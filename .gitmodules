@@ -1,0 +1,3 @@
+[submodule "refs/parser/wasm-tools"]
+	path = refs/parser/wasm-tools
+	url = https://github.com/bytecodealliance/wasm-tools.git
