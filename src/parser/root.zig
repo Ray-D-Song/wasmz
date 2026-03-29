@@ -67,7 +67,6 @@ pub const Parser = struct {
                         },
                     } };
                 },
-                .BEGIN_WASM, .END_SECTION => return self.read_sect_header(),
                 .END_WASM => {
                     if (!self.has_more_bytes()) {
                         return .end;
@@ -76,6 +75,8 @@ pub const Parser = struct {
                     return self.fail_with_state(ParserError.TrailingBytesAfterModule);
                 },
                 .ERROR => return self.fail_with_state(ParserError.UnsupportedState),
+                .BEGIN_WASM, .END_SECTION => return self.read_sect_header(),
+
                 else => return self.fail_with_state(ParserError.UnsupportedState),
             }
         }
@@ -116,6 +117,135 @@ pub const Parser = struct {
         const b4 = self.read_u8();
 
         return @as(u32, b1) | (@as(u32, b2) << 8) | (@as(u32, b3) << 16) | (@as(u32, b4) << 24);
+    }
+
+    /// Check if there are enough bytes to read a complete LEB128 integer starting from the current position.
+    /// LEB128 uses the most significant bit as a continuation flag.
+    /// When a byte with the most significant bit set to 0 is encountered, it indicates the end of the integer.
+    fn has_var_int_bytes(self: *Parser) bool {
+        var pos = self.cur_pos;
+        while (pos < self.cur_len) {
+            // 0x80: LEB128_CONTINUATION_BIT
+            // If the continuation bit is not set, it means this is the last byte of the LEB128 integer, so we can return true.
+            if ((self.cur_data[pos] & 0x80) == 0) return true;
+            pos += 1;
+        }
+        return false;
+    }
+
+    /// Read a single byte and interpret it as a boolean value (varuint1).
+    /// Used for boolean values or flags, such as the has_max flag in memory limits.
+    /// Directly reads 1 byte and takes the lowest 1 bit.
+    fn read_var_uint1(self: *Parser) u1 {
+        return @truncate(self.read_u8());
+    }
+
+    /// Read a 7-bit unsigned integer (varuint7).
+    /// Directly reads 1 byte, value range 0-127.
+    /// Commonly used for Section ID (standard Section ID range 0-12, 7 bits are sufficient).
+    fn read_var_uint7(self: *Parser) u7 {
+        return @truncate(self.read_u8());
+    }
+
+    /// Read a 7-bit signed integer (varint7).
+    /// Used for scenarios where a negative value is needed, such as type encoding in the Type Section.
+    /// Sign extension: converts the 7-bit value to a signed integer, range -64 to 63.
+    fn read_var_int7(self: *Parser) i7 {
+        const byte = self.read_u8();
+        // Extract the lower 7 bits, value range 0-127
+        const value = byte & 0x7f;
+        // If the most significant bit (bit 6) is 1, it indicates a negative number (range 64-127 corresponds to -64 to -1)
+        if (value & 0x40 != 0) {
+            // Negative number: convert to two's complement representation
+            // For example: 64 (0x40) should represent -64
+            // Map 64 to 127 to -64 to -1
+            const signed_value = @as(i16, @intCast(value)) - 128;
+            return @as(i7, @intCast(signed_value));
+        } else {
+            // Positive number: 0 to 63
+            return @as(i7, @intCast(value));
+        }
+    }
+
+    /// Read a 32-bit unsigned LEB128 integer (varuint32)
+    ///
+    /// Decoding process:
+    /// 1. Loop through bytes, extracting the lower 7 bits (byte & 0x7f)
+    /// 2. Shift left by 7 bits for each subsequent byte and accumulate the result
+    /// 3. Stop when a byte with the continuation bit 0 ((byte & 0x80) == 0) is encountered
+    ///
+    /// Encoding length: 1-5 bytes
+    /// Maximum representable value: 2^32 - 1 = 4294967295
+    fn read_var_uint32(self: *Parser) u32 {
+        var result: u32 = 0;
+        var shift: u32 = 0;
+
+        while (true) {
+            const byte = self.read_u8();
+            // Extract the lower 7 bits and shift to the correct position
+            result |= @as(u32, byte & 0x7f) << @intCast(shift);
+            shift += 7;
+            // Check the continuation flag: if 0, this is the last byte
+            if ((byte & 0x80) == 0) break;
+        }
+
+        return result;
+    }
+
+    /// Read a 32-bit signed LEB128 integer (varint32)
+    ///
+    /// Similar to the unsigned version, but requires sign extension:
+    /// If the total number of bits is less than 32, shift left and then right by the same amount to extend the sign bit to the highest bit.
+    ///
+    /// For example, decoding -1:
+    ///   Encoding: 0x7F (01111111) -> end, value is 127
+    ///   Sign extension: (127 << 25) >> 25 = -1
+    fn read_var_int32(self: *Parser) i32 {
+        var result: u32 = 0;
+        var shift: u32 = 0;
+
+        while (true) {
+            const byte = self.read_u8();
+            result |= @as(u32, byte & 0x7f) << @intCast(shift);
+            shift += 7;
+            if ((byte & 0x80) == 0) break;
+        }
+
+        // Sign extension: if shift < 32, extend the sign bit to the highest bit (bit 31)
+        if (shift < 32) {
+            const ashift: u5 = @intCast(32 - shift);
+            // Shift left to move the sign bit to the highest position, then arithmetic right shift to extend the sign
+            const signed_result = @as(i32, @bitCast(result << ashift)) >> ashift;
+            return signed_result;
+        }
+
+        return @as(i32, @bitCast(result));
+    }
+
+    /// Read a 64-bit signed LEB128 integer (varint64)
+    ///
+    /// Decoding process is similar to the 32-bit version, but uses 64-bit storage
+    /// Encoding length: 1-10 bytes
+    /// Maximum representable value: 2^63 - 1 = 9223372036854775807
+    fn read_var_int64(self: *Parser) i64 {
+        var result: u64 = 0;
+        var shift: u32 = 0;
+
+        while (true) {
+            const byte = self.read_u8();
+            result |= @as(u64, byte & 0x7f) << @intCast(shift);
+            shift += 7;
+            if ((byte & 0x80) == 0) break;
+        }
+
+        // Sign extension: if shift < 64, extend the sign bit to the highest bit (bit 63)
+        if (shift < 64) {
+            const ashift: u6 = @intCast(64 - shift);
+            const signed_result = @as(i64, @bitCast(result << ashift)) >> ashift;
+            return signed_result;
+        }
+
+        return @as(i64, @bitCast(result));
     }
 
     fn read_sect_header(self: *Parser) ParseResult {
@@ -354,6 +484,158 @@ test "returns end after the header when eof is reached with no more bytes" {
     var parser = Parser.init();
     _ = parser.parse(&header, false);
     try expect_end(parser.parse(&.{}, true));
+}
+
+test "LEB128 unsigned 32-bit encoding" {
+    // Test varuint32 decoding
+    var parser = Parser.init();
+
+    // 1-byte encoding: 0x01 = 1
+    parser.cur_data = &[_]u8{0x01};
+    parser.cur_len = 1;
+    parser.cur_pos = 0;
+    try std.testing.expectEqual(@as(u32, 1), parser.read_var_uint32());
+
+    // 1-byte encoding: 0x7F = 127
+    parser.cur_data = &[_]u8{0x7F};
+    parser.cur_len = 1;
+    parser.cur_pos = 0;
+    try std.testing.expectEqual(@as(u32, 127), parser.read_var_uint32());
+
+    // 2-byte encoding: 0x80 0x01 = 128 (10000000 00000001)
+    // 0x80: data=0, continue=1
+    // 0x01: data=1, continue=0
+    // result = 0 | (1 << 7) = 128
+    parser.cur_data = &[_]u8{ 0x80, 0x01 };
+    parser.cur_len = 2;
+    parser.cur_pos = 0;
+    try std.testing.expectEqual(@as(u32, 128), parser.read_var_uint32());
+
+    // 3-byte encoding: 624485 (example from WebAssembly spec)
+    // 624485 = 0x2638C5 = 00000010 01100011 10000101
+    // Encoded: 0xE5 0x8E 0x26
+    parser.cur_data = &[_]u8{ 0xE5, 0x8E, 0x26 };
+    parser.cur_len = 3;
+    parser.cur_pos = 0;
+    try std.testing.expectEqual(@as(u32, 624485), parser.read_var_uint32());
+}
+
+test "LEB128 signed 32-bit encoding" {
+    var parser = Parser.init();
+
+    // Positive numbers encoded same as unsigned
+    // 0x01 = 1
+    parser.cur_data = &[_]u8{0x01};
+    parser.cur_len = 1;
+    parser.cur_pos = 0;
+    try std.testing.expectEqual(@as(i32, 1), parser.read_var_int32());
+
+    // Negative numbers need sign extension
+    // -1 encoded as 0x7F (127 with sign extension becomes -1)
+    parser.cur_data = &[_]u8{0x7F};
+    parser.cur_len = 1;
+    parser.cur_pos = 0;
+    try std.testing.expectEqual(@as(i32, -1), parser.read_var_int32());
+
+    // -128 encoded as 0x80 0x7F
+    // After decoding: 0x80 = 128, with sign extension: (128 << 25) >> 25 = -128
+    // Actually: 0x80 | (0x7F << 7) = 0x80 | 0x3F80 = 0x4000 = 16384
+    // Let me recalculate: -128 in LEB128
+    // -128 = 0x80 (in 8-bit two's complement)
+    // LEB128: 0x80 0x7F
+    // 0x80: data=0, continue=1
+    // 0x7F: data=127, continue=0
+    // result = 0 | (127 << 7) = 16256, sign extend from bit 14
+    // ashift = 32 - 14 = 18
+    // (16256 << 18) >> 18 = -128 ✓
+    parser.cur_data = &[_]u8{ 0x80, 0x7F };
+    parser.cur_len = 2;
+    parser.cur_pos = 0;
+    try std.testing.expectEqual(@as(i32, -128), parser.read_var_int32());
+}
+
+test "LEB128 7-bit integers" {
+    var parser = Parser.init();
+
+    // varuint7: max value 127
+    parser.cur_data = &[_]u8{0x7F};
+    parser.cur_len = 1;
+    parser.cur_pos = 0;
+    try std.testing.expectEqual(@as(u7, 127), parser.read_var_uint7());
+
+    // varuint1: max value 1
+    parser.cur_data = &[_]u8{0x01};
+    parser.cur_len = 1;
+    parser.cur_pos = 0;
+    try std.testing.expectEqual(@as(u1, 1), parser.read_var_uint1());
+
+    // varint7: positive 63
+    parser.cur_data = &[_]u8{0x3F};
+    parser.cur_len = 1;
+    parser.cur_pos = 0;
+    try std.testing.expectEqual(@as(i7, 63), parser.read_var_int7());
+
+    // varint7: negative -64
+    // -64 in 7-bit signed = 0x40 (64)
+    // But with proper sign extension from bit 7
+    parser.cur_data = &[_]u8{0x40};
+    parser.cur_len = 1;
+    parser.cur_pos = 0;
+    try std.testing.expectEqual(@as(i7, -64), parser.read_var_int7());
+}
+
+test "LEB128 has_var_int_bytes check" {
+    var parser = Parser.init();
+
+    // Complete LEB128: single byte with continue=0
+    parser.cur_data = &[_]u8{0x01};
+    parser.cur_len = 1;
+    parser.cur_pos = 0;
+    try std.testing.expect(parser.has_var_int_bytes());
+
+    // Incomplete LEB128: continue=1 but no more data
+    parser.cur_data = &[_]u8{0x80};
+    parser.cur_len = 1;
+    parser.cur_pos = 0;
+    try std.testing.expect(!parser.has_var_int_bytes());
+
+    // Complete multi-byte: 0x80 0x01
+    parser.cur_data = &[_]u8{ 0x80, 0x01 };
+    parser.cur_len = 2;
+    parser.cur_pos = 0;
+    try std.testing.expect(parser.has_var_int_bytes());
+
+    // Incomplete multi-byte: 0x80 0x80 (both continue=1, no terminator)
+    parser.cur_data = &[_]u8{ 0x80, 0x80 };
+    parser.cur_len = 2;
+    parser.cur_pos = 0;
+    try std.testing.expect(!parser.has_var_int_bytes());
+}
+
+test "LEB128 64-bit encoding" {
+    var parser = Parser.init();
+
+    // Simple positive number
+    parser.cur_data = &[_]u8{0x01};
+    parser.cur_len = 1;
+    parser.cur_pos = 0;
+    try std.testing.expectEqual(@as(i64, 1), parser.read_var_int64());
+
+    // Large positive number: 127 needs 2 bytes in signed LEB128
+    // 127 = 0b1111111, encoded as 0xFF 0x00
+    // 0xFF: data=127, continue=1
+    // 0x00: data=0, continue=0
+    // result = 127 | (0 << 7) = 127
+    parser.cur_data = &[_]u8{ 0xFF, 0x00 };
+    parser.cur_len = 2;
+    parser.cur_pos = 0;
+    try std.testing.expectEqual(@as(i64, 127), parser.read_var_int64());
+
+    // Negative number: 0x7F is -1 in signed LEB128
+    parser.cur_data = &[_]u8{0x7F};
+    parser.cur_len = 1;
+    parser.cur_pos = 0;
+    try std.testing.expectEqual(@as(i64, -1), parser.read_var_int64());
 }
 
 test "remaining bytes after the header are not treated as a second module" {
