@@ -23,12 +23,11 @@ pub fn main() !void {
         var input = pending_buf[0 .. pending_len + n];
 
         while (true) {
-            switch (try parser.parse(input, eof)) {
+            switch (parser.parse(input, eof)) {
                 .parsed => |r| {
                     switch (r.payload) {
-                        .version => {},
-                        .section => {},
-                        .end => return,
+                        .module_header => {},
+                        else => {},
                     }
 
                     input = input[r.consumed..];
@@ -37,7 +36,7 @@ pub fn main() !void {
                         break;
                     }
                 },
-                .need_more_data => |_| {
+                .need_more_data => {
                     std.mem.copyForwards(u8, pending_buf[0..input.len], input);
                     pending_len = input.len;
 
