@@ -1,7 +1,12 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const DataRange = @import("range.zig").DataRange;
 const payload_mod = @import("payload.zig");
 const Payload = payload_mod.Payload;
+const Type = payload_mod.Type;
+const RefType = payload_mod.RefType;
+const HeapType = payload_mod.HeapType;
+const TypeKind = payload_mod.TypeKind;
 const SectionCode = payload_mod.SectionCode;
 const SectionInformation = payload_mod.SectionInformation;
 
@@ -94,7 +99,19 @@ pub const Parser = struct {
                 .ERROR => return self.fail_with_state(ParserError.UnsupportedState),
                 // Read the next complete section after the module header or the previous section.
                 .BEGIN_WASM, .END_SECTION => return self.read_sect(),
-                .TYPE_SECTION_ENTRY,
+                .TYPE_SECTION_ENTRY => {
+                    if (self.cur_rec_group_types_left == 0) {
+                        // Rec group boundaries are internal-only; once all nested
+                        // types are emitted, immediately advance to the next type-section item.
+                        self.cur_section_entries_left -= 1;
+                        self.cur_rec_group_types_left = -1;
+                        continue;
+                    }
+                    if (self.cur_rec_group_types_left > 0) {
+                        return self.read_rec_group_entry();
+                    }
+                    return self.read_type_entry();
+                },
                 .IMPORT_SECTION_ENTRY,
                 .FUNCTION_SECTION_ENTRY,
                 .TABLE_SECTION_ENTRY,
@@ -497,6 +514,37 @@ pub const Parser = struct {
         };
     }
 
+    fn read_rec_group_entry(self: *Parser) ParseResult {
+        const type_kind = self.read_var_int7();
+        self.read_type_entry_common(type_kind);
+        self.cur_rec_group_types_left -= 1;
+    }
+
+    fn read_type_entry_common(self: *Parser, type_kind: i7) ParseResult {}
+
+    // TODO
+    // read_func_type
+    //   read_type
+    //     read_heap_type
+    // read_sub_type
+    // read_struct_type
+    // read_array_type
+
+    // Heap is used to represent reference types and type indices in WebAssembly
+    fn read_heap_type(self: *Parser) i64 {
+        const lsb = self.read_u8();
+        if ((lsb & 0x80) != 0) {
+            const tail = self.read_var_int32();
+            return (@as(i64, tail) - 1) * 128 + @as(i64, lsb);
+        }
+
+        const low7 = lsb & 0x7f;
+        if ((low7 & 0x40) != 0) {
+            return @as(i64, @as(i16, @intCast(low7)) - 128);
+        }
+        return @as(i64, low7);
+    }
+
     fn fail_with_state(self: *Parser, err: ParserError) ParseResult {
         self.last_err_state = @intFromEnum(self.cur_state);
         return .{ .err = err };
@@ -529,6 +577,15 @@ pub const Parser = struct {
         self.cur_rec_group_types_left = -1;
     }
 };
+
+pub const testing = if (builtin.is_test) struct {
+    pub fn read_heap_type(bytes: []const u8) i64 {
+        var parser = Parser.init();
+        parser.cur_data = bytes;
+        parser.cur_len = bytes.len;
+        return parser.read_heap_type();
+    }
+} else struct {};
 
 pub const ParserError = error{
     // "Unexpected type kind: ${kind}}"

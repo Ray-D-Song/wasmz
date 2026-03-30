@@ -7,6 +7,7 @@ const ParseResult = parser_mod.ParseResult;
 const ParseState = parser_mod.ParseState;
 const ParserError = parser_mod.ParserError;
 const SectionCode = payload_mod.SectionCode;
+const parser_testing = parser_mod.testing;
 
 const wasm_magic_number: u32 = 0x6d736100;
 
@@ -146,6 +147,14 @@ test "partial section after the header asks for more data" {
     var parser = Parser.init();
     _ = parser.parse(&header, false);
     try expect_need_more_data(parser.parse(&trailing, true));
+}
+
+test "read_heap_type decodes a single-byte negative heap type" {
+    try std.testing.expectEqual(@as(i64, -16), parser_testing.read_heap_type(&[_]u8{0x70}));
+}
+
+test "read_heap_type decodes a continued heap type index" {
+    try std.testing.expectEqual(@as(i64, 127), parser_testing.read_heap_type(&[_]u8{ 0xff, 0x00 }));
 }
 
 fn expect_need_more_data(result: ParseResult) !void {
