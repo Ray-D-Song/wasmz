@@ -1,6 +1,9 @@
 const std = @import("std");
 const DataRange = @import("range.zig").DataRange;
-const Payload = @import("payload.zig").Payload;
+const payload_mod = @import("payload.zig");
+const Payload = payload_mod.Payload;
+const SectionCode = payload_mod.SectionCode;
+const SectionInformation = payload_mod.SectionInformation;
 
 const WASM_MAGIC_NUMBER = 0x6d736100;
 const WASM_SUPPORTED_VERSION = [_]u32{ 0x1, 0x2 };
@@ -16,7 +19,6 @@ pub const Parser = struct {
     cur_len: usize = 0,
     // Flag to indicate if the end of the file has been reached.
     cur_eof: bool = false,
-    cur_sect_range: ?DataRange = null,
     cur_fn_range: ?DataRange = null,
 
     last_err_arg: u32 = 0,
@@ -75,7 +77,8 @@ pub const Parser = struct {
                     return self.fail_with_state(ParserError.TrailingBytesAfterModule);
                 },
                 .ERROR => return self.fail_with_state(ParserError.UnsupportedState),
-                .BEGIN_WASM, .END_SECTION => return self.read_sect_header(),
+                // Read the next complete section after the module header or the previous section.
+                .BEGIN_WASM, .END_SECTION => return self.read_sect(),
 
                 else => return self.fail_with_state(ParserError.UnsupportedState),
             }
@@ -117,6 +120,32 @@ pub const Parser = struct {
         const b4 = self.read_u8();
 
         return @as(u32, b1) | (@as(u32, b2) << 8) | (@as(u32, b3) << 16) | (@as(u32, b4) << 24);
+    }
+
+    /// Check if there are enough bytes to read a WebAssembly string (length-prefixed with LEB128 varuint32) starting from the current position.
+    ///
+    /// WebAssembly strings are encoded as a length field (varuint32) followed by that many bytes of UTF-8 data. To check if we can read a complete string, we need to:
+    /// 1. Check if there are enough bytes to read the length field (LEB128 varuint32).
+    /// 2. Check if there are enough bytes to read the string content based on the length field.
+    fn has_str_bytes(self: *Parser) bool {
+        if (!self.has_var_int_bytes()) return false;
+        const pos = self.cur_pos;
+        const length = self.read_var_uint32();
+        const result = self.has_bytes(length);
+        self.cur_pos = pos;
+
+        return result;
+    }
+
+    fn read_str_bytes(self: *Parser) []const u8 {
+        const length = self.read_var_uint32();
+        return self.read_bytes(length);
+    }
+
+    fn read_bytes(self: *Parser, len: usize) []const u8 {
+        const bytes = self.cur_data[self.cur_pos .. self.cur_pos + len];
+        self.cur_pos += len;
+        return bytes;
     }
 
     /// Check if there are enough bytes to read a complete LEB128 integer starting from the current position.
@@ -248,24 +277,59 @@ pub const Parser = struct {
         return @as(i64, @bitCast(result));
     }
 
-    fn read_sect_header(self: *Parser) ParseResult {
-        if (!self.has_more_bytes()) {
-            if (self.cur_eof) {
-                self.cur_state = .END_WASM;
-                return .end;
-            }
+    fn read_sect(self: *Parser) ParseResult {
+        const start_pos = self.cur_pos;
+        if (!self.has_more_bytes() and self.cur_eof) {
+            self.cur_state = .END_WASM;
+            return .end;
+        }
 
+        // Check if there are enough bytes to read the section header (at least 1 byte for section ID and 1 byte for section size)
+        if (!self.has_var_int_bytes()) {
             return .need_more_data;
         }
 
-        // Section parsing is not implemented yet. Any remaining bytes are treated
-        // as work for a future section parser stage rather than a second module.
-        return self.fail_with_state(ParserError.UnsupportedState);
+        const sect_id = self.read_var_uint7();
+
+        if (!self.has_var_int_bytes()) {
+            self.cur_pos = start_pos;
+            return .need_more_data;
+        }
+
+        const payload_len = self.read_var_uint32();
+        const payload_end_pos = self.cur_pos + payload_len;
+
+        var custom_section_name: ?[]const u8 = null;
+        if (sect_id == 0) {
+            if (!self.has_str_bytes()) {
+                self.cur_pos = start_pos;
+                return .need_more_data;
+            }
+            custom_section_name = self.read_str_bytes();
+        }
+
+        if (payload_end_pos > self.cur_len) {
+            self.cur_pos = start_pos;
+            return .need_more_data;
+        }
+
+        self.cur_pos = payload_end_pos;
+        self.cur_state = .END_SECTION;
+
+        return .{ .parsed = .{
+            .consumed = payload_end_pos - start_pos,
+            .payload = Payload{
+                .section_info = SectionInformation{
+                    .id = sect_id,
+                    .name = custom_section_name,
+                },
+            },
+        } };
     }
 
     fn fail_with_state(self: *Parser, err: ParserError) ParseResult {
         self.last_err_state = @intFromEnum(self.cur_state);
-        return ParseResult{ .err = err };
+        return .{ .err = err };
     }
 };
 
@@ -486,6 +550,78 @@ test "returns end after the header when eof is reached with no more bytes" {
     try expect_end(parser.parse(&.{}, true));
 }
 
+test "parses an empty section as a single event" {
+    const module = [_]u8{
+        0x00, 0x61, 0x73, 0x6d,
+        0x01, 0x00, 0x00, 0x00,
+        0x01, // type section id
+        0x01, // payload length
+        0x00, // type count
+    };
+
+    var parser = Parser.init();
+    _ = parser.parse(module[0..8], false);
+
+    const result = parser.parse(module[8..], false);
+    switch (result) {
+        .parsed => |parsed| {
+            try std.testing.expectEqual(@as(usize, 3), parsed.consumed);
+            switch (parsed.payload) {
+                .section_info => |section_info| {
+                    try std.testing.expectEqual(SectionCode.type, section_info.id);
+                    try std.testing.expectEqual(@as(?[]const u8, null), section_info.name);
+                },
+                else => return error.UnexpectedPayload,
+            }
+        },
+        else => return error.UnexpectedParseResult,
+    }
+
+    try std.testing.expectEqual(ParseState.END_SECTION, parser.cur_state);
+}
+
+test "returns need_more_data when a full section is not yet available" {
+    const partial_section = [_]u8{
+        0x01, // type section id
+        0x03, // payload length
+        0x01, // part of payload only
+    };
+
+    var parser = Parser.init();
+    parser.cur_state = .BEGIN_WASM;
+    try expect_need_more_data(parser.parse(&partial_section, false));
+}
+
+test "parses a custom section name only when the full section is available" {
+    const custom_section = [_]u8{
+        0x00, // custom section id
+        0x05, // payload length
+        0x04, // name length
+        'n',
+        'a',
+        'm',
+        'e',
+    };
+
+    var parser = Parser.init();
+    parser.cur_state = .BEGIN_WASM;
+
+    const result = parser.parse(&custom_section, false);
+    switch (result) {
+        .parsed => |parsed| {
+            try std.testing.expectEqual(@as(usize, custom_section.len), parsed.consumed);
+            switch (parsed.payload) {
+                .section_info => |section_info| {
+                    try std.testing.expectEqual(SectionCode.custom, section_info.id);
+                    try std.testing.expectEqualStrings("name", section_info.name.?);
+                },
+                else => return error.UnexpectedPayload,
+            }
+        },
+        else => return error.UnexpectedParseResult,
+    }
+}
+
 test "LEB128 unsigned 32-bit encoding" {
     // Test varuint32 decoding
     var parser = Parser.init();
@@ -638,13 +774,13 @@ test "LEB128 64-bit encoding" {
     try std.testing.expectEqual(@as(i64, -1), parser.read_var_int64());
 }
 
-test "remaining bytes after the header are not treated as a second module" {
+test "partial section after the header asks for more data" {
     const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
     const trailing = [_]u8{0x00};
 
     var parser = Parser.init();
     _ = parser.parse(&header, false);
-    try expect_error(ParserError.UnsupportedState, parser.parse(&trailing, true));
+    try expect_need_more_data(parser.parse(&trailing, true));
 }
 
 fn expect_need_more_data(result: ParseResult) !void {
