@@ -1,3 +1,4 @@
+const std = @import("std");
 const DataRange = @import("range.zig").DataRange;
 const payload_mod = @import("payload.zig");
 const Payload = payload_mod.Payload;
@@ -18,6 +19,10 @@ pub const Parser = struct {
     cur_len: usize = 0,
     // Flag to indicate if the end of the file has been reached.
     cur_eof: bool = false,
+    cur_sect_range: ?DataRange = null,
+    cur_sect_id: SectionCode = .unknown,
+    cur_section_entries_left: u32 = 0,
+    cur_rec_group_types_left: i32 = -1,
     cur_fn_range: ?DataRange = null,
 
     last_err_arg: u32 = 0,
@@ -29,6 +34,17 @@ pub const Parser = struct {
 
     // Incremental parsing: one observable parser event per call.
     pub fn parse(self: *Parser, input: []const u8, eof: bool) ParseResult {
+        const old_pos = self.cur_pos;
+        const shift = -@as(isize, @intCast(old_pos));
+        if (old_pos != 0) {
+            if (self.cur_sect_range) |*sect_range| {
+                sect_range.offset(shift);
+            }
+            if (self.cur_fn_range) |*fn_range| {
+                fn_range.offset(shift);
+            }
+        }
+
         self.cur_data = input;
         self.cur_pos = 0;
         self.cur_len = input.len;
@@ -78,6 +94,38 @@ pub const Parser = struct {
                 .ERROR => return self.fail_with_state(ParserError.UnsupportedState),
                 // Read the next complete section after the module header or the previous section.
                 .BEGIN_WASM, .END_SECTION => return self.read_sect(),
+                .TYPE_SECTION_ENTRY,
+                .IMPORT_SECTION_ENTRY,
+                .FUNCTION_SECTION_ENTRY,
+                .TABLE_SECTION_ENTRY,
+                .MEMORY_SECTION_ENTRY,
+                .GLOBAL_SECTION_ENTRY,
+                .EXPORT_SECTION_ENTRY,
+                .DATA_SECTION_ENTRY,
+                .ELEMENT_SECTION_ENTRY,
+                .LINKING_SECTION_ENTRY,
+                .TAG_SECTION_ENTRY,
+                .READING_FUNCTION_HEADER,
+                .DATA_COUNT_SECTION_ENTRY,
+                .NAME_SECTION_ENTRY,
+                .RELOC_SECTION_ENTRY,
+                => {
+                    if (self.cur_section_entries_left == 0) {
+                        self.finish_current_section();
+                        continue;
+                    }
+                    return self.fail_with_state(ParserError.UnsupportedState);
+                },
+                .RELOC_SECTION_HEADER => {
+                    if (!self.has_var_int_bytes()) return .need_more_data;
+                    self.cur_section_entries_left = self.read_var_uint32();
+                    if (self.cur_section_entries_left == 0) {
+                        self.finish_current_section();
+                        continue;
+                    }
+                    self.cur_state = .RELOC_SECTION_ENTRY;
+                    return self.fail_with_state(ParserError.UnsupportedState);
+                },
 
                 else => return self.fail_with_state(ParserError.UnsupportedState),
             }
@@ -94,6 +142,11 @@ pub const Parser = struct {
 
     fn has_more_bytes(self: *Parser) bool {
         return self.cur_pos < self.cur_len;
+    }
+
+    fn has_section_payload(self: *Parser) bool {
+        const sect_range = self.cur_sect_range orelse return false;
+        return self.has_bytes(sect_range.end - self.cur_pos);
     }
 
     fn read_u8(self: *Parser) u8 {
@@ -279,6 +332,8 @@ pub const Parser = struct {
     fn read_sect(self: *Parser) ParseResult {
         const start_pos = self.cur_pos;
         if (!self.has_more_bytes() and self.cur_eof) {
+            self.cur_sect_range = null;
+            self.cur_sect_id = .unknown;
             self.cur_state = .END_WASM;
             return .end;
         }
@@ -288,7 +343,7 @@ pub const Parser = struct {
             return .need_more_data;
         }
 
-        const sect_id = self.read_var_uint7();
+        const sect_id_raw = self.read_var_uint7();
 
         if (!self.has_var_int_bytes()) {
             self.cur_pos = start_pos;
@@ -297,38 +352,181 @@ pub const Parser = struct {
 
         const payload_len = self.read_var_uint32();
         const payload_end_pos = self.cur_pos + payload_len;
+        self.cur_sect_id = parse_section_code(sect_id_raw) orelse {
+            self.last_err_arg = sect_id_raw;
+            return self.fail_with_state(ParserError.UnsupportedSection);
+        };
+        self.cur_sect_range = .{ .start = self.cur_pos, .end = payload_end_pos };
+        self.cur_section_entries_left = 0;
+        self.cur_rec_group_types_left = -1;
 
         var custom_section_name: ?[]const u8 = null;
-        if (sect_id == 0) {
+        if (self.cur_sect_id == .custom) {
             if (!self.has_str_bytes()) {
-                self.cur_pos = start_pos;
-                return .need_more_data;
+                return self.rollback_section_parse(start_pos);
             }
             custom_section_name = self.read_str_bytes();
         }
 
-        if (payload_end_pos > self.cur_len) {
-            self.cur_pos = start_pos;
-            return .need_more_data;
-        }
-
-        self.cur_pos = payload_end_pos;
-        self.cur_state = .END_SECTION;
-
-        return .{ .parsed = .{
-            .consumed = payload_end_pos - start_pos,
-            .payload = Payload{
-                .section_info = SectionInformation{
-                    .id = sect_id,
-                    .name = custom_section_name,
-                },
+        return switch (self.cur_sect_id) {
+            .type => {
+                if (!self.has_section_payload()) return self.rollback_section_parse(start_pos);
+                self.cur_section_entries_left = self.read_var_uint32();
+                self.cur_rec_group_types_left = -1;
+                self.cur_state = .TYPE_SECTION_ENTRY;
+                return self.finish_section_dispatch(start_pos, custom_section_name);
             },
-        } };
+            .import => {
+                if (!self.has_section_payload()) return self.rollback_section_parse(start_pos);
+                self.cur_section_entries_left = self.read_var_uint32();
+                self.cur_state = .IMPORT_SECTION_ENTRY;
+                return self.finish_section_dispatch(start_pos, custom_section_name);
+            },
+            .@"export" => {
+                if (!self.has_section_payload()) return self.rollback_section_parse(start_pos);
+                self.cur_section_entries_left = self.read_var_uint32();
+                self.cur_state = .EXPORT_SECTION_ENTRY;
+                return self.finish_section_dispatch(start_pos, custom_section_name);
+            },
+            .function => {
+                if (!self.has_section_payload()) return self.rollback_section_parse(start_pos);
+                self.cur_section_entries_left = self.read_var_uint32();
+                self.cur_state = .FUNCTION_SECTION_ENTRY;
+                return self.finish_section_dispatch(start_pos, custom_section_name);
+            },
+            .table => {
+                if (!self.has_section_payload()) return self.rollback_section_parse(start_pos);
+                self.cur_section_entries_left = self.read_var_uint32();
+                self.cur_state = .TABLE_SECTION_ENTRY;
+                return self.finish_section_dispatch(start_pos, custom_section_name);
+            },
+            .memory => {
+                if (!self.has_section_payload()) return self.rollback_section_parse(start_pos);
+                self.cur_section_entries_left = self.read_var_uint32();
+                self.cur_state = .MEMORY_SECTION_ENTRY;
+                return self.finish_section_dispatch(start_pos, custom_section_name);
+            },
+            .global => {
+                if (!self.has_var_int_bytes()) return self.rollback_section_parse(start_pos);
+                self.cur_section_entries_left = self.read_var_uint32();
+                self.cur_state = .GLOBAL_SECTION_ENTRY;
+                return self.finish_section_dispatch(start_pos, custom_section_name);
+            },
+            .start => {
+                if (!self.has_var_int_bytes()) return self.rollback_section_parse(start_pos);
+                const index = self.read_var_uint32();
+                self.cur_state = .END_SECTION;
+                self.cur_sect_range = null;
+                self.cur_sect_id = .unknown;
+                return .{ .parsed = .{
+                    .consumed = self.cur_pos - start_pos,
+                    .payload = .{ .start_entry = .{ .index = index } },
+                } };
+            },
+            .code => {
+                if (!self.has_var_int_bytes()) return self.rollback_section_parse(start_pos);
+                self.cur_section_entries_left = self.read_var_uint32();
+                self.cur_state = .READING_FUNCTION_HEADER;
+                return self.finish_section_dispatch(start_pos, custom_section_name);
+            },
+            .element => {
+                if (!self.has_var_int_bytes()) return self.rollback_section_parse(start_pos);
+                self.cur_section_entries_left = self.read_var_uint32();
+                self.cur_state = .ELEMENT_SECTION_ENTRY;
+                return self.finish_section_dispatch(start_pos, custom_section_name);
+            },
+            .data => {
+                if (!self.has_var_int_bytes()) return self.rollback_section_parse(start_pos);
+                self.cur_section_entries_left = self.read_var_uint32();
+                self.cur_state = .DATA_SECTION_ENTRY;
+                return self.finish_section_dispatch(start_pos, custom_section_name);
+            },
+            .data_count => {
+                if (!self.has_var_int_bytes()) return self.rollback_section_parse(start_pos);
+                self.cur_section_entries_left = self.read_var_uint32();
+                self.cur_state = .DATA_COUNT_SECTION_ENTRY;
+                return self.finish_section_dispatch(start_pos, custom_section_name);
+            },
+            .tag => {
+                if (!self.has_var_int_bytes()) return self.rollback_section_parse(start_pos);
+                self.cur_section_entries_left = self.read_var_uint32();
+                self.cur_state = .TAG_SECTION_ENTRY;
+                return self.finish_section_dispatch(start_pos, custom_section_name);
+            },
+            .custom => {
+                const name = custom_section_name orelse return self.rollback_section_parse(start_pos);
+                if (std.mem.eql(u8, name, "name")) {
+                    self.cur_state = .NAME_SECTION_ENTRY;
+                    return self.finish_section_dispatch(start_pos, custom_section_name);
+                }
+                if (std.mem.startsWith(u8, name, "reloc.")) {
+                    self.cur_state = .RELOC_SECTION_HEADER;
+                    return self.finish_section_dispatch(start_pos, custom_section_name);
+                }
+                if (std.mem.eql(u8, name, "linking")) {
+                    if (!self.has_var_int_bytes()) return self.rollback_section_parse(start_pos);
+                    self.cur_section_entries_left = self.read_var_uint32();
+                    self.cur_state = .LINKING_SECTION_ENTRY;
+                    return self.finish_section_dispatch(start_pos, custom_section_name);
+                }
+                if (std.mem.eql(u8, name, "sourceMappingURL")) {
+                    if (!self.has_str_bytes()) return self.rollback_section_parse(start_pos);
+                    const url = self.read_str_bytes();
+                    self.cur_state = .END_SECTION;
+                    self.cur_sect_range = null;
+                    self.cur_sect_id = .unknown;
+                    return .{ .parsed = .{
+                        .consumed = self.cur_pos - start_pos,
+                        .payload = .{ .source_mapping_url = .{ .url = url } },
+                    } };
+                }
+                if (!self.has_section_payload()) return self.rollback_section_parse(start_pos);
+                const body = self.read_bytes(payload_end_pos - self.cur_pos);
+                self.cur_state = .END_SECTION;
+                self.cur_sect_range = null;
+                self.cur_sect_id = .unknown;
+                return .{ .parsed = .{
+                    .consumed = self.cur_pos - start_pos,
+                    .payload = .{ .bytes = body },
+                } };
+            },
+            else => {
+                self.last_err_arg = @intFromEnum(self.cur_sect_id);
+                return self.fail_with_state(ParserError.UnsupportedSection);
+            },
+        };
     }
 
     fn fail_with_state(self: *Parser, err: ParserError) ParseResult {
         self.last_err_state = @intFromEnum(self.cur_state);
         return .{ .err = err };
+    }
+
+    fn rollback_section_parse(self: *Parser, start_pos: usize) ParseResult {
+        self.cur_pos = start_pos;
+        self.cur_sect_range = null;
+        self.cur_sect_id = .unknown;
+        self.cur_section_entries_left = 0;
+        self.cur_rec_group_types_left = -1;
+        return .need_more_data;
+    }
+
+    fn finish_section_dispatch(self: *Parser, start_pos: usize, custom_section_name: ?[]const u8) ParseResult {
+        return .{ .parsed = .{
+            .consumed = self.cur_pos - start_pos,
+            .payload = .{ .section_info = SectionInformation{
+                .id = self.cur_sect_id,
+                .name = custom_section_name,
+            } },
+        } };
+    }
+
+    fn finish_current_section(self: *Parser) void {
+        self.cur_state = .END_SECTION;
+        self.cur_sect_range = null;
+        self.cur_sect_id = .unknown;
+        self.cur_section_entries_left = 0;
+        self.cur_rec_group_types_left = -1;
     }
 };
 
@@ -476,4 +674,8 @@ fn contains_u32(values: []const u32, value: u32) bool {
         if (candidate == value) return true;
     }
     return false;
+}
+
+fn parse_section_code(raw: u7) ?SectionCode {
+    return std.meta.intToEnum(SectionCode, raw) catch null;
 }

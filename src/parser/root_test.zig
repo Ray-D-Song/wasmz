@@ -106,7 +106,7 @@ test "parses an empty section as a single event" {
         else => return error.UnexpectedParseResult,
     }
 
-    try std.testing.expectEqual(ParseState.END_SECTION, parser.cur_state);
+    try std.testing.expectEqual(ParseState.TYPE_SECTION_ENTRY, parser.cur_state);
 }
 
 test "returns need_more_data when a full section is not yet available" {
