@@ -971,15 +971,17 @@ pub const FunctionEntry = struct {
     type_index: u32,
 };
 
+// TypeEntry represents a type definition in the WebAssembly module.
+// It can be a function type, struct type, or array type
 pub const TypeEntry = struct {
-    form: TypeKind,
+    type: TypeKind,
     params: []const Type = &.{},
     returns: []const Type = &.{},
     fields: []const Type = &.{},
     mutabilities: []const bool = &.{},
     element_type: ?Type = null,
     mutability: ?bool = null,
-    supertypes: []const HeapType = &.{},
+    super_types: []const HeapType = &.{},
     final: ?bool = null,
 };
 

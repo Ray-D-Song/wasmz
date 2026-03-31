@@ -7,6 +7,7 @@ const ParseResult = parser_mod.ParseResult;
 const ParseState = parser_mod.ParseState;
 const ParserError = parser_mod.ParserError;
 const SectionCode = payload_mod.SectionCode;
+const TypeKind = payload_mod.TypeKind;
 const parser_testing = parser_mod.testing;
 
 const wasm_magic_number: u32 = 0x6d736100;
@@ -14,7 +15,7 @@ const wasm_magic_number: u32 = 0x6d736100;
 test "parses a module header in one call" {
     const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
 
-    var parser = Parser.init();
+    var parser = Parser.init(std.testing.allocator);
     const result = parser.parse(&header, false);
 
     switch (result) {
@@ -38,7 +39,7 @@ test "needs more data until the full header is available" {
     const prefix = [_]u8{ 0x00, 0x61, 0x73, 0x6d };
     const full_header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
 
-    var parser = Parser.init();
+    var parser = Parser.init(std.testing.allocator);
     try expect_need_more_data(parser.parse(&prefix, false));
 
     const result = parser.parse(&full_header, false);
@@ -51,33 +52,33 @@ test "needs more data until the full header is available" {
 test "returns an error for a bad magic number" {
     const header = [_]u8{ 0x01, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
 
-    var parser = Parser.init();
+    var parser = Parser.init(std.testing.allocator);
     try expect_error(ParserError.BadMagicNumber, parser.parse(&header, false));
 }
 
 test "returns an error for an unsupported version" {
     const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x03, 0x00, 0x00, 0x00 };
 
-    var parser = Parser.init();
+    var parser = Parser.init(std.testing.allocator);
     try expect_error(ParserError.BadVersionNumber, parser.parse(&header, false));
 }
 
 test "empty input before eof requests more data" {
-    var parser = Parser.init();
+    var parser = Parser.init(std.testing.allocator);
     try expect_need_more_data(parser.parse(&.{}, false));
 }
 
 test "truncated header at eof still requests more data" {
     const prefix = [_]u8{ 0x00, 0x61, 0x73, 0x6d };
 
-    var parser = Parser.init();
+    var parser = Parser.init(std.testing.allocator);
     try expect_need_more_data(parser.parse(&prefix, true));
 }
 
 test "returns end after the header when eof is reached with no more bytes" {
     const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
 
-    var parser = Parser.init();
+    var parser = Parser.init(std.testing.allocator);
     _ = parser.parse(&header, false);
     try expect_end(parser.parse(&.{}, true));
 }
@@ -89,7 +90,7 @@ test "parses an empty section as a single event" {
         0x01, 0x01, 0x00,
     };
 
-    var parser = Parser.init();
+    var parser = Parser.init(std.testing.allocator);
     _ = parser.parse(module[0..8], false);
 
     const result = parser.parse(module[8..], false);
@@ -113,7 +114,7 @@ test "parses an empty section as a single event" {
 test "returns need_more_data when a full section is not yet available" {
     const partial_section = [_]u8{ 0x01, 0x03, 0x01 };
 
-    var parser = Parser.init();
+    var parser = Parser.init(std.testing.allocator);
     parser.cur_state = .BEGIN_WASM;
     try expect_need_more_data(parser.parse(&partial_section, false));
 }
@@ -121,7 +122,7 @@ test "returns need_more_data when a full section is not yet available" {
 test "parses a custom section name only when the full section is available" {
     const custom_section = [_]u8{ 0x00, 0x05, 0x04, 'n', 'a', 'm', 'e' };
 
-    var parser = Parser.init();
+    var parser = Parser.init(std.testing.allocator);
     parser.cur_state = .BEGIN_WASM;
 
     const result = parser.parse(&custom_section, false);
@@ -144,17 +145,56 @@ test "partial section after the header asks for more data" {
     const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
     const trailing = [_]u8{0x00};
 
-    var parser = Parser.init();
+    var parser = Parser.init(std.testing.allocator);
     _ = parser.parse(&header, false);
     try expect_need_more_data(parser.parse(&trailing, true));
 }
 
 test "read_heap_type decodes a single-byte negative heap type" {
-    try std.testing.expectEqual(@as(i64, -16), parser_testing.read_heap_type(&[_]u8{0x70}));
+    switch (parser_testing.read_heap_type(&[_]u8{0x70})) {
+        .kind => |kind| try std.testing.expectEqual(TypeKind.funcref, kind),
+        else => return error.UnexpectedPayload,
+    }
 }
 
 test "read_heap_type decodes a continued heap type index" {
-    try std.testing.expectEqual(@as(i64, 127), parser_testing.read_heap_type(&[_]u8{ 0xff, 0x00 }));
+    switch (parser_testing.read_heap_type(&[_]u8{ 0xff, 0x00 })) {
+        .index => |index| try std.testing.expectEqual(@as(u32, 127), index),
+        else => return error.UnexpectedPayload,
+    }
+}
+
+test "read_type decodes a type index" {
+    const typ = parser_testing.read_type(&[_]u8{ 0xff, 0x00 });
+
+    switch (typ) {
+        .index => |index| try std.testing.expectEqual(@as(u32, 127), index),
+        else => return error.UnexpectedPayload,
+    }
+}
+
+test "read_type decodes a primitive value type" {
+    const typ = parser_testing.read_type(&[_]u8{0x7f});
+
+    switch (typ) {
+        .kind => |kind| try std.testing.expectEqual(TypeKind.i32, kind),
+        else => return error.UnexpectedPayload,
+    }
+}
+
+test "read_type decodes a nullable reference type" {
+    const typ = parser_testing.read_type(&[_]u8{ 0x63, 0x70 });
+
+    switch (typ) {
+        .ref_type => |ref_type| {
+            try std.testing.expect(ref_type.nullable);
+            switch (ref_type.ref_index) {
+                .kind => |kind| try std.testing.expectEqual(TypeKind.funcref, kind),
+                else => return error.UnexpectedPayload,
+            }
+        },
+        else => return error.UnexpectedPayload,
+    }
 }
 
 fn expect_need_more_data(result: ParseResult) !void {

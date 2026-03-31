@@ -4,6 +4,7 @@ const DataRange = @import("range.zig").DataRange;
 const payload_mod = @import("payload.zig");
 const Payload = payload_mod.Payload;
 const Type = payload_mod.Type;
+const TypeEntry = payload_mod.TypeEntry;
 const RefType = payload_mod.RefType;
 const HeapType = payload_mod.HeapType;
 const TypeKind = payload_mod.TypeKind;
@@ -14,6 +15,7 @@ const WASM_MAGIC_NUMBER = 0x6d736100;
 const WASM_SUPPORTED_VERSION = [_]u32{ 0x1, 0x2 };
 
 pub const Parser = struct {
+    allocator: std.mem.Allocator,
     // The current state of the parser.
     cur_state: ParseState = .INITIAL,
     // Input data for the current parse call.
@@ -33,8 +35,10 @@ pub const Parser = struct {
     last_err_arg: u32 = 0,
     last_err_state: i32 = 0,
 
-    pub fn init() Parser {
-        return .{};
+    pub fn init(allocator: std.mem.Allocator) Parser {
+        return Parser{
+            .allocator = allocator,
+        };
     }
 
     // Incremental parsing: one observable parser event per call.
@@ -100,6 +104,10 @@ pub const Parser = struct {
                 // Read the next complete section after the module header or the previous section.
                 .BEGIN_WASM, .END_SECTION => return self.read_sect(),
                 .TYPE_SECTION_ENTRY => {
+                    if (self.cur_section_entries_left == 0 and self.cur_rec_group_types_left < 0) {
+                        self.finish_current_section();
+                        continue;
+                    }
                     if (self.cur_rec_group_types_left == 0) {
                         // Rec group boundaries are internal-only; once all nested
                         // types are emitted, immediately advance to the next type-section item.
@@ -508,19 +516,66 @@ pub const Parser = struct {
                 } };
             },
             else => {
-                self.last_err_arg = @intFromEnum(self.cur_sect_id);
+                self.last_err_arg = @bitCast(@as(i32, @intFromEnum(self.cur_sect_id)));
                 return self.fail_with_state(ParserError.UnsupportedSection);
             },
         };
     }
 
     fn read_rec_group_entry(self: *Parser) ParseResult {
+        const start_pos = self.cur_pos;
         const type_kind = self.read_var_int7();
-        self.read_type_entry_common(type_kind);
+        const type_entry = self.read_type_entry_common(type_kind) catch {
+            return self.fail_with_state(ParserError.UnknownTypeKind);
+        };
         self.cur_rec_group_types_left -= 1;
+        return .{ .parsed = .{
+            .consumed = self.cur_pos - start_pos,
+            .payload = .{ .type_entry = type_entry },
+        } };
     }
 
-    fn read_type_entry_common(self: *Parser, type_kind: i7) ParseResult {}
+    fn read_type_entry(self: *Parser) ParseResult {
+        const start_pos = self.cur_pos;
+        const type_kind = self.read_var_int7();
+        if (type_kind == @intFromEnum(TypeKind.rec_group)) {
+            self.cur_rec_group_types_left = @intCast(self.read_var_uint32());
+            return self.read_rec_group_entry();
+        }
+
+        const type_entry = self.read_type_entry_common(type_kind) catch {
+            return self.fail_with_state(ParserError.UnknownTypeKind);
+        };
+        self.cur_section_entries_left -= 1;
+        return .{ .parsed = .{
+            .consumed = self.cur_pos - start_pos,
+            .payload = .{ .type_entry = type_entry },
+        } };
+    }
+
+    fn read_type_entry_common(self: *Parser, type_kind: i7) !TypeEntry {
+        return switch (type_kind) {
+            @intFromEnum(TypeKind.func) => try self.read_func_type(),
+            @intFromEnum(TypeKind.subtype) => try self.read_sub_type(false),
+            @intFromEnum(TypeKind.subtype_final) => try self.read_sub_type(true),
+            @intFromEnum(TypeKind.struct_type) => try self.read_struct_type(),
+            @intFromEnum(TypeKind.array_type) => try self.read_array_type(),
+            @intFromEnum(TypeKind.i32),
+            @intFromEnum(TypeKind.i64),
+            @intFromEnum(TypeKind.f32),
+            @intFromEnum(TypeKind.f64),
+            @intFromEnum(TypeKind.v128),
+            @intFromEnum(TypeKind.i8),
+            @intFromEnum(TypeKind.i16),
+            @intFromEnum(TypeKind.funcref),
+            @intFromEnum(TypeKind.externref),
+            @intFromEnum(TypeKind.exnref),
+            @intFromEnum(TypeKind.anyref),
+            @intFromEnum(TypeKind.eqref),
+            => .{ .type = parse_type_kind(type_kind) },
+            else => error.UnknownTypeKind,
+        };
+    }
 
     // TODO
     // read_func_type
@@ -530,19 +585,134 @@ pub const Parser = struct {
     // read_struct_type
     // read_array_type
 
+    fn read_struct_type(self: *Parser) !TypeEntry {
+        const field_count = self.read_var_uint32();
+        const field_types = try self.allocator.alloc(Type, @intCast(field_count));
+        const field_mutabilities = try self.allocator.alloc(bool, @intCast(field_count));
+        for (field_types, field_mutabilities) |*field_type, *field_mutability| {
+            field_type.* = self.read_type();
+            field_mutability.* = self.read_var_uint1() != 0;
+        }
+        return .{
+            .type = .struct_type,
+            .fields = field_types,
+            .mutabilities = field_mutabilities,
+        };
+    }
+
+    fn read_array_type(self: *Parser) !TypeEntry {
+        const element_type = self.read_type();
+        const mutability = self.read_var_uint1() != 0;
+        return .{
+            .type = .array_type,
+            .element_type = element_type,
+            .mutability = mutability,
+        };
+    }
+
+    fn read_base_type(self: *Parser) !TypeEntry {
+        const type_kind = self.read_var_int7();
+        return switch (type_kind) {
+            @intFromEnum(TypeKind.func) => try self.read_func_type(),
+            @intFromEnum(TypeKind.struct_type) => try self.read_struct_type(),
+            @intFromEnum(TypeKind.array_type) => try self.read_array_type(),
+            else => error.UnexpectedTypeKind,
+        };
+    }
+
+    fn read_sub_type(self: *Parser, is_final: bool) !TypeEntry {
+        const super_count = self.read_var_uint32();
+        const super_types = try self.allocator.alloc(HeapType, @intCast(super_count));
+        for (super_types) |*super_type| {
+            super_type.* = self.read_heap_type();
+        }
+        var result = try self.read_base_type();
+        result.final = is_final;
+        result.super_types = super_types;
+        return result;
+    }
+
+    fn read_func_type(self: *Parser) !TypeEntry {
+        const param_count = self.read_var_uint32();
+        const param_types = try self.allocator.alloc(Type, @intCast(param_count));
+        for (param_types) |*param_type| {
+            param_type.* = self.read_type();
+        }
+        const return_count = self.read_var_uint32();
+        const return_types = try self.allocator.alloc(Type, @intCast(return_count));
+        for (return_types) |*return_type| {
+            return_type.* = self.read_type();
+        }
+        return .{
+            .type = .func,
+            .params = param_types,
+            .returns = return_types,
+        };
+    }
+
     // Heap is used to represent reference types and type indices in WebAssembly
-    fn read_heap_type(self: *Parser) i64 {
+    fn read_heap_type(self: *Parser) HeapType {
         const lsb = self.read_u8();
-        if ((lsb & 0x80) != 0) {
+
+        const raw: i64 = if ((lsb & 0x80) != 0) blk: {
             const tail = self.read_var_int32();
-            return (@as(i64, tail) - 1) * 128 + @as(i64, lsb);
+            break :blk (@as(i64, tail) - 1) * 128 + @as(i64, lsb);
+        } else blk: {
+            const low7 = lsb & 0x7f;
+            if ((low7 & 0x40) != 0) {
+                break :blk @as(i64, @as(i16, @intCast(low7)) - 128);
+            }
+            break :blk @as(i64, low7);
+        };
+
+        if (raw >= 0) {
+            return .{ .index = @intCast(raw) };
         }
 
-        const low7 = lsb & 0x7f;
-        if ((low7 & 0x40) != 0) {
-            return @as(i64, @as(i16, @intCast(low7)) - 128);
-        }
-        return @as(i64, low7);
+        return .{
+            .kind = parse_type_kind(raw),
+        };
+    }
+
+    // Read Wasm type, create Type or RefType
+    fn read_type(self: *Parser) Type {
+        return switch (self.read_heap_type()) {
+            .index => |index| .{ .index = index },
+            .kind => |kind| switch (kind) {
+                .ref_null, .ref_ => .{ .ref_type = .{
+                    .nullable = kind == .ref_null,
+                    .ref_index = self.read_heap_type(),
+                } },
+                .i32,
+                .i64,
+                .f32,
+                .f64,
+                .v128,
+                .i8,
+                .i16,
+                .funcref,
+                .externref,
+                .exnref,
+                .anyref,
+                .eqref,
+                .i31ref,
+                .null_externref,
+                .null_funcref,
+                .null_exnref,
+                .structref,
+                .arrayref,
+                .null_ref,
+                .func,
+                .struct_type,
+                .array_type,
+                .subtype,
+                .rec_group,
+                .subtype_final,
+                .empty_block_type,
+                => .{ .kind = kind },
+                else => std.debug.panic("Unknown type kind: {}", .{kind}),
+            },
+        };
     }
 
     fn fail_with_state(self: *Parser, err: ParserError) ParseResult {
@@ -579,11 +749,18 @@ pub const Parser = struct {
 };
 
 pub const testing = if (builtin.is_test) struct {
-    pub fn read_heap_type(bytes: []const u8) i64 {
-        var parser = Parser.init();
+    pub fn read_heap_type(bytes: []const u8) HeapType {
+        var parser = Parser.init(std.heap.page_allocator);
         parser.cur_data = bytes;
         parser.cur_len = bytes.len;
         return parser.read_heap_type();
+    }
+
+    pub fn read_type(bytes: []const u8) Type {
+        var parser = Parser.init(std.heap.page_allocator);
+        parser.cur_data = bytes;
+        parser.cur_len = bytes.len;
+        return parser.read_type();
     }
 } else struct {};
 
@@ -735,4 +912,10 @@ fn contains_u32(values: []const u32, value: u32) bool {
 
 fn parse_section_code(raw: u7) ?SectionCode {
     return std.meta.intToEnum(SectionCode, raw) catch null;
+}
+
+fn parse_type_kind(kind: i64) TypeKind {
+    return std.meta.intToEnum(TypeKind, @as(i32, @intCast(kind))) catch {
+        std.debug.panic("Unknown type kind: {}", .{kind});
+    };
 }
