@@ -8,6 +8,15 @@ const TypeEntry = payload_mod.TypeEntry;
 const RefType = payload_mod.RefType;
 const HeapType = payload_mod.HeapType;
 const TypeKind = payload_mod.TypeKind;
+const ExternalKind = payload_mod.ExternalKind;
+const ResizableLimits = payload_mod.ResizableLimits;
+const TableType = payload_mod.TableType;
+const MemoryType = payload_mod.MemoryType;
+const GlobalType = payload_mod.GlobalType;
+const TagType = payload_mod.TagType;
+const TagAttribute = payload_mod.TagAttribute;
+const ImportEntry = payload_mod.ImportEntry;
+const ImportEntryType = payload_mod.ImportEntryType;
 const SectionCode = payload_mod.SectionCode;
 const SectionInformation = payload_mod.SectionInformation;
 
@@ -120,7 +129,7 @@ pub const Parser = struct {
                     }
                     return self.read_type_entry();
                 },
-                .IMPORT_SECTION_ENTRY,
+                .IMPORT_SECTION_ENTRY => return self.read_import_entry(),
                 .FUNCTION_SECTION_ENTRY,
                 .TABLE_SECTION_ENTRY,
                 .MEMORY_SECTION_ENTRY,
@@ -522,6 +531,42 @@ pub const Parser = struct {
         };
     }
 
+    fn read_import_entry(self: *Parser) ParseResult {
+        const start_pos = self.cur_pos;
+        if (!self.has_import_entry_bytes()) {
+            return .need_more_data;
+        }
+
+        const module = self.read_str_bytes();
+        const field = self.read_str_bytes();
+        const kind_raw = self.read_u8();
+        const kind = std.meta.intToEnum(ExternalKind, kind_raw) catch {
+            std.debug.panic("Unknown external kind: {}", .{kind_raw});
+        };
+
+        var func_type_index: ?u32 = null;
+        var typ: ?ImportEntryType = null;
+        switch (kind) {
+            .function => func_type_index = self.read_var_uint32(),
+            .table => typ = .{ .table = self.read_table_type() },
+            .memory => typ = .{ .memory = self.read_memory_type() },
+            .global => typ = .{ .global = self.read_global_type() },
+            .tag => typ = .{ .tag = self.read_tag_type() },
+        }
+
+        self.cur_section_entries_left -= 1;
+        return .{ .parsed = .{
+            .consumed = self.cur_pos - start_pos,
+            .payload = .{ .import_entry = ImportEntry{
+                .module = module,
+                .field = field,
+                .kind = kind,
+                .func_type_index = func_type_index,
+                .typ = typ,
+            } },
+        } };
+    }
+
     fn read_rec_group_entry(self: *Parser) ParseResult {
         return self.read_rec_group_entry_from(self.cur_pos);
     }
@@ -609,14 +654,6 @@ pub const Parser = struct {
             else => error.UnknownTypeKind,
         };
     }
-
-    // TODO
-    // read_func_type
-    //   read_type
-    //     read_heap_type
-    // read_sub_type
-    // read_struct_type
-    // read_array_type
 
     fn read_struct_type(self: *Parser) !TypeEntry {
         const field_count = self.read_var_uint32();
@@ -748,9 +785,57 @@ pub const Parser = struct {
         };
     }
 
+    fn read_resizable_limits(self: *Parser, max_present: bool) ResizableLimits {
+        const initial = self.read_var_uint32();
+        const maximum = if (max_present) self.read_var_uint32() else null;
+        return .{
+            .initial = initial,
+            .maximum = maximum,
+        };
+    }
+
+    fn read_table_type(self: *Parser) TableType {
+        const element_type = self.read_type();
+        const flags = self.read_var_uint32();
+        return .{
+            .element_type = element_type,
+            .limits = self.read_resizable_limits((flags & 0x01) != 0),
+        };
+    }
+
+    fn read_memory_type(self: *Parser) MemoryType {
+        const flags = self.read_var_uint32();
+        return .{
+            .limits = self.read_resizable_limits((flags & 0x01) != 0),
+            .shared = (flags & 0x02) != 0,
+        };
+    }
+
+    fn read_global_type(self: *Parser) GlobalType {
+        return .{
+            .content_type = self.read_type(),
+            .mutability = self.read_var_uint1(),
+        };
+    }
+
+    fn read_tag_type(self: *Parser) TagType {
+        const attribute = self.read_var_uint32();
+        return .{
+            .attribute = std.meta.intToEnum(TagAttribute, @as(u8, @intCast(attribute))) catch {
+                std.debug.panic("Unknown tag attribute: {}", .{attribute});
+            },
+            .type_index = self.read_var_uint32(),
+        };
+    }
+
     fn has_type_entry_common_bytes(self: *Parser, type_kind: i7) bool {
         var probe = self.*;
         return probe.skip_type_entry_common(type_kind);
+    }
+
+    fn has_import_entry_bytes(self: *Parser) bool {
+        var probe = self.*;
+        return probe.skip_import_entry();
     }
 
     fn skip_type_entry_common(self: *Parser, type_kind: i7) bool {
@@ -839,6 +924,66 @@ pub const Parser = struct {
                 else => true,
             },
         };
+    }
+
+    fn skip_import_entry(self: *Parser) bool {
+        if (!self.has_str_bytes()) return false;
+        _ = self.read_str_bytes();
+        if (!self.has_str_bytes()) return false;
+        _ = self.read_str_bytes();
+        if (!self.has_bytes(1)) return false;
+
+        const kind_raw = self.read_u8();
+        const kind = std.meta.intToEnum(ExternalKind, kind_raw) catch return true;
+        return switch (kind) {
+            .function => blk: {
+                if (!self.has_var_int_bytes()) break :blk false;
+                _ = self.read_var_uint32();
+                break :blk true;
+            },
+            .table => self.skip_table_type(),
+            .memory => self.skip_memory_type(),
+            .global => self.skip_global_type(),
+            .tag => self.skip_tag_type(),
+        };
+    }
+
+    fn skip_table_type(self: *Parser) bool {
+        if (!self.skip_type()) return false;
+        if (!self.has_var_int_bytes()) return false;
+        const flags = self.read_var_uint32();
+        return self.skip_resizable_limits((flags & 0x01) != 0);
+    }
+
+    fn skip_memory_type(self: *Parser) bool {
+        if (!self.has_var_int_bytes()) return false;
+        const flags = self.read_var_uint32();
+        return self.skip_resizable_limits((flags & 0x01) != 0);
+    }
+
+    fn skip_global_type(self: *Parser) bool {
+        if (!self.skip_type()) return false;
+        if (!self.has_bytes(1)) return false;
+        _ = self.read_var_uint1();
+        return true;
+    }
+
+    fn skip_tag_type(self: *Parser) bool {
+        if (!self.has_var_int_bytes()) return false;
+        _ = self.read_var_uint32();
+        if (!self.has_var_int_bytes()) return false;
+        _ = self.read_var_uint32();
+        return true;
+    }
+
+    fn skip_resizable_limits(self: *Parser, max_present: bool) bool {
+        if (!self.has_var_int_bytes()) return false;
+        _ = self.read_var_uint32();
+        if (max_present) {
+            if (!self.has_var_int_bytes()) return false;
+            _ = self.read_var_uint32();
+        }
+        return true;
     }
 
     fn skip_heap_type(self: *Parser) ?HeapType {

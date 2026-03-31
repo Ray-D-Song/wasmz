@@ -6,6 +6,7 @@ const Parser = parser_mod.Parser;
 const ParseResult = parser_mod.ParseResult;
 const ParseState = parser_mod.ParseState;
 const ParserError = parser_mod.ParserError;
+const ExternalKind = payload_mod.ExternalKind;
 const SectionCode = payload_mod.SectionCode;
 const TypeKind = payload_mod.TypeKind;
 const parser_testing = parser_mod.testing;
@@ -189,6 +190,55 @@ test "type section entry parses a func type" {
                     try std.testing.expectEqual(TypeKind.func, type_entry.type);
                     try std.testing.expectEqual(@as(usize, 0), type_entry.params.len);
                     try std.testing.expectEqual(@as(usize, 0), type_entry.returns.len);
+                },
+                else => return error.UnexpectedPayload,
+            }
+        },
+        else => return error.UnexpectedParseResult,
+    }
+}
+
+test "import section entry asks for more data when payload is truncated" {
+    const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
+    const import_section = [_]u8{ 0x02, 0x07, 0x01, 0x01, 'm', 0x01, 'f', 0x00, 0x00 };
+
+    var parser = Parser.init(std.testing.allocator);
+    _ = parser.parse(&header, false);
+
+    const section_result = parser.parse(&import_section, false);
+    const consumed = switch (section_result) {
+        .parsed => |parsed| parsed.consumed,
+        else => return error.UnexpectedParseResult,
+    };
+
+    try std.testing.expectEqual(@as(usize, 3), consumed);
+    try expect_need_more_data(parser.parse(import_section[consumed .. consumed + 3], false));
+}
+
+test "import section entry parses a function import" {
+    const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
+    const import_section = [_]u8{ 0x02, 0x07, 0x01, 0x01, 'm', 0x01, 'f', 0x00, 0x00 };
+
+    var parser = Parser.init(std.testing.allocator);
+    _ = parser.parse(&header, false);
+
+    const section_result = parser.parse(&import_section, false);
+    const consumed = switch (section_result) {
+        .parsed => |parsed| parsed.consumed,
+        else => return error.UnexpectedParseResult,
+    };
+
+    const entry_result = parser.parse(import_section[consumed..], false);
+    switch (entry_result) {
+        .parsed => |parsed| {
+            try std.testing.expectEqual(@as(usize, 6), parsed.consumed);
+            switch (parsed.payload) {
+                .import_entry => |import_entry| {
+                    try std.testing.expectEqualStrings("m", import_entry.module);
+                    try std.testing.expectEqualStrings("f", import_entry.field);
+                    try std.testing.expectEqual(ExternalKind.function, import_entry.kind);
+                    try std.testing.expectEqual(@as(?u32, 0), import_entry.func_type_index);
+                    try std.testing.expectEqual(@as(?payload_mod.ImportEntryType, null), import_entry.typ);
                 },
                 else => return error.UnexpectedPayload,
             }
