@@ -131,8 +131,8 @@ pub const Parser = struct {
                 },
                 .IMPORT_SECTION_ENTRY => return self.read_import_entry(),
                 .FUNCTION_SECTION_ENTRY => return self.read_function_entry(),
-                .TABLE_SECTION_ENTRY,
-                .MEMORY_SECTION_ENTRY,
+                .TABLE_SECTION_ENTRY => return self.read_table_entry(),
+                .MEMORY_SECTION_ENTRY => return self.read_memory_entry(),
                 .GLOBAL_SECTION_ENTRY,
                 .EXPORT_SECTION_ENTRY,
                 .DATA_SECTION_ENTRY,
@@ -529,6 +529,24 @@ pub const Parser = struct {
                 return self.fail_with_state(ParserError.UnsupportedSection);
             },
         };
+    }
+
+    fn read_memory_entry(self: *Parser) ParseResult {
+        if (self.cur_sect_entries_left == 0) {
+            self.finish_current_section();
+        }
+        self.cur_state = .MEMORY_SECTION_ENTRY;
+        self.cur_sect_entries_left -= 1;
+        return self.read_memory_type();
+    }
+
+    fn read_table_entry(self: *Parser) ParseResult {
+        if (self.cur_sect_entries_left == 0) {
+            self.finish_current_section();
+        }
+        self.cur_state = .TABLE_SECTION_ENTRY;
+        self.cur_sect_entries_left -= 1;
+        return self.read_table_type();
     }
 
     fn read_function_entry(self: *Parser) ParseResult {
