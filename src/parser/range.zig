@@ -3,7 +3,9 @@ pub const DataRange = struct {
     end: usize,
 
     pub fn offset(self: *DataRange, shift: isize) void {
-        self.start = @intCast(@as(isize, @intCast(self.start)) + shift);
-        self.end = @intCast(@as(isize, @intCast(self.end)) + shift);
+        const shifted_start = @as(isize, @intCast(self.start)) + shift;
+        const shifted_end = @as(isize, @intCast(self.end)) + shift;
+        self.start = @intCast(@max(shifted_start, 0));
+        self.end = @intCast(@max(shifted_end, 0));
     }
 };

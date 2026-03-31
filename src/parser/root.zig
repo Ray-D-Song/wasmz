@@ -523,8 +523,19 @@ pub const Parser = struct {
     }
 
     fn read_rec_group_entry(self: *Parser) ParseResult {
-        const start_pos = self.cur_pos;
+        return self.read_rec_group_entry_from(self.cur_pos);
+    }
+
+    fn read_rec_group_entry_from(self: *Parser, start_pos: usize) ParseResult {
+        if (!self.has_bytes(1)) {
+            self.cur_pos = start_pos;
+            return .need_more_data;
+        }
         const type_kind = self.read_var_int7();
+        if (!self.has_type_entry_common_bytes(type_kind)) {
+            self.cur_pos = start_pos;
+            return .need_more_data;
+        }
         const type_entry = self.read_type_entry_common(type_kind) catch {
             return self.fail_with_state(ParserError.UnknownTypeKind);
         };
@@ -537,20 +548,42 @@ pub const Parser = struct {
 
     fn read_type_entry(self: *Parser) ParseResult {
         const start_pos = self.cur_pos;
-        const type_kind = self.read_var_int7();
-        if (type_kind == @intFromEnum(TypeKind.rec_group)) {
-            self.cur_rec_group_types_left = @intCast(self.read_var_uint32());
-            return self.read_rec_group_entry();
-        }
+        while (true) {
+            if (!self.has_bytes(1)) {
+                self.cur_pos = start_pos;
+                return .need_more_data;
+            }
 
-        const type_entry = self.read_type_entry_common(type_kind) catch {
-            return self.fail_with_state(ParserError.UnknownTypeKind);
-        };
-        self.cur_section_entries_left -= 1;
-        return .{ .parsed = .{
-            .consumed = self.cur_pos - start_pos,
-            .payload = .{ .type_entry = type_entry },
-        } };
+            const type_kind = self.read_var_int7();
+            if (type_kind == @intFromEnum(TypeKind.rec_group)) {
+                if (!self.has_var_int_bytes()) {
+                    self.cur_pos = start_pos;
+                    return .need_more_data;
+                }
+
+                self.cur_rec_group_types_left = @intCast(self.read_var_uint32());
+                if (self.cur_rec_group_types_left == 0) {
+                    self.cur_section_entries_left -= 1;
+                    self.cur_rec_group_types_left = -1;
+                    continue;
+                }
+                return self.read_rec_group_entry_from(start_pos);
+            }
+
+            if (!self.has_type_entry_common_bytes(type_kind)) {
+                self.cur_pos = start_pos;
+                return .need_more_data;
+            }
+
+            const type_entry = self.read_type_entry_common(type_kind) catch {
+                return self.fail_with_state(ParserError.UnknownTypeKind);
+            };
+            self.cur_section_entries_left -= 1;
+            return .{ .parsed = .{
+                .consumed = self.cur_pos - start_pos,
+                .payload = .{ .type_entry = type_entry },
+            } };
+        }
     }
 
     fn read_type_entry_common(self: *Parser, type_kind: i7) !TypeEntry {
@@ -713,6 +746,121 @@ pub const Parser = struct {
                 else => std.debug.panic("Unknown type kind: {}", .{kind}),
             },
         };
+    }
+
+    fn has_type_entry_common_bytes(self: *Parser, type_kind: i7) bool {
+        var probe = self.*;
+        return probe.skip_type_entry_common(type_kind);
+    }
+
+    fn skip_type_entry_common(self: *Parser, type_kind: i7) bool {
+        return switch (type_kind) {
+            @intFromEnum(TypeKind.func) => self.skip_func_type(),
+            @intFromEnum(TypeKind.subtype) => self.skip_sub_type(),
+            @intFromEnum(TypeKind.subtype_final) => self.skip_sub_type(),
+            @intFromEnum(TypeKind.struct_type) => self.skip_struct_type(),
+            @intFromEnum(TypeKind.array_type) => self.skip_array_type(),
+            @intFromEnum(TypeKind.i32),
+            @intFromEnum(TypeKind.i64),
+            @intFromEnum(TypeKind.f32),
+            @intFromEnum(TypeKind.f64),
+            @intFromEnum(TypeKind.v128),
+            @intFromEnum(TypeKind.i8),
+            @intFromEnum(TypeKind.i16),
+            @intFromEnum(TypeKind.funcref),
+            @intFromEnum(TypeKind.externref),
+            @intFromEnum(TypeKind.exnref),
+            @intFromEnum(TypeKind.anyref),
+            @intFromEnum(TypeKind.eqref),
+            => true,
+            else => true,
+        };
+    }
+
+    fn skip_func_type(self: *Parser) bool {
+        if (!self.has_var_int_bytes()) return false;
+        const param_count = self.read_var_uint32();
+        for (0..param_count) |_| {
+            if (!self.skip_type()) return false;
+        }
+
+        if (!self.has_var_int_bytes()) return false;
+        const return_count = self.read_var_uint32();
+        for (0..return_count) |_| {
+            if (!self.skip_type()) return false;
+        }
+        return true;
+    }
+
+    fn skip_sub_type(self: *Parser) bool {
+        if (!self.has_var_int_bytes()) return false;
+        const super_count = self.read_var_uint32();
+        for (0..super_count) |_| {
+            if (self.skip_heap_type() == null) return false;
+        }
+        return self.skip_base_type();
+    }
+
+    fn skip_base_type(self: *Parser) bool {
+        if (!self.has_bytes(1)) return false;
+        const type_kind = self.read_var_int7();
+        return switch (type_kind) {
+            @intFromEnum(TypeKind.func) => self.skip_func_type(),
+            @intFromEnum(TypeKind.struct_type) => self.skip_struct_type(),
+            @intFromEnum(TypeKind.array_type) => self.skip_array_type(),
+            else => true,
+        };
+    }
+
+    fn skip_struct_type(self: *Parser) bool {
+        if (!self.has_var_int_bytes()) return false;
+        const field_count = self.read_var_uint32();
+        for (0..field_count) |_| {
+            if (!self.skip_type()) return false;
+            if (!self.has_bytes(1)) return false;
+            _ = self.read_var_uint1();
+        }
+        return true;
+    }
+
+    fn skip_array_type(self: *Parser) bool {
+        if (!self.skip_type()) return false;
+        if (!self.has_bytes(1)) return false;
+        _ = self.read_var_uint1();
+        return true;
+    }
+
+    fn skip_type(self: *Parser) bool {
+        const heap_type = self.skip_heap_type() orelse return false;
+        return switch (heap_type) {
+            .index => true,
+            .kind => |kind| switch (kind) {
+                .ref_null, .ref_ => self.skip_heap_type() != null,
+                else => true,
+            },
+        };
+    }
+
+    fn skip_heap_type(self: *Parser) ?HeapType {
+        if (!self.has_bytes(1)) return null;
+
+        const lsb = self.read_u8();
+        const raw: i64 = if ((lsb & 0x80) != 0) blk: {
+            if (!self.has_var_int_bytes()) return null;
+            const tail = self.read_var_int32();
+            break :blk (@as(i64, tail) - 1) * 128 + @as(i64, lsb);
+        } else blk: {
+            const low7 = lsb & 0x7f;
+            if ((low7 & 0x40) != 0) {
+                break :blk @as(i64, @as(i16, @intCast(low7)) - 128);
+            }
+            break :blk @as(i64, low7);
+        };
+
+        if (raw >= 0) {
+            return .{ .index = @intCast(raw) };
+        }
+        return .{ .kind = parse_type_kind(raw) };
     }
 
     fn fail_with_state(self: *Parser, err: ParserError) ParseResult {
