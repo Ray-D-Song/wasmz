@@ -343,6 +343,112 @@ test "export section entry parses a function export" {
     }
 }
 
+test "data section entry parses a passive data segment and body" {
+    const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
+    const data_section = [_]u8{ 0x0b, 0x04, 0x01, 0x01, 0x01, 'A' };
+
+    var parser = Parser.init(std.testing.allocator);
+    _ = parser.parse(&header, false);
+
+    const section_result = parser.parse(&data_section, false);
+    const section_consumed = switch (section_result) {
+        .parsed => |parsed| parsed.consumed,
+        else => return error.UnexpectedParseResult,
+    };
+
+    const entry_result = parser.parse(data_section[section_consumed..], false);
+    const entry_consumed = switch (entry_result) {
+        .parsed => |parsed| blk: {
+            try std.testing.expectEqual(@as(usize, 1), parsed.consumed);
+            switch (parsed.payload) {
+                .data_segment => |data_segment| {
+                    try std.testing.expectEqual(payload_mod.DataMode.passive, data_segment.mode);
+                    try std.testing.expectEqual(@as(?u32, null), data_segment.memory_index);
+                },
+                else => return error.UnexpectedPayload,
+            }
+            break :blk parsed.consumed;
+        },
+        else => return error.UnexpectedParseResult,
+    };
+
+    const body_result = parser.parse(data_section[section_consumed + entry_consumed ..], false);
+    switch (body_result) {
+        .parsed => |parsed| {
+            try std.testing.expectEqual(@as(usize, 2), parsed.consumed);
+            switch (parsed.payload) {
+                .data_segment_body => |body| try std.testing.expectEqualStrings("A", body.data),
+                else => return error.UnexpectedPayload,
+            }
+        },
+        else => return error.UnexpectedParseResult,
+    }
+}
+
+test "data section body asks for more data when payload is truncated" {
+    const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
+    const data_section = [_]u8{ 0x0b, 0x04, 0x01, 0x01, 0x01, 'A' };
+
+    var parser = Parser.init(std.testing.allocator);
+    _ = parser.parse(&header, false);
+
+    const section_result = parser.parse(&data_section, false);
+    const section_consumed = switch (section_result) {
+        .parsed => |parsed| parsed.consumed,
+        else => return error.UnexpectedParseResult,
+    };
+
+    const entry_result = parser.parse(data_section[section_consumed..], false);
+    const entry_consumed = switch (entry_result) {
+        .parsed => |parsed| parsed.consumed,
+        else => return error.UnexpectedParseResult,
+    };
+
+    try expect_need_more_data(parser.parse(data_section[section_consumed + entry_consumed .. section_consumed + entry_consumed + 1], false));
+}
+
+test "data section entry parses an active data segment body after init expr" {
+    const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
+    const data_section = [_]u8{ 0x0b, 0x07, 0x01, 0x00, 0x41, 0x00, 0x0b, 0x01, 'A' };
+
+    var parser = Parser.init(std.testing.allocator);
+    _ = parser.parse(&header, false);
+
+    const section_result = parser.parse(&data_section, false);
+    const section_consumed = switch (section_result) {
+        .parsed => |parsed| parsed.consumed,
+        else => return error.UnexpectedParseResult,
+    };
+
+    const entry_result = parser.parse(data_section[section_consumed..], false);
+    const entry_consumed = switch (entry_result) {
+        .parsed => |parsed| blk: {
+            try std.testing.expectEqual(@as(usize, 1), parsed.consumed);
+            switch (parsed.payload) {
+                .data_segment => |data_segment| {
+                    try std.testing.expectEqual(payload_mod.DataMode.active, data_segment.mode);
+                    try std.testing.expectEqual(@as(?u32, 0), data_segment.memory_index);
+                },
+                else => return error.UnexpectedPayload,
+            }
+            break :blk parsed.consumed;
+        },
+        else => return error.UnexpectedParseResult,
+    };
+
+    const body_result = parser.parse(data_section[section_consumed + entry_consumed ..], false);
+    switch (body_result) {
+        .parsed => |parsed| {
+            try std.testing.expectEqual(@as(usize, 5), parsed.consumed);
+            switch (parsed.payload) {
+                .data_segment_body => |body| try std.testing.expectEqualStrings("A", body.data),
+                else => return error.UnexpectedPayload,
+            }
+        },
+        else => return error.UnexpectedParseResult,
+    }
+}
+
 test "read_heap_type decodes a single-byte negative heap type" {
     switch (parser_testing.read_heap_type(&[_]u8{0x70})) {
         .kind => |kind| try std.testing.expectEqual(TypeKind.funcref, kind),

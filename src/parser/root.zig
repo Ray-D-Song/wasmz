@@ -19,6 +19,9 @@ const TagAttribute = payload_mod.TagAttribute;
 const ImportEntry = payload_mod.ImportEntry;
 const ImportEntryType = payload_mod.ImportEntryType;
 const ExportEntry = payload_mod.ExportEntry;
+const DataMode = payload_mod.DataMode;
+const DataSegment = payload_mod.DataSegment;
+const DataSegmentBody = payload_mod.DataSegmentBody;
 const SectionCode = payload_mod.SectionCode;
 const SectionInformation = payload_mod.SectionInformation;
 
@@ -41,6 +44,7 @@ pub const Parser = struct {
     cur_sect_id: SectionCode = .unknown,
     cur_sect_entries_left: u32 = 0,
     cur_rec_group_types_left: i32 = -1,
+    cur_data_segment_active: bool = false,
     cur_fn_range: ?DataRange = null,
 
     last_err_arg: u32 = 0,
@@ -138,6 +142,10 @@ pub const Parser = struct {
                 .GLOBAL_SECTION_ENTRY => return self.read_global_entry(),
                 .EXPORT_SECTION_ENTRY => return self.read_export_entry(),
                 .DATA_SECTION_ENTRY,
+                .END_DATA_SECTION_ENTRY,
+                => return self.read_data_entry(),
+                .BEGIN_DATA_SECTION_ENTRY => return self.read_data_entry_body(),
+                .DATA_SECTION_ENTRY_BODY,
                 .ELEMENT_SECTION_ENTRY,
                 .LINKING_SECTION_ENTRY,
                 .TAG_SECTION_ENTRY,
@@ -652,6 +660,72 @@ pub const Parser = struct {
         } };
     }
 
+    fn read_data_entry(self: *Parser) ParseResult {
+        const start_pos = self.cur_pos;
+        if (self.cur_sect_entries_left == 0) {
+            self.finish_current_section();
+            return self.read_sect();
+        }
+        if (!self.has_data_entry_bytes()) {
+            return .need_more_data;
+        }
+
+        const segment_type = self.read_var_uint32();
+        var mode: DataMode = undefined;
+        var memory_index: ?u32 = null;
+        switch (segment_type) {
+            0 => {
+                mode = .active;
+                memory_index = 0;
+                self.cur_data_segment_active = true;
+            },
+            1 => {
+                mode = .passive;
+                self.cur_data_segment_active = false;
+            },
+            2 => {
+                mode = .active;
+                memory_index = self.read_var_uint32();
+                self.cur_data_segment_active = true;
+            },
+            else => {
+                self.last_err_arg = segment_type;
+                return self.fail_with_state(ParserError.UnsupportedDataSegmentType);
+            },
+        }
+
+        self.cur_state = .BEGIN_DATA_SECTION_ENTRY;
+        self.cur_sect_entries_left -= 1;
+        return .{ .parsed = .{
+            .consumed = self.cur_pos - start_pos,
+            .payload = .{ .data_segment = DataSegment{
+                .mode = mode,
+                .memory_index = memory_index,
+            } },
+        } };
+    }
+
+    fn read_data_entry_body(self: *Parser) ParseResult {
+        const start_pos = self.cur_pos;
+        if (self.cur_data_segment_active) {
+            if (!self.skip_init_expr()) {
+                return .need_more_data;
+            }
+        }
+        if (!self.has_str_bytes()) {
+            self.cur_pos = start_pos;
+            return .need_more_data;
+        }
+
+        const data = self.read_str_bytes();
+        self.cur_state = .END_DATA_SECTION_ENTRY;
+        self.cur_data_segment_active = false;
+        return .{ .parsed = .{
+            .consumed = self.cur_pos - start_pos,
+            .payload = .{ .data_segment_body = DataSegmentBody{ .data = data } },
+        } };
+    }
+
     fn read_rec_group_entry(self: *Parser) ParseResult {
         return self.read_rec_group_entry_from(self.cur_pos);
     }
@@ -933,6 +1007,11 @@ pub const Parser = struct {
         return probe.skip_export_entry();
     }
 
+    fn has_data_entry_bytes(self: *Parser) bool {
+        var probe = self.*;
+        return probe.skip_data_entry();
+    }
+
     fn skip_type_entry_common(self: *Parser, type_kind: i7) bool {
         return switch (type_kind) {
             @intFromEnum(TypeKind.func) => self.skip_func_type(),
@@ -1056,6 +1135,20 @@ pub const Parser = struct {
         if (!self.has_var_int_bytes()) return false;
         _ = self.read_var_uint32();
         return true;
+    }
+
+    fn skip_data_entry(self: *Parser) bool {
+        if (!self.has_var_int_bytes()) return false;
+        const segment_type = self.read_var_uint32();
+        switch (segment_type) {
+            0, 1 => return true,
+            2 => {
+                if (!self.has_var_int_bytes()) return false;
+                _ = self.read_var_uint32();
+                return true;
+            },
+            else => return true,
+        }
     }
 
     fn skip_init_expr(self: *Parser) bool {
@@ -1186,6 +1279,7 @@ pub const Parser = struct {
         self.cur_sect_id = .unknown;
         self.cur_sect_entries_left = 0;
         self.cur_rec_group_types_left = -1;
+        self.cur_data_segment_active = false;
     }
 };
 
