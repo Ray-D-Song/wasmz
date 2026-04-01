@@ -21,6 +21,11 @@ const Naming = payload_mod.Naming;
 const LocalName = payload_mod.LocalName;
 const FieldName = payload_mod.FieldName;
 const RelocType = payload_mod.RelocType;
+const OperatorCode = payload_mod.OperatorCode;
+const OperatorInformation = payload_mod.OperatorInformation;
+const MemoryAddress = payload_mod.MemoryAddress;
+const CatchHandler = payload_mod.CatchHandler;
+const CatchHandlerKind = payload_mod.CatchHandlerKind;
 const ImportEntry = payload_mod.ImportEntry;
 const ImportEntryType = payload_mod.ImportEntryType;
 const ExportEntry = payload_mod.ExportEntry;
@@ -49,6 +54,18 @@ const ElementSegmentType = enum(u8) {
     passive_elemexpr = 0x05,
     active_elemexpr = 0x06,
     declared_elemexpr = 0x07,
+};
+
+const CodeUnitKind = enum {
+    function_body,
+    expression,
+};
+
+const CodeReadError = error{
+    NeedMoreData,
+    UnknownOperator,
+    UnsupportedState,
+    AtomicFenceConsistencyModelMustBeZero,
 };
 
 pub const Parser = struct {
@@ -721,7 +738,14 @@ pub const Parser = struct {
         }
 
         self.cur_fn_range = .{ .start = self.cur_pos, .end = body_end };
-        self.cur_pos = body_end;
+        self.read_code_operator(.function_body) catch |err| switch (err) {
+            error.NeedMoreData => return .need_more_data,
+            error.UnknownOperator => return self.fail_with_state(ParserError.UnknownOperator),
+            error.AtomicFenceConsistencyModelMustBeZero => {
+                return self.fail_with_state(ParserError.AtomicFenceConsistencyModelMustBeZero);
+            },
+            error.UnsupportedState => return self.fail_with_state(ParserError.UnsupportedState),
+        };
         self.cur_fn_range = null;
         self.cur_state = .END_FUNCTION_BODY;
         self.cur_sect_entries_left -= 1;
@@ -1386,6 +1410,873 @@ pub const Parser = struct {
         return names;
     }
 
+    fn read_code_operator(self: *Parser, unit: CodeUnitKind) CodeReadError!void {
+        const start_pos = self.cur_pos;
+        errdefer self.cur_pos = start_pos;
+
+        switch (unit) {
+            .function_body => {
+                const fn_range = self.cur_fn_range orelse return error.UnsupportedState;
+                if (!self.has_bytes(fn_range.end - self.cur_pos)) return error.NeedMoreData;
+                while (self.cur_pos < fn_range.end) {
+                    _ = try self.read_single_operator();
+                }
+            },
+            .expression => {
+                while (true) {
+                    const operator = try self.read_single_operator();
+                    if (operator.code == .end) break;
+                }
+            },
+        }
+    }
+
+    fn read_memory_immediate(self: *Parser) CodeReadError!MemoryAddress {
+        if (!self.has_var_int_bytes()) return error.NeedMoreData;
+        const flags = self.read_var_uint32();
+        if (!self.has_var_int_bytes()) return error.NeedMoreData;
+        const offset = self.read_var_uint32();
+        return .{ .flags = flags, .offset = offset };
+    }
+
+    fn read_type_checked(self: *Parser) CodeReadError!Type {
+        var probe = self.*;
+        if (!probe.skip_type()) return error.NeedMoreData;
+        return self.read_type();
+    }
+
+    fn read_heap_type_checked(self: *Parser) CodeReadError!HeapType {
+        var probe = self.*;
+        _ = probe.skip_heap_type() orelse return error.NeedMoreData;
+        return self.read_heap_type();
+    }
+
+    fn read_br_table(self: *Parser) CodeReadError![]const u32 {
+        if (!self.has_var_int_bytes()) return error.NeedMoreData;
+        const table_count = self.read_var_uint32();
+        const br_table = self.allocator.alloc(u32, @intCast(table_count + 1)) catch @panic("OOM");
+        for (br_table) |*depth| {
+            if (!self.has_var_int_bytes()) return error.NeedMoreData;
+            depth.* = self.read_var_uint32();
+        }
+        return br_table;
+    }
+
+    fn read_try_table(self: *Parser) CodeReadError![]const CatchHandler {
+        if (!self.has_var_int_bytes()) return error.NeedMoreData;
+        const table_count = self.read_var_uint32();
+        const handlers = self.allocator.alloc(CatchHandler, @intCast(table_count)) catch @panic("OOM");
+        for (handlers) |*handler| {
+            if (!self.has_var_int_bytes()) return error.NeedMoreData;
+            const kind_raw = self.read_var_uint32();
+            const kind = std.meta.intToEnum(CatchHandlerKind, kind_raw) catch {
+                self.last_err_arg = kind_raw;
+                return error.UnknownOperator;
+            };
+            var tag_index: ?u32 = null;
+            switch (kind) {
+                .catch_, .catch_ref => {
+                    if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                    tag_index = self.read_var_uint32();
+                },
+                .catch_all, .catch_all_ref => {},
+            }
+            if (!self.has_var_int_bytes()) return error.NeedMoreData;
+            handler.* = .{
+                .kind = kind,
+                .tag_index = tag_index,
+                .depth = self.read_var_uint32(),
+            };
+        }
+        return handlers;
+    }
+
+    fn read_code_operator_0xfb(self: *Parser) CodeReadError!OperatorInformation {
+        if (!self.has_var_int_bytes()) return error.NeedMoreData;
+        const subcode = self.read_var_uint32();
+        const code_value = 0xfb00 | subcode;
+        const code = std.meta.intToEnum(OperatorCode, code_value) catch {
+            self.last_err_arg = code_value;
+            return error.UnknownOperator;
+        };
+
+        var info = OperatorInformation{ .code = code };
+        switch (code) {
+            .br_on_cast, .br_on_cast_fail => {
+                if (!self.has_bytes(1)) return error.NeedMoreData;
+                info.literal = .{ .number = self.read_u8() };
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.br_depth = self.read_var_uint32();
+                info.src_type = try self.read_heap_type_checked();
+                info.ref_type = try self.read_heap_type_checked();
+            },
+            .array_get,
+            .array_get_s,
+            .array_get_u,
+            .array_set,
+            .array_new,
+            .array_new_default,
+            .struct_new,
+            .struct_new_default,
+            .array_fill,
+            => {
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.ref_type = .{ .index = self.read_var_uint32() };
+            },
+            .array_new_fixed => {
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.ref_type = .{ .index = self.read_var_uint32() };
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.len = self.read_var_uint32();
+            },
+            .array_copy => {
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.ref_type = .{ .index = self.read_var_uint32() };
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.src_type = .{ .index = self.read_var_uint32() };
+            },
+            .struct_get, .struct_get_s, .struct_get_u, .struct_set => {
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.ref_type = .{ .index = self.read_var_uint32() };
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.field_index = self.read_var_uint32();
+            },
+            .array_new_data, .array_new_elem, .array_init_data, .array_init_elem => {
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.ref_type = .{ .index = self.read_var_uint32() };
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.segment_index = self.read_var_uint32();
+            },
+            .ref_test, .ref_test_null, .ref_cast, .ref_cast_null => {
+                info.ref_type = try self.read_heap_type_checked();
+            },
+            .array_len,
+            .extern_convert_any,
+            .any_convert_extern,
+            .ref_i31,
+            .i31_get_s,
+            .i31_get_u,
+            => {},
+            else => {
+                self.last_err_arg = code_value;
+                return error.UnknownOperator;
+            },
+        }
+        return info;
+    }
+
+    fn read_code_operator_0xfc(self: *Parser) CodeReadError!OperatorInformation {
+        if (!self.has_var_int_bytes()) return error.NeedMoreData;
+        const subcode = self.read_var_uint32();
+        const code_value = 0xfc00 | subcode;
+        const code = std.meta.intToEnum(OperatorCode, code_value) catch {
+            self.last_err_arg = code_value;
+            return error.UnknownOperator;
+        };
+
+        var info = OperatorInformation{ .code = code };
+        switch (code) {
+            .i32_trunc_sat_f32_s,
+            .i32_trunc_sat_f32_u,
+            .i32_trunc_sat_f64_s,
+            .i32_trunc_sat_f64_u,
+            .i64_trunc_sat_f32_s,
+            .i64_trunc_sat_f32_u,
+            .i64_trunc_sat_f64_s,
+            .i64_trunc_sat_f64_u,
+            => {},
+            .memory_copy => {
+                if (!self.has_bytes(2)) return error.NeedMoreData;
+                _ = self.read_var_uint1();
+                _ = self.read_var_uint1();
+            },
+            .memory_fill => {
+                if (!self.has_bytes(1)) return error.NeedMoreData;
+                _ = self.read_var_uint1();
+            },
+            .table_init => {
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.segment_index = self.read_var_uint32();
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.table_index = self.read_var_uint32();
+            },
+            .table_copy => {
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.table_index = self.read_var_uint32();
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.destination_index = self.read_var_uint32();
+            },
+            .table_grow, .table_size, .table_fill => {
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.table_index = self.read_var_uint32();
+            },
+            .memory_init => {
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.segment_index = self.read_var_uint32();
+                if (!self.has_bytes(1)) return error.NeedMoreData;
+                _ = self.read_var_uint1();
+            },
+            .data_drop, .elem_drop => {
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.segment_index = self.read_var_uint32();
+            },
+            else => {
+                self.last_err_arg = code_value;
+                return error.UnknownOperator;
+            },
+        }
+        return info;
+    }
+
+    fn read_code_operator_0xfd(self: *Parser) CodeReadError!OperatorInformation {
+        if (!self.has_var_int_bytes()) return error.NeedMoreData;
+        const subcode = self.read_var_uint32();
+        const code_value = 0xfd000 | subcode;
+        const code = std.meta.intToEnum(OperatorCode, code_value) catch {
+            self.last_err_arg = code_value;
+            return error.UnknownOperator;
+        };
+
+        var info = OperatorInformation{ .code = code };
+        switch (code) {
+            .v128_load,
+            .i16x8_load8x8_s,
+            .i16x8_load8x8_u,
+            .i32x4_load16x4_s,
+            .i32x4_load16x4_u,
+            .i64x2_load32x2_s,
+            .i64x2_load32x2_u,
+            .v8x16_load_splat,
+            .v16x8_load_splat,
+            .v32x4_load_splat,
+            .v64x2_load_splat,
+            .v128_store,
+            .v128_load32_zero,
+            .v128_load64_zero,
+            => info.memory_address = try self.read_memory_immediate(),
+            .v128_const => {
+                if (!self.has_bytes(16)) return error.NeedMoreData;
+                info.literal = .{ .bytes = self.read_bytes(16) };
+            },
+            .i8x16_shuffle => {
+                if (!self.has_bytes(16)) return error.NeedMoreData;
+                info.lines = self.read_bytes(16);
+            },
+            .i8x16_extract_lane_s,
+            .i8x16_extract_lane_u,
+            .i8x16_replace_lane,
+            .i16x8_extract_lane_s,
+            .i16x8_extract_lane_u,
+            .i16x8_replace_lane,
+            .i32x4_extract_lane,
+            .i32x4_replace_lane,
+            .i64x2_extract_lane,
+            .i64x2_replace_lane,
+            .f32x4_extract_lane,
+            .f32x4_replace_lane,
+            .f64x2_extract_lane,
+            .f64x2_replace_lane,
+            => {
+                if (!self.has_bytes(1)) return error.NeedMoreData;
+                info.line_index = self.read_u8();
+            },
+            .v128_load8_lane,
+            .v128_load16_lane,
+            .v128_load32_lane,
+            .v128_load64_lane,
+            .v128_store8_lane,
+            .v128_store16_lane,
+            .v128_store32_lane,
+            .v128_store64_lane,
+            => {
+                info.memory_address = try self.read_memory_immediate();
+                if (!self.has_bytes(1)) return error.NeedMoreData;
+                info.line_index = self.read_u8();
+            },
+            .i8x16_swizzle,
+            .i8x16_splat,
+            .i16x8_splat,
+            .i32x4_splat,
+            .i64x2_splat,
+            .f32x4_splat,
+            .f64x2_splat,
+            .i8x16_eq,
+            .i8x16_ne,
+            .i8x16_lt_s,
+            .i8x16_lt_u,
+            .i8x16_gt_s,
+            .i8x16_gt_u,
+            .i8x16_le_s,
+            .i8x16_le_u,
+            .i8x16_ge_s,
+            .i8x16_ge_u,
+            .i16x8_eq,
+            .i16x8_ne,
+            .i16x8_lt_s,
+            .i16x8_lt_u,
+            .i16x8_gt_s,
+            .i16x8_gt_u,
+            .i16x8_le_s,
+            .i16x8_le_u,
+            .i16x8_ge_s,
+            .i16x8_ge_u,
+            .i32x4_eq,
+            .i32x4_ne,
+            .i32x4_lt_s,
+            .i32x4_lt_u,
+            .i32x4_gt_s,
+            .i32x4_gt_u,
+            .i32x4_le_s,
+            .i32x4_le_u,
+            .i32x4_ge_s,
+            .i32x4_ge_u,
+            .f32x4_eq,
+            .f32x4_ne,
+            .f32x4_lt,
+            .f32x4_gt,
+            .f32x4_le,
+            .f32x4_ge,
+            .f64x2_eq,
+            .f64x2_ne,
+            .f64x2_lt,
+            .f64x2_gt,
+            .f64x2_le,
+            .f64x2_ge,
+            .v128_not,
+            .v128_and,
+            .v128_andnot,
+            .v128_or,
+            .v128_xor,
+            .v128_bitselect,
+            .v128_any_true,
+            .f32x4_demote_f64x2_zero,
+            .f64x2_promote_low_f32x4,
+            .i8x16_abs,
+            .i8x16_neg,
+            .i8x16_popcnt,
+            .i8x16_all_true,
+            .i8x16_bitmask,
+            .i8x16_narrow_i16x8_s,
+            .i8x16_narrow_i16x8_u,
+            .f32x4_ceil,
+            .f32x4_floor,
+            .f32x4_trunc,
+            .f32x4_nearest,
+            .i8x16_shl,
+            .i8x16_shr_s,
+            .i8x16_shr_u,
+            .i8x16_add,
+            .i8x16_add_sat_s,
+            .i8x16_add_sat_u,
+            .i8x16_sub,
+            .i8x16_sub_sat_s,
+            .i8x16_sub_sat_u,
+            .f64x2_ceil,
+            .f64x2_floor,
+            .i8x16_min_s,
+            .i8x16_min_u,
+            .i8x16_max_s,
+            .i8x16_max_u,
+            .f64x2_trunc,
+            .i8x16_avgr_u,
+            .i16x8_extadd_pairwise_i8x16_s,
+            .i16x8_extadd_pairwise_i8x16_u,
+            .i32x4_extadd_pairwise_i16x8_s,
+            .i32x4_extadd_pairwise_i16x8_u,
+            .i16x8_abs,
+            .i16x8_neg,
+            .i16x8_q15mulr_sat_s,
+            .i16x8_all_true,
+            .i16x8_bitmask,
+            .i16x8_narrow_i32x4_s,
+            .i16x8_narrow_i32x4_u,
+            .i16x8_extend_low_i8x16_s,
+            .i16x8_extend_high_i8x16_s,
+            .i16x8_extend_low_i8x16_u,
+            .i16x8_extend_high_i8x16_u,
+            .i16x8_shl,
+            .i16x8_shr_s,
+            .i16x8_shr_u,
+            .i16x8_add,
+            .i16x8_add_sat_s,
+            .i16x8_add_sat_u,
+            .i16x8_sub,
+            .i16x8_sub_sat_s,
+            .i16x8_sub_sat_u,
+            .f64x2_nearest,
+            .i16x8_mul,
+            .i16x8_min_s,
+            .i16x8_min_u,
+            .i16x8_max_s,
+            .i16x8_max_u,
+            .i16x8_avgr_u,
+            .i16x8_extmul_low_i8x16_s,
+            .i16x8_extmul_high_i8x16_s,
+            .i16x8_extmul_low_i8x16_u,
+            .i16x8_extmul_high_i8x16_u,
+            .i32x4_abs,
+            .i32x4_neg,
+            .i32x4_all_true,
+            .i32x4_bitmask,
+            .i32x4_extend_low_i16x8_s,
+            .i32x4_extend_high_i16x8_s,
+            .i32x4_extend_low_i16x8_u,
+            .i32x4_extend_high_i16x8_u,
+            .i32x4_shl,
+            .i32x4_shr_s,
+            .i32x4_shr_u,
+            .i32x4_add,
+            .i32x4_sub,
+            .i32x4_mul,
+            .i32x4_min_s,
+            .i32x4_min_u,
+            .i32x4_max_s,
+            .i32x4_max_u,
+            .i32x4_dot_i16x8_s,
+            .i32x4_extmul_low_i16x8_s,
+            .i32x4_extmul_high_i16x8_s,
+            .i32x4_extmul_low_i16x8_u,
+            .i32x4_extmul_high_i16x8_u,
+            .i64x2_abs,
+            .i64x2_neg,
+            .i64x2_all_true,
+            .i64x2_bitmask,
+            .i64x2_extend_low_i32x4_s,
+            .i64x2_extend_high_i32x4_s,
+            .i64x2_extend_low_i32x4_u,
+            .i64x2_extend_high_i32x4_u,
+            .i64x2_shl,
+            .i64x2_shr_s,
+            .i64x2_shr_u,
+            .i64x2_add,
+            .i64x2_sub,
+            .i64x2_mul,
+            .i64x2_eq,
+            .i64x2_ne,
+            .i64x2_lt_s,
+            .i64x2_gt_s,
+            .i64x2_le_s,
+            .i64x2_ge_s,
+            .i64x2_extmul_low_i32x4_s,
+            .i64x2_extmul_high_i32x4_s,
+            .i64x2_extmul_low_i32x4_u,
+            .i64x2_extmul_high_i32x4_u,
+            .f32x4_abs,
+            .f32x4_neg,
+            .f32x4_sqrt,
+            .f32x4_add,
+            .f32x4_sub,
+            .f32x4_mul,
+            .f32x4_div,
+            .f32x4_min,
+            .f32x4_max,
+            .f32x4_pmin,
+            .f32x4_pmax,
+            .f64x2_abs,
+            .f64x2_neg,
+            .f64x2_sqrt,
+            .f64x2_add,
+            .f64x2_sub,
+            .f64x2_mul,
+            .f64x2_div,
+            .f64x2_min,
+            .f64x2_max,
+            .f64x2_pmin,
+            .f64x2_pmax,
+            .i32x4_trunc_sat_f32x4_s,
+            .i32x4_trunc_sat_f32x4_u,
+            .f32x4_convert_i32x4_s,
+            .f32x4_convert_i32x4_u,
+            .i32x4_trunc_sat_f64x2_s_zero,
+            .i32x4_trunc_sat_f64x2_u_zero,
+            .f64x2_convert_low_i32x4_s,
+            .f64x2_convert_low_i32x4_u,
+            .i8x16_relaxed_swizzle,
+            .i32x4_relaxed_trunc_f32x4_s,
+            .i32x4_relaxed_trunc_f32x4_u,
+            .i32x4_relaxed_trunc_f64x2_s_zero,
+            .i32x4_relaxed_trunc_f64x2_u_zero,
+            .f32x4_relaxed_madd,
+            .f32x4_relaxed_nmadd,
+            .f64x2_relaxed_madd,
+            .f64x2_relaxed_nmadd,
+            .i8x16_relaxed_laneselect,
+            .i16x8_relaxed_laneselect,
+            .i32x4_relaxed_laneselect,
+            .i64x2_relaxed_laneselect,
+            .f32x4_relaxed_min,
+            .f32x4_relaxed_max,
+            .f64x2_relaxed_min,
+            .f64x2_relaxed_max,
+            .i16x8_relaxed_q15mulr_s,
+            .i16x8_relaxed_dot_i8x16_i7x16_s,
+            .i32x4_relaxed_dot_i8x16_i7x16_add_s,
+            => {},
+            else => {
+                self.last_err_arg = code_value;
+                return error.UnknownOperator;
+            },
+        }
+        return info;
+    }
+
+    fn read_code_operator_0xfe(self: *Parser) CodeReadError!OperatorInformation {
+        if (!self.has_var_int_bytes()) return error.NeedMoreData;
+        const subcode = self.read_var_uint32();
+        const code_value = 0xfe00 | subcode;
+        const code = std.meta.intToEnum(OperatorCode, code_value) catch {
+            self.last_err_arg = code_value;
+            return error.UnknownOperator;
+        };
+
+        var info = OperatorInformation{ .code = code };
+        switch (code) {
+            .memory_atomic_notify,
+            .memory_atomic_wait32,
+            .memory_atomic_wait64,
+            .i32_atomic_load,
+            .i64_atomic_load,
+            .i32_atomic_load8_u,
+            .i32_atomic_load16_u,
+            .i64_atomic_load8_u,
+            .i64_atomic_load16_u,
+            .i64_atomic_load32_u,
+            .i32_atomic_store,
+            .i64_atomic_store,
+            .i32_atomic_store8,
+            .i32_atomic_store16,
+            .i64_atomic_store8,
+            .i64_atomic_store16,
+            .i64_atomic_store32,
+            .i32_atomic_rmw_add,
+            .i64_atomic_rmw_add,
+            .i32_atomic_rmw8_add_u,
+            .i32_atomic_rmw16_add_u,
+            .i64_atomic_rmw8_add_u,
+            .i64_atomic_rmw16_add_u,
+            .i64_atomic_rmw32_add_u,
+            .i32_atomic_rmw_sub,
+            .i64_atomic_rmw_sub,
+            .i32_atomic_rmw8_sub_u,
+            .i32_atomic_rmw16_sub_u,
+            .i64_atomic_rmw8_sub_u,
+            .i64_atomic_rmw16_sub_u,
+            .i64_atomic_rmw32_sub_u,
+            .i32_atomic_rmw_and,
+            .i64_atomic_rmw_and,
+            .i32_atomic_rmw8_and_u,
+            .i32_atomic_rmw16_and_u,
+            .i64_atomic_rmw8_and_u,
+            .i64_atomic_rmw16_and_u,
+            .i64_atomic_rmw32_and_u,
+            .i32_atomic_rmw_or,
+            .i64_atomic_rmw_or,
+            .i32_atomic_rmw8_or_u,
+            .i32_atomic_rmw16_or_u,
+            .i64_atomic_rmw8_or_u,
+            .i64_atomic_rmw16_or_u,
+            .i64_atomic_rmw32_or_u,
+            .i32_atomic_rmw_xor,
+            .i64_atomic_rmw_xor,
+            .i32_atomic_rmw8_xor_u,
+            .i32_atomic_rmw16_xor_u,
+            .i64_atomic_rmw8_xor_u,
+            .i64_atomic_rmw16_xor_u,
+            .i64_atomic_rmw32_xor_u,
+            .i32_atomic_rmw_xchg,
+            .i64_atomic_rmw_xchg,
+            .i32_atomic_rmw8_xchg_u,
+            .i32_atomic_rmw16_xchg_u,
+            .i64_atomic_rmw8_xchg_u,
+            .i64_atomic_rmw16_xchg_u,
+            .i64_atomic_rmw32_xchg_u,
+            .i32_atomic_rmw_cmpxchg,
+            .i64_atomic_rmw_cmpxchg,
+            .i32_atomic_rmw8_cmpxchg_u,
+            .i32_atomic_rmw16_cmpxchg_u,
+            .i64_atomic_rmw8_cmpxchg_u,
+            .i64_atomic_rmw16_cmpxchg_u,
+            .i64_atomic_rmw32_cmpxchg_u,
+            => info.memory_address = try self.read_memory_immediate(),
+            .atomic_fence => {
+                if (!self.has_bytes(1)) return error.NeedMoreData;
+                const consistency_model = self.read_u8();
+                if (consistency_model != 0) {
+                    self.last_err_arg = consistency_model;
+                    return error.AtomicFenceConsistencyModelMustBeZero;
+                }
+            },
+            else => {
+                self.last_err_arg = code_value;
+                return error.UnknownOperator;
+            },
+        }
+        return info;
+    }
+
+    fn read_single_operator(self: *Parser) CodeReadError!OperatorInformation {
+        const start_pos = self.cur_pos;
+        errdefer self.cur_pos = start_pos;
+
+        if (!self.has_bytes(1)) return error.NeedMoreData;
+        const code_raw = self.read_u8();
+        const code = std.meta.intToEnum(OperatorCode, code_raw) catch {
+            self.last_err_arg = code_raw;
+            return error.UnknownOperator;
+        };
+
+        switch (code) {
+            .prefix_0xfb => return self.read_code_operator_0xfb(),
+            .prefix_0xfc => return self.read_code_operator_0xfc(),
+            .prefix_0xfd => return self.read_code_operator_0xfd(),
+            .prefix_0xfe => return self.read_code_operator_0xfe(),
+            else => {},
+        }
+
+        var info = OperatorInformation{ .code = code };
+        switch (code) {
+            .block, .loop, .if_, .try_ => info.block_type = try self.read_type_checked(),
+            .br, .br_if, .br_on_null, .br_on_non_null => {
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.br_depth = self.read_var_uint32();
+            },
+            .br_table => info.br_table = try self.read_br_table(),
+            .rethrow, .delegate => {
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.relative_depth = self.read_var_uint32();
+            },
+            .catch_, .throw => {
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.tag_index = self.read_var_uint32();
+            },
+            .try_table => {
+                info.block_type = try self.read_type_checked();
+                info.try_table = try self.read_try_table();
+            },
+            .ref_null => info.ref_type = try self.read_heap_type_checked(),
+            .call, .return_call, .ref_func => {
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.func_index = self.read_var_uint32();
+            },
+            .call_indirect, .return_call_indirect => {
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.type_index = .{ .index = self.read_var_uint32() };
+                if (!self.has_bytes(1)) return error.NeedMoreData;
+                _ = self.read_var_uint1();
+            },
+            .local_get, .local_set, .local_tee => {
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.local_index = self.read_var_uint32();
+            },
+            .global_get, .global_set => {
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.global_index = self.read_var_uint32();
+            },
+            .table_get, .table_set => {
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.table_index = self.read_var_uint32();
+            },
+            .call_ref, .return_call_ref => info.type_index = try self.read_heap_type_checked(),
+            .i32_load,
+            .i64_load,
+            .f32_load,
+            .f64_load,
+            .i32_load8_s,
+            .i32_load8_u,
+            .i32_load16_s,
+            .i32_load16_u,
+            .i64_load8_s,
+            .i64_load8_u,
+            .i64_load16_s,
+            .i64_load16_u,
+            .i64_load32_s,
+            .i64_load32_u,
+            .i32_store,
+            .i64_store,
+            .f32_store,
+            .f64_store,
+            .i32_store8,
+            .i32_store16,
+            .i64_store8,
+            .i64_store16,
+            .i64_store32,
+            => info.memory_address = try self.read_memory_immediate(),
+            .memory_size, .memory_grow => {
+                if (!self.has_bytes(1)) return error.NeedMoreData;
+                _ = self.read_var_uint1();
+            },
+            .i32_const => {
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.literal = .{ .number = self.read_var_int32() };
+            },
+            .i64_const => {
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.literal = .{ .int64 = self.read_var_int64() };
+            },
+            .f32_const => {
+                if (!self.has_bytes(4)) return error.NeedMoreData;
+                info.literal = .{ .bytes = self.read_bytes(4) };
+            },
+            .f64_const => {
+                if (!self.has_bytes(8)) return error.NeedMoreData;
+                info.literal = .{ .bytes = self.read_bytes(8) };
+            },
+            .select_with_type => {
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                const num_types = self.read_var_int32();
+                if (num_types == 1) {
+                    info.select_type = try self.read_type_checked();
+                }
+            },
+            .unreachable_,
+            .nop,
+            .else_,
+            .end,
+            .return_,
+            .catch_all,
+            .drop,
+            .select,
+            .i32_eqz,
+            .i32_eq,
+            .i32_ne,
+            .i32_lt_s,
+            .i32_lt_u,
+            .i32_gt_s,
+            .i32_gt_u,
+            .i32_le_s,
+            .i32_le_u,
+            .i32_ge_s,
+            .i32_ge_u,
+            .i64_eqz,
+            .i64_eq,
+            .i64_ne,
+            .i64_lt_s,
+            .i64_lt_u,
+            .i64_gt_s,
+            .i64_gt_u,
+            .i64_le_s,
+            .i64_le_u,
+            .i64_ge_s,
+            .i64_ge_u,
+            .f32_eq,
+            .f32_ne,
+            .f32_lt,
+            .f32_gt,
+            .f32_le,
+            .f32_ge,
+            .f64_eq,
+            .f64_ne,
+            .f64_lt,
+            .f64_gt,
+            .f64_le,
+            .f64_ge,
+            .i32_clz,
+            .i32_ctz,
+            .i32_popcnt,
+            .i32_add,
+            .i32_sub,
+            .i32_mul,
+            .i32_div_s,
+            .i32_div_u,
+            .i32_rem_s,
+            .i32_rem_u,
+            .i32_and,
+            .i32_or,
+            .i32_xor,
+            .i32_shl,
+            .i32_shr_s,
+            .i32_shr_u,
+            .i32_rotl,
+            .i32_rotr,
+            .i64_clz,
+            .i64_ctz,
+            .i64_popcnt,
+            .i64_add,
+            .i64_sub,
+            .i64_mul,
+            .i64_div_s,
+            .i64_div_u,
+            .i64_rem_s,
+            .i64_rem_u,
+            .i64_and,
+            .i64_or,
+            .i64_xor,
+            .i64_shl,
+            .i64_shr_s,
+            .i64_shr_u,
+            .i64_rotl,
+            .i64_rotr,
+            .f32_abs,
+            .f32_neg,
+            .f32_ceil,
+            .f32_floor,
+            .f32_trunc,
+            .f32_nearest,
+            .f32_sqrt,
+            .f32_add,
+            .f32_sub,
+            .f32_mul,
+            .f32_div,
+            .f32_min,
+            .f32_max,
+            .f32_copysign,
+            .f64_abs,
+            .f64_neg,
+            .f64_ceil,
+            .f64_floor,
+            .f64_trunc,
+            .f64_nearest,
+            .f64_sqrt,
+            .f64_add,
+            .f64_sub,
+            .f64_mul,
+            .f64_div,
+            .f64_min,
+            .f64_max,
+            .f64_copysign,
+            .i32_wrap_i64,
+            .i32_trunc_f32_s,
+            .i32_trunc_f32_u,
+            .i32_trunc_f64_s,
+            .i32_trunc_f64_u,
+            .i64_extend_i32_s,
+            .i64_extend_i32_u,
+            .i64_trunc_f32_s,
+            .i64_trunc_f32_u,
+            .i64_trunc_f64_s,
+            .i64_trunc_f64_u,
+            .f32_convert_i32_s,
+            .f32_convert_i32_u,
+            .f32_convert_i64_s,
+            .f32_convert_i64_u,
+            .f32_demote_f64,
+            .f64_convert_i32_s,
+            .f64_convert_i32_u,
+            .f64_convert_i64_s,
+            .f64_convert_i64_u,
+            .f64_promote_f32,
+            .i32_reinterpret_f32,
+            .i64_reinterpret_f64,
+            .f32_reinterpret_i32,
+            .f64_reinterpret_i64,
+            .i32_extend8_s,
+            .i32_extend16_s,
+            .i64_extend8_s,
+            .i64_extend16_s,
+            .i64_extend32_s,
+            .ref_is_null,
+            .ref_as_non_null,
+            .ref_eq,
+            .throw_ref,
+            => {},
+            else => {
+                self.last_err_arg = @intFromEnum(code);
+                return error.UnknownOperator;
+            },
+        }
+        return info;
+    }
+
     fn skip_type_entry_common(self: *Parser, type_kind: i7) bool {
         return switch (type_kind) {
             @intFromEnum(TypeKind.func) => self.skip_func_type(),
@@ -1850,6 +2741,25 @@ pub const testing = if (builtin.is_test) struct {
         parser.cur_len = bytes.len;
         return parser.read_type();
     }
+
+    pub fn consume_expression(bytes: []const u8) usize {
+        var parser = Parser.init(std.heap.page_allocator);
+        parser.cur_data = bytes;
+        parser.cur_len = bytes.len;
+        parser.read_code_operator(.expression) catch |err| {
+            @panic(@errorName(err));
+        };
+        return parser.cur_pos;
+    }
+
+    pub fn read_single_operator(bytes: []const u8) OperatorInformation {
+        var parser = Parser.init(std.heap.page_allocator);
+        parser.cur_data = bytes;
+        parser.cur_len = bytes.len;
+        return parser.read_single_operator() catch |err| {
+            @panic(@errorName(err));
+        };
+    }
 } else struct {};
 
 pub const ParserError = error{
@@ -1953,14 +2863,10 @@ pub const ParseState = enum(i32) {
     START_SECTION_ENTRY,
     TAG_SECTION_ENTRY,
 
-    INIT_EXPRESSION_OPERATOR,
-
     READING_FUNCTION_HEADER,
-    CODE_OPERATOR,
     END_FUNCTION_BODY,
 
     BEGIN_ELEMENT_SECTION_ENTRY,
-    ELEMENT_SECTION_ENTRY_BODY,
     END_ELEMENT_SECTION_ENTRY,
 
     BEGIN_DATA_SECTION_ENTRY,
@@ -1969,8 +2875,6 @@ pub const ParseState = enum(i32) {
 
     RELOC_SECTION_HEADER,
     RELOC_SECTION_ENTRY,
-
-    OFFSET_EXPRESSION_OPERATOR,
 
     DATA_COUNT_SECTION_ENTRY,
 };

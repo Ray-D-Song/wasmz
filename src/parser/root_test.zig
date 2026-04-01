@@ -10,6 +10,7 @@ const ExternalKind = payload_mod.ExternalKind;
 const LinkingType = payload_mod.LinkingType;
 const NameType = payload_mod.NameType;
 const RelocType = payload_mod.RelocType;
+const OperatorCode = payload_mod.OperatorCode;
 const SectionCode = payload_mod.SectionCode;
 const TagAttribute = payload_mod.TagAttribute;
 const TypeKind = payload_mod.TypeKind;
@@ -929,6 +930,20 @@ test "read_type decodes a nullable reference type" {
                 else => return error.UnexpectedPayload,
             }
         },
+        else => return error.UnexpectedPayload,
+    }
+}
+
+test "read_code_operator consumes a complete expression" {
+    const consumed = parser_testing.consume_expression(&[_]u8{ 0x41, 0x00, 0x0b });
+    try std.testing.expectEqual(@as(usize, 3), consumed);
+}
+
+test "read_single_operator decodes ref.null" {
+    const operator = parser_testing.read_single_operator(&[_]u8{ 0xd0, 0x70 });
+    try std.testing.expectEqual(OperatorCode.ref_null, operator.code);
+    switch (operator.ref_type.?) {
+        .kind => |kind| try std.testing.expectEqual(TypeKind.funcref, kind),
         else => return error.UnexpectedPayload,
     }
 }
