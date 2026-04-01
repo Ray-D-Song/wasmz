@@ -19,6 +19,9 @@ const TagAttribute = payload_mod.TagAttribute;
 const ImportEntry = payload_mod.ImportEntry;
 const ImportEntryType = payload_mod.ImportEntryType;
 const ExportEntry = payload_mod.ExportEntry;
+const ElementMode = payload_mod.ElementMode;
+const ElementSegment = payload_mod.ElementSegment;
+const ElementSegmentBody = payload_mod.ElementSegmentBody;
 const DataMode = payload_mod.DataMode;
 const DataSegment = payload_mod.DataSegment;
 const DataSegmentBody = payload_mod.DataSegmentBody;
@@ -27,6 +30,17 @@ const SectionInformation = payload_mod.SectionInformation;
 
 const WASM_MAGIC_NUMBER = 0x6d736100;
 const WASM_SUPPORTED_VERSION = [_]u32{ 0x1, 0x2 };
+
+const ElementSegmentType = enum(u8) {
+    legacy_active_funcref_externval = 0x00,
+    passive_externval = 0x01,
+    active_externval = 0x02,
+    declared_externval = 0x03,
+    legacy_active_funcref_elemexpr = 0x04,
+    passive_elemexpr = 0x05,
+    active_elemexpr = 0x06,
+    declared_elemexpr = 0x07,
+};
 
 pub const Parser = struct {
     allocator: std.mem.Allocator,
@@ -45,6 +59,7 @@ pub const Parser = struct {
     cur_sect_entries_left: u32 = 0,
     cur_rec_group_types_left: i32 = -1,
     cur_data_segment_active: bool = false,
+    cur_element_segment_type: ?ElementSegmentType = null,
     cur_fn_range: ?DataRange = null,
 
     last_err_arg: u32 = 0,
@@ -145,8 +160,14 @@ pub const Parser = struct {
                 .END_DATA_SECTION_ENTRY,
                 => return self.read_data_entry(),
                 .BEGIN_DATA_SECTION_ENTRY => return self.read_data_entry_body(),
-                .DATA_SECTION_ENTRY_BODY,
+                .DATA_SECTION_ENTRY_BODY => {
+                    self.cur_state = .END_DATA_SECTION_ENTRY;
+                    continue;
+                },
                 .ELEMENT_SECTION_ENTRY,
+                .END_ELEMENT_SECTION_ENTRY,
+                => return self.read_element_entry(),
+                .BEGIN_ELEMENT_SECTION_ENTRY => return self.read_element_entry_body(),
                 .LINKING_SECTION_ENTRY,
                 .TAG_SECTION_ENTRY,
                 .READING_FUNCTION_HEADER,
@@ -726,6 +747,98 @@ pub const Parser = struct {
         } };
     }
 
+    fn read_element_entry(self: *Parser) ParseResult {
+        const start_pos = self.cur_pos;
+        if (self.cur_sect_entries_left == 0) {
+            self.finish_current_section();
+            return self.read_sect();
+        }
+        if (!self.has_element_entry_bytes()) {
+            return .need_more_data;
+        }
+
+        const segment_type_raw = self.read_u8();
+        const segment_type = std.meta.intToEnum(ElementSegmentType, segment_type_raw) catch {
+            self.last_err_arg = segment_type_raw;
+            return self.fail_with_state(ParserError.UnsupportedElementSegmentType);
+        };
+
+        var mode: ElementMode = undefined;
+        var table_index: ?u32 = null;
+        switch (segment_type) {
+            .legacy_active_funcref_externval, .legacy_active_funcref_elemexpr => {
+                mode = .active;
+                table_index = 0;
+            },
+            .passive_externval, .passive_elemexpr => {
+                mode = .passive;
+            },
+            .active_externval, .active_elemexpr => {
+                mode = .active;
+                table_index = self.read_var_uint32();
+            },
+            .declared_externval, .declared_elemexpr => {
+                mode = .declarative;
+            },
+        }
+
+        self.cur_state = .BEGIN_ELEMENT_SECTION_ENTRY;
+        self.cur_element_segment_type = segment_type;
+        self.cur_sect_entries_left -= 1;
+        return .{ .parsed = .{
+            .consumed = self.cur_pos - start_pos,
+            .payload = .{ .element_segment = ElementSegment{
+                .mode = mode,
+                .table_index = table_index,
+            } },
+        } };
+    }
+
+    fn read_element_entry_body(self: *Parser) ParseResult {
+        const start_pos = self.cur_pos;
+        const segment_type = self.cur_element_segment_type orelse {
+            return self.fail_with_state(ParserError.UnsupportedState);
+        };
+        if (!self.has_element_entry_body_bytes(segment_type)) {
+            return .need_more_data;
+        }
+
+        if (is_active_element_segment_type(segment_type)) {
+            _ = self.skip_init_expr();
+        }
+
+        var element_type: Type = .{ .kind = .funcref };
+        switch (segment_type) {
+            .passive_externval, .active_externval, .declared_externval => {
+                _ = self.read_u8();
+            },
+            .passive_elemexpr, .active_elemexpr, .declared_elemexpr => {
+                element_type = self.read_type();
+            },
+            .legacy_active_funcref_externval, .legacy_active_funcref_elemexpr => {},
+        }
+
+        const item_count = self.read_var_uint32();
+        if (is_externval_element_segment_type(segment_type)) {
+            for (0..item_count) |_| {
+                _ = self.read_var_uint32();
+            }
+        } else {
+            for (0..item_count) |_| {
+                _ = self.skip_init_expr();
+            }
+        }
+
+        self.cur_state = .END_ELEMENT_SECTION_ENTRY;
+        self.cur_element_segment_type = null;
+        return .{ .parsed = .{
+            .consumed = self.cur_pos - start_pos,
+            .payload = .{ .element_segment_body = ElementSegmentBody{
+                .element_type = element_type,
+            } },
+        } };
+    }
+
     fn read_rec_group_entry(self: *Parser) ParseResult {
         return self.read_rec_group_entry_from(self.cur_pos);
     }
@@ -1012,6 +1125,16 @@ pub const Parser = struct {
         return probe.skip_data_entry();
     }
 
+    fn has_element_entry_bytes(self: *Parser) bool {
+        var probe = self.*;
+        return probe.skip_element_entry();
+    }
+
+    fn has_element_entry_body_bytes(self: *Parser, segment_type: ElementSegmentType) bool {
+        var probe = self.*;
+        return probe.skip_element_entry_body(segment_type);
+    }
+
     fn skip_type_entry_common(self: *Parser, type_kind: i7) bool {
         return switch (type_kind) {
             @intFromEnum(TypeKind.func) => self.skip_func_type(),
@@ -1151,6 +1274,51 @@ pub const Parser = struct {
         }
     }
 
+    fn skip_element_entry(self: *Parser) bool {
+        if (!self.has_bytes(1)) return false;
+        const segment_type_raw = self.read_u8();
+        const segment_type = std.meta.intToEnum(ElementSegmentType, segment_type_raw) catch return true;
+        return switch (segment_type) {
+            .active_externval, .active_elemexpr => blk: {
+                if (!self.has_var_int_bytes()) break :blk false;
+                _ = self.read_var_uint32();
+                break :blk true;
+            },
+            else => true,
+        };
+    }
+
+    fn skip_element_entry_body(self: *Parser, segment_type: ElementSegmentType) bool {
+        if (is_active_element_segment_type(segment_type)) {
+            if (!self.skip_init_expr()) return false;
+        }
+
+        switch (segment_type) {
+            .passive_externval, .active_externval, .declared_externval => {
+                if (!self.has_bytes(1)) return false;
+                _ = self.read_u8();
+            },
+            .passive_elemexpr, .active_elemexpr, .declared_elemexpr => {
+                if (!self.skip_type()) return false;
+            },
+            .legacy_active_funcref_externval, .legacy_active_funcref_elemexpr => {},
+        }
+
+        if (!self.has_var_int_bytes()) return false;
+        const item_count = self.read_var_uint32();
+        if (is_externval_element_segment_type(segment_type)) {
+            for (0..item_count) |_| {
+                if (!self.has_var_int_bytes()) return false;
+                _ = self.read_var_uint32();
+            }
+        } else {
+            for (0..item_count) |_| {
+                if (!self.skip_init_expr()) return false;
+            }
+        }
+        return true;
+    }
+
     fn skip_init_expr(self: *Parser) bool {
         while (true) {
             if (!self.has_bytes(1)) return false;
@@ -1280,6 +1448,7 @@ pub const Parser = struct {
         self.cur_sect_entries_left = 0;
         self.cur_rec_group_types_left = -1;
         self.cur_data_segment_active = false;
+        self.cur_element_segment_type = null;
     }
 };
 
@@ -1452,5 +1621,27 @@ fn parse_section_code(raw: u7) ?SectionCode {
 fn parse_type_kind(kind: i64) TypeKind {
     return std.meta.intToEnum(TypeKind, @as(i32, @intCast(kind))) catch {
         std.debug.panic("Unknown type kind: {}", .{kind});
+    };
+}
+
+fn is_active_element_segment_type(segment_type: ElementSegmentType) bool {
+    return switch (segment_type) {
+        .legacy_active_funcref_externval,
+        .active_externval,
+        .legacy_active_funcref_elemexpr,
+        .active_elemexpr,
+        => true,
+        else => false,
+    };
+}
+
+fn is_externval_element_segment_type(segment_type: ElementSegmentType) bool {
+    return switch (segment_type) {
+        .legacy_active_funcref_externval,
+        .passive_externval,
+        .active_externval,
+        .declared_externval,
+        => true,
+        else => false,
     };
 }
