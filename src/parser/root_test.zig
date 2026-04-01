@@ -8,6 +8,7 @@ const ParseState = parser_mod.ParseState;
 const ParserError = parser_mod.ParserError;
 const ExternalKind = payload_mod.ExternalKind;
 const LinkingType = payload_mod.LinkingType;
+const NameType = payload_mod.NameType;
 const SectionCode = payload_mod.SectionCode;
 const TagAttribute = payload_mod.TagAttribute;
 const TypeKind = payload_mod.TypeKind;
@@ -676,6 +677,131 @@ test "code section function body parses local declarations" {
                         .kind => |kind| try std.testing.expectEqual(TypeKind.i32, kind),
                         else => return error.UnexpectedPayload,
                     }
+                },
+                else => return error.UnexpectedPayload,
+            }
+        },
+        else => return error.UnexpectedParseResult,
+    }
+}
+
+test "data count section entry asks for more data when payload is truncated" {
+    const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
+    const data_count_section = [_]u8{ 0x0c, 0x01, 0x02 };
+
+    var parser = Parser.init(std.testing.allocator);
+    _ = parser.parse(&header, false);
+
+    const section_result = parser.parse(&data_count_section, false);
+    const consumed = switch (section_result) {
+        .parsed => |parsed| parsed.consumed,
+        else => return error.UnexpectedParseResult,
+    };
+
+    try std.testing.expectEqual(@as(usize, 2), consumed);
+    try expect_need_more_data(parser.parse(data_count_section[consumed..consumed], false));
+}
+
+test "data count section entry parses the count" {
+    const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
+    const data_count_section = [_]u8{ 0x0c, 0x01, 0x02 };
+
+    var parser = Parser.init(std.testing.allocator);
+    _ = parser.parse(&header, false);
+
+    const section_result = parser.parse(&data_count_section, false);
+    const consumed = switch (section_result) {
+        .parsed => |parsed| parsed.consumed,
+        else => return error.UnexpectedParseResult,
+    };
+
+    const entry_result = parser.parse(data_count_section[consumed..], false);
+    switch (entry_result) {
+        .parsed => |parsed| {
+            try std.testing.expectEqual(@as(usize, 1), parsed.consumed);
+            switch (parsed.payload) {
+                .number => |number| try std.testing.expectEqual(@as(i64, 2), number),
+                else => return error.UnexpectedPayload,
+            }
+        },
+        else => return error.UnexpectedParseResult,
+    }
+}
+
+test "name section entry asks for more data when subsection payload is truncated" {
+    const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
+    const name_section = [_]u8{ 0x00, 0x0b, 0x04, 'n', 'a', 'm', 'e', 0x00, 0x04, 0x03, 'm', 'o', 'd' };
+
+    var parser = Parser.init(std.testing.allocator);
+    _ = parser.parse(&header, false);
+
+    const section_result = parser.parse(&name_section, false);
+    const consumed = switch (section_result) {
+        .parsed => |parsed| parsed.consumed,
+        else => return error.UnexpectedParseResult,
+    };
+
+    try std.testing.expectEqual(@as(usize, 7), consumed);
+    try expect_need_more_data(parser.parse(name_section[consumed .. consumed + 1], false));
+}
+
+test "name section entry parses a module name subsection" {
+    const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
+    const name_section = [_]u8{ 0x00, 0x0b, 0x04, 'n', 'a', 'm', 'e', 0x00, 0x04, 0x03, 'm', 'o', 'd' };
+
+    var parser = Parser.init(std.testing.allocator);
+    _ = parser.parse(&header, false);
+
+    const section_result = parser.parse(&name_section, false);
+    const consumed = switch (section_result) {
+        .parsed => |parsed| parsed.consumed,
+        else => return error.UnexpectedParseResult,
+    };
+
+    const entry_result = parser.parse(name_section[consumed..], false);
+    switch (entry_result) {
+        .parsed => |parsed| {
+            try std.testing.expectEqual(@as(usize, 6), parsed.consumed);
+            switch (parsed.payload) {
+                .module_name_entry => |entry| {
+                    try std.testing.expectEqual(NameType.module, entry.typ);
+                    try std.testing.expectEqualStrings("mod", entry.module_name);
+                },
+                else => return error.UnexpectedPayload,
+            }
+        },
+        else => return error.UnexpectedParseResult,
+    }
+}
+
+test "name section entry skips unknown subsections and parses function names" {
+    const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
+    const name_section = [_]u8{
+        0x00, 0x0e, 0x04, 'n',  'a',  'm',  'e',
+        0x0c, 0x01, 0x00, 0x01, 0x04, 0x01, 0x00,
+        0x01, 'f',
+    };
+
+    var parser = Parser.init(std.testing.allocator);
+    _ = parser.parse(&header, false);
+
+    const section_result = parser.parse(&name_section, false);
+    const consumed = switch (section_result) {
+        .parsed => |parsed| parsed.consumed,
+        else => return error.UnexpectedParseResult,
+    };
+
+    const entry_result = parser.parse(name_section[consumed..], false);
+    switch (entry_result) {
+        .parsed => |parsed| {
+            try std.testing.expectEqual(@as(usize, 9), parsed.consumed);
+            switch (parsed.payload) {
+                .function_name_entry => |entry| {
+                    defer std.testing.allocator.free(entry.names);
+                    try std.testing.expectEqual(NameType.function, entry.typ);
+                    try std.testing.expectEqual(@as(usize, 1), entry.names.len);
+                    try std.testing.expectEqual(@as(u32, 0), entry.names[0].index);
+                    try std.testing.expectEqualStrings("f", entry.names[0].name);
                 },
                 else => return error.UnexpectedPayload,
             }

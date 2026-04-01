@@ -16,6 +16,10 @@ const GlobalType = payload_mod.GlobalType;
 const GlobalVariable = payload_mod.GlobalVariable;
 const TagType = payload_mod.TagType;
 const TagAttribute = payload_mod.TagAttribute;
+const NameType = payload_mod.NameType;
+const Naming = payload_mod.Naming;
+const LocalName = payload_mod.LocalName;
+const FieldName = payload_mod.FieldName;
 const ImportEntry = payload_mod.ImportEntry;
 const ImportEntryType = payload_mod.ImportEntryType;
 const ExportEntry = payload_mod.ExportEntry;
@@ -175,8 +179,8 @@ pub const Parser = struct {
                 .LINKING_SECTION_ENTRY => return self.read_linking_entry(),
                 .TAG_SECTION_ENTRY => return self.read_tag_entry(),
                 .READING_FUNCTION_HEADER, .END_FUNCTION_BODY => return self.read_function_body(),
-                .DATA_COUNT_SECTION_ENTRY,
-                .NAME_SECTION_ENTRY,
+                .DATA_COUNT_SECTION_ENTRY => return self.read_data_count_entry(),
+                .NAME_SECTION_ENTRY => return self.read_name_entry(),
                 .RELOC_SECTION_ENTRY,
                 => {
                     if (self.cur_sect_entries_left == 0) {
@@ -511,8 +515,8 @@ pub const Parser = struct {
                 return self.finish_section_dispatch(start_pos, custom_section_name);
             },
             .data_count => {
-                if (!self.has_var_int_bytes()) return self.rollback_section_parse(start_pos);
-                self.cur_sect_entries_left = self.read_var_uint32();
+                if (!self.has_section_payload()) return self.rollback_section_parse(start_pos);
+                self.cur_sect_entries_left = 1;
                 self.cur_state = .DATA_COUNT_SECTION_ENTRY;
                 return self.finish_section_dispatch(start_pos, custom_section_name);
             },
@@ -742,6 +746,121 @@ pub const Parser = struct {
                 .locals = locals,
             } },
         } };
+    }
+
+    fn read_data_count_entry(self: *Parser) ParseResult {
+        const start_pos = self.cur_pos;
+        if (self.cur_sect_entries_left == 0) {
+            self.finish_current_section();
+            return self.read_sect();
+        }
+        if (!self.has_var_int_bytes()) {
+            return .need_more_data;
+        }
+
+        const count = self.read_var_uint32();
+        self.cur_sect_entries_left -= 1;
+        return .{ .parsed = .{
+            .consumed = self.cur_pos - start_pos,
+            .payload = .{ .number = count },
+        } };
+    }
+
+    fn read_name_entry(self: *Parser) ParseResult {
+        const start_pos = self.cur_pos;
+        const sect_range = self.cur_sect_range orelse {
+            return self.fail_with_state(ParserError.UnsupportedState);
+        };
+
+        while (true) {
+            if (self.cur_pos >= sect_range.end) {
+                self.finish_current_section();
+                return self.read_sect();
+            }
+
+            var probe = self.*;
+            if (!probe.skip_name_entry()) {
+                return .need_more_data;
+            }
+
+            const typ_raw = self.read_var_uint7();
+            const payload_len = self.read_var_uint32();
+            const payload_end = self.cur_pos + payload_len;
+            const typ = std.meta.intToEnum(NameType, typ_raw) catch {
+                self.cur_pos = payload_end;
+                continue;
+            };
+
+            switch (typ) {
+                .module => {
+                    const module_name = self.read_str_bytes();
+                    self.cur_pos = payload_end;
+                    return .{ .parsed = .{
+                        .consumed = self.cur_pos - start_pos,
+                        .payload = .{ .module_name_entry = .{
+                            .typ = typ,
+                            .module_name = module_name,
+                        } },
+                    } };
+                },
+                .function, .tag, .type, .table, .memory, .global => {
+                    const names = self.read_name_map() catch @panic("OOM");
+                    self.cur_pos = payload_end;
+                    return .{ .parsed = .{
+                        .consumed = self.cur_pos - start_pos,
+                        .payload = switch (typ) {
+                            .function => .{ .function_name_entry = .{ .typ = typ, .names = names } },
+                            .tag => .{ .tag_name_entry = .{ .typ = typ, .names = names } },
+                            .type => .{ .type_name_entry = .{ .typ = typ, .names = names } },
+                            .table => .{ .table_name_entry = .{ .typ = typ, .names = names } },
+                            .memory => .{ .memory_name_entry = .{ .typ = typ, .names = names } },
+                            .global => .{ .global_name_entry = .{ .typ = typ, .names = names } },
+                            else => unreachable,
+                        },
+                    } };
+                },
+                .local => {
+                    const funcs_len = self.read_var_uint32();
+                    const funcs = self.allocator.alloc(LocalName, @intCast(funcs_len)) catch @panic("OOM");
+                    for (funcs) |*func| {
+                        func.* = .{
+                            .index = self.read_var_uint32(),
+                            .locals = self.read_name_map() catch @panic("OOM"),
+                        };
+                    }
+                    self.cur_pos = payload_end;
+                    return .{ .parsed = .{
+                        .consumed = self.cur_pos - start_pos,
+                        .payload = .{ .local_name_entry = .{
+                            .typ = typ,
+                            .funcs = funcs,
+                        } },
+                    } };
+                },
+                .field => {
+                    const types_len = self.read_var_uint32();
+                    const types = self.allocator.alloc(FieldName, @intCast(types_len)) catch @panic("OOM");
+                    for (types) |*field_name| {
+                        field_name.* = .{
+                            .index = self.read_var_uint32(),
+                            .fields = self.read_name_map() catch @panic("OOM"),
+                        };
+                    }
+                    self.cur_pos = payload_end;
+                    return .{ .parsed = .{
+                        .consumed = self.cur_pos - start_pos,
+                        .payload = .{ .field_name_entry = .{
+                            .typ = typ,
+                            .types = types,
+                        } },
+                    } };
+                },
+                else => {
+                    self.cur_pos = payload_end;
+                    continue;
+                },
+            }
+        }
     }
 
     fn read_data_entry(self: *Parser) ParseResult {
@@ -1200,6 +1319,18 @@ pub const Parser = struct {
         };
     }
 
+    fn read_name_map(self: *Parser) ![]const Naming {
+        const count = self.read_var_uint32();
+        const names = try self.allocator.alloc(Naming, @intCast(count));
+        for (names) |*name| {
+            name.* = .{
+                .index = self.read_var_uint32(),
+                .name = self.read_str_bytes(),
+            };
+        }
+        return names;
+    }
+
     fn skip_type_entry_common(self: *Parser, type_kind: i7) bool {
         return switch (type_kind) {
             @intFromEnum(TypeKind.func) => self.skip_func_type(),
@@ -1395,6 +1526,67 @@ pub const Parser = struct {
                 break :blk true;
             },
         };
+    }
+
+    fn skip_name_map(self: *Parser) bool {
+        if (!self.has_var_int_bytes()) return false;
+        const count = self.read_var_uint32();
+        for (0..count) |_| {
+            if (!self.has_var_int_bytes()) return false;
+            _ = self.read_var_uint32();
+            if (!self.has_str_bytes()) return false;
+            _ = self.read_str_bytes();
+        }
+        return true;
+    }
+
+    fn skip_name_entry(self: *Parser) bool {
+        const sect_range = self.cur_sect_range orelse return false;
+        if (self.cur_pos >= sect_range.end) return true;
+        if (!self.has_var_int_bytes()) return false;
+        const typ_raw = self.read_var_uint7();
+        if (!self.has_var_int_bytes()) return false;
+        const payload_len = self.read_var_uint32();
+        if (!self.has_bytes(payload_len)) return false;
+
+        const payload_end = self.cur_pos + payload_len;
+        const typ = std.meta.intToEnum(NameType, typ_raw) catch {
+            self.cur_pos = payload_end;
+            return true;
+        };
+
+        switch (typ) {
+            .module => {
+                if (!self.has_str_bytes()) return false;
+                _ = self.read_str_bytes();
+            },
+            .function, .tag, .type, .table, .memory, .global => {
+                if (!self.skip_name_map()) return false;
+            },
+            .local => {
+                if (!self.has_var_int_bytes()) return false;
+                const funcs_len = self.read_var_uint32();
+                for (0..funcs_len) |_| {
+                    if (!self.has_var_int_bytes()) return false;
+                    _ = self.read_var_uint32();
+                    if (!self.skip_name_map()) return false;
+                }
+            },
+            .field => {
+                if (!self.has_var_int_bytes()) return false;
+                const types_len = self.read_var_uint32();
+                for (0..types_len) |_| {
+                    if (!self.has_var_int_bytes()) return false;
+                    _ = self.read_var_uint32();
+                    if (!self.skip_name_map()) return false;
+                }
+            },
+            else => {},
+        }
+
+        if (self.cur_pos > payload_end) return false;
+        self.cur_pos = payload_end;
+        return true;
     }
 
     fn skip_function_body(self: *Parser) bool {
