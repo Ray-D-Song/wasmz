@@ -623,7 +623,14 @@ pub const Parser = struct {
         }
 
         const typ = self.read_global_type();
-        _ = self.skip_init_expr();
+        self.read_code_operator(.expression) catch |err| switch (err) {
+            error.NeedMoreData => return .need_more_data,
+            error.UnknownOperator => return self.fail_with_state(ParserError.UnknownOperator),
+            error.AtomicFenceConsistencyModelMustBeZero => {
+                return self.fail_with_state(ParserError.AtomicFenceConsistencyModelMustBeZero);
+            },
+            error.UnsupportedState => return self.fail_with_state(ParserError.UnsupportedState),
+        };
         self.cur_state = .GLOBAL_SECTION_ENTRY;
         self.cur_sect_entries_left -= 1;
         return .{ .parsed = .{
