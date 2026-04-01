@@ -18,6 +18,7 @@ const TagType = payload_mod.TagType;
 const TagAttribute = payload_mod.TagAttribute;
 const ImportEntry = payload_mod.ImportEntry;
 const ImportEntryType = payload_mod.ImportEntryType;
+const ExportEntry = payload_mod.ExportEntry;
 const SectionCode = payload_mod.SectionCode;
 const SectionInformation = payload_mod.SectionInformation;
 
@@ -135,7 +136,7 @@ pub const Parser = struct {
                 .TABLE_SECTION_ENTRY => return self.read_table_entry(),
                 .MEMORY_SECTION_ENTRY => return self.read_memory_entry(),
                 .GLOBAL_SECTION_ENTRY => return self.read_global_entry(),
-                .EXPORT_SECTION_ENTRY,
+                .EXPORT_SECTION_ENTRY => return self.read_export_entry(),
                 .DATA_SECTION_ENTRY,
                 .ELEMENT_SECTION_ENTRY,
                 .LINKING_SECTION_ENTRY,
@@ -627,6 +628,30 @@ pub const Parser = struct {
         } };
     }
 
+    fn read_export_entry(self: *Parser) ParseResult {
+        const start_pos = self.cur_pos;
+        if (!self.has_export_entry_bytes()) {
+            return .need_more_data;
+        }
+
+        const field = self.read_str_bytes();
+        const kind_raw = self.read_u8();
+        const kind = std.meta.intToEnum(ExternalKind, kind_raw) catch {
+            std.debug.panic("Unknown external kind: {}", .{kind_raw});
+        };
+        const index = self.read_var_uint32();
+
+        self.cur_sect_entries_left -= 1;
+        return .{ .parsed = .{
+            .consumed = self.cur_pos - start_pos,
+            .payload = .{ .export_entry = ExportEntry{
+                .field = field,
+                .kind = kind,
+                .index = index,
+            } },
+        } };
+    }
+
     fn read_rec_group_entry(self: *Parser) ParseResult {
         return self.read_rec_group_entry_from(self.cur_pos);
     }
@@ -903,6 +928,11 @@ pub const Parser = struct {
         return probe.skip_global_entry();
     }
 
+    fn has_export_entry_bytes(self: *Parser) bool {
+        var probe = self.*;
+        return probe.skip_export_entry();
+    }
+
     fn skip_type_entry_common(self: *Parser, type_kind: i7) bool {
         return switch (type_kind) {
             @intFromEnum(TypeKind.func) => self.skip_func_type(),
@@ -1016,6 +1046,16 @@ pub const Parser = struct {
     fn skip_global_entry(self: *Parser) bool {
         if (!self.skip_global_type()) return false;
         return self.skip_init_expr();
+    }
+
+    fn skip_export_entry(self: *Parser) bool {
+        if (!self.has_str_bytes()) return false;
+        _ = self.read_str_bytes();
+        if (!self.has_bytes(1)) return false;
+        _ = self.read_u8();
+        if (!self.has_var_int_bytes()) return false;
+        _ = self.read_var_uint32();
+        return true;
     }
 
     fn skip_init_expr(self: *Parser) bool {

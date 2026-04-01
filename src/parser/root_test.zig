@@ -296,6 +296,53 @@ test "global section entry parses a global with i32 const init expr" {
     }
 }
 
+test "export section entry asks for more data when payload is truncated" {
+    const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
+    const export_section = [_]u8{ 0x07, 0x05, 0x01, 0x01, 'f', 0x00, 0x00 };
+
+    var parser = Parser.init(std.testing.allocator);
+    _ = parser.parse(&header, false);
+
+    const section_result = parser.parse(&export_section, false);
+    const consumed = switch (section_result) {
+        .parsed => |parsed| parsed.consumed,
+        else => return error.UnexpectedParseResult,
+    };
+
+    try std.testing.expectEqual(@as(usize, 3), consumed);
+    try expect_need_more_data(parser.parse(export_section[consumed .. consumed + 2], false));
+}
+
+test "export section entry parses a function export" {
+    const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
+    const export_section = [_]u8{ 0x07, 0x05, 0x01, 0x01, 'f', 0x00, 0x00 };
+
+    var parser = Parser.init(std.testing.allocator);
+    _ = parser.parse(&header, false);
+
+    const section_result = parser.parse(&export_section, false);
+    const consumed = switch (section_result) {
+        .parsed => |parsed| parsed.consumed,
+        else => return error.UnexpectedParseResult,
+    };
+
+    const entry_result = parser.parse(export_section[consumed..], false);
+    switch (entry_result) {
+        .parsed => |parsed| {
+            try std.testing.expectEqual(@as(usize, 4), parsed.consumed);
+            switch (parsed.payload) {
+                .export_entry => |export_entry| {
+                    try std.testing.expectEqualStrings("f", export_entry.field);
+                    try std.testing.expectEqual(ExternalKind.function, export_entry.kind);
+                    try std.testing.expectEqual(@as(u32, 0), export_entry.index);
+                },
+                else => return error.UnexpectedPayload,
+            }
+        },
+        else => return error.UnexpectedParseResult,
+    }
+}
+
 test "read_heap_type decodes a single-byte negative heap type" {
     switch (parser_testing.read_heap_type(&[_]u8{0x70})) {
         .kind => |kind| try std.testing.expectEqual(TypeKind.funcref, kind),
