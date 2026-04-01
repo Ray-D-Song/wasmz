@@ -43,7 +43,7 @@ const LinkingType = payload_mod.LinkingType;
 const LinkingEntry = payload_mod.LinkingEntry;
 
 const WASM_MAGIC_NUMBER = 0x6d736100;
-const WASM_SUPPORTED_VERSION = [_]u32{ 0x1, 0x2 };
+const WASM_SUPPORTED_VERSION = [_]u32{ 0x1, 0x2, 0x0d };
 
 const ElementSegmentType = enum(u8) {
     legacy_active_funcref_externval = 0x00,
@@ -207,8 +207,28 @@ pub const Parser = struct {
         }
     }
 
-    // Full parsing, it will call parse() internally.
-    pub fn parseAll() void {}
+    // Parse a complete module from a contiguous input buffer and collect
+    // every observable payload event in order.
+    pub fn parseAll(self: *Parser, input: []const u8) ParseAllError![]Payload {
+        var payloads: std.ArrayList(Payload) = .empty;
+        errdefer payloads.deinit(self.allocator);
+
+        var remaining = input;
+        while (true) {
+            switch (self.parse(remaining, true)) {
+                .parsed => |parsed| {
+                    if (parsed.consumed == 0) {
+                        return error.UnexpectedNeedMoreData;
+                    }
+                    try payloads.append(self.allocator, parsed.payload);
+                    remaining = remaining[parsed.consumed..];
+                },
+                .need_more_data => return error.UnexpectedNeedMoreData,
+                .end => return try payloads.toOwnedSlice(self.allocator),
+                .err => |err| return err,
+            }
+        }
+    }
 
     // Helper function to check if there are enough bytes left in the input data for parsing.
     fn has_bytes(self: *Parser, len: usize) bool {
@@ -2844,6 +2864,10 @@ pub const ParserError = error{
     UnsupportedState,
     // "Trailing bytes found after the module end"
     TrailingBytesAfterModule,
+};
+
+pub const ParseAllError = std.mem.Allocator.Error || ParserError || error{
+    UnexpectedNeedMoreData,
 };
 
 pub fn formatParserError(

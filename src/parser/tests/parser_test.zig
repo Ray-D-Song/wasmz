@@ -10,6 +10,7 @@ const SectionCode = payload_mod.SectionCode;
 
 const imports_wasm: []const u8 = @embedFile("fixtures/imports.wasm");
 const globals_wasm: []const u8 = @embedFile("fixtures/globals.wasm");
+const malloc_v13_wasm: []const u8 = @embedFile("fixtures/malloc_v13.wasm");
 const nop_wasm: []const u8 = @embedFile("fixtures/nop.wasm");
 
 const StreamStats = struct {
@@ -56,6 +57,16 @@ fn fail_parse(parser: *Parser, err: ParserError) error{ParseFailed} {
         .{ err, parser.cur_state, parser.last_err_arg, parser.last_err_state },
     );
     return error.ParseFailed;
+}
+
+fn collect_payload_stats(payloads: []const Payload) StreamStats {
+    var stats = StreamStats{
+        .parsed_events = payloads.len,
+    };
+    for (payloads) |payload| {
+        note_payload(&stats, payload);
+    }
+    return stats;
 }
 
 fn parse_fixture_streaming(bytes: []const u8, chunk_size: usize) !StreamStats {
@@ -165,4 +176,37 @@ test "stream parses globals fixture one byte at a time" {
     try std.testing.expect(stats.saw_global_variable);
     try std.testing.expect(stats.need_more_data_count > 0);
     try std.testing.expectEqual(globals_wasm.len, stats.total_consumed);
+}
+
+test "parseAll parses nop fixture with the same event granularity" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var parser = Parser.init(arena.allocator());
+    const payloads = try parser.parseAll(nop_wasm);
+    const stats = collect_payload_stats(payloads);
+    const streaming_stats = try parse_fixture_streaming(nop_wasm, 7);
+
+    try std.testing.expect(stats.saw_header);
+    try std.testing.expect(stats.saw_type_section);
+    try std.testing.expect(stats.saw_function_section);
+    try std.testing.expect(stats.saw_code_section);
+    try std.testing.expect(stats.saw_function_info);
+    try std.testing.expectEqual(streaming_stats.parsed_events, payloads.len);
+}
+
+test "parseAll accepts experimental version 0x0d fixture" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var parser = Parser.init(arena.allocator());
+    const payloads = try parser.parseAll(malloc_v13_wasm);
+
+    try std.testing.expect(payloads.len > 1);
+    switch (payloads[0]) {
+        .module_header => |module_header| {
+            try std.testing.expectEqual(@as(u32, 0x0d), module_header.version);
+        },
+        else => return error.UnexpectedPayload,
+    }
 }
