@@ -998,9 +998,14 @@ pub const Parser = struct {
     fn read_data_entry_body(self: *Parser) ParseResult {
         const start_pos = self.cur_pos;
         if (self.cur_data_segment_active) {
-            if (!self.skip_init_expr()) {
-                return .need_more_data;
-            }
+            self.read_code_operator(.expression) catch |err| switch (err) {
+                error.NeedMoreData => return .need_more_data,
+                error.UnknownOperator => return self.fail_with_state(ParserError.UnknownOperator),
+                error.AtomicFenceConsistencyModelMustBeZero => {
+                    return self.fail_with_state(ParserError.AtomicFenceConsistencyModelMustBeZero);
+                },
+                error.UnsupportedState => return self.fail_with_state(ParserError.UnsupportedState),
+            };
         }
         if (!self.has_str_bytes()) {
             self.cur_pos = start_pos;
@@ -1075,7 +1080,14 @@ pub const Parser = struct {
         }
 
         if (is_active_element_segment_type(segment_type)) {
-            _ = self.skip_init_expr();
+            self.read_code_operator(.expression) catch |err| switch (err) {
+                error.NeedMoreData => return .need_more_data,
+                error.UnknownOperator => return self.fail_with_state(ParserError.UnknownOperator),
+                error.AtomicFenceConsistencyModelMustBeZero => {
+                    return self.fail_with_state(ParserError.AtomicFenceConsistencyModelMustBeZero);
+                },
+                error.UnsupportedState => return self.fail_with_state(ParserError.UnsupportedState),
+            };
         }
 
         var element_type: Type = .{ .kind = .funcref };
@@ -1096,7 +1108,14 @@ pub const Parser = struct {
             }
         } else {
             for (0..item_count) |_| {
-                _ = self.skip_init_expr();
+                self.read_code_operator(.expression) catch |err| switch (err) {
+                    error.NeedMoreData => return .need_more_data,
+                    error.UnknownOperator => return self.fail_with_state(ParserError.UnknownOperator),
+                    error.AtomicFenceConsistencyModelMustBeZero => {
+                        return self.fail_with_state(ParserError.AtomicFenceConsistencyModelMustBeZero);
+                    },
+                    error.UnsupportedState => return self.fail_with_state(ParserError.UnsupportedState),
+                };
             }
         }
 
