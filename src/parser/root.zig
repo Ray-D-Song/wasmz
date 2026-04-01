@@ -576,12 +576,18 @@ pub const Parser = struct {
         const start_pos = self.cur_pos;
         if (self.cur_sect_entries_left == 0) {
             self.finish_current_section();
+            return self.read_sect();
+        }
+        var probe = self.*;
+        if (!probe.skip_memory_type()) {
+            return .need_more_data;
         }
         self.cur_state = .MEMORY_SECTION_ENTRY;
         self.cur_sect_entries_left -= 1;
+        const memory_type = self.read_memory_type();
         return .{ .parsed = .{
             .consumed = self.cur_pos - start_pos,
-            .payload = .{ .memory_type = self.read_memory_type() },
+            .payload = .{ .memory_type = memory_type },
         } };
     }
 
@@ -589,24 +595,35 @@ pub const Parser = struct {
         const start_pos = self.cur_pos;
         if (self.cur_sect_entries_left == 0) {
             self.finish_current_section();
+            return self.read_sect();
+        }
+        var probe = self.*;
+        if (!probe.skip_table_type()) {
+            return .need_more_data;
         }
         self.cur_state = .TABLE_SECTION_ENTRY;
         self.cur_sect_entries_left -= 1;
+        const table_type = self.read_table_type();
         return .{ .parsed = .{
             .consumed = self.cur_pos - start_pos,
-            .payload = .{ .table_type = self.read_table_type() },
+            .payload = .{ .table_type = table_type },
         } };
     }
 
     fn read_function_entry(self: *Parser) ParseResult {
+        const start_pos = self.cur_pos;
         if (self.cur_sect_entries_left == 0) {
             self.finish_current_section();
+            return self.read_sect();
+        }
+        if (!self.has_var_int_bytes()) {
+            return .need_more_data;
         }
         const typeIdx = self.read_var_uint32();
         self.cur_state = .FUNCTION_SECTION_ENTRY;
         self.cur_sect_entries_left -= 1;
         return .{ .parsed = .{
-            .consumed = self.cur_pos,
+            .consumed = self.cur_pos - start_pos,
             .payload = .{ .function_entry = .{ .type_index = typeIdx } },
         } };
     }
@@ -641,6 +658,10 @@ pub const Parser = struct {
 
     fn read_import_entry(self: *Parser) ParseResult {
         const start_pos = self.cur_pos;
+        if (self.cur_sect_entries_left == 0) {
+            self.finish_current_section();
+            return self.read_sect();
+        }
         var probe = self.*;
         if (!probe.skip_import_entry()) {
             return .need_more_data;
@@ -678,6 +699,10 @@ pub const Parser = struct {
 
     fn read_export_entry(self: *Parser) ParseResult {
         const start_pos = self.cur_pos;
+        if (self.cur_sect_entries_left == 0) {
+            self.finish_current_section();
+            return self.read_sect();
+        }
         var probe = self.*;
         if (!probe.skip_export_entry()) {
             return .need_more_data;
@@ -2942,4 +2967,8 @@ fn is_externval_element_segment_type(segment_type: ElementSegmentType) bool {
         => true,
         else => false,
     };
+}
+
+test {
+    _ = @import("tests/unit_test.zig");
 }

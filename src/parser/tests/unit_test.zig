@@ -1,6 +1,6 @@
 const std = @import("std");
-const parser_mod = @import("root.zig");
-const payload_mod = @import("payload.zig");
+const parser_mod = @import("../root.zig");
+const payload_mod = @import("../payload.zig");
 
 const Parser = parser_mod.Parser;
 const ParseResult = parser_mod.ParseResult;
