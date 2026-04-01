@@ -9,6 +9,7 @@ const ParserError = parser_mod.ParserError;
 const ExternalKind = payload_mod.ExternalKind;
 const LinkingType = payload_mod.LinkingType;
 const NameType = payload_mod.NameType;
+const RelocType = payload_mod.RelocType;
 const SectionCode = payload_mod.SectionCode;
 const TagAttribute = payload_mod.TagAttribute;
 const TypeKind = payload_mod.TypeKind;
@@ -802,6 +803,81 @@ test "name section entry skips unknown subsections and parses function names" {
                     try std.testing.expectEqual(@as(usize, 1), entry.names.len);
                     try std.testing.expectEqual(@as(u32, 0), entry.names[0].index);
                     try std.testing.expectEqualStrings("f", entry.names[0].name);
+                },
+                else => return error.UnexpectedPayload,
+            }
+        },
+        else => return error.UnexpectedParseResult,
+    }
+}
+
+test "reloc section entry asks for more data when payload is truncated" {
+    const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
+    const reloc_section = [_]u8{
+        0x00, 0x0d, 0x06, 'r', 'e', 'l', 'o', 'c', '.', 0x0a, 0x01, 0x00, 0x01, 0x02,
+    };
+
+    var parser = Parser.init(std.testing.allocator);
+    _ = parser.parse(&header, false);
+
+    const section_result = parser.parse(&reloc_section, false);
+    const section_consumed = switch (section_result) {
+        .parsed => |parsed| parsed.consumed,
+        else => return error.UnexpectedParseResult,
+    };
+
+    const header_result = parser.parse(reloc_section[section_consumed..], false);
+    const header_consumed = switch (header_result) {
+        .parsed => |parsed| parsed.consumed,
+        else => return error.UnexpectedParseResult,
+    };
+
+    try std.testing.expectEqual(@as(usize, 9), section_consumed);
+    try std.testing.expectEqual(@as(usize, 2), header_consumed);
+    try expect_need_more_data(parser.parse(reloc_section[section_consumed + header_consumed .. section_consumed + header_consumed + 2], false));
+}
+
+test "reloc section entry parses header and entry" {
+    const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
+    const reloc_section = [_]u8{
+        0x00, 0x0e, 0x06, 'r', 'e', 'l', 'o', 'c', '.', 0x0a, 0x01, 0x00, 0x01, 0x02, 0x03,
+    };
+
+    var parser = Parser.init(std.testing.allocator);
+    _ = parser.parse(&header, false);
+
+    const section_result = parser.parse(&reloc_section, false);
+    const section_consumed = switch (section_result) {
+        .parsed => |parsed| parsed.consumed,
+        else => return error.UnexpectedParseResult,
+    };
+
+    const reloc_header_result = parser.parse(reloc_section[section_consumed..], false);
+    const header_consumed = switch (reloc_header_result) {
+        .parsed => |parsed| blk: {
+            try std.testing.expectEqual(@as(usize, 2), parsed.consumed);
+            switch (parsed.payload) {
+                .reloc_header => |reloc_header| {
+                    try std.testing.expectEqual(SectionCode.code, reloc_header.id);
+                    try std.testing.expectEqualStrings("", reloc_header.name);
+                },
+                else => return error.UnexpectedPayload,
+            }
+            break :blk parsed.consumed;
+        },
+        else => return error.UnexpectedParseResult,
+    };
+
+    const entry_result = parser.parse(reloc_section[section_consumed + header_consumed ..], false);
+    switch (entry_result) {
+        .parsed => |parsed| {
+            try std.testing.expectEqual(@as(usize, 3), parsed.consumed);
+            switch (parsed.payload) {
+                .reloc_entry => |entry| {
+                    try std.testing.expectEqual(RelocType.function_index_leb, entry.typ);
+                    try std.testing.expectEqual(@as(u32, 1), entry.offset);
+                    try std.testing.expectEqual(@as(u32, 2), entry.index);
+                    try std.testing.expectEqual(@as(?u32, null), entry.addend);
                 },
                 else => return error.UnexpectedPayload,
             }

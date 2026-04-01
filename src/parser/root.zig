@@ -20,6 +20,7 @@ const NameType = payload_mod.NameType;
 const Naming = payload_mod.Naming;
 const LocalName = payload_mod.LocalName;
 const FieldName = payload_mod.FieldName;
+const RelocType = payload_mod.RelocType;
 const ImportEntry = payload_mod.ImportEntry;
 const ImportEntryType = payload_mod.ImportEntryType;
 const ExportEntry = payload_mod.ExportEntry;
@@ -181,24 +182,8 @@ pub const Parser = struct {
                 .READING_FUNCTION_HEADER, .END_FUNCTION_BODY => return self.read_function_body(),
                 .DATA_COUNT_SECTION_ENTRY => return self.read_data_count_entry(),
                 .NAME_SECTION_ENTRY => return self.read_name_entry(),
-                .RELOC_SECTION_ENTRY,
-                => {
-                    if (self.cur_sect_entries_left == 0) {
-                        self.finish_current_section();
-                        continue;
-                    }
-                    return self.fail_with_state(ParserError.UnsupportedState);
-                },
-                .RELOC_SECTION_HEADER => {
-                    if (!self.has_var_int_bytes()) return .need_more_data;
-                    self.cur_sect_entries_left = self.read_var_uint32();
-                    if (self.cur_sect_entries_left == 0) {
-                        self.finish_current_section();
-                        continue;
-                    }
-                    self.cur_state = .RELOC_SECTION_ENTRY;
-                    return self.fail_with_state(ParserError.UnsupportedState);
-                },
+                .RELOC_SECTION_ENTRY => return self.read_reloc_entry(),
+                .RELOC_SECTION_HEADER => return self.read_reloc_header(),
 
                 else => return self.fail_with_state(ParserError.UnsupportedState),
             }
@@ -861,6 +846,76 @@ pub const Parser = struct {
                 },
             }
         }
+    }
+
+    fn read_reloc_header(self: *Parser) ParseResult {
+        const start_pos = self.cur_pos;
+        var probe = self.*;
+        if (!probe.skip_reloc_header()) {
+            return .need_more_data;
+        }
+
+        const id_raw = self.read_var_uint7();
+        const id = parse_section_code(id_raw) orelse {
+            self.last_err_arg = id_raw;
+            return self.fail_with_state(ParserError.UnsupportedSection);
+        };
+        const name = if (id == .custom) self.read_str_bytes() else &.{};
+        self.cur_sect_entries_left = self.read_var_uint32();
+        self.cur_state = .RELOC_SECTION_ENTRY;
+
+        return .{ .parsed = .{
+            .consumed = self.cur_pos - start_pos,
+            .payload = .{ .reloc_header = .{
+                .id = id,
+                .name = name,
+            } },
+        } };
+    }
+
+    fn read_reloc_entry(self: *Parser) ParseResult {
+        const start_pos = self.cur_pos;
+        if (self.cur_sect_entries_left == 0) {
+            self.finish_current_section();
+            return self.read_sect();
+        }
+
+        var probe = self.*;
+        if (!probe.skip_reloc_entry()) {
+            return .need_more_data;
+        }
+
+        const typ_raw = self.read_var_uint7();
+        const typ = std.meta.intToEnum(RelocType, typ_raw) catch {
+            self.last_err_arg = typ_raw;
+            return self.fail_with_state(ParserError.BadRelocationType);
+        };
+        const offset = self.read_var_uint32();
+        const index = self.read_var_uint32();
+        const addend = switch (typ) {
+            .function_index_leb,
+            .table_index_sleb,
+            .table_index_i32,
+            .type_index_leb,
+            .global_index_leb,
+            => null,
+            .global_addr_leb,
+            .global_addr_sleb,
+            .global_addr_i32,
+            => self.read_var_uint32(),
+        };
+
+        self.cur_state = .RELOC_SECTION_ENTRY;
+        self.cur_sect_entries_left -= 1;
+        return .{ .parsed = .{
+            .consumed = self.cur_pos - start_pos,
+            .payload = .{ .reloc_entry = .{
+                .typ = typ,
+                .offset = offset,
+                .index = index,
+                .addend = addend,
+            } },
+        } };
     }
 
     fn read_data_entry(self: *Parser) ParseResult {
@@ -1586,6 +1641,45 @@ pub const Parser = struct {
 
         if (self.cur_pos > payload_end) return false;
         self.cur_pos = payload_end;
+        return true;
+    }
+
+    fn skip_reloc_header(self: *Parser) bool {
+        if (!self.has_var_int_bytes()) return false;
+        const section_id_raw = self.read_var_uint7();
+        const section_id = parse_section_code(section_id_raw) orelse return true;
+        if (section_id == .custom) {
+            if (!self.has_str_bytes()) return false;
+            _ = self.read_str_bytes();
+        }
+        if (!self.has_var_int_bytes()) return false;
+        _ = self.read_var_uint32();
+        return true;
+    }
+
+    fn skip_reloc_entry(self: *Parser) bool {
+        if (!self.has_var_int_bytes()) return false;
+        const typ_raw = self.read_var_uint7();
+        const typ = std.meta.intToEnum(RelocType, typ_raw) catch return true;
+        if (!self.has_var_int_bytes()) return false;
+        _ = self.read_var_uint32();
+        if (!self.has_var_int_bytes()) return false;
+        _ = self.read_var_uint32();
+        switch (typ) {
+            .function_index_leb,
+            .table_index_sleb,
+            .table_index_i32,
+            .type_index_leb,
+            .global_index_leb,
+            => {},
+            .global_addr_leb,
+            .global_addr_sleb,
+            .global_addr_i32,
+            => {
+                if (!self.has_var_int_bytes()) return false;
+                _ = self.read_var_uint32();
+            },
+        }
         return true;
     }
 
