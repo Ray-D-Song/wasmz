@@ -13,6 +13,7 @@ const ResizableLimits = payload_mod.ResizableLimits;
 const TableType = payload_mod.TableType;
 const MemoryType = payload_mod.MemoryType;
 const GlobalType = payload_mod.GlobalType;
+const GlobalVariable = payload_mod.GlobalVariable;
 const TagType = payload_mod.TagType;
 const TagAttribute = payload_mod.TagAttribute;
 const ImportEntry = payload_mod.ImportEntry;
@@ -133,7 +134,7 @@ pub const Parser = struct {
                 .FUNCTION_SECTION_ENTRY => return self.read_function_entry(),
                 .TABLE_SECTION_ENTRY => return self.read_table_entry(),
                 .MEMORY_SECTION_ENTRY => return self.read_memory_entry(),
-                .GLOBAL_SECTION_ENTRY,
+                .GLOBAL_SECTION_ENTRY => return self.read_global_entry(),
                 .EXPORT_SECTION_ENTRY,
                 .DATA_SECTION_ENTRY,
                 .ELEMENT_SECTION_ENTRY,
@@ -532,21 +533,29 @@ pub const Parser = struct {
     }
 
     fn read_memory_entry(self: *Parser) ParseResult {
+        const start_pos = self.cur_pos;
         if (self.cur_sect_entries_left == 0) {
             self.finish_current_section();
         }
         self.cur_state = .MEMORY_SECTION_ENTRY;
         self.cur_sect_entries_left -= 1;
-        return self.read_memory_type();
+        return .{ .parsed = .{
+            .consumed = self.cur_pos - start_pos,
+            .payload = .{ .memory_type = self.read_memory_type() },
+        } };
     }
 
     fn read_table_entry(self: *Parser) ParseResult {
+        const start_pos = self.cur_pos;
         if (self.cur_sect_entries_left == 0) {
             self.finish_current_section();
         }
         self.cur_state = .TABLE_SECTION_ENTRY;
         self.cur_sect_entries_left -= 1;
-        return self.read_table_type();
+        return .{ .parsed = .{
+            .consumed = self.cur_pos - start_pos,
+            .payload = .{ .table_type = self.read_table_type() },
+        } };
     }
 
     fn read_function_entry(self: *Parser) ParseResult {
@@ -559,6 +568,26 @@ pub const Parser = struct {
         return .{ .parsed = .{
             .consumed = self.cur_pos,
             .payload = .{ .function_entry = .{ .type_index = typeIdx } },
+        } };
+    }
+
+    fn read_global_entry(self: *Parser) ParseResult {
+        const start_pos = self.cur_pos;
+        if (self.cur_sect_entries_left == 0) {
+            self.finish_current_section();
+            return self.read_sect();
+        }
+        if (!self.has_global_entry_bytes()) {
+            return .need_more_data;
+        }
+
+        const typ = self.read_global_type();
+        _ = self.skip_init_expr();
+        self.cur_state = .GLOBAL_SECTION_ENTRY;
+        self.cur_sect_entries_left -= 1;
+        return .{ .parsed = .{
+            .consumed = self.cur_pos - start_pos,
+            .payload = .{ .global_variable = GlobalVariable{ .typ = typ } },
         } };
     }
 
@@ -869,6 +898,11 @@ pub const Parser = struct {
         return probe.skip_import_entry();
     }
 
+    fn has_global_entry_bytes(self: *Parser) bool {
+        var probe = self.*;
+        return probe.skip_global_entry();
+    }
+
     fn skip_type_entry_common(self: *Parser, type_kind: i7) bool {
         return switch (type_kind) {
             @intFromEnum(TypeKind.func) => self.skip_func_type(),
@@ -977,6 +1011,49 @@ pub const Parser = struct {
             .global => self.skip_global_type(),
             .tag => self.skip_tag_type(),
         };
+    }
+
+    fn skip_global_entry(self: *Parser) bool {
+        if (!self.skip_global_type()) return false;
+        return self.skip_init_expr();
+    }
+
+    fn skip_init_expr(self: *Parser) bool {
+        while (true) {
+            if (!self.has_bytes(1)) return false;
+            const opcode = self.read_u8();
+            switch (opcode) {
+                0x0b => return true, // end
+                0x23 => { // global.get
+                    if (!self.has_var_int_bytes()) return false;
+                    _ = self.read_var_uint32();
+                },
+                0x41 => { // i32.const
+                    if (!self.has_var_int_bytes()) return false;
+                    _ = self.read_var_int32();
+                },
+                0x42 => { // i64.const
+                    if (!self.has_var_int_bytes()) return false;
+                    _ = self.read_var_int64();
+                },
+                0x43 => { // f32.const
+                    if (!self.has_bytes(4)) return false;
+                    _ = self.read_bytes(4);
+                },
+                0x44 => { // f64.const
+                    if (!self.has_bytes(8)) return false;
+                    _ = self.read_bytes(8);
+                },
+                0xd0 => { // ref.null
+                    if (self.skip_heap_type() == null) return false;
+                },
+                0xd2 => { // ref.func
+                    if (!self.has_var_int_bytes()) return false;
+                    _ = self.read_var_uint32();
+                },
+                else => std.debug.panic("Unsupported init expr opcode: 0x{x}", .{opcode}),
+            }
+        }
     }
 
     fn skip_table_type(self: *Parser) bool {
