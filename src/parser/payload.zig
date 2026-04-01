@@ -1047,6 +1047,7 @@ pub const Payload = union(enum) {
     export_entry: ExportEntry,
     function_entry: FunctionEntry,
     type_entry: TypeEntry,
+    tag_type: TagType,
     module_header: ModuleHeader,
     operator_info: OperatorInformation,
     memory_type: MemoryType,

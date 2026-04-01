@@ -25,8 +25,12 @@ const ElementSegmentBody = payload_mod.ElementSegmentBody;
 const DataMode = payload_mod.DataMode;
 const DataSegment = payload_mod.DataSegment;
 const DataSegmentBody = payload_mod.DataSegmentBody;
+const Locals = payload_mod.Locals;
+const FunctionInformation = payload_mod.FunctionInformation;
 const SectionCode = payload_mod.SectionCode;
 const SectionInformation = payload_mod.SectionInformation;
+const LinkingType = payload_mod.LinkingType;
+const LinkingEntry = payload_mod.LinkingEntry;
 
 const WASM_MAGIC_NUMBER = 0x6d736100;
 const WASM_SUPPORTED_VERSION = [_]u32{ 0x1, 0x2 };
@@ -168,9 +172,9 @@ pub const Parser = struct {
                 .END_ELEMENT_SECTION_ENTRY,
                 => return self.read_element_entry(),
                 .BEGIN_ELEMENT_SECTION_ENTRY => return self.read_element_entry_body(),
-                .LINKING_SECTION_ENTRY,
-                .TAG_SECTION_ENTRY,
-                .READING_FUNCTION_HEADER,
+                .LINKING_SECTION_ENTRY => return self.read_linking_entry(),
+                .TAG_SECTION_ENTRY => return self.read_tag_entry(),
+                .READING_FUNCTION_HEADER, .END_FUNCTION_BODY => return self.read_function_body(),
                 .DATA_COUNT_SECTION_ENTRY,
                 .NAME_SECTION_ENTRY,
                 .RELOC_SECTION_ENTRY,
@@ -607,7 +611,8 @@ pub const Parser = struct {
             self.finish_current_section();
             return self.read_sect();
         }
-        if (!self.has_global_entry_bytes()) {
+        var probe = self.*;
+        if (!probe.skip_global_entry()) {
             return .need_more_data;
         }
 
@@ -623,7 +628,8 @@ pub const Parser = struct {
 
     fn read_import_entry(self: *Parser) ParseResult {
         const start_pos = self.cur_pos;
-        if (!self.has_import_entry_bytes()) {
+        var probe = self.*;
+        if (!probe.skip_import_entry()) {
             return .need_more_data;
         }
 
@@ -659,7 +665,8 @@ pub const Parser = struct {
 
     fn read_export_entry(self: *Parser) ParseResult {
         const start_pos = self.cur_pos;
-        if (!self.has_export_entry_bytes()) {
+        var probe = self.*;
+        if (!probe.skip_export_entry()) {
             return .need_more_data;
         }
 
@@ -681,13 +688,70 @@ pub const Parser = struct {
         } };
     }
 
+    fn read_tag_entry(self: *Parser) ParseResult {
+        const start_pos = self.cur_pos;
+        if (self.cur_sect_entries_left == 0) {
+            self.finish_current_section();
+            return self.read_sect();
+        }
+        var probe = self.*;
+        if (!probe.skip_tag_type()) {
+            return .need_more_data;
+        }
+
+        const tag_type = self.read_tag_type();
+        self.cur_sect_entries_left -= 1;
+        return .{ .parsed = .{
+            .consumed = self.cur_pos - start_pos,
+            .payload = .{ .tag_type = tag_type },
+        } };
+    }
+
+    fn read_function_body(self: *Parser) ParseResult {
+        const start_pos = self.cur_pos;
+        if (self.cur_sect_entries_left == 0) {
+            self.finish_current_section();
+            return self.read_sect();
+        }
+        var probe = self.*;
+        if (!probe.skip_function_body()) {
+            return .need_more_data;
+        }
+
+        const body_size = self.read_var_uint32();
+        const body_end = self.cur_pos + body_size;
+        const local_count = self.read_var_uint32();
+        const locals = self.allocator.alloc(Locals, @intCast(local_count)) catch {
+            @panic("OOM");
+        };
+        for (locals) |*local| {
+            local.* = .{
+                .count = self.read_var_uint32(),
+                .typ = self.read_type(),
+            };
+        }
+
+        self.cur_fn_range = .{ .start = self.cur_pos, .end = body_end };
+        self.cur_pos = body_end;
+        self.cur_fn_range = null;
+        self.cur_state = .END_FUNCTION_BODY;
+        self.cur_sect_entries_left -= 1;
+        return .{ .parsed = .{
+            .consumed = self.cur_pos - start_pos,
+            .payload = .{ .function_info = FunctionInformation{
+                .locals = locals,
+            } },
+        } };
+    }
+
     fn read_data_entry(self: *Parser) ParseResult {
         const start_pos = self.cur_pos;
         if (self.cur_sect_entries_left == 0) {
             self.finish_current_section();
             return self.read_sect();
         }
-        if (!self.has_data_entry_bytes()) {
+        var probe = self.*;
+        if (!probe.skip_data_entry()) {
             return .need_more_data;
         }
 
@@ -753,7 +817,8 @@ pub const Parser = struct {
             self.finish_current_section();
             return self.read_sect();
         }
-        if (!self.has_element_entry_bytes()) {
+        var probe = self.*;
+        if (!probe.skip_element_entry()) {
             return .need_more_data;
         }
 
@@ -799,7 +864,8 @@ pub const Parser = struct {
         const segment_type = self.cur_element_segment_type orelse {
             return self.fail_with_state(ParserError.UnsupportedState);
         };
-        if (!self.has_element_entry_body_bytes(segment_type)) {
+        var probe = self.*;
+        if (!probe.skip_element_entry_body(segment_type)) {
             return .need_more_data;
         }
 
@@ -839,6 +905,38 @@ pub const Parser = struct {
         } };
     }
 
+    fn read_linking_entry(self: *Parser) ParseResult {
+        const start_pos = self.cur_pos;
+        if (self.cur_sect_entries_left == 0) {
+            self.finish_current_section();
+            return self.read_sect();
+        }
+        var probe = self.*;
+        if (!probe.skip_linking_entry()) {
+            return .need_more_data;
+        }
+
+        const typ_raw = self.read_var_uint32();
+        const typ = std.meta.intToEnum(LinkingType, typ_raw) catch {
+            self.last_err_arg = typ_raw;
+            return self.fail_with_state(ParserError.BadLinkingType);
+        };
+
+        var index: ?u32 = null;
+        switch (typ) {
+            .stack_pointer => index = self.read_var_uint32(),
+        }
+
+        self.cur_sect_entries_left -= 1;
+        return .{ .parsed = .{
+            .consumed = self.cur_pos - start_pos,
+            .payload = .{ .linking_entry = LinkingEntry{
+                .typ = typ,
+                .index = index,
+            } },
+        } };
+    }
+
     fn read_rec_group_entry(self: *Parser) ParseResult {
         return self.read_rec_group_entry_from(self.cur_pos);
     }
@@ -849,7 +947,8 @@ pub const Parser = struct {
             return .need_more_data;
         }
         const type_kind = self.read_var_int7();
-        if (!self.has_type_entry_common_bytes(type_kind)) {
+        var probe = self.*;
+        if (!probe.skip_type_entry_common(type_kind)) {
             self.cur_pos = start_pos;
             return .need_more_data;
         }
@@ -887,7 +986,8 @@ pub const Parser = struct {
                 return self.read_rec_group_entry_from(start_pos);
             }
 
-            if (!self.has_type_entry_common_bytes(type_kind)) {
+            var probe = self.*;
+            if (!probe.skip_type_entry_common(type_kind)) {
                 self.cur_pos = start_pos;
                 return .need_more_data;
             }
@@ -1100,41 +1200,6 @@ pub const Parser = struct {
         };
     }
 
-    fn has_type_entry_common_bytes(self: *Parser, type_kind: i7) bool {
-        var probe = self.*;
-        return probe.skip_type_entry_common(type_kind);
-    }
-
-    fn has_import_entry_bytes(self: *Parser) bool {
-        var probe = self.*;
-        return probe.skip_import_entry();
-    }
-
-    fn has_global_entry_bytes(self: *Parser) bool {
-        var probe = self.*;
-        return probe.skip_global_entry();
-    }
-
-    fn has_export_entry_bytes(self: *Parser) bool {
-        var probe = self.*;
-        return probe.skip_export_entry();
-    }
-
-    fn has_data_entry_bytes(self: *Parser) bool {
-        var probe = self.*;
-        return probe.skip_data_entry();
-    }
-
-    fn has_element_entry_bytes(self: *Parser) bool {
-        var probe = self.*;
-        return probe.skip_element_entry();
-    }
-
-    fn has_element_entry_body_bytes(self: *Parser, segment_type: ElementSegmentType) bool {
-        var probe = self.*;
-        return probe.skip_element_entry_body(segment_type);
-    }
-
     fn skip_type_entry_common(self: *Parser, type_kind: i7) bool {
         return switch (type_kind) {
             @intFromEnum(TypeKind.func) => self.skip_func_type(),
@@ -1319,6 +1384,38 @@ pub const Parser = struct {
         return true;
     }
 
+    fn skip_linking_entry(self: *Parser) bool {
+        if (!self.has_var_int_bytes()) return false;
+        const typ_raw = self.read_var_uint32();
+        const typ = std.meta.intToEnum(LinkingType, typ_raw) catch return true;
+        return switch (typ) {
+            .stack_pointer => blk: {
+                if (!self.has_var_int_bytes()) break :blk false;
+                _ = self.read_var_uint32();
+                break :blk true;
+            },
+        };
+    }
+
+    fn skip_function_body(self: *Parser) bool {
+        if (!self.has_var_int_bytes()) return false;
+        const body_size = self.read_var_uint32();
+        if (!self.has_bytes(body_size)) return false;
+
+        const body_end = self.cur_pos + body_size;
+        if (!self.has_var_int_bytes()) return false;
+        const local_count = self.read_var_uint32();
+        for (0..local_count) |_| {
+            if (!self.has_var_int_bytes()) return false;
+            _ = self.read_var_uint32();
+            if (!self.skip_type()) return false;
+            if (self.cur_pos > body_end) return false;
+        }
+
+        self.cur_pos = body_end;
+        return true;
+    }
+
     fn skip_init_expr(self: *Parser) bool {
         while (true) {
             if (!self.has_bytes(1)) return false;
@@ -1449,6 +1546,7 @@ pub const Parser = struct {
         self.cur_rec_group_types_left = -1;
         self.cur_data_segment_active = false;
         self.cur_element_segment_type = null;
+        self.cur_fn_range = null;
     }
 };
 
