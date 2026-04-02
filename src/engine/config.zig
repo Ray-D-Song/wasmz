@@ -1,1 +1,1 @@
-const Config = struct {};
+pub const Config = struct {};
