@@ -1,6 +1,6 @@
 const std = @import("std");
-const parser_mod = @import("../root.zig");
-const payload_mod = @import("../payload.zig");
+const parser_mod = @import("parser");
+const payload_mod = @import("payload");
 
 const Parser = parser_mod.Parser;
 const ParseResult = parser_mod.ParseResult;
@@ -10,6 +10,7 @@ const SectionCode = payload_mod.SectionCode;
 
 const imports_wasm: []const u8 = @embedFile("fixtures/imports.wasm");
 const globals_wasm: []const u8 = @embedFile("fixtures/globals.wasm");
+const zig_hello_wasm: []const u8 = @embedFile("fixtures/zig_hello.wasm");
 const malloc_v13_wasm: []const u8 = @embedFile("fixtures/malloc_v13.wasm");
 const nop_wasm: []const u8 = @embedFile("fixtures/nop.wasm");
 
@@ -208,5 +209,17 @@ test "parseAll accepts experimental version 0x0d fixture" {
             try std.testing.expectEqual(@as(u32, 0x0d), module_header.version);
         },
         else => return error.UnexpectedPayload,
+    }
+}
+
+test "zig hello" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var parser = Parser.init(arena.allocator());
+    const payloads = try parser.parseAll(zig_hello_wasm);
+    try std.testing.expect(payloads.len > 1);
+    for (payloads) |payload| {
+        std.debug.print("payload = {any}\n", .{payload});
     }
 }

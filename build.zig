@@ -151,6 +151,32 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
 
+    const payload_mod_dep = b.createModule(.{
+        .root_source_file = b.path("src/parser/payload.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const parser_mod_dep = b.createModule(.{
+        .root_source_file = b.path("src/parser/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "payload", .module = payload_mod_dep },
+        },
+    });
+    const parser_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/parser/tests/parser_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "parser", .module = parser_mod_dep },
+                .{ .name = "payload", .module = payload_mod_dep },
+            },
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(parser_tests).step);
+
     const trap_mod = b.createModule(.{
         .root_source_file = b.path("src/core/trap.zig"),
         .target = target,

@@ -15,6 +15,5 @@ pub fn bufferedPrint() !void {
 }
 
 test {
-    _ = @import("parser/tests/parser_test.zig");
     _ = @import("engine/func_ty.zig");
 }
