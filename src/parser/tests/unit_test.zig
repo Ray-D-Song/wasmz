@@ -812,6 +812,41 @@ test "name section entry skips unknown subsections and parses function names" {
     }
 }
 
+test "name section trailing skipped subsection preserves consumed bytes for the next section" {
+    const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
+    const name_then_type = [_]u8{
+        0x00, 0x0b, 0x04, 'n', 'a', 'm', 'e',
+        0x09, 0x04, 0x01, 0x00, 0x01, 'd',
+        0x01, 0x01, 0x00,
+    };
+
+    var parser = Parser.init(std.testing.allocator);
+    _ = parser.parse(&header, false);
+
+    const section_result = parser.parse(&name_then_type, false);
+    const consumed = switch (section_result) {
+        .parsed => |parsed| parsed.consumed,
+        else => return error.UnexpectedParseResult,
+    };
+
+    try std.testing.expectEqual(@as(usize, 7), consumed);
+
+    const next_result = parser.parse(name_then_type[consumed..], false);
+    switch (next_result) {
+        .parsed => |parsed| {
+            try std.testing.expectEqual(@as(usize, 9), parsed.consumed);
+            switch (parsed.payload) {
+                .section_info => |section_info| {
+                    try std.testing.expectEqual(SectionCode.type, section_info.id);
+                    try std.testing.expectEqual(@as(?[]const u8, null), section_info.name);
+                },
+                else => return error.UnexpectedPayload,
+            }
+        },
+        else => return error.UnexpectedParseResult,
+    }
+}
+
 test "reloc section entry asks for more data when payload is truncated" {
     const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
     const reloc_section = [_]u8{

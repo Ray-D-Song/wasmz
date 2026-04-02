@@ -60,6 +60,36 @@ fn fail_parse(parser: *Parser, err: ParserError) error{ParseFailed} {
     return error.ParseFailed;
 }
 
+fn fail_parse_all(parser: *Parser, err: parser_mod.ParseAllError) parser_mod.ParseAllError {
+    switch (err) {
+        error.OutOfMemory, error.UnexpectedNeedMoreData => {
+            std.debug.print(
+                "parseAll failed: err={s}, state={any}, arg={}, last_state={}\n",
+                .{ @errorName(err), parser.cur_state, parser.last_err_arg, parser.last_err_state },
+            );
+        },
+        else => {
+            const parser_err: ParserError = @errorCast(err);
+            var detail_buf: [256]u8 = undefined;
+            var detail_stream = std.io.fixedBufferStream(&detail_buf);
+
+            parser_mod.formatParserError(parser, parser_err, detail_stream.writer()) catch {};
+            std.debug.print(
+                "parseAll failed: err={s}, detail={s}, state={any}, arg={}, last_state={}\n",
+                .{
+                    @errorName(parser_err),
+                    detail_stream.getWritten(),
+                    parser.cur_state,
+                    parser.last_err_arg,
+                    parser.last_err_state,
+                },
+            );
+        },
+    }
+
+    return err;
+}
+
 fn collect_payload_stats(payloads: []const Payload) StreamStats {
     var stats = StreamStats{
         .parsed_events = payloads.len,
@@ -217,9 +247,6 @@ test "zig hello" {
     defer arena.deinit();
 
     var parser = Parser.init(arena.allocator());
-    const payloads = try parser.parseAll(zig_hello_wasm);
+    const payloads = parser.parseAll(zig_hello_wasm) catch |err| return fail_parse_all(&parser, err);
     try std.testing.expect(payloads.len > 1);
-    for (payloads) |payload| {
-        std.debug.print("payload = {any}\n", .{payload});
-    }
 }

@@ -835,8 +835,7 @@ pub const Parser = struct {
 
         while (true) {
             if (self.cur_pos >= sect_range.end) {
-                self.finish_current_section();
-                return self.read_sect();
+                return self.finish_name_section(start_pos);
             }
 
             var probe = self.*;
@@ -922,6 +921,21 @@ pub const Parser = struct {
                 },
             }
         }
+    }
+
+    fn finish_name_section(self: *Parser, start_pos: usize) ParseResult {
+        const skipped = self.cur_pos - start_pos;
+        self.finish_current_section();
+
+        return switch (self.read_sect()) {
+            .parsed => |parsed| .{ .parsed = .{
+                .consumed = skipped + parsed.consumed,
+                .payload = parsed.payload,
+            } },
+            .need_more_data => .need_more_data,
+            .end => .end,
+            .err => |err| .{ .err = err },
+        };
     }
 
     fn read_reloc_header(self: *Parser) ParseResult {
@@ -2876,28 +2890,28 @@ pub fn formatParserError(
     writer: anytype,
 ) !void {
     switch (err) {
-        .UnexpectedTypeKind => try writer.print("Unexpected type kind: {}", .{parser.last_err_arg}),
-        .UnknownTypeKind => try writer.print("Unknown type kind: {}", .{parser.last_err_arg}),
-        .UnsupportedElementSegmentType => {
+        error.UnexpectedTypeKind => try writer.print("Unexpected type kind: {}", .{parser.last_err_arg}),
+        error.UnknownTypeKind => try writer.print("Unknown type kind: {}", .{parser.last_err_arg}),
+        error.UnsupportedElementSegmentType => {
             try writer.print("Unsupported element segment type {}", .{parser.last_err_arg});
         },
-        .UnsupportedDataSegmentType => {
+        error.UnsupportedDataSegmentType => {
             try writer.print("Unsupported data segment type {}", .{parser.last_err_arg});
         },
-        .BadLinkingType => try writer.print("Bad linking type: {}", .{parser.last_err_arg}),
-        .BadRelocationType => try writer.print("Bad relocation type: {}", .{parser.last_err_arg}),
-        .UnknownOperator => try writer.print("Unknown operator: 0x{x}", .{parser.last_err_arg}),
-        .AtomicFenceConsistencyModelMustBeZero => {
+        error.BadLinkingType => try writer.print("Bad linking type: {}", .{parser.last_err_arg}),
+        error.BadRelocationType => try writer.print("Bad relocation type: {}", .{parser.last_err_arg}),
+        error.UnknownOperator => try writer.print("Unknown operator: 0x{x}", .{parser.last_err_arg}),
+        error.AtomicFenceConsistencyModelMustBeZero => {
             try writer.writeAll("atomic.fence consistency model must be 0");
         },
-        .UnsupportedSection => try writer.print("Unsupported section: {}", .{parser.last_err_arg}),
-        .BadMagicNumber => try writer.writeAll("Bad magic number"),
-        .BadVersionNumber => try writer.print("Bad version number {}", .{parser.last_err_arg}),
-        .UnexpectedSectionType => {
+        error.UnsupportedSection => try writer.print("Unsupported section: {}", .{parser.last_err_arg}),
+        error.BadMagicNumber => try writer.writeAll("Bad magic number"),
+        error.BadVersionNumber => try writer.print("Bad version number {}", .{parser.last_err_arg}),
+        error.UnexpectedSectionType => {
             try writer.print("Unexpected section type: {}", .{parser.last_err_arg});
         },
-        .UnsupportedState => try writer.print("Unsupported state: {}", .{parser.last_err_state}),
-        .TrailingBytesAfterModule => try writer.writeAll("Trailing bytes found after the module end"),
+        error.UnsupportedState => try writer.print("Unsupported state: {}", .{parser.last_err_state}),
+        error.TrailingBytesAfterModule => try writer.writeAll("Trailing bytes found after the module end"),
     }
 }
 
