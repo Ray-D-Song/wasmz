@@ -1,3 +1,5 @@
+const std = @import("std");
+
 pub const ExternalKind = enum(u8) {
     function = 0,
     table = 1,
@@ -1076,4 +1078,35 @@ pub const Payload = union(enum) {
     start_entry: StartEntry,
     bytes: []const u8,
     number: i64,
+
+    // For test and debug purposes only
+    pub fn format(self: Payload, writer: anytype) !void {
+        switch (self) {
+            .module_header => |v| try writer.print(
+                "Payload.module_header(version=0x{x})",
+                .{v.version},
+            ),
+            .section_info => |v| try writer.print(
+                "Payload.section_info(id={any}, name={s})",
+                .{ v.id, v.name orelse "" },
+            ),
+            .function_entry => |v| try writer.print(
+                "Payload.function_entry(type_index={})",
+                .{v.type_index},
+            ),
+            .export_entry => |v| try writer.print(
+                "Payload.export_entry(field={s}, kind={any}, index={})",
+                .{ v.field, v.kind, v.index },
+            ),
+            .bytes => |v| try writer.print(
+                "Payload.bytes(len={})",
+                .{v.len},
+            ),
+            .number => |v| try writer.print(
+                "Payload.number({})",
+                .{v},
+            ),
+            else => try writer.print("Payload.{s}", .{@tagName(self)}),
+        }
+    }
 };

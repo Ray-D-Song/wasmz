@@ -209,7 +209,7 @@ pub const Parser = struct {
 
     // Parse a complete module from a contiguous input buffer and collect
     // every observable payload event in order.
-    pub fn parseAll(self: *Parser, input: []const u8) ParseAllError![]Payload {
+    pub fn parse_all(self: *Parser, input: []const u8) ParseAllError![]Payload {
         var payloads: std.ArrayList(Payload) = .empty;
         errdefer payloads.deinit(self.allocator);
 
