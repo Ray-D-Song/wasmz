@@ -1,4 +1,4 @@
-const ValType = @import("val_type.zig").ValType;
+const ValType = @import("./value/type.zig").ValType;
 
 // The index type used for addressing memories and tables.
 pub const IndexType = enum {

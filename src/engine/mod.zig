@@ -3,6 +3,7 @@ const zigrc = @import("zigrc");
 
 const Allocator = std.mem.Allocator;
 const Config = @import("./config.zig").Config;
+const FuncTypeRegistry = @import("./func_ty.zig").FuncTypeRegistry;
 
 var current_engine_id: u32 = 0;
 
@@ -34,83 +35,84 @@ pub fn EngineOwned(comptime T: type) type {
     };
 }
 
-const State = struct {
+const EngineInner = struct {
     id: EngineId,
     config: Config,
     // code_map: CodeMap,
-    // func_types: FuncTypeRegistry,
+    func_types: FuncTypeRegistry,
     // allocs: ReusableAllocationStack,
     // stacks: EngineStacks,
 
-    fn init(config_value: Config) State {
+    fn init(allocator: Allocator, config_value: Config) EngineInner {
         return .{
             .id = EngineId.init(),
             .config = config_value,
+            .func_types = FuncTypeRegistry.init(allocator, EngineId.init()),
         };
     }
 
-    fn deinit(self: *State) void {
+    fn deinit(self: *EngineInner) void {
         _ = self;
     }
 };
 
-const StateRef = zigrc.Arc(State);
-const StateWeak = StateRef.Weak;
+const EngineInnerRef = zigrc.Arc(EngineInner);
+const EngineInnerWeak = EngineInnerRef.Weak;
 
 pub const EngineWeak = struct {
-    state: StateWeak,
+    inner: EngineInnerWeak,
 
     pub fn clone(self: EngineWeak) EngineWeak {
         return .{
-            .state = self.state.retain(),
+            .inner = self.inner.retain(),
         };
     }
 
     pub fn deinit(self: EngineWeak) void {
-        self.state.release();
+        self.inner.release();
     }
 
     pub fn upgrade(self: *EngineWeak) ?Engine {
-        const state = self.state.upgrade() orelse return null;
-        return .{ .state = state };
+        const inner = self.inner.upgrade() orelse return null;
+        return .{ .inner = inner };
     }
 };
 
 pub const Engine = struct {
-    state: StateRef,
+    inner: EngineInnerRef,
 
     pub fn init(allocator: Allocator, config_value: Config) Allocator.Error!Engine {
         return .{
-            .state = try StateRef.init(allocator, State.init(config_value)),
+            .inner = try EngineInnerRef.init(allocator, EngineInner.init(allocator, config_value)),
         };
     }
 
     pub fn clone(self: Engine) Engine {
         return .{
-            .state = self.state.retain(),
+            .inner = self.inner.retain(),
         };
     }
 
     pub fn deinit(self: Engine) void {
-        var state = self.state.releaseUnwrap() orelse return;
-        state.deinit();
+        var inner = self.inner.releaseUnwrap() orelse return;
+        inner.deinit();
     }
 
     pub fn weak(self: Engine) EngineWeak {
         return .{
-            .state = self.state.downgrade(),
+            .inner = self.inner.downgrade(),
         };
     }
 
     pub fn config(self: Engine) *const Config {
-        return &self.state.value.config;
+        return &self.inner.value.config;
     }
 
     pub fn id(self: Engine) EngineId {
-        return self.state.value.id;
+        return self.inner.value.id;
     }
 
     pub fn same(a: Engine, b: Engine) bool {
-        return a.state.value == b.state.value;
+        return a.inner.value == b.inner.value;
     }
 };

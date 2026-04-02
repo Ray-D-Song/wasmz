@@ -1,6 +1,6 @@
 const std = @import("std");
-const trap = @import("./trap.zig");
-const table_type = @import("./table/type.zig");
+const trap = @import("../trap.zig");
+const table_type = @import("../table/type.zig");
 
 pub const ValType = enum {
     I32,
