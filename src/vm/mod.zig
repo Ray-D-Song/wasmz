@@ -71,6 +71,46 @@ pub const VM = struct {
                     const rhs = slots[inst.rhs].i32;
                     slots[inst.dst] = .{ .i32 = if (lhs != rhs) 1 else 0 };
                 },
+                .i32_lt_s => |inst| {
+                    const lhs = slots[inst.lhs].i32;
+                    const rhs = slots[inst.rhs].i32;
+                    slots[inst.dst] = .{ .i32 = if (lhs < rhs) 1 else 0 };
+                },
+                .i32_lt_u => |inst| {
+                    const lhs: u32 = @bitCast(slots[inst.lhs].i32);
+                    const rhs: u32 = @bitCast(slots[inst.rhs].i32);
+                    slots[inst.dst] = .{ .i32 = if (lhs < rhs) 1 else 0 };
+                },
+                .i32_gt_s => |inst| {
+                    const lhs = slots[inst.lhs].i32;
+                    const rhs = slots[inst.rhs].i32;
+                    slots[inst.dst] = .{ .i32 = if (lhs > rhs) 1 else 0 };
+                },
+                .i32_gt_u => |inst| {
+                    const lhs: u32 = @bitCast(slots[inst.lhs].i32);
+                    const rhs: u32 = @bitCast(slots[inst.rhs].i32);
+                    slots[inst.dst] = .{ .i32 = if (lhs > rhs) 1 else 0 };
+                },
+                .i32_le_s => |inst| {
+                    const lhs = slots[inst.lhs].i32;
+                    const rhs = slots[inst.rhs].i32;
+                    slots[inst.dst] = .{ .i32 = if (lhs <= rhs) 1 else 0 };
+                },
+                .i32_le_u => |inst| {
+                    const lhs: u32 = @bitCast(slots[inst.lhs].i32);
+                    const rhs: u32 = @bitCast(slots[inst.rhs].i32);
+                    slots[inst.dst] = .{ .i32 = if (lhs <= rhs) 1 else 0 };
+                },
+                .i32_ge_s => |inst| {
+                    const lhs = slots[inst.lhs].i32;
+                    const rhs = slots[inst.rhs].i32;
+                    slots[inst.dst] = .{ .i32 = if (lhs >= rhs) 1 else 0 };
+                },
+                .i32_ge_u => |inst| {
+                    const lhs: u32 = @bitCast(slots[inst.lhs].i32);
+                    const rhs: u32 = @bitCast(slots[inst.rhs].i32);
+                    slots[inst.dst] = .{ .i32 = if (lhs >= rhs) 1 else 0 };
+                },
                 .ret => |inst| {
                     return if (inst.value) |slot| slots[slot] else null;
                 },

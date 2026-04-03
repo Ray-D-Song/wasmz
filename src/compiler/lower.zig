@@ -30,6 +30,14 @@ pub const WasmOp = union(enum) {
     i32_eqz,
     i32_eq,
     i32_ne,
+    i32_lt_s,
+    i32_lt_u,
+    i32_gt_s,
+    i32_gt_u,
+    i32_le_s,
+    i32_le_u,
+    i32_ge_s,
+    i32_ge_u,
     ret,
 };
 
@@ -143,6 +151,62 @@ pub const Lower = struct {
                 const lhs = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .i32_ne = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i32_lt_s => {
+                const rhs = try self.pop_slot();
+                const lhs = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_lt_s = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i32_lt_u => {
+                const rhs = try self.pop_slot();
+                const lhs = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_lt_u = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i32_gt_s => {
+                const rhs = try self.pop_slot();
+                const lhs = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_gt_s = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i32_gt_u => {
+                const rhs = try self.pop_slot();
+                const lhs = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_gt_u = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i32_le_s => {
+                const rhs = try self.pop_slot();
+                const lhs = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_le_s = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i32_le_u => {
+                const rhs = try self.pop_slot();
+                const lhs = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_le_u = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i32_ge_s => {
+                const rhs = try self.pop_slot();
+                const lhs = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_ge_s = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i32_ge_u => {
+                const rhs = try self.pop_slot();
+                const lhs = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_ge_u = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
                 try self.stack.push(self.allocator, dst);
             },
             .ret => {

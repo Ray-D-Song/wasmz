@@ -44,6 +44,46 @@ pub const Op = union(enum) {
         lhs: Slot,
         rhs: Slot,
     },
+    i32_lt_s: struct {
+        dst: Slot,
+        lhs: Slot,
+        rhs: Slot,
+    },
+    i32_lt_u: struct {
+        dst: Slot,
+        lhs: Slot,
+        rhs: Slot,
+    },
+    i32_gt_s: struct {
+        dst: Slot,
+        lhs: Slot,
+        rhs: Slot,
+    },
+    i32_gt_u: struct {
+        dst: Slot,
+        lhs: Slot,
+        rhs: Slot,
+    },
+    i32_le_s: struct {
+        dst: Slot,
+        lhs: Slot,
+        rhs: Slot,
+    },
+    i32_le_u: struct {
+        dst: Slot,
+        lhs: Slot,
+        rhs: Slot,
+    },
+    i32_ge_s: struct {
+        dst: Slot,
+        lhs: Slot,
+        rhs: Slot,
+    },
+    i32_ge_u: struct {
+        dst: Slot,
+        lhs: Slot,
+        rhs: Slot,
+    },
     ret: struct {
         value: ?Slot,
     },

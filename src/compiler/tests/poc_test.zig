@@ -9,6 +9,28 @@ const LowerError = lower_mod.LowerError;
 const WasmOp = lower_mod.WasmOp;
 const Op = ir.Op;
 
+fn expect_binary_cmp_lowered(op: WasmOp, comptime tag: std.meta.Tag(Op)) !void {
+    var lower = Lower.init_with_reserved_slots(testing.allocator, 2);
+    defer lower.deinit();
+
+    const ops = [_]WasmOp{
+        .{ .local_get = 0 },
+        .{ .local_get = 1 },
+        op,
+        .ret,
+    };
+
+    for (ops) |item| {
+        try lower.lower_op(item);
+    }
+
+    try testing.expectEqual(@as(u32, 3), lower.compiled.slots_len);
+    try testing.expectEqual(@as(usize, 2), lower.compiled.ops.items.len);
+
+    try testing.expectEqual(tag, std.meta.activeTag(lower.compiled.ops.items[0]));
+    try testing.expectEqual(.ret, std.meta.activeTag(lower.compiled.ops.items[1]));
+}
+
 test "lower simple add function into slot IR" {
     var lower = Lower.init_with_reserved_slots(testing.allocator, 2);
     defer lower.deinit();
@@ -338,4 +360,15 @@ test "lower i32_ne into slot IR" {
         },
         else => return error.UnexpectedOpTag,
     }
+}
+
+test "lower i32 comparison family into slot IR" {
+    try expect_binary_cmp_lowered(.i32_lt_s, .i32_lt_s);
+    try expect_binary_cmp_lowered(.i32_lt_u, .i32_lt_u);
+    try expect_binary_cmp_lowered(.i32_gt_s, .i32_gt_s);
+    try expect_binary_cmp_lowered(.i32_gt_u, .i32_gt_u);
+    try expect_binary_cmp_lowered(.i32_le_s, .i32_le_s);
+    try expect_binary_cmp_lowered(.i32_le_u, .i32_le_u);
+    try expect_binary_cmp_lowered(.i32_ge_s, .i32_ge_s);
+    try expect_binary_cmp_lowered(.i32_ge_u, .i32_ge_u);
 }
