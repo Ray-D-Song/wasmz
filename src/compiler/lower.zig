@@ -39,12 +39,23 @@ pub const Lower = struct {
         return .{ .allocator = allocator };
     }
 
+    pub fn init_with_reserved_slots(allocator: Allocator, reserved_slots: u32) Lower {
+        return .{
+            .allocator = allocator,
+            .compiled = .{
+                .slots_len = reserved_slots,
+                .ops = .empty,
+            },
+            .next_slot = reserved_slots,
+        };
+    }
+
     pub fn deinit(self: *Lower) void {
         self.stack.deinit(self.allocator);
         self.compiled.ops.deinit(self.allocator);
     }
 
-    fn allocSlot(self: *Lower) Slot {
+    fn alloc_slot(self: *Lower) Slot {
         const slot = self.next_slot;
         self.next_slot += 1;
         if (self.compiled.slots_len < self.next_slot) {
@@ -57,30 +68,32 @@ pub const Lower = struct {
         try self.compiled.ops.append(self.allocator, op);
     }
 
-    fn popSlot(self: *Lower) LowerError!Slot {
+    fn pop_slot(self: *Lower) LowerError!Slot {
         return self.stack.pop() orelse error.StackUnderflow;
     }
 
-    pub fn lowerOp(self: *Lower, op: WasmOp) !void {
+    fn local_to_slot(_: *Lower, local: u32) Slot {
+        return local;
+    }
+
+    pub fn lower_op(self: *Lower, op: WasmOp) !void {
         switch (op) {
             .local_get => |local| {
-                const dst = self.allocSlot();
-                try self.emit(.{ .local_get = .{ .dst = dst, .local = local } });
-                try self.stack.push(self.allocator, dst);
+                try self.stack.push(self.allocator, self.local_to_slot(local));
             },
             .local_set => |local| {
-                const src = try self.popSlot();
+                const src = try self.pop_slot();
                 try self.emit(.{ .local_set = .{ .local = local, .src = src } });
             },
             .i32_const => |value| {
-                const dst = self.allocSlot();
+                const dst = self.alloc_slot();
                 try self.emit(.{ .const_i32 = .{ .dst = dst, .value = value } });
                 try self.stack.push(self.allocator, dst);
             },
             .i32_add => {
-                const rhs = try self.popSlot();
-                const lhs = try self.popSlot();
-                const dst = self.allocSlot();
+                const rhs = try self.pop_slot();
+                const lhs = try self.pop_slot();
+                const dst = self.alloc_slot();
                 try self.emit(.{ .i32_add = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
                 try self.stack.push(self.allocator, dst);
             },

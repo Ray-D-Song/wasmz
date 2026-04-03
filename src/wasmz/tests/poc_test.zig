@@ -20,6 +20,7 @@ const simple_add_wasm: []const u8 = @embedFile("fixtures/simple_add.wasm");
 const ParsedFunction = struct {
     params: []ValType,
     results: []ValType,
+    reserved_slots: u32,
     body_expr: []const u8,
 };
 
@@ -98,12 +99,18 @@ fn parseSimpleAddModule(allocator: std.mem.Allocator, wasm: []const u8) !ParsedF
     var function_type_index: ?u32 = null;
     var params: []ValType = &.{};
     var results: []ValType = &.{};
+    var explicit_local_count: u32 = 0;
 
     for (payloads) |payload| {
         switch (payload) {
             .function_entry => |entry| {
                 if (function_type_index == null) {
                     function_type_index = entry.type_index;
+                }
+            },
+            .function_info => |info| {
+                for (info.locals) |local_group| {
+                    explicit_local_count += local_group.count;
                 }
             },
             else => {},
@@ -147,12 +154,13 @@ fn parseSimpleAddModule(allocator: std.mem.Allocator, wasm: []const u8) !ParsedF
     return .{
         .params = params,
         .results = results,
+        .reserved_slots = @as(u32, @intCast(params.len)) + explicit_local_count,
         .body_expr = body_expr,
     };
 }
 
-fn lowerParsedFunction(allocator: std.mem.Allocator, body_expr: []const u8) !Lower {
-    var lower = Lower.init(allocator);
+fn lowerParsedFunction(allocator: std.mem.Allocator, reserved_slots: u32, body_expr: []const u8) !Lower {
+    var lower = Lower.init_with_reserved_slots(allocator, reserved_slots);
     errdefer lower.deinit();
 
     var cursor: usize = 0;
@@ -166,7 +174,7 @@ fn lowerParsedFunction(allocator: std.mem.Allocator, body_expr: []const u8) !Low
             .end => WasmOp.ret,
             else => return error.UnsupportedOperator,
         };
-        try lower.lowerOp(lowered_op);
+        try lower.lower_op(lowered_op);
     }
 
     return lower;
@@ -179,14 +187,15 @@ test "simple_add fixture runs through parser lower ir vm" {
     const parsed = try parseSimpleAddModule(arena.allocator(), simple_add_wasm);
     try testing.expectEqual(@as(usize, 2), parsed.params.len);
     try testing.expectEqual(@as(usize, 1), parsed.results.len);
+    try testing.expectEqual(@as(u32, 2), parsed.reserved_slots);
     try testing.expectEqual(ValType.I32, parsed.params[0]);
     try testing.expectEqual(ValType.I32, parsed.params[1]);
     try testing.expectEqual(ValType.I32, parsed.results[0]);
 
-    var lower = try lowerParsedFunction(testing.allocator, parsed.body_expr);
+    var lower = try lowerParsedFunction(testing.allocator, parsed.reserved_slots, parsed.body_expr);
     defer lower.deinit();
 
-    try testing.expectEqual(@as(usize, 4), lower.compiled.ops.items.len);
+    try testing.expectEqual(@as(usize, 2), lower.compiled.ops.items.len);
 
     var vm = VM.init(testing.allocator);
     const params = [_]Value{
