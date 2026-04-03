@@ -169,8 +169,13 @@ fn lowerParsedFunction(allocator: std.mem.Allocator, reserved_slots: u32, body_e
         cursor += parsed.consumed;
 
         const lowered_op = switch (parsed.info.code) {
+            .drop => WasmOp.drop,
             .local_get => WasmOp{ .local_get = parsed.info.local_index.? },
+            .local_set => WasmOp{ .local_set = parsed.info.local_index.? },
+            .local_tee => WasmOp{ .local_tee = parsed.info.local_index.? },
             .i32_add => WasmOp.i32_add,
+            .i32_sub => WasmOp.i32_sub,
+            .i32_mul => WasmOp.i32_mul,
             .end => WasmOp.ret,
             else => return error.UnsupportedOperator,
         };

@@ -19,10 +19,14 @@ pub const LowerError = error{
 };
 
 pub const WasmOp = union(enum) {
+    drop,
     local_get: u32,
     local_set: u32,
+    local_tee: u32,
     i32_const: i32,
     i32_add,
+    i32_sub,
+    i32_mul,
     ret,
 };
 
@@ -78,11 +82,18 @@ pub const Lower = struct {
 
     pub fn lower_op(self: *Lower, op: WasmOp) !void {
         switch (op) {
+            .drop => {
+                _ = try self.pop_slot();
+            },
             .local_get => |local| {
                 try self.stack.push(self.allocator, self.local_to_slot(local));
             },
             .local_set => |local| {
                 const src = try self.pop_slot();
+                try self.emit(.{ .local_set = .{ .local = local, .src = src } });
+            },
+            .local_tee => |local| {
+                const src = self.stack.peek() orelse return error.StackUnderflow;
                 try self.emit(.{ .local_set = .{ .local = local, .src = src } });
             },
             .i32_const => |value| {
@@ -95,6 +106,20 @@ pub const Lower = struct {
                 const lhs = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .i32_add = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i32_sub => {
+                const rhs = try self.pop_slot();
+                const lhs = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_sub = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i32_mul => {
+                const rhs = try self.pop_slot();
+                const lhs = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_mul = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
                 try self.stack.push(self.allocator, dst);
             },
             .ret => {
