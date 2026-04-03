@@ -4,3 +4,6 @@
 [submodule "refs/vm/wasmi"]
 	path = refs/vm/wasmi
 	url = https://github.com/wasmi-labs/wasmi
+[submodule "refs/vm/wasm3"]
+	path = refs/vm/wasm3
+	url = https://github.com/wasm3/wasm3.git

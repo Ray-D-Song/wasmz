@@ -33,6 +33,20 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    const payload_mod_dep = b.createModule(.{
+        .root_source_file = b.path("src/parser/payload.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const parser_mod_dep = b.createModule(.{
+        .root_source_file = b.path("src/parser/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "payload", .module = payload_mod_dep },
+        },
+    });
+
     const mod = b.addModule("wasmz", .{
         // The root source file is the "entry point" of this module. Users of
         // this module will only be able to access public declarations contained
@@ -46,6 +60,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .imports = &.{
             .{ .name = "zigrc", .module = zigrc_mod },
+            .{ .name = "parser", .module = parser_mod_dep },
+            .{ .name = "payload", .module = payload_mod_dep },
         },
     });
 
@@ -151,19 +167,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
 
-    const payload_mod_dep = b.createModule(.{
-        .root_source_file = b.path("src/parser/payload.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const parser_mod_dep = b.createModule(.{
-        .root_source_file = b.path("src/parser/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "payload", .module = payload_mod_dep },
-        },
-    });
     const parser_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/parser/tests/parser_test.zig"),
@@ -200,6 +203,15 @@ pub fn build(b: *std.Build) void {
         .root_module = helper_mod,
     });
     test_step.dependOn(&b.addRunArtifact(helper_tests).step);
+
+    const compiler_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/compiler/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(compiler_tests).step);
 
     // Just like flags, top level steps are also listed in the `--help` menu.
     //

@@ -2813,6 +2813,11 @@ pub const Parser = struct {
 };
 
 pub const testing = if (builtin.is_test) struct {
+    pub const ConsumedOperator = struct {
+        consumed: usize,
+        info: OperatorInformation,
+    };
+
     pub fn read_heap_type(bytes: []const u8) HeapType {
         var parser = Parser.init(std.heap.page_allocator);
         parser.cur_data = bytes;
@@ -2843,6 +2848,19 @@ pub const testing = if (builtin.is_test) struct {
         parser.cur_len = bytes.len;
         return parser.read_single_operator() catch |err| {
             @panic(@errorName(err));
+        };
+    }
+
+    pub fn read_next_operator(bytes: []const u8) ConsumedOperator {
+        var parser = Parser.init(std.heap.page_allocator);
+        parser.cur_data = bytes;
+        parser.cur_len = bytes.len;
+        const info = parser.read_single_operator() catch |err| {
+            @panic(@errorName(err));
+        };
+        return .{
+            .consumed = parser.cur_pos,
+            .info = info,
         };
     }
 } else struct {};

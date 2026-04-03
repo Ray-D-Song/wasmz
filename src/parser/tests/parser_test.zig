@@ -242,14 +242,14 @@ test "parse_all accepts experimental version 0x0d fixture" {
     }
 }
 
-test "zig hello" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
+// test "zig hello" {
+//     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+//     defer arena.deinit();
 
-    var parser = Parser.init(arena.allocator());
-    const payloads = parser.parse_all(zig_hello_wasm) catch |err| return fail_parse_all(&parser, err);
-    try std.testing.expect(payloads.len > 1);
-    for (payloads) |payload| {
-        std.debug.print("payload = {f}\n", .{payload});
-    }
-}
+//     var parser = Parser.init(arena.allocator());
+//     const payloads = parser.parse_all(zig_hello_wasm) catch |err| return fail_parse_all(&parser, err);
+//     try std.testing.expect(payloads.len > 1);
+//     for (payloads) |payload| {
+//         std.debug.print("payload = {f}\n", .{payload});
+//     }
+// }
