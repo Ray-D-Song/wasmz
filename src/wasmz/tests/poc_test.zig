@@ -16,6 +16,13 @@ const Value = vm_mod.Value;
 const ValType = value_type_mod.ValType;
 
 const simple_add_wasm: []const u8 = @embedFile("fixtures/simple_add.wasm");
+const local_tee_wasm = [_]u8{
+    0x00, 0x61, 0x73, 0x6d,
+    0x01, 0x00, 0x00, 0x00,
+    0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f,
+    0x03, 0x02, 0x01, 0x00,
+    0x0a, 0x08, 0x01, 0x06, 0x00, 0x20, 0x00, 0x22, 0x00, 0x0b,
+};
 
 const ParsedFunction = struct {
     params: []ValType,
@@ -92,7 +99,7 @@ fn findFunctionExprBytes(wasm: []const u8) ![]const u8 {
     return error.CodeSectionNotFound;
 }
 
-fn parseSimpleAddModule(allocator: std.mem.Allocator, wasm: []const u8) !ParsedFunction {
+fn parse_single_function_module(allocator: std.mem.Allocator, wasm: []const u8) !ParsedFunction {
     var parser = Parser.init(allocator);
     const payloads = try parser.parse_all(wasm);
 
@@ -176,6 +183,9 @@ fn lowerParsedFunction(allocator: std.mem.Allocator, reserved_slots: u32, body_e
             .i32_add => WasmOp.i32_add,
             .i32_sub => WasmOp.i32_sub,
             .i32_mul => WasmOp.i32_mul,
+            .i32_eqz => WasmOp.i32_eqz,
+            .i32_eq => WasmOp.i32_eq,
+            .i32_ne => WasmOp.i32_ne,
             .end => WasmOp.ret,
             else => return error.UnsupportedOperator,
         };
@@ -189,7 +199,7 @@ test "simple_add fixture runs through parser lower ir vm" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    const parsed = try parseSimpleAddModule(arena.allocator(), simple_add_wasm);
+    const parsed = try parse_single_function_module(arena.allocator(), simple_add_wasm);
     try testing.expectEqual(@as(usize, 2), parsed.params.len);
     try testing.expectEqual(@as(usize, 1), parsed.results.len);
     try testing.expectEqual(@as(u32, 2), parsed.reserved_slots);
@@ -211,5 +221,32 @@ test "simple_add fixture runs through parser lower ir vm" {
 
     switch (result) {
         .i32 => |value| try testing.expectEqual(@as(i32, 42), value),
+    }
+}
+
+test "local_tee module runs through parser lower ir vm" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const parsed = try parse_single_function_module(arena.allocator(), &local_tee_wasm);
+    try testing.expectEqual(@as(usize, 1), parsed.params.len);
+    try testing.expectEqual(@as(usize, 1), parsed.results.len);
+    try testing.expectEqual(@as(u32, 1), parsed.reserved_slots);
+    try testing.expectEqual(ValType.I32, parsed.params[0]);
+    try testing.expectEqual(ValType.I32, parsed.results[0]);
+
+    var lower = try lowerParsedFunction(testing.allocator, parsed.reserved_slots, parsed.body_expr);
+    defer lower.deinit();
+
+    try testing.expectEqual(@as(usize, 2), lower.compiled.ops.items.len);
+
+    var vm = VM.init(testing.allocator);
+    const params = [_]Value{
+        .{ .i32 = 9 },
+    };
+    const result = (try vm.execute(lower.compiled, &params)) orelse return error.MissingReturnValue;
+
+    switch (result) {
+        .i32 => |value| try testing.expectEqual(@as(i32, 9), value),
     }
 }

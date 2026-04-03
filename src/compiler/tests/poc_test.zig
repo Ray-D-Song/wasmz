@@ -236,3 +236,106 @@ test "lower i32_mul into slot IR" {
         else => return error.UnexpectedOpTag,
     }
 }
+
+test "lower i32_eqz into slot IR" {
+    var lower = Lower.init_with_reserved_slots(testing.allocator, 1);
+    defer lower.deinit();
+
+    const ops = [_]WasmOp{
+        .{ .local_get = 0 },
+        .i32_eqz,
+        .ret,
+    };
+
+    for (ops) |op| {
+        try lower.lower_op(op);
+    }
+
+    try testing.expectEqual(@as(u32, 2), lower.compiled.slots_len);
+    try testing.expectEqual(@as(usize, 2), lower.compiled.ops.items.len);
+
+    switch (lower.compiled.ops.items[0]) {
+        .i32_eqz => |got| {
+            try testing.expectEqual(@as(u32, 1), got.dst);
+            try testing.expectEqual(@as(u32, 0), got.src);
+        },
+        else => return error.UnexpectedOpTag,
+    }
+
+    switch (lower.compiled.ops.items[1]) {
+        .ret => |got| {
+            try testing.expectEqual(@as(?u32, 1), got.value);
+        },
+        else => return error.UnexpectedOpTag,
+    }
+}
+
+test "lower i32_eq into slot IR" {
+    var lower = Lower.init_with_reserved_slots(testing.allocator, 2);
+    defer lower.deinit();
+
+    const ops = [_]WasmOp{
+        .{ .local_get = 0 },
+        .{ .local_get = 1 },
+        .i32_eq,
+        .ret,
+    };
+
+    for (ops) |op| {
+        try lower.lower_op(op);
+    }
+
+    try testing.expectEqual(@as(u32, 3), lower.compiled.slots_len);
+    try testing.expectEqual(@as(usize, 2), lower.compiled.ops.items.len);
+
+    switch (lower.compiled.ops.items[0]) {
+        .i32_eq => |got| {
+            try testing.expectEqual(@as(u32, 2), got.dst);
+            try testing.expectEqual(@as(u32, 0), got.lhs);
+            try testing.expectEqual(@as(u32, 1), got.rhs);
+        },
+        else => return error.UnexpectedOpTag,
+    }
+
+    switch (lower.compiled.ops.items[1]) {
+        .ret => |got| {
+            try testing.expectEqual(@as(?u32, 2), got.value);
+        },
+        else => return error.UnexpectedOpTag,
+    }
+}
+
+test "lower i32_ne into slot IR" {
+    var lower = Lower.init_with_reserved_slots(testing.allocator, 2);
+    defer lower.deinit();
+
+    const ops = [_]WasmOp{
+        .{ .local_get = 0 },
+        .{ .local_get = 1 },
+        .i32_ne,
+        .ret,
+    };
+
+    for (ops) |op| {
+        try lower.lower_op(op);
+    }
+
+    try testing.expectEqual(@as(u32, 3), lower.compiled.slots_len);
+    try testing.expectEqual(@as(usize, 2), lower.compiled.ops.items.len);
+
+    switch (lower.compiled.ops.items[0]) {
+        .i32_ne => |got| {
+            try testing.expectEqual(@as(u32, 2), got.dst);
+            try testing.expectEqual(@as(u32, 0), got.lhs);
+            try testing.expectEqual(@as(u32, 1), got.rhs);
+        },
+        else => return error.UnexpectedOpTag,
+    }
+
+    switch (lower.compiled.ops.items[1]) {
+        .ret => |got| {
+            try testing.expectEqual(@as(?u32, 2), got.value);
+        },
+        else => return error.UnexpectedOpTag,
+    }
+}

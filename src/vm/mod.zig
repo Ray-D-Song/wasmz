@@ -57,6 +57,20 @@ pub const VM = struct {
                     const rhs = slots[inst.rhs].i32;
                     slots[inst.dst] = .{ .i32 = lhs * rhs };
                 },
+                .i32_eqz => |inst| {
+                    const src = slots[inst.src].i32;
+                    slots[inst.dst] = .{ .i32 = if (src == 0) 1 else 0 };
+                },
+                .i32_eq => |inst| {
+                    const lhs = slots[inst.lhs].i32;
+                    const rhs = slots[inst.rhs].i32;
+                    slots[inst.dst] = .{ .i32 = if (lhs == rhs) 1 else 0 };
+                },
+                .i32_ne => |inst| {
+                    const lhs = slots[inst.lhs].i32;
+                    const rhs = slots[inst.rhs].i32;
+                    slots[inst.dst] = .{ .i32 = if (lhs != rhs) 1 else 0 };
+                },
                 .ret => |inst| {
                     return if (inst.value) |slot| slots[slot] else null;
                 },

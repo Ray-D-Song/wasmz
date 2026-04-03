@@ -30,6 +30,20 @@ pub const Op = union(enum) {
         lhs: Slot,
         rhs: Slot,
     },
+    i32_eqz: struct {
+        dst: Slot,
+        src: Slot,
+    },
+    i32_eq: struct {
+        dst: Slot,
+        lhs: Slot,
+        rhs: Slot,
+    },
+    i32_ne: struct {
+        dst: Slot,
+        lhs: Slot,
+        rhs: Slot,
+    },
     ret: struct {
         value: ?Slot,
     },

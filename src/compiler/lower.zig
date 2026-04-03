@@ -27,6 +27,9 @@ pub const WasmOp = union(enum) {
     i32_add,
     i32_sub,
     i32_mul,
+    i32_eqz,
+    i32_eq,
+    i32_ne,
     ret,
 };
 
@@ -120,6 +123,26 @@ pub const Lower = struct {
                 const lhs = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .i32_mul = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i32_eqz => {
+                const src = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_eqz = .{ .dst = dst, .src = src } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i32_eq => {
+                const rhs = try self.pop_slot();
+                const lhs = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_eq = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i32_ne => {
+                const rhs = try self.pop_slot();
+                const lhs = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_ne = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
                 try self.stack.push(self.allocator, dst);
             },
             .ret => {
