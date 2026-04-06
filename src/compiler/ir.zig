@@ -84,6 +84,20 @@ pub const Op = union(enum) {
         lhs: Slot,
         rhs: Slot,
     },
+    /// Unconditional jump. `target` is an index into CompiledFunction.ops.
+    jump: struct {
+        target: u32,
+    },
+    /// Jump if `cond` slot holds an i32 equal to zero. `target` is an op index.
+    jump_if_z: struct {
+        cond: Slot,
+        target: u32,
+    },
+    /// Copy `src` slot into `dst` slot (used to write block results).
+    copy: struct {
+        dst: Slot,
+        src: Slot,
+    },
     ret: struct {
         value: ?Slot,
     },

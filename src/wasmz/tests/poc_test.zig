@@ -258,3 +258,99 @@ test "local_tee module runs through parser lower ir vm" {
         .i32 => |value| try testing.expectEqual(@as(i32, 9), value),
     }
 }
+
+test "countdown loop: block+loop+br_if runs correctly through lower and vm" {
+    // Wasm equivalent (counts down from N to 0, returns 0):
+    //   block
+    //     loop
+    //       local.get 0
+    //       i32.eqz
+    //       br_if 1       ; exit outer block when counter == 0
+    //       local.get 0
+    //       i32.const 1
+    //       i32.sub
+    //       local.set 0
+    //       br 0          ; back to loop top
+    //     end
+    //   end
+    //   local.get 0
+    //   ret
+
+    var lower = Lower.init_with_reserved_slots(testing.allocator, 1);
+    defer lower.deinit();
+
+    const ops = [_]WasmOp{
+        .{ .block = null },
+        .{ .loop = null },
+        .{ .local_get = 0 },
+        .i32_eqz,
+        .{ .br_if = 1 },
+        .{ .local_get = 0 },
+        .{ .i32_const = 1 },
+        .i32_sub,
+        .{ .local_set = 0 },
+        .{ .br = 0 },
+        .end, // end loop
+        .end, // end block
+        .{ .local_get = 0 },
+        .ret,
+    };
+    for (ops) |o| try lower.lower_op(o);
+
+    var vm = VM.init(testing.allocator);
+
+    // Start at 3, should return 0.
+    const params3 = [_]Value{.{ .i32 = 3 }};
+    const r3 = (try vm.execute(lower.compiled, &params3)) orelse return error.MissingReturnValue;
+    switch (r3) {
+        .i32 => |v| try testing.expectEqual(@as(i32, 0), v),
+    }
+
+    // Start at 0, loop never runs, should return 0.
+    const params0 = [_]Value{.{ .i32 = 0 }};
+    const r0 = (try vm.execute(lower.compiled, &params0)) orelse return error.MissingReturnValue;
+    switch (r0) {
+        .i32 => |v| try testing.expectEqual(@as(i32, 0), v),
+    }
+}
+
+test "if-else selects correct branch at runtime" {
+    // Wasm equivalent:
+    //   local.get 0     ; condition
+    //   if (result i32)
+    //     i32.const 10
+    //   else
+    //     i32.const 20
+    //   end
+    //   ret
+
+    var lower = Lower.init_with_reserved_slots(testing.allocator, 1);
+    defer lower.deinit();
+
+    const ops = [_]WasmOp{
+        .{ .local_get = 0 },
+        .{ .if_ = .i32 },
+        .{ .i32_const = 10 },
+        .else_,
+        .{ .i32_const = 20 },
+        .end,
+        .ret,
+    };
+    for (ops) |o| try lower.lower_op(o);
+
+    var vm = VM.init(testing.allocator);
+
+    // Non-zero condition → then branch → 10
+    const params_true = [_]Value{.{ .i32 = 1 }};
+    const r_true = (try vm.execute(lower.compiled, &params_true)) orelse return error.MissingReturnValue;
+    switch (r_true) {
+        .i32 => |v| try testing.expectEqual(@as(i32, 10), v),
+    }
+
+    // Zero condition → else branch → 20
+    const params_false = [_]Value{.{ .i32 = 0 }};
+    const r_false = (try vm.execute(lower.compiled, &params_false)) orelse return error.MissingReturnValue;
+    switch (r_false) {
+        .i32 => |v| try testing.expectEqual(@as(i32, 20), v),
+    }
+}

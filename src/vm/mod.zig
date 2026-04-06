@@ -31,7 +31,10 @@ pub const VM = struct {
             slots[index] = param;
         }
 
-        for (func.ops.items) |op| {
+        var pc: usize = 0;
+        while (pc < func.ops.items.len) {
+            const op = func.ops.items[pc];
+            pc += 1;
             switch (op) {
                 .const_i32 => |inst| {
                     slots[inst.dst] = .{ .i32 = inst.value };
@@ -42,20 +45,31 @@ pub const VM = struct {
                 .local_set => |inst| {
                     slots[inst.local] = slots[inst.src];
                 },
+                .copy => |inst| {
+                    slots[inst.dst] = slots[inst.src];
+                },
+                .jump => |inst| {
+                    pc = inst.target;
+                },
+                .jump_if_z => |inst| {
+                    if (slots[inst.cond].i32 == 0) {
+                        pc = inst.target;
+                    }
+                },
                 .i32_add => |inst| {
                     const lhs = slots[inst.lhs].i32;
                     const rhs = slots[inst.rhs].i32;
-                    slots[inst.dst] = .{ .i32 = lhs + rhs };
+                    slots[inst.dst] = .{ .i32 = lhs +% rhs };
                 },
                 .i32_sub => |inst| {
                     const lhs = slots[inst.lhs].i32;
                     const rhs = slots[inst.rhs].i32;
-                    slots[inst.dst] = .{ .i32 = lhs - rhs };
+                    slots[inst.dst] = .{ .i32 = lhs -% rhs };
                 },
                 .i32_mul => |inst| {
                     const lhs = slots[inst.lhs].i32;
                     const rhs = slots[inst.rhs].i32;
-                    slots[inst.dst] = .{ .i32 = lhs * rhs };
+                    slots[inst.dst] = .{ .i32 = lhs *% rhs };
                 },
                 .i32_eqz => |inst| {
                     const src = slots[inst.src].i32;
