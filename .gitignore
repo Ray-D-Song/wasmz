@@ -6,3 +6,5 @@ zig-out/
 .vscode/
 
 playgrounds/
+
+tests/**/*.wasm

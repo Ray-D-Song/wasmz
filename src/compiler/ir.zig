@@ -111,9 +111,25 @@ pub const Op = union(enum) {
     ret: struct {
         value: ?Slot,
     },
+    /// direct fn call
+    ///
+    /// args slots are stored in CompiledFunction.call_args, indexed by (args_start, args_len).
+    /// This allows us to avoid per-call allocations for argument lists and instead reuse a single contiguous array for all call arguments.
+    call: struct {
+        /// result slot (void functions have null)
+        dst: ?Slot,
+        /// Index of the callee function in module.functions
+        func_idx: u32,
+        /// Starting offset of the argument slots in CompiledFunction.call_args
+        args_start: u32,
+        args_len: u32,
+    },
 };
 
 pub const CompiledFunction = struct {
     slots_len: u32,
     ops: std.ArrayListUnmanaged(Op),
+    /// All call instruction argument slots are stored here (concatenated in call order).
+    /// Op.call indexes into the corresponding argument slot segment using (args_start, args_len).
+    call_args: std.ArrayListUnmanaged(Slot),
 };

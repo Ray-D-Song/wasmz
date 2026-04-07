@@ -77,6 +77,13 @@ pub const WasmOp = union(enum) {
     i32_ge_s,
     i32_ge_u,
     ret,
+    /// direct fn call with known func_idx, param count and result presence.
+    /// n_params / has_result are filled in by the caller (module.zig) after querying the function type signature.
+    call: struct {
+        func_idx: u32,
+        n_params: u32,
+        has_result: bool,
+    },
 };
 
 /// Block/loop/if result type. null means void (no result).
@@ -91,6 +98,7 @@ pub const Lower = struct {
     compiled: CompiledFunction = .{
         .slots_len = 0,
         .ops = .empty,
+        .call_args = .empty,
     },
     stack: ValueStack = .{},
     next_slot: Slot = 0,
@@ -107,6 +115,7 @@ pub const Lower = struct {
             .compiled = .{
                 .slots_len = reserved_slots,
                 .ops = .empty,
+                .call_args = .empty,
             },
             .next_slot = reserved_slots,
         };
@@ -115,6 +124,7 @@ pub const Lower = struct {
     pub fn deinit(self: *Lower) void {
         self.stack.deinit(self.allocator);
         self.compiled.ops.deinit(self.allocator);
+        self.compiled.call_args.deinit(self.allocator);
         for (self.control_stack.items) |*frame| {
             frame.patch_sites.deinit(self.allocator);
         }
@@ -517,6 +527,34 @@ pub const Lower = struct {
             .ret => {
                 const value = self.stack.pop();
                 try self.emit(.{ .ret = .{ .value = value } });
+            },
+
+            // ── function call ──────────────────────────────────────────────────────────
+
+            .call => |inst| {
+                // Pop n_params argument slots from the value stack in reverse order.
+                // The top of the stack is the last argument, so we need to reverse them to restore the correct order.
+                const args_start: u32 = @intCast(self.compiled.call_args.items.len);
+                var i: u32 = 0;
+                while (i < inst.n_params) : (i += 1) {
+                    const slot = try self.pop_slot();
+                    try self.compiled.call_args.append(self.allocator, slot);
+                }
+                // Reverse to match Wasm spec order (first pushed is first)
+                const args = self.compiled.call_args.items[args_start..];
+                std.mem.reverse(Slot, args);
+
+                const dst: ?Slot = if (inst.has_result) self.alloc_slot() else null;
+
+                try self.emit(.{ .call = .{
+                    .dst = dst,
+                    .func_idx = inst.func_idx,
+                    .args_start = args_start,
+                    .args_len = inst.n_params,
+                } });
+
+                // If the call produces a result, push the result slot.
+                if (dst) |s| try self.stack.push(self.allocator, s);
             },
         }
     }

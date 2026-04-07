@@ -63,6 +63,7 @@ pub const ModuleCompileError = Allocator.Error ||
     func_type_mod.FuncTypeError ||
     error{
         DuplicateExport,
+        ImportedFunctionCallUnsupported,
         InvalidFunctionTypeIndex,
         InvalidMutability,
         InvalidI32Literal,
@@ -81,14 +82,15 @@ pub const ModuleCompileError = Allocator.Error ||
 /// Compiled WebAssembly module, holding all data required for runtime execution.
 ///
 /// Field descriptions:
-///   - functions:       List of compiled functions, indexed according to the Wasm function index space (imported functions come first).
-///   - func_types:      All function signatures defined in the Type Section.
-///   - exports:         Mapping from export names to ExportEntry, currently only function exports are supported.
-///   - globals:         List of global variables, each containing mutability and the initial value evaluated from constant expressions.
-///   - memory:          Linear memory definition (optional), currently supports at most one memory segment.
-///   - start_function:  Optional start function index (from the Wasm Start Section).
-///                      Per the Wasm spec, this function is automatically called during module instantiation.
-///                      It must have no parameters and no return values.
+///   - functions:         List of compiled functions, indexed according to the Wasm function index space (imported functions come first).
+///   - func_types:        All function signatures defined in the Type Section.
+///   - exports:           Mapping from export names to ExportEntry, currently only function exports are supported.
+///   - globals:           List of global variables, each containing mutability and the initial value evaluated from constant expressions.
+///   - memory:            Linear memory definition (optional), currently supports at most one memory segment.
+///   - start_function:    Optional start function index (from the Wasm Start Section).
+///                        Per the Wasm spec, this function is automatically called during module instantiation.
+///                        It must have no parameters and no return values.
+///   - import_func_count: Number of imported functions; used to offset func_idx when resolving call targets.
 pub const Module = struct {
     allocator: Allocator,
     functions: []CompiledFunction,
@@ -96,9 +98,12 @@ pub const Module = struct {
     exports: std.StringHashMapUnmanaged(ExportEntry),
     globals: []GlobalInit,
     memory: ?MemoryDef,
-    /// Optional start function index (from the Wasm Start Section).
+    /// Wasm Start Section (optional).
     /// If present, Instance.init will automatically call this function after instantiation.
     start_function: ?u32,
+    /// Number of imported functions. The func_idx in the call instruction includes imported functions,
+    /// local functions' index in functions = func_idx - import_func_count.
+    import_func_count: u32,
 
     /// Compile WebAssembly bytecode into a Module.
     ///
@@ -189,6 +194,7 @@ pub const Module = struct {
         @memset(functions, .{
             .slots_len = 0,
             .ops = .empty,
+            .call_args = .empty,
         });
 
         var local_function_index: usize = 0;
@@ -206,10 +212,19 @@ pub const Module = struct {
 
                     const reserved_slots = try computeReservedSlots(func_types_list.items[type_index], info);
                     const function_index = imported_function_count + local_function_index;
+
+                    // build function type resolver for looking up callee signatures when translating call instructions
+                    const resolver = FuncTypeResolver{
+                        .func_types = func_types_list.items,
+                        .type_indices = function_type_indices.items,
+                        .import_count = imported_function_count,
+                    };
+
                     functions[function_index] = try compileFunctionBody(
                         allocator,
                         reserved_slots,
                         info.body,
+                        resolver,
                     );
                     local_function_index += 1;
                 },
@@ -239,6 +254,7 @@ pub const Module = struct {
             .globals = globals,
             .memory = memory,
             .start_function = start_function,
+            .import_func_count = @intCast(imported_function_count),
         };
     }
 
@@ -261,6 +277,7 @@ pub const Module = struct {
     /// Free the operations list held by each CompiledFunction in the functions slice.
     fn deinitFunctions(allocator: Allocator, functions: []CompiledFunction) void {
         for (functions) |*function| {
+            function.call_args.deinit(allocator);
             function.ops.deinit(allocator);
         }
     }
@@ -416,15 +433,37 @@ pub const Module = struct {
     }
 };
 
+/// Function type resolver: look up function signatures (parameter count, return count) by func_idx.
+///
+/// Wasm function index space = imported functions + local functions, type_indices only cover local functions.
+pub const FuncTypeResolver = struct {
+    func_types: []const FuncType,
+    type_indices: []const u32,
+    import_count: usize,
+
+    /// Look up the FuncType by func_idx.
+    /// Returns an error if func_idx refers to an imported function or is out of bounds.
+    pub fn resolve(self: FuncTypeResolver, func_idx: u32) ModuleCompileError!*const FuncType {
+        if (func_idx < self.import_count) return error.ImportedFunctionCallUnsupported;
+        const local_idx = func_idx - @as(u32, @intCast(self.import_count));
+        if (local_idx >= self.type_indices.len) return error.InvalidFunctionTypeIndex;
+        const type_idx = self.type_indices[local_idx];
+        if (type_idx >= self.func_types.len) return error.InvalidFunctionTypeIndex;
+        return &self.func_types[type_idx];
+    }
+};
+
 /// Compile a single function body from Wasm bytecode into a CompiledFunction.
 ///
 /// reserved_slots is the total number of value slots needed for executing the function,
 /// calculated by the caller based on the function signature and local variable declarations.
-/// body is the raw bytecode of the Wasm function body (excluding the locals declaration part
+/// body is the raw bytecode of the Wasm function body (excluding the locals declaration part).
+/// resolver is used to look up callee function signatures when translating call instructions.
 pub fn compileFunctionBody(
     allocator: Allocator,
     reserved_slots: u32,
     body: []const u8,
+    resolver: FuncTypeResolver,
 ) ModuleCompileError!CompiledFunction {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -436,11 +475,23 @@ pub fn compileFunctionBody(
     while (cursor < body.len) {
         const parsed = try parser_mod.readNextOperator(arena.allocator(), body[cursor..]);
         cursor += parsed.consumed;
-        try lower.lower_op(try translate_mod.operatorToWasmOp(parsed.info));
+
+        const wasm_op: lower_mod.WasmOp = if (parsed.info.code == .call) blk: {
+            const func_idx = parsed.info.func_index orelse return error.UnsupportedOperator;
+            const func_type = try resolver.resolve(func_idx);
+            break :blk .{ .call = .{
+                .func_idx = func_idx,
+                .n_params = @intCast(func_type.params().len),
+                .has_result = func_type.results().len > 0,
+            } };
+        } else try translate_mod.operatorToWasmOp(parsed.info);
+
+        try lower.lower_op(wasm_op);
     }
 
     const compiled = lower.finish();
     lower.compiled.ops = .empty;
+    lower.compiled.call_args = .empty;
     lower.deinit();
     return compiled;
 }
@@ -475,7 +526,7 @@ test "module.compile builds exported function bodies" {
     try std.testing.expectEqual(@as(u32, 0), export_entry.function_index);
 
     var vm = VM.init(std.testing.allocator);
-    const result = (try vm.execute(module.functions[@intCast(export_entry.function_index)], &.{}, &.{}, &.{})) orelse {
+    const result = (try vm.execute(module.functions[@intCast(export_entry.function_index)], &.{}, &.{}, &.{}, &.{})) orelse {
         return error.MissingReturnValue;
     };
     try std.testing.expectEqual(@as(i32, 1), result.readAs(i32));

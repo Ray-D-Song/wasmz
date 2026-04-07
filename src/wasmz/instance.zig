@@ -80,7 +80,7 @@ pub const Instance = struct {
             }
             const start_func = module.functions[start_idx];
             var vm = VM.init(store.allocator);
-            const result = try vm.execute(start_func, &.{}, globals, memory);
+            const result = try vm.execute(start_func, &.{}, globals, memory, module.functions);
             // start function must be void: having a return value violates the Wasm specification
             if (result != null) {
                 return error.StartFunctionMustBeVoid;
@@ -116,7 +116,7 @@ pub const Instance = struct {
         const export_entry = self.module.exports.get(name) orelse return error.ExportNotFound;
         const func = self.module.functions[export_entry.function_index];
         var vm = VM.init(self.store.allocator);
-        return vm.execute(func, args, self.globals, self.memory);
+        return vm.execute(func, args, self.globals, self.memory, self.module.functions);
     }
 };
 
@@ -237,6 +237,68 @@ test "Instance.init with no memory section" {
 
     try testing.expectEqual(@as(usize, 0), instance.globals.len);
     try testing.expectEqual(@as(usize, 0), instance.memory.len);
+}
+
+test "Instance.call supports inter-function calls (double via add)" {
+    // WAT：
+    //   (module
+    //     (func $add (param i32 i32) (result i32)
+    //       local.get 0
+    //       local.get 1
+    //       i32.add)
+    //     (func $double (export "double") (param i32) (result i32)
+    //       local.get 0
+    //       local.get 0
+    //       call $add)
+    //   )
+    //
+    const testing = std.testing;
+    const engine_mod = @import("../engine/mod.zig");
+    const config_mod = @import("../engine/config.zig");
+
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = Store.init(testing.allocator, engine);
+    defer store.deinit();
+
+    //   type[0]: (i32,i32)->i32   type[1]: (i32)->i32
+    //   func[0]=type[0] (add), func[1]=type[1] (double)
+    //   export "double" -> func[1]
+    //   add  body: local.get 0, local.get 1, i32.add, end
+    //   double body: local.get 0, local.get 0, call 0, end
+    const wasm = [_]u8{
+        // magic + version
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+        // type section: 2 types
+        //   type[0]: (i32,i32)->i32
+        //   type[1]: (i32)->i32
+        0x01, 0x0c, 0x02,
+        0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f, // type[0]
+        0x60, 0x01, 0x7f, 0x01, 0x7f, // type[1]
+        // function section: func[0]=type[0], func[1]=type[1]
+        0x03, 0x03, 0x02, 0x00, 0x01,
+        // export section: "double" -> func[1]
+        0x07, 0x0a, 0x01, 0x06, 'd',
+        'o',  'u',  'b',  'l',  'e',
+        0x00, 0x01,
+        // code section: 2 bodies
+        //   body[0] (add):    0 locals; local.get 0; local.get 1; i32.add; end
+        //   body[1] (double): 0 locals; local.get 0; local.get 0; call 0; end
+        0x0a, 0x12, 0x02,
+        0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6a, 0x0b, // add
+        0x08, 0x00, 0x20, 0x00, 0x20, 0x00, 0x10, 0x00, 0x0b, // double
+    };
+
+    var module = try Module.compile(engine, &wasm);
+    defer module.deinit();
+
+    var instance = try Instance.init(&store, &module, {});
+    defer instance.deinit();
+
+    const args = [_]RawVal{RawVal.from(@as(i32, 7))};
+    const result = (try instance.call("double", &args)) orelse return error.MissingReturnValue;
+    try testing.expectEqual(@as(i32, 14), result.readAs(i32));
 }
 
 test "Instance.init auto-calls start function" {
