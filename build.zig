@@ -100,6 +100,11 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "wasmz", .module = mod },
             },
+            // strip when Release mode
+            .strip = switch (optimize) {
+                .ReleaseFast, .ReleaseSafe, .ReleaseSmall => true,
+                else => false,
+            },
         }),
     });
 

@@ -10,6 +10,17 @@
 const std = @import("std");
 const wasmz = @import("wasmz");
 
+/// Custom panic handler: simply print the message to stderr and abort, without unwinding with DWARF.
+/// This eliminates about 127 KB of DWARF parsing code from std.debug
+fn simplePanic(msg: []const u8, _: ?usize) noreturn {
+    const stderr = std.fs.File.stderr();
+    stderr.writeAll("panic: ") catch {};
+    stderr.writeAll(msg) catch {};
+    stderr.writeAll("\n") catch {};
+    std.process.abort();
+}
+pub const panic = std.debug.FullPanic(simplePanic);
+
 const Engine = wasmz.Engine;
 const Config = wasmz.Config;
 const Module = wasmz.Module;
