@@ -1,0 +1,50 @@
+name: Build Dev
+
+on:
+  push:
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-linux-musl
+            runner: ubuntu-latest
+            artifact_suffix: linux-x86_64
+          - target: aarch64-linux-musl
+            runner: ubuntu-latest
+            artifact_suffix: linux-arm64
+          - target: aarch64-macos
+            runner: macos-latest
+            artifact_suffix: macos-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Zig 0.15.2
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Get short git hash
+        id: git_hash
+        run: echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+
+      - name: Rename artifact
+        run: |
+          mkdir -p dist
+          cp zig-out/bin/wasmz dist/wasmz-${{ steps.git_hash.outputs.sha }}-${{ matrix.artifact_suffix }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasmz-${{ steps.git_hash.outputs.sha }}-${{ matrix.artifact_suffix }}
+          path: dist/wasmz-${{ steps.git_hash.outputs.sha }}-${{ matrix.artifact_suffix }}
+          retention-days: 30
