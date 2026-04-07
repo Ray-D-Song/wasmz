@@ -32,7 +32,7 @@ pub const Mutability = enum {
 };
 
 // Shape of a global variable
-const GlobalType = struct {
+pub const GlobalType = struct {
     mutability: Mutability,
     valueType: ValType,
 

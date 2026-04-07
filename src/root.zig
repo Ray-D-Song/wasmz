@@ -17,5 +17,7 @@ pub fn bufferedPrint() !void {
 test {
     _ = @import("engine/func_ty.zig");
     _ = @import("wasmz/module.zig");
+    _ = @import("wasmz/store.zig");
+    _ = @import("wasmz/instance.zig");
     _ = @import("wasmz/tests/poc_test.zig");
 }
