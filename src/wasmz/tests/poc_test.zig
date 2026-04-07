@@ -12,7 +12,7 @@ const Type = payload_mod.Type;
 const Lower = lower_mod.Lower;
 const WasmOp = lower_mod.WasmOp;
 const VM = vm_mod.VM;
-const Value = vm_mod.Value;
+const RawVal = vm_mod.RawVal;
 const ValType = value_type_mod.ValType;
 
 const simple_add_wasm: []const u8 = @embedFile("fixtures/simple_add.wasm");
@@ -221,15 +221,12 @@ test "simple_add fixture runs through parser lower ir vm" {
     try testing.expectEqual(@as(usize, 2), lower.compiled.ops.items.len);
 
     var vm = VM.init(testing.allocator);
-    const params = [_]Value{
-        .{ .i32 = 20 },
-        .{ .i32 = 22 },
+    const params = [_]RawVal{
+        RawVal.from(@as(i32, 20)),
+        RawVal.from(@as(i32, 22)),
     };
     const result = (try vm.execute(lower.compiled, &params)) orelse return error.MissingReturnValue;
-
-    switch (result) {
-        .i32 => |value| try testing.expectEqual(@as(i32, 42), value),
-    }
+    try testing.expectEqual(@as(i32, 42), result.readAs(i32));
 }
 
 test "local_tee module runs through parser lower ir vm" {
@@ -249,14 +246,11 @@ test "local_tee module runs through parser lower ir vm" {
     try testing.expectEqual(@as(usize, 2), lower.compiled.ops.items.len);
 
     var vm = VM.init(testing.allocator);
-    const params = [_]Value{
-        .{ .i32 = 9 },
+    const params = [_]RawVal{
+        RawVal.from(@as(i32, 9)),
     };
     const result = (try vm.execute(lower.compiled, &params)) orelse return error.MissingReturnValue;
-
-    switch (result) {
-        .i32 => |value| try testing.expectEqual(@as(i32, 9), value),
-    }
+    try testing.expectEqual(@as(i32, 9), result.readAs(i32));
 }
 
 test "countdown loop: block+loop+br_if runs correctly through lower and vm" {
@@ -300,18 +294,14 @@ test "countdown loop: block+loop+br_if runs correctly through lower and vm" {
     var vm = VM.init(testing.allocator);
 
     // Start at 3, should return 0.
-    const params3 = [_]Value{.{ .i32 = 3 }};
+    const params3 = [_]RawVal{RawVal.from(@as(i32, 3))};
     const r3 = (try vm.execute(lower.compiled, &params3)) orelse return error.MissingReturnValue;
-    switch (r3) {
-        .i32 => |v| try testing.expectEqual(@as(i32, 0), v),
-    }
+    try testing.expectEqual(@as(i32, 0), r3.readAs(i32));
 
     // Start at 0, loop never runs, should return 0.
-    const params0 = [_]Value{.{ .i32 = 0 }};
+    const params0 = [_]RawVal{RawVal.from(@as(i32, 0))};
     const r0 = (try vm.execute(lower.compiled, &params0)) orelse return error.MissingReturnValue;
-    switch (r0) {
-        .i32 => |v| try testing.expectEqual(@as(i32, 0), v),
-    }
+    try testing.expectEqual(@as(i32, 0), r0.readAs(i32));
 }
 
 test "if-else selects correct branch at runtime" {
@@ -341,16 +331,12 @@ test "if-else selects correct branch at runtime" {
     var vm = VM.init(testing.allocator);
 
     // Non-zero condition → then branch → 10
-    const params_true = [_]Value{.{ .i32 = 1 }};
+    const params_true = [_]RawVal{RawVal.from(@as(i32, 1))};
     const r_true = (try vm.execute(lower.compiled, &params_true)) orelse return error.MissingReturnValue;
-    switch (r_true) {
-        .i32 => |v| try testing.expectEqual(@as(i32, 10), v),
-    }
+    try testing.expectEqual(@as(i32, 10), r_true.readAs(i32));
 
     // Zero condition → else branch → 20
-    const params_false = [_]Value{.{ .i32 = 0 }};
+    const params_false = [_]RawVal{RawVal.from(@as(i32, 0))};
     const r_false = (try vm.execute(lower.compiled, &params_false)) orelse return error.MissingReturnValue;
-    switch (r_false) {
-        .i32 => |v| try testing.expectEqual(@as(i32, 20), v),
-    }
+    try testing.expectEqual(@as(i32, 20), r_false.readAs(i32));
 }

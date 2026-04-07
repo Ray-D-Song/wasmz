@@ -17,9 +17,9 @@ pub const RawVal = struct {
     // Reads native types like `i32`, `f64` or `V128` from the raw value.
     pub fn readAs(self: RawVal, comptime T: type) T {
         if (T == RawVal) return self;
-        if (T == i8) return @as(i8, @truncate(self.low64));
-        if (T == i16) return @as(i16, @truncate(self.low64));
-        if (T == i32) return @as(i32, @truncate(self.low64));
+        if (T == i8) return @as(i8, @bitCast(@as(u8, @truncate(self.low64))));
+        if (T == i16) return @as(i16, @bitCast(@as(u16, @truncate(self.low64))));
+        if (T == i32) return @as(i32, @bitCast(@as(u32, @truncate(self.low64))));
         if (T == i64) return @as(i64, @bitCast(self.low64));
 
         if (T == u8) return @as(u8, @truncate(self.low64));
