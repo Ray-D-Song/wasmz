@@ -111,6 +111,29 @@ pub const Op = union(enum) {
     ret: struct {
         value: ?Slot,
     },
+
+    // ── Memory load/store instructions ──────────────────────────────────────────
+    // All load/store instructions share the same memory immediate: (align, offset).
+    // `addr` is the slot holding the base address (i32), `offset` is the static immediate offset.
+    // The effective address = addr_value + offset.
+
+    /// i32.load — load 4 bytes from memory (little-endian) as i32, write into `dst`
+    i32_load: struct { dst: Slot, addr: Slot, offset: u32 },
+    /// i32.load8_s — load 1 byte from memory, sign-extend to i32, write into `dst`
+    i32_load8_s: struct { dst: Slot, addr: Slot, offset: u32 },
+    /// i32.load8_u — load 1 byte from memory, zero-extend to i32, write into `dst`
+    i32_load8_u: struct { dst: Slot, addr: Slot, offset: u32 },
+    /// i32.load16_s — load 2 bytes from memory (little-endian), sign-extend to i32, write into `dst`
+    i32_load16_s: struct { dst: Slot, addr: Slot, offset: u32 },
+    /// i32.load16_u — load 2 bytes from memory (little-endian), zero-extend to i32, write into `dst`
+    i32_load16_u: struct { dst: Slot, addr: Slot, offset: u32 },
+
+    /// i32.store — store 4-byte i32 value from `src` slot to memory at (addr + offset)
+    i32_store: struct { addr: Slot, src: Slot, offset: u32 },
+    /// i32.store8 — store lowest 8 bits of i32 from `src` to memory
+    i32_store8: struct { addr: Slot, src: Slot, offset: u32 },
+    /// i32.store16 — store lowest 16 bits of i32 from `src` to memory (little-endian)
+    i32_store16: struct { addr: Slot, src: Slot, offset: u32 },
     /// direct fn call
     ///
     /// args slots are stored in CompiledFunction.call_args, indexed by (args_start, args_len).

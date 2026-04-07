@@ -30,6 +30,8 @@ pub const InstanceError = Allocator.Error || error{
     InvalidStartFunctionIndex,
     /// Start function returns a value, which violates the Wasm specification that start functions must be void
     StartFunctionMustBeVoid,
+    /// Memory access out of bounds (effective address exceeds memory size)
+    MemoryOutOfBounds,
 };
 
 pub const Instance = struct {
@@ -268,26 +270,23 @@ test "Instance.call supports inter-function calls (double via add)" {
     //   add  body: local.get 0, local.get 1, i32.add, end
     //   double body: local.get 0, local.get 0, call 0, end
     const wasm = [_]u8{
-        // magic + version
-        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-        // type section: 2 types
-        //   type[0]: (i32,i32)->i32
-        //   type[1]: (i32)->i32
-        0x01, 0x0c, 0x02,
-        0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f, // type[0]
-        0x60, 0x01, 0x7f, 0x01, 0x7f, // type[1]
-        // function section: func[0]=type[0], func[1]=type[1]
-        0x03, 0x03, 0x02, 0x00, 0x01,
-        // export section: "double" -> func[1]
-        0x07, 0x0a, 0x01, 0x06, 'd',
-        'o',  'u',  'b',  'l',  'e',
-        0x00, 0x01,
-        // code section: 2 bodies
-        //   body[0] (add):    0 locals; local.get 0; local.get 1; i32.add; end
-        //   body[1] (double): 0 locals; local.get 0; local.get 0; call 0; end
-        0x0a, 0x12, 0x02,
-        0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6a, 0x0b, // add
-        0x08, 0x00, 0x20, 0x00, 0x20, 0x00, 0x10, 0x00, 0x0b, // double
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic + version
+        0x01, 0x0c, 0x02, // type section: 2 types
+        0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f, // type[0]: (i32,i32)->i32
+        0x60, 0x01, 0x7f, 0x01, 0x7f, // type[1]: (i32)->i32
+        0x03, 0x03, 0x02, 0x00, 0x01, // function section: func[0]=type[0], func[1]=type[1]
+        0x07, 0x0a, 0x01, // export section
+        0x06, 0x64, 0x6f, 0x75, 0x62, 0x6c, 0x65, 0x00, 0x01, // "double" -> func[1]
+        0x0a, 0x12, 0x02, // code section: 2 bodies
+        // body[0] add: local.get 0; local.get 1; i32.add; end
+        0x07, 0x00, 0x20,
+        0x00, 0x20, 0x01,
+        0x6a, 0x0b,
+        // body[1] double: local.get 0; local.get 0; call 0; end
+        0x08,
+        0x00, 0x20, 0x00,
+        0x20, 0x00, 0x10,
+        0x00, 0x0b,
     };
 
     var module = try Module.compile(engine, &wasm);
@@ -360,4 +359,172 @@ test "Instance.init auto-calls start function" {
 
     // start function has been automatically executed during instantiation, global 0 value should be 42
     try testing.expectEqual(@as(i32, 42), instance.globals[0].getRawValue().readAs(i32));
+}
+
+test "Instance.call: i32.store and i32.load round-trip" {
+    // WAT:
+    //   (module
+    //     (memory 1)
+    //     (func (export "f") (param i32 i32) (result i32)
+    //       local.get 0        ;; address
+    //       local.get 1        ;; value
+    //       i32.store          ;; store val at mem[addr]
+    //       local.get 0        ;; address again
+    //       i32.load)          ;; load from mem[addr] -> result
+    //   )
+    //
+    // Binary layout:
+    //   magic+version
+    //   type section:     (i32,i32)->i32
+    //   function section: func[0]=type[0]
+    //   memory section:   1 page min, no max
+    //   export section:   "f" -> func[0]
+    //   code section:     body above
+    //
+    // i32.store encoding: 0x36 <align_leb> <offset_leb>  (align=2, offset=0)
+    // i32.load  encoding: 0x28 <align_leb> <offset_leb>  (align=2, offset=0)
+    const testing = std.testing;
+    const engine_mod = @import("../engine/mod.zig");
+    const config_mod = @import("../engine/config.zig");
+
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = Store.init(testing.allocator, engine);
+    defer store.deinit();
+
+    const wasm = [_]u8{
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic + version
+        0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01, // type section: (i32,i32)->i32
+        0x7f,
+        0x03, 0x02, 0x01, 0x00, // function section
+        0x05, 0x03, 0x01, 0x00, 0x01, // memory section: 1 page
+        0x07, 0x05, 0x01, 0x01, 0x66, 0x00, 0x00, // export "f" -> func[0]
+        0x0a, 0x10, 0x01, // code section
+        0x0e, 0x00, // body len=14, 0 locals
+        0x20, 0x00, // local.get 0
+        0x20, 0x01, // local.get 1
+        0x36, 0x02, 0x00, // i32.store align=2 offset=0
+        0x20, 0x00, // local.get 0
+        0x28, 0x02, 0x00, // i32.load align=2 offset=0
+        0x0b, // end
+    };
+
+    var module = try Module.compile(engine, &wasm);
+    defer module.deinit();
+
+    var instance = try Instance.init(&store, &module, {});
+    defer instance.deinit();
+
+    // store 0xDEADBEEF at address 8, then load it back
+    const addr = RawVal.from(@as(i32, 8));
+    const val = RawVal.from(@as(i32, @bitCast(@as(u32, 0xDEADBEEF))));
+    const result = (try instance.call("f", &.{ addr, val })) orelse return error.MissingReturnValue;
+    try testing.expectEqual(@as(i32, @bitCast(@as(u32, 0xDEADBEEF))), result.readAs(i32));
+}
+
+test "Instance.call: i32.store8, i32.load8_u, i32.load8_s" {
+    // WAT:
+    //   (module
+    //     (memory 1)
+    //     (func (export "store8") (param i32 i32)
+    //       local.get 0
+    //       local.get 1
+    //       i32.store8)
+    //     (func (export "load8u") (param i32) (result i32)
+    //       local.get 0
+    //       i32.load8_u)
+    //     (func (export "load8s") (param i32) (result i32)
+    //       local.get 0
+    //       i32.load8_s)
+    //   )
+    //
+    // i32.store8  = 0x3a align=0 offset=0
+    // i32.load8_u = 0x2d align=0 offset=0
+    // i32.load8_s = 0x2c align=0 offset=0
+    const testing = std.testing;
+    const engine_mod = @import("../engine/mod.zig");
+    const config_mod = @import("../engine/config.zig");
+
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = Store.init(testing.allocator, engine);
+    defer store.deinit();
+
+    const wasm = [_]u8{
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0b, 0x02, 0x60,
+        0x02, 0x7f, 0x7f, 0x00, 0x60, 0x01, 0x7f, 0x01, 0x7f, 0x03, 0x04, 0x03,
+        0x00, 0x01, 0x01, 0x05, 0x03, 0x01, 0x00, 0x01, 0x07, 0x1c, 0x03, 0x06,
+        0x73, 0x74, 0x6f, 0x72, 0x65, 0x38, 0x00, 0x00, 0x06, 0x6c, 0x6f, 0x61,
+        0x64, 0x38, 0x75, 0x00, 0x01, 0x06, 0x6c, 0x6f, 0x61, 0x64, 0x38, 0x73,
+        0x00, 0x02, 0x0a, 0x1b, 0x03, 0x09, 0x00, 0x20, 0x00, 0x20, 0x01, 0x3a,
+        0x00, 0x00, 0x0b, 0x07, 0x00, 0x20, 0x00, 0x2d, 0x00, 0x00, 0x0b, 0x07,
+        0x00, 0x20, 0x00, 0x2c, 0x00, 0x00, 0x0b,
+    };
+
+    var module = try Module.compile(engine, &wasm);
+    defer module.deinit();
+
+    var instance = try Instance.init(&store, &module, {});
+    defer instance.deinit();
+
+    // store 0xFF (= -1 signed, 255 unsigned) at address 4
+    const addr = RawVal.from(@as(i32, 4));
+    try testing.expectEqual(@as(?RawVal, null), try instance.call("store8", &.{ addr, RawVal.from(@as(i32, 0xFF)) }));
+
+    // load8_u should give 255 (zero-extended)
+    const r_u = (try instance.call("load8u", &.{addr})) orelse return error.MissingReturnValue;
+    try testing.expectEqual(@as(i32, 255), r_u.readAs(i32));
+
+    // load8_s should give -1 (sign-extended)
+    const r_s = (try instance.call("load8s", &.{addr})) orelse return error.MissingReturnValue;
+    try testing.expectEqual(@as(i32, -1), r_s.readAs(i32));
+}
+
+test "Instance.call: memory out-of-bounds returns error" {
+    // A function that loads from address that exceeds the memory size.
+    // WAT:
+    //   (module
+    //     (memory 1)           ;; 65536 bytes
+    //     (func (export "f") (param i32) (result i32)
+    //       local.get 0
+    //       i32.load)          ;; load 4 bytes at param
+    //   )
+    const testing = std.testing;
+    const engine_mod = @import("../engine/mod.zig");
+    const config_mod = @import("../engine/config.zig");
+
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = Store.init(testing.allocator, engine);
+    defer store.deinit();
+
+    const wasm = [_]u8{
+        // magic + version
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+        // type: (i32)->i32
+        0x01, 0x05, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f,
+        // function: func[0]=type[0]
+        0x03, 0x02, 0x01, 0x00,
+        // memory: 1 page min
+        0x05, 0x03, 0x01, 0x00,
+        0x01,
+        // export: "f" -> func[0]
+        0x07, 0x05, 0x01, 0x01, 'f',  0x00, 0x00,
+        // code: local.get 0; i32.load align=2 offset=0; end
+        0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x28,
+        0x02, 0x00, 0x0b,
+    };
+
+    var module = try Module.compile(engine, &wasm);
+    defer module.deinit();
+
+    var instance = try Instance.init(&store, &module, {});
+    defer instance.deinit();
+
+    // address 65533 + 4 bytes = 65537 > 65536: out of bounds
+    const oob_addr = RawVal.from(@as(i32, 65533));
+    try testing.expectError(error.MemoryOutOfBounds, instance.call("f", &.{oob_addr}));
 }

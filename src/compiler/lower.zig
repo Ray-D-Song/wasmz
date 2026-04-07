@@ -84,6 +84,19 @@ pub const WasmOp = union(enum) {
         n_params: u32,
         has_result: bool,
     },
+
+    // ── Memory load instructions ─────────────────────────────────────────────
+    // `offset` is the static immediate offset encoded in the Wasm instruction (memory_address.offset).
+    i32_load: struct { offset: u32 },
+    i32_load8_s: struct { offset: u32 },
+    i32_load8_u: struct { offset: u32 },
+    i32_load16_s: struct { offset: u32 },
+    i32_load16_u: struct { offset: u32 },
+
+    // ── Memory store instructions ─────────────────────────────────────────────
+    i32_store: struct { offset: u32 },
+    i32_store8: struct { offset: u32 },
+    i32_store16: struct { offset: u32 },
 };
 
 /// Block/loop/if result type. null means void (no result).
@@ -555,6 +568,60 @@ pub const Lower = struct {
 
                 // If the call produces a result, push the result slot.
                 if (dst) |s| try self.stack.push(self.allocator, s);
+            },
+
+            // ── Memory load ──────────────────────────────────────────────────────────
+            // For all load op: pop the address slot, allocate a result slot, emit the corresponding load Op, push the result slot.
+
+            .i32_load => |inst| {
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_load = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i32_load8_s => |inst| {
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_load8_s = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i32_load8_u => |inst| {
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_load8_u = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i32_load16_s => |inst| {
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_load16_s = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i32_load16_u => |inst| {
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_load16_u = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
+                try self.stack.push(self.allocator, dst);
+            },
+
+            // ── Memory store ─────────────────────────────────────────────────────────
+            // For all store op: Wasm stack top is value, below is addr (push addr first, then val).
+            // According to Wasm spec pop order: pop val (top), then pop addr.
+
+            .i32_store => |inst| {
+                const src = try self.pop_slot(); // value
+                const addr = try self.pop_slot(); // base address
+                try self.emit(.{ .i32_store = .{ .addr = addr, .src = src, .offset = inst.offset } });
+            },
+            .i32_store8 => |inst| {
+                const src = try self.pop_slot();
+                const addr = try self.pop_slot();
+                try self.emit(.{ .i32_store8 = .{ .addr = addr, .src = src, .offset = inst.offset } });
+            },
+            .i32_store16 => |inst| {
+                const src = try self.pop_slot();
+                const addr = try self.pop_slot();
+                try self.emit(.{ .i32_store16 = .{ .addr = addr, .src = src, .offset = inst.offset } });
             },
         }
     }

@@ -82,6 +82,34 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         .global_get => WasmOp{ .global_get = info.global_index orelse return error.UnsupportedOperator },
         .global_set => WasmOp{ .global_set = info.global_index orelse return error.UnsupportedOperator },
         .i32_const => WasmOp{ .i32_const = try literalAsI32(info) },
+
+        // ── Memory instructions ───────────────────────────────────────────────
+        // All memory instructions require memory_address field (with offset), align field is ignored for now (not validated at runtime).
+        .i32_load => WasmOp{ .i32_load = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+        .i32_load8_s => WasmOp{ .i32_load8_s = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+        .i32_load8_u => WasmOp{ .i32_load8_u = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+        .i32_load16_s => WasmOp{ .i32_load16_s = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+        .i32_load16_u => WasmOp{ .i32_load16_u = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+        .i32_store => WasmOp{ .i32_store = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+        .i32_store8 => WasmOp{ .i32_store8 = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+        .i32_store16 => WasmOp{ .i32_store16 = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+
         .i32_add => WasmOp.i32_add,
         .i32_sub => WasmOp.i32_sub,
         .i32_mul => WasmOp.i32_mul,

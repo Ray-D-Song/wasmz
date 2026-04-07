@@ -34,7 +34,7 @@ pub const VM = struct {
     ///   func      — The entry-point compiled function body (IR instruction list)
     ///   params    — Function parameters (filled into slots 0..params.len-1)
     ///   globals   — Slice of module instance globals (needed for global_get/global_set)
-    ///   memory    — Linear memory slice (reserved, currently pass an empty slice)
+    ///   memory    — Linear memory slice (byte array; null means the module has no memory)
     ///   functions — All compiled functions in the module (needed to resolve call targets)
     pub fn execute(
         self: *VM,
@@ -44,8 +44,6 @@ pub const VM = struct {
         memory: []u8,
         functions: []const CompiledFunction,
     ) !?RawVal {
-        _ = memory; // TODO: memory operations not implemented yet, ignore for now
-
         // ── Initialize entry frame ─────────────────────────────────────────────
         const entry_slots_len: usize = @max(
             @as(usize, @intCast(func.slots_len)),
@@ -250,6 +248,70 @@ pub const VM = struct {
                     // append may cause call_stack.items to be reallocated,
                     // any previously held pointers (e.g., caller_slots) are invalidated,
                     // do not dereference them.
+                },
+
+                // ── Memory load ──────────────────────────────────────────────────────────
+                // legal address = slots[addr].readAs(u32) + offset
+                // TODO: Wasm spec requires out-of-bounds access to trap; here we directly return error.MemoryOutOfBounds.
+
+                .i32_load => |inst| {
+                    const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
+                    const ea = base +% inst.offset; // effective address（wrapping add 防溢出）
+                    if (@as(usize, ea) + 4 > memory.len) return error.MemoryOutOfBounds;
+                    const val = std.mem.readInt(i32, memory[ea..][0..4], .little);
+                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(val);
+                },
+                .i32_load8_s => |inst| {
+                    const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
+                    const ea = base +% inst.offset;
+                    if (@as(usize, ea) + 1 > memory.len) return error.MemoryOutOfBounds;
+                    const byte: i8 = @bitCast(memory[ea]);
+                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, byte));
+                },
+                .i32_load8_u => |inst| {
+                    const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
+                    const ea = base +% inst.offset;
+                    if (@as(usize, ea) + 1 > memory.len) return error.MemoryOutOfBounds;
+                    const byte: u8 = memory[ea];
+                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, byte));
+                },
+                .i32_load16_s => |inst| {
+                    const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
+                    const ea = base +% inst.offset;
+                    if (@as(usize, ea) + 2 > memory.len) return error.MemoryOutOfBounds;
+                    const half: i16 = @bitCast(std.mem.readInt(u16, memory[ea..][0..2], .little));
+                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, half));
+                },
+                .i32_load16_u => |inst| {
+                    const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
+                    const ea = base +% inst.offset;
+                    if (@as(usize, ea) + 2 > memory.len) return error.MemoryOutOfBounds;
+                    const half: u16 = std.mem.readInt(u16, memory[ea..][0..2], .little);
+                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, half));
+                },
+
+                // ── Memory store ─────────────────────────────────────────────────────────
+
+                .i32_store => |inst| {
+                    const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
+                    const ea = base +% inst.offset;
+                    if (@as(usize, ea) + 4 > memory.len) return error.MemoryOutOfBounds;
+                    const val = call_stack.items[frame_idx].slots[inst.src].readAs(i32);
+                    std.mem.writeInt(i32, memory[ea..][0..4], val, .little);
+                },
+                .i32_store8 => |inst| {
+                    const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
+                    const ea = base +% inst.offset;
+                    if (@as(usize, ea) + 1 > memory.len) return error.MemoryOutOfBounds;
+                    const val = call_stack.items[frame_idx].slots[inst.src].readAs(i32);
+                    memory[ea] = @truncate(@as(u32, @bitCast(val)));
+                },
+                .i32_store16 => |inst| {
+                    const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
+                    const ea = base +% inst.offset;
+                    if (@as(usize, ea) + 2 > memory.len) return error.MemoryOutOfBounds;
+                    const val = call_stack.items[frame_idx].slots[inst.src].readAs(i32);
+                    std.mem.writeInt(u16, memory[ea..][0..2], @truncate(@as(u32, @bitCast(val))), .little);
                 },
 
                 // ── return ────────────────────────────────────────────────────────
