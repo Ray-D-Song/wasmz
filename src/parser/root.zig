@@ -61,7 +61,7 @@ const CodeUnitKind = enum {
     expression,
 };
 
-const CodeReadError = error{
+pub const CodeReadError = error{
     NeedMoreData,
     UnknownOperator,
     UnsupportedState,
@@ -660,6 +660,7 @@ pub const Parser = struct {
         }
 
         const typ = self.read_global_type();
+        const init_expr_start = self.cur_pos;
         self.read_code_operator(.expression) catch |err| switch (err) {
             error.NeedMoreData => return .need_more_data,
             error.UnknownOperator => return self.fail_with_state(ParserError.UnknownOperator),
@@ -668,11 +669,15 @@ pub const Parser = struct {
             },
             error.UnsupportedState => return self.fail_with_state(ParserError.UnsupportedState),
         };
+        const init_expr = self.cur_data[init_expr_start..self.cur_pos];
         self.cur_state = .GLOBAL_SECTION_ENTRY;
         self.cur_sect_entries_left -= 1;
         return .{ .parsed = .{
             .consumed = self.cur_pos - start_pos,
-            .payload = .{ .global_variable = GlobalVariable{ .typ = typ } },
+            .payload = .{ .global_variable = GlobalVariable{
+                .typ = typ,
+                .init_expr = init_expr,
+            } },
         } };
     }
 
@@ -789,6 +794,7 @@ pub const Parser = struct {
             };
         }
 
+        const body_start = self.cur_pos;
         self.cur_fn_range = .{ .start = self.cur_pos, .end = body_end };
         self.read_code_operator(.function_body) catch |err| switch (err) {
             error.NeedMoreData => return .need_more_data,
@@ -805,6 +811,7 @@ pub const Parser = struct {
             .consumed = self.cur_pos - start_pos,
             .payload = .{ .function_info = FunctionInformation{
                 .locals = locals,
+                .body = self.cur_data[body_start..self.cur_pos],
             } },
         } };
     }
@@ -2812,11 +2819,39 @@ pub const Parser = struct {
     }
 };
 
-pub const testing = if (builtin.is_test) struct {
-    pub const ConsumedOperator = struct {
-        consumed: usize,
-        info: OperatorInformation,
+pub const ConsumedCodeOperator = struct {
+    consumed: usize,
+    info: OperatorInformation,
+};
+
+pub fn consumeExpression(allocator: std.mem.Allocator, bytes: []const u8) CodeReadError!usize {
+    var parser = Parser.init(allocator);
+    parser.cur_data = bytes;
+    parser.cur_len = bytes.len;
+    try parser.read_code_operator(.expression);
+    return parser.cur_pos;
+}
+
+pub fn readSingleOperator(allocator: std.mem.Allocator, bytes: []const u8) CodeReadError!OperatorInformation {
+    var parser = Parser.init(allocator);
+    parser.cur_data = bytes;
+    parser.cur_len = bytes.len;
+    return try parser.read_single_operator();
+}
+
+pub fn readNextOperator(allocator: std.mem.Allocator, bytes: []const u8) CodeReadError!ConsumedCodeOperator {
+    var parser = Parser.init(allocator);
+    parser.cur_data = bytes;
+    parser.cur_len = bytes.len;
+    const info = try parser.read_single_operator();
+    return .{
+        .consumed = parser.cur_pos,
+        .info = info,
     };
+}
+
+pub const testing = if (builtin.is_test) struct {
+    pub const ConsumedOperator = ConsumedCodeOperator;
 
     pub fn read_heap_type(bytes: []const u8) HeapType {
         var parser = Parser.init(std.heap.page_allocator);
@@ -2833,34 +2868,24 @@ pub const testing = if (builtin.is_test) struct {
     }
 
     pub fn consume_expression(bytes: []const u8) usize {
-        var parser = Parser.init(std.heap.page_allocator);
-        parser.cur_data = bytes;
-        parser.cur_len = bytes.len;
-        parser.read_code_operator(.expression) catch |err| {
+        return consumeExpression(std.heap.page_allocator, bytes) catch |err| {
             @panic(@errorName(err));
         };
-        return parser.cur_pos;
     }
 
     pub fn read_single_operator(bytes: []const u8) OperatorInformation {
-        var parser = Parser.init(std.heap.page_allocator);
-        parser.cur_data = bytes;
-        parser.cur_len = bytes.len;
-        return parser.read_single_operator() catch |err| {
+        return readSingleOperator(std.heap.page_allocator, bytes) catch |err| {
             @panic(@errorName(err));
         };
     }
 
     pub fn read_next_operator(bytes: []const u8) ConsumedOperator {
-        var parser = Parser.init(std.heap.page_allocator);
-        parser.cur_data = bytes;
-        parser.cur_len = bytes.len;
-        const info = parser.read_single_operator() catch |err| {
+        const parsed = readNextOperator(std.heap.page_allocator, bytes) catch |err| {
             @panic(@errorName(err));
         };
         return .{
-            .consumed = parser.cur_pos,
-            .info = info,
+            .consumed = parsed.consumed,
+            .info = parsed.info,
         };
     }
 } else struct {};

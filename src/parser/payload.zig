@@ -839,6 +839,7 @@ pub const TagType = struct {
 
 pub const GlobalVariable = struct {
     typ: GlobalType,
+    init_expr: []const u8,
 };
 
 pub const ElementSegment = struct {
@@ -999,6 +1000,7 @@ pub const Locals = struct {
 
 pub const FunctionInformation = struct {
     locals: []const Locals,
+    body: []const u8,
 };
 
 pub const MemoryAddress = struct {

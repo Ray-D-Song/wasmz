@@ -36,6 +36,7 @@ pub fn EngineOwned(comptime T: type) type {
 }
 
 const EngineInner = struct {
+    allocator: Allocator,
     id: EngineId,
     config: Config,
     // code_map: CodeMap,
@@ -45,6 +46,7 @@ const EngineInner = struct {
 
     fn init(allocator: Allocator, config_value: Config) EngineInner {
         return .{
+            .allocator = allocator,
             .id = EngineId.init(),
             .config = config_value,
             .func_types = FuncTypeRegistry.init(allocator, EngineId.init()),
@@ -81,9 +83,9 @@ pub const EngineWeak = struct {
 pub const Engine = struct {
     inner: EngineInnerRef,
 
-    pub fn init(allocator: Allocator, config_value: Config) Allocator.Error!Engine {
+    pub fn init(alloc: Allocator, config_value: Config) Allocator.Error!Engine {
         return .{
-            .inner = try EngineInnerRef.init(allocator, EngineInner.init(allocator, config_value)),
+            .inner = try EngineInnerRef.init(alloc, EngineInner.init(alloc, config_value)),
         };
     }
 
@@ -106,6 +108,10 @@ pub const Engine = struct {
 
     pub fn config(self: Engine) *const Config {
         return &self.inner.value.config;
+    }
+
+    pub fn allocator(self: Engine) Allocator {
+        return self.inner.value.allocator;
     }
 
     pub fn id(self: Engine) EngineId {

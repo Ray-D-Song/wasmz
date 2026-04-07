@@ -4,16 +4,20 @@ const testing = std.testing;
 const parser_mod = @import("parser");
 const payload_mod = @import("payload");
 const lower_mod = @import("../../compiler/lower.zig");
+const ir_mod = @import("../../compiler/ir.zig");
 const vm_mod = @import("../../vm/mod.zig");
+const module_mod = @import("../../wasmz/module.zig");
 const value_type_mod = @import("../../core/value/type.zig");
 
 const Parser = parser_mod.Parser;
 const Type = payload_mod.Type;
 const Lower = lower_mod.Lower;
 const WasmOp = lower_mod.WasmOp;
+const CompiledFunction = ir_mod.CompiledFunction;
 const VM = vm_mod.VM;
 const RawVal = vm_mod.RawVal;
 const ValType = value_type_mod.ValType;
+const compileFunctionBody = module_mod.compileFunctionBody;
 
 const simple_add_wasm: []const u8 = @embedFile("fixtures/simple_add.wasm");
 const local_tee_wasm = [_]u8{
@@ -166,41 +170,8 @@ fn parse_single_function_module(allocator: std.mem.Allocator, wasm: []const u8) 
     };
 }
 
-fn lowerParsedFunction(allocator: std.mem.Allocator, reserved_slots: u32, body_expr: []const u8) !Lower {
-    var lower = Lower.init_with_reserved_slots(allocator, reserved_slots);
-    errdefer lower.deinit();
-
-    var cursor: usize = 0;
-    while (cursor < body_expr.len) {
-        const parsed = parser_mod.testing.read_next_operator(body_expr[cursor..]);
-        cursor += parsed.consumed;
-
-        const lowered_op = switch (parsed.info.code) {
-            .drop => WasmOp.drop,
-            .local_get => WasmOp{ .local_get = parsed.info.local_index.? },
-            .local_set => WasmOp{ .local_set = parsed.info.local_index.? },
-            .local_tee => WasmOp{ .local_tee = parsed.info.local_index.? },
-            .i32_add => WasmOp.i32_add,
-            .i32_sub => WasmOp.i32_sub,
-            .i32_mul => WasmOp.i32_mul,
-            .i32_eqz => WasmOp.i32_eqz,
-            .i32_eq => WasmOp.i32_eq,
-            .i32_ne => WasmOp.i32_ne,
-            .i32_lt_s => WasmOp.i32_lt_s,
-            .i32_lt_u => WasmOp.i32_lt_u,
-            .i32_gt_s => WasmOp.i32_gt_s,
-            .i32_gt_u => WasmOp.i32_gt_u,
-            .i32_le_s => WasmOp.i32_le_s,
-            .i32_le_u => WasmOp.i32_le_u,
-            .i32_ge_s => WasmOp.i32_ge_s,
-            .i32_ge_u => WasmOp.i32_ge_u,
-            .end => WasmOp.ret,
-            else => return error.UnsupportedOperator,
-        };
-        try lower.lower_op(lowered_op);
-    }
-
-    return lower;
+fn lowerParsedFunction(allocator: std.mem.Allocator, reserved_slots: u32, body_expr: []const u8) !CompiledFunction {
+    return try compileFunctionBody(allocator, reserved_slots, body_expr);
 }
 
 test "simple_add fixture runs through parser lower ir vm" {
@@ -215,17 +186,17 @@ test "simple_add fixture runs through parser lower ir vm" {
     try testing.expectEqual(ValType.I32, parsed.params[1]);
     try testing.expectEqual(ValType.I32, parsed.results[0]);
 
-    var lower = try lowerParsedFunction(testing.allocator, parsed.reserved_slots, parsed.body_expr);
-    defer lower.deinit();
+    var compiled = try lowerParsedFunction(testing.allocator, parsed.reserved_slots, parsed.body_expr);
+    defer compiled.ops.deinit(testing.allocator);
 
-    try testing.expectEqual(@as(usize, 2), lower.compiled.ops.items.len);
+    try testing.expectEqual(@as(usize, 2), compiled.ops.items.len);
 
     var vm = VM.init(testing.allocator);
     const params = [_]RawVal{
         RawVal.from(@as(i32, 20)),
         RawVal.from(@as(i32, 22)),
     };
-    const result = (try vm.execute(lower.compiled, &params)) orelse return error.MissingReturnValue;
+    const result = (try vm.execute(compiled, &params)) orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 42), result.readAs(i32));
 }
 
@@ -240,16 +211,16 @@ test "local_tee module runs through parser lower ir vm" {
     try testing.expectEqual(ValType.I32, parsed.params[0]);
     try testing.expectEqual(ValType.I32, parsed.results[0]);
 
-    var lower = try lowerParsedFunction(testing.allocator, parsed.reserved_slots, parsed.body_expr);
-    defer lower.deinit();
+    var compiled = try lowerParsedFunction(testing.allocator, parsed.reserved_slots, parsed.body_expr);
+    defer compiled.ops.deinit(testing.allocator);
 
-    try testing.expectEqual(@as(usize, 2), lower.compiled.ops.items.len);
+    try testing.expectEqual(@as(usize, 2), compiled.ops.items.len);
 
     var vm = VM.init(testing.allocator);
     const params = [_]RawVal{
         RawVal.from(@as(i32, 9)),
     };
-    const result = (try vm.execute(lower.compiled, &params)) orelse return error.MissingReturnValue;
+    const result = (try vm.execute(compiled, &params)) orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 9), result.readAs(i32));
 }
 
