@@ -6,6 +6,17 @@ const CompiledFunction = ir.CompiledFunction;
 const Allocator = std.mem.Allocator;
 pub const RawVal = core.raw.RawVal;
 pub const Global = core.Global;
+pub const Trap = core.Trap;
+pub const TrapCode = core.TrapCode;
+
+/// VM execute result either be void or Wasm trap
+/// Allocation failures and other host environment errors are still propagated through Zig error unions (Allocator.Error).
+pub const ExecResult = union(enum) {
+    /// Normal return, ?RawVal is null for void functions
+    ok: ?RawVal,
+    /// Runtime trap (MemoryOutOfBounds, UnreachableCodeReached, etc.)
+    trap: Trap,
+};
 
 /// One call frame is one function call
 ///
@@ -36,6 +47,11 @@ pub const VM = struct {
     ///   globals   — Slice of module instance globals (needed for global_get/global_set)
     ///   memory    — Linear memory slice (byte array; null means the module has no memory)
     ///   functions — All compiled functions in the module (needed to resolve call targets)
+    ///
+    /// Returns:
+    ///   Allocator.Error  — Host memory allocation failure (not a Wasm trap)
+    ///   ExecResult.ok    — Normal execution completed, with optional return value
+    ///   ExecResult.trap  — Wasm runtime trap, with TrapCode and description
     pub fn execute(
         self: *VM,
         func: CompiledFunction,
@@ -43,7 +59,7 @@ pub const VM = struct {
         globals: []Global,
         memory: []u8,
         functions: []const CompiledFunction,
-    ) !?RawVal {
+    ) Allocator.Error!ExecResult {
         // ── Initialize entry frame ─────────────────────────────────────────────
         const entry_slots_len: usize = @max(
             @as(usize, @intCast(func.slots_len)),
@@ -251,41 +267,39 @@ pub const VM = struct {
                 },
 
                 // ── Memory load ──────────────────────────────────────────────────────────
-                // legal address = slots[addr].readAs(u32) + offset
-                // TODO: Wasm spec requires out-of-bounds access to trap; here we directly return error.MemoryOutOfBounds.
 
                 .i32_load => |inst| {
                     const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
-                    const ea = base +% inst.offset; // effective address（wrapping add 防溢出）
-                    if (@as(usize, ea) + 4 > memory.len) return error.MemoryOutOfBounds;
+                    const ea = base +% inst.offset;
+                    if (@as(usize, ea) + 4 > memory.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
                     const val = std.mem.readInt(i32, memory[ea..][0..4], .little);
                     call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(val);
                 },
                 .i32_load8_s => |inst| {
                     const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
                     const ea = base +% inst.offset;
-                    if (@as(usize, ea) + 1 > memory.len) return error.MemoryOutOfBounds;
+                    if (@as(usize, ea) + 1 > memory.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
                     const byte: i8 = @bitCast(memory[ea]);
                     call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, byte));
                 },
                 .i32_load8_u => |inst| {
                     const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
                     const ea = base +% inst.offset;
-                    if (@as(usize, ea) + 1 > memory.len) return error.MemoryOutOfBounds;
+                    if (@as(usize, ea) + 1 > memory.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
                     const byte: u8 = memory[ea];
                     call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, byte));
                 },
                 .i32_load16_s => |inst| {
                     const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
                     const ea = base +% inst.offset;
-                    if (@as(usize, ea) + 2 > memory.len) return error.MemoryOutOfBounds;
+                    if (@as(usize, ea) + 2 > memory.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
                     const half: i16 = @bitCast(std.mem.readInt(u16, memory[ea..][0..2], .little));
                     call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, half));
                 },
                 .i32_load16_u => |inst| {
                     const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
                     const ea = base +% inst.offset;
-                    if (@as(usize, ea) + 2 > memory.len) return error.MemoryOutOfBounds;
+                    if (@as(usize, ea) + 2 > memory.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
                     const half: u16 = std.mem.readInt(u16, memory[ea..][0..2], .little);
                     call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, half));
                 },
@@ -295,21 +309,21 @@ pub const VM = struct {
                 .i32_store => |inst| {
                     const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
                     const ea = base +% inst.offset;
-                    if (@as(usize, ea) + 4 > memory.len) return error.MemoryOutOfBounds;
+                    if (@as(usize, ea) + 4 > memory.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
                     const val = call_stack.items[frame_idx].slots[inst.src].readAs(i32);
                     std.mem.writeInt(i32, memory[ea..][0..4], val, .little);
                 },
                 .i32_store8 => |inst| {
                     const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
                     const ea = base +% inst.offset;
-                    if (@as(usize, ea) + 1 > memory.len) return error.MemoryOutOfBounds;
+                    if (@as(usize, ea) + 1 > memory.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
                     const val = call_stack.items[frame_idx].slots[inst.src].readAs(i32);
                     memory[ea] = @truncate(@as(u32, @bitCast(val)));
                 },
                 .i32_store16 => |inst| {
                     const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
                     const ea = base +% inst.offset;
-                    if (@as(usize, ea) + 2 > memory.len) return error.MemoryOutOfBounds;
+                    if (@as(usize, ea) + 2 > memory.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
                     const val = call_stack.items[frame_idx].slots[inst.src].readAs(i32);
                     std.mem.writeInt(u16, memory[ea..][0..2], @truncate(@as(u32, @bitCast(val))), .little);
                 },
@@ -328,7 +342,7 @@ pub const VM = struct {
 
                     if (call_stack.items.len == 0) {
                         // Top-level frame returned: execution finished
-                        return ret_val;
+                        return .{ .ok = ret_val };
                     }
 
                     // Write the return value to the caller frame's dst slot
@@ -342,7 +356,6 @@ pub const VM = struct {
             }
         }
 
-        // Call stack is empty (under normal circumstances, the ret instruction would return early)
-        return null;
+        return .{ .ok = null };
     }
 };

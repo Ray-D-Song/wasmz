@@ -144,7 +144,15 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
         std.process.exit(1);
     };
 
-    if (result) |val| {
-        try stdout.print("{d}\n", .{val.readAs(i32)});
+    switch (result) {
+        .ok => |val| {
+            if (val) |v| try stdout.print("{d}\n", .{v.readAs(i32)});
+        },
+        .trap => |t| {
+            const msg = try t.allocPrint(allocator);
+            defer allocator.free(msg);
+            std.debug.print("error: trap: {s}\n", .{msg});
+            std.process.exit(1);
+        },
     }
 }

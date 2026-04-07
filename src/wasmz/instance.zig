@@ -20,6 +20,12 @@ const Global = core.Global;
 const GlobalType = core.GlobalType;
 const VM = vm_mod.VM;
 pub const RawVal = vm_mod.RawVal;
+/// Wasm runtime trap, carrying TrapCode and optional description
+pub const Trap = vm_mod.Trap;
+/// TrapCode enumeration, used to determine the type of trap in ExecResult.trap
+pub const TrapCode = vm_mod.TrapCode;
+/// Instance.call result: either a normal return (with optional value for void functions) or a Wasm trap
+pub const ExecResult = vm_mod.ExecResult;
 
 /// The number of bytes in a single WebAssembly memory page (64 KiB).
 const WASM_PAGE_SIZE: usize = 65536;
@@ -30,8 +36,8 @@ pub const InstanceError = Allocator.Error || error{
     InvalidStartFunctionIndex,
     /// Start function returns a value, which violates the Wasm specification that start functions must be void
     StartFunctionMustBeVoid,
-    /// Memory access out of bounds (effective address exceeds memory size)
-    MemoryOutOfBounds,
+    /// Start function raised a Wasm trap during instantiation
+    StartFunctionTrapped,
 };
 
 pub const Instance = struct {
@@ -82,10 +88,12 @@ pub const Instance = struct {
             }
             const start_func = module.functions[start_idx];
             var vm = VM.init(store.allocator);
-            const result = try vm.execute(start_func, &.{}, globals, memory, module.functions);
-            // start function must be void: having a return value violates the Wasm specification
-            if (result != null) {
-                return error.StartFunctionMustBeVoid;
+            const exec_r = try vm.execute(start_func, &.{}, globals, memory, module.functions);
+            switch (exec_r) {
+                // start function triggered a trap: instantiation failed
+                .trap => return error.StartFunctionTrapped,
+                // start function has a return value: violates Wasm specification
+                .ok => |ret_val| if (ret_val != null) return error.StartFunctionMustBeVoid,
             }
         }
 
@@ -113,8 +121,12 @@ pub const Instance = struct {
     ///   name — The name of the exported function
     ///   args — Function arguments
     ///
-    /// Returns: The return value of the function (null for void functions)
-    pub fn call(self: *Instance, name: []const u8, args: []const RawVal) !?RawVal {
+    /// Returns:
+    ///   error.ExportNotFound     — The export with the given name does not exist
+    ///   Allocator.Error          — Host memory allocation failure
+    ///   ExecResult.ok(val)       — Normal execution completed, val is the return value (null for void functions)
+    ///   ExecResult.trap(trap)    — Wasm runtime trap (e.g., out-of-bounds memory access)
+    pub fn call(self: *Instance, name: []const u8, args: []const RawVal) (Allocator.Error || error{ExportNotFound})!ExecResult {
         const export_entry = self.module.exports.get(name) orelse return error.ExportNotFound;
         const func = self.module.functions[export_entry.function_index];
         var vm = VM.init(self.store.allocator);
@@ -153,7 +165,8 @@ test "Instance.call executes exported function end-to-end" {
         RawVal.from(@as(i32, 20)),
         RawVal.from(@as(i32, 22)),
     };
-    const result = (try instance.call("add", &args)) orelse return error.MissingReturnValue;
+    const exec_r = try instance.call("add", &args);
+    const result = exec_r.ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 42), result.readAs(i32));
 }
 
@@ -296,7 +309,8 @@ test "Instance.call supports inter-function calls (double via add)" {
     defer instance.deinit();
 
     const args = [_]RawVal{RawVal.from(@as(i32, 7))};
-    const result = (try instance.call("double", &args)) orelse return error.MissingReturnValue;
+    const exec_r = try instance.call("double", &args);
+    const result = exec_r.ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 14), result.readAs(i32));
 }
 
@@ -419,7 +433,8 @@ test "Instance.call: i32.store and i32.load round-trip" {
     // store 0xDEADBEEF at address 8, then load it back
     const addr = RawVal.from(@as(i32, 8));
     const val = RawVal.from(@as(i32, @bitCast(@as(u32, 0xDEADBEEF))));
-    const result = (try instance.call("f", &.{ addr, val })) orelse return error.MissingReturnValue;
+    const exec_r = try instance.call("f", &.{ addr, val });
+    const result = exec_r.ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, @bitCast(@as(u32, 0xDEADBEEF))), result.readAs(i32));
 }
 
@@ -471,18 +486,20 @@ test "Instance.call: i32.store8, i32.load8_u, i32.load8_s" {
 
     // store 0xFF (= -1 signed, 255 unsigned) at address 4
     const addr = RawVal.from(@as(i32, 4));
-    try testing.expectEqual(@as(?RawVal, null), try instance.call("store8", &.{ addr, RawVal.from(@as(i32, 0xFF)) }));
+    // store8 is a void function, expect ExecResult.ok(null)
+    const store_r = try instance.call("store8", &.{ addr, RawVal.from(@as(i32, 0xFF)) });
+    try testing.expectEqual(@as(?RawVal, null), store_r.ok);
 
     // load8_u should give 255 (zero-extended)
-    const r_u = (try instance.call("load8u", &.{addr})) orelse return error.MissingReturnValue;
+    const r_u = (try instance.call("load8u", &.{addr})).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 255), r_u.readAs(i32));
 
     // load8_s should give -1 (sign-extended)
-    const r_s = (try instance.call("load8s", &.{addr})) orelse return error.MissingReturnValue;
+    const r_s = (try instance.call("load8s", &.{addr})).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, -1), r_s.readAs(i32));
 }
 
-test "Instance.call: memory out-of-bounds returns error" {
+test "Instance.call: memory out-of-bounds returns trap" {
     // A function that loads from address that exceeds the memory size.
     // WAT:
     //   (module
@@ -526,5 +543,7 @@ test "Instance.call: memory out-of-bounds returns error" {
 
     // address 65533 + 4 bytes = 65537 > 65536: out of bounds
     const oob_addr = RawVal.from(@as(i32, 65533));
-    try testing.expectError(error.MemoryOutOfBounds, instance.call("f", &.{oob_addr}));
+    const exec_r = try instance.call("f", &.{oob_addr});
+    // Expect a trap, trap code should be MemoryOutOfBounds
+    try testing.expectEqual(TrapCode.MemoryOutOfBounds, exec_r.trap.trapCode().?);
 }

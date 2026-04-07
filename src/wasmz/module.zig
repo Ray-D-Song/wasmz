@@ -526,7 +526,7 @@ test "module.compile builds exported function bodies" {
     try std.testing.expectEqual(@as(u32, 0), export_entry.function_index);
 
     var vm = VM.init(std.testing.allocator);
-    const result = (try vm.execute(module.functions[@intCast(export_entry.function_index)], &.{}, &.{}, &.{}, &.{})) orelse {
+    const result = (try vm.execute(module.functions[@intCast(export_entry.function_index)], &.{}, &.{}, &.{}, &.{})).ok orelse {
         return error.MissingReturnValue;
     };
     try std.testing.expectEqual(@as(i32, 1), result.readAs(i32));
