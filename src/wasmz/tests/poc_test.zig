@@ -199,7 +199,7 @@ test "simple_add fixture runs through parser lower ir vm" {
         RawVal.from(@as(i32, 20)),
         RawVal.from(@as(i32, 22)),
     };
-    const result = (try vm.execute(compiled, &params)) orelse return error.MissingReturnValue;
+    const result = (try vm.execute(compiled, &params, &.{}, &.{})) orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 42), result.readAs(i32));
 }
 
@@ -223,7 +223,7 @@ test "local_tee module runs through parser lower ir vm" {
     const params = [_]RawVal{
         RawVal.from(@as(i32, 9)),
     };
-    const result = (try vm.execute(compiled, &params)) orelse return error.MissingReturnValue;
+    const result = (try vm.execute(compiled, &params, &.{}, &.{})) orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 9), result.readAs(i32));
 }
 
@@ -269,12 +269,12 @@ test "countdown loop: block+loop+br_if runs correctly through lower and vm" {
 
     // Start at 3, should return 0.
     const params3 = [_]RawVal{RawVal.from(@as(i32, 3))};
-    const r3 = (try vm.execute(lower.compiled, &params3)) orelse return error.MissingReturnValue;
+    const r3 = (try vm.execute(lower.compiled, &params3, &.{}, &.{})) orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 0), r3.readAs(i32));
 
     // Start at 0, loop never runs, should return 0.
     const params0 = [_]RawVal{RawVal.from(@as(i32, 0))};
-    const r0 = (try vm.execute(lower.compiled, &params0)) orelse return error.MissingReturnValue;
+    const r0 = (try vm.execute(lower.compiled, &params0, &.{}, &.{})) orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 0), r0.readAs(i32));
 }
 
@@ -306,11 +306,11 @@ test "if-else selects correct branch at runtime" {
 
     // Non-zero condition → then branch → 10
     const params_true = [_]RawVal{RawVal.from(@as(i32, 1))};
-    const r_true = (try vm.execute(lower.compiled, &params_true)) orelse return error.MissingReturnValue;
+    const r_true = (try vm.execute(lower.compiled, &params_true, &.{}, &.{})) orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 10), r_true.readAs(i32));
 
     // Zero condition → else branch → 20
     const params_false = [_]RawVal{RawVal.from(@as(i32, 0))};
-    const r_false = (try vm.execute(lower.compiled, &params_false)) orelse return error.MissingReturnValue;
+    const r_false = (try vm.execute(lower.compiled, &params_false, &.{}, &.{})) orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 20), r_false.readAs(i32));
 }

@@ -98,6 +98,16 @@ pub const Op = union(enum) {
         dst: Slot,
         src: Slot,
     },
+    /// Read value from global and write it into `dst` slot
+    global_get: struct {
+        dst: Slot,
+        global_idx: u32,
+    },
+    /// Write value from `src` slot into global
+    global_set: struct {
+        src: Slot,
+        global_idx: u32,
+    },
     ret: struct {
         value: ?Slot,
     },

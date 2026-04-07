@@ -79,6 +79,8 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         .local_get => WasmOp{ .local_get = info.local_index orelse return error.UnsupportedOperator },
         .local_set => WasmOp{ .local_set = info.local_index orelse return error.UnsupportedOperator },
         .local_tee => WasmOp{ .local_tee = info.local_index orelse return error.UnsupportedOperator },
+        .global_get => WasmOp{ .global_get = info.global_index orelse return error.UnsupportedOperator },
+        .global_set => WasmOp{ .global_set = info.global_index orelse return error.UnsupportedOperator },
         .i32_const => WasmOp{ .i32_const = try literalAsI32(info) },
         .i32_add => WasmOp.i32_add,
         .i32_sub => WasmOp.i32_sub,

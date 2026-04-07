@@ -11,17 +11,22 @@ const std = @import("std");
 const core = @import("core");
 const store_mod = @import("./store.zig");
 const module_mod = @import("./module.zig");
+const vm_mod = @import("../vm/mod.zig");
 
 const Allocator = std.mem.Allocator;
 const Store = store_mod.Store;
 const Module = module_mod.Module;
 const Global = core.Global;
 const GlobalType = core.GlobalType;
+const VM = vm_mod.VM;
+pub const RawVal = vm_mod.RawVal;
 
 /// The number of bytes in a single WebAssembly memory page (64 KiB).
 const WASM_PAGE_SIZE: usize = 65536;
 
-pub const InstanceError = Allocator.Error;
+pub const InstanceError = Allocator.Error || error{
+    ExportNotFound,
+};
 
 pub const Instance = struct {
     store: *Store,
@@ -79,6 +84,20 @@ pub const Instance = struct {
             allocator.free(self.memory);
         }
         self.* = undefined;
+    }
+
+    /// Call an exported function by name.
+    ///
+    /// Parameters:
+    ///   name — The name of the exported function
+    ///   args — Function arguments
+    ///
+    /// Returns: The return value of the function (null for void functions)
+    pub fn call(self: *Instance, name: []const u8, args: []const RawVal) !?RawVal {
+        const export_entry = self.module.exports.get(name) orelse return error.ExportNotFound;
+        const func = self.module.functions[export_entry.function_index];
+        var vm = VM.init(self.store.allocator);
+        return vm.execute(func, args, self.globals, self.memory);
     }
 };
 

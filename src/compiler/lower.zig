@@ -59,6 +59,8 @@ pub const WasmOp = union(enum) {
     local_get: u32,
     local_set: u32,
     local_tee: u32,
+    global_get: u32,
+    global_set: u32,
     i32_const: i32,
     i32_add,
     i32_sub,
@@ -392,6 +394,16 @@ pub const Lower = struct {
             .local_tee => |local| {
                 const src = self.stack.peek() orelse return error.StackUnderflow;
                 try self.emit(.{ .local_set = .{ .local = local, .src = src } });
+            },
+            // ── Globals ──────────────────────────────────────────────────────────
+            .global_get => |global_idx| {
+                const dst = self.alloc_slot();
+                try self.emit(.{ .global_get = .{ .dst = dst, .global_idx = global_idx } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .global_set => |global_idx| {
+                const src = try self.pop_slot();
+                try self.emit(.{ .global_set = .{ .src = src, .global_idx = global_idx } });
             },
             .i32_const => |value| {
                 const dst = self.alloc_slot();

@@ -5,6 +5,7 @@ const core = @import("core");
 const CompiledFunction = ir.CompiledFunction;
 const Allocator = std.mem.Allocator;
 pub const RawVal = core.raw.RawVal;
+pub const Global = core.Global;
 
 pub const Frame = struct {
     slots: []RawVal,
@@ -17,7 +18,21 @@ pub const VM = struct {
         return .{ .allocator = allocator };
     }
 
-    pub fn execute(self: *VM, func: CompiledFunction, params: []const RawVal) !?RawVal {
+    /// Execute a compiled function.
+    ///
+    /// Parameters:
+    ///   func    — The compiled function body (IR instruction list)
+    ///   params  — Function parameters (filled into slots 0..params.len-1)
+    ///   globals — Slice of module instance globals (needed for global_get/global_set)
+    ///   memory  — Linear memory slice (reserved, currently pass an empty slice)
+    pub fn execute(
+        self: *VM,
+        func: CompiledFunction,
+        params: []const RawVal,
+        globals: []Global,
+        memory: []u8,
+    ) !?RawVal {
+        _ = memory; // Stage 4 usage, currently ignored
         const slots_len: usize = @max(
             @as(usize, @intCast(func.slots_len)),
             params.len,
@@ -42,6 +57,14 @@ pub const VM = struct {
                 },
                 .local_set => |inst| {
                     slots[inst.local] = slots[inst.src];
+                },
+                // Read raw value from global into destination slot
+                .global_get => |inst| {
+                    slots[inst.dst] = globals[inst.global_idx].getRawValue();
+                },
+                // Write value from src slot into global (bypassing type checks, VM layer does not carry type info)
+                .global_set => |inst| {
+                    globals[inst.global_idx].value = slots[inst.src];
                 },
                 .copy => |inst| {
                     slots[inst.dst] = slots[inst.src];
