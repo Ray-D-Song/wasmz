@@ -168,6 +168,103 @@ pub const VM = struct {
                     const rhs = s[inst.rhs].readAs(i32);
                     call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(lhs *% rhs);
                 },
+                .i32_div_s => |inst| {
+                    const s = call_stack.items[frame_idx].slots;
+                    const lhs = s[inst.lhs].readAs(i32);
+                    const rhs = s[inst.rhs].readAs(i32);
+                    if (rhs == 0) return .{ .trap = Trap.fromTrapCode(.IntegerDivisionByZero) };
+                    if (lhs == std.math.minInt(i32) and rhs == -1) return .{ .trap = Trap.fromTrapCode(.IntegerOverflow) };
+                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@divTrunc(lhs, rhs));
+                },
+                .i32_div_u => |inst| {
+                    const s = call_stack.items[frame_idx].slots;
+                    const lhs = s[inst.lhs].readAs(u32);
+                    const rhs = s[inst.rhs].readAs(u32);
+                    if (rhs == 0) return .{ .trap = Trap.fromTrapCode(.IntegerDivisionByZero) };
+                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, @bitCast(lhs / rhs)));
+                },
+                .i32_rem_s => |inst| {
+                    const s = call_stack.items[frame_idx].slots;
+                    const lhs = s[inst.lhs].readAs(i32);
+                    const rhs = s[inst.rhs].readAs(i32);
+                    if (rhs == 0) return .{ .trap = Trap.fromTrapCode(.IntegerDivisionByZero) };
+                    // INT_MIN % -1 == 0 per Wasm spec (no trap)
+                    if (lhs == std.math.minInt(i32) and rhs == -1) {
+                        call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, 0));
+                    } else {
+                        call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@rem(lhs, rhs));
+                    }
+                },
+                .i32_rem_u => |inst| {
+                    const s = call_stack.items[frame_idx].slots;
+                    const lhs = s[inst.lhs].readAs(u32);
+                    const rhs = s[inst.rhs].readAs(u32);
+                    if (rhs == 0) return .{ .trap = Trap.fromTrapCode(.IntegerDivisionByZero) };
+                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, @bitCast(lhs % rhs)));
+                },
+                .i32_and => |inst| {
+                    const s = call_stack.items[frame_idx].slots;
+                    const lhs = s[inst.lhs].readAs(i32);
+                    const rhs = s[inst.rhs].readAs(i32);
+                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(lhs & rhs);
+                },
+                .i32_or => |inst| {
+                    const s = call_stack.items[frame_idx].slots;
+                    const lhs = s[inst.lhs].readAs(i32);
+                    const rhs = s[inst.rhs].readAs(i32);
+                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(lhs | rhs);
+                },
+                .i32_xor => |inst| {
+                    const s = call_stack.items[frame_idx].slots;
+                    const lhs = s[inst.lhs].readAs(i32);
+                    const rhs = s[inst.rhs].readAs(i32);
+                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(lhs ^ rhs);
+                },
+                .i32_shl => |inst| {
+                    const s = call_stack.items[frame_idx].slots;
+                    const lhs = s[inst.lhs].readAs(i32);
+                    const rhs = s[inst.rhs].readAs(i32);
+                    const shift: u5 = @intCast(@as(u32, @bitCast(rhs)) & 0x1f);
+                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(lhs << shift);
+                },
+                .i32_shr_s => |inst| {
+                    const s = call_stack.items[frame_idx].slots;
+                    const lhs = s[inst.lhs].readAs(i32);
+                    const rhs = s[inst.rhs].readAs(i32);
+                    const shift: u5 = @intCast(@as(u32, @bitCast(rhs)) & 0x1f);
+                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(lhs >> shift);
+                },
+                .i32_shr_u => |inst| {
+                    const s = call_stack.items[frame_idx].slots;
+                    const lhs = s[inst.lhs].readAs(u32);
+                    const rhs = s[inst.rhs].readAs(u32);
+                    const shift: u5 = @intCast(rhs & 0x1f);
+                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, @bitCast(lhs >> shift)));
+                },
+                .i32_rotl => |inst| {
+                    const s = call_stack.items[frame_idx].slots;
+                    const lhs = s[inst.lhs].readAs(u32);
+                    const rhs = s[inst.rhs].readAs(u32);
+                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, @bitCast(std.math.rotl(u32, lhs, rhs & 0x1f))));
+                },
+                .i32_rotr => |inst| {
+                    const s = call_stack.items[frame_idx].slots;
+                    const lhs = s[inst.lhs].readAs(u32);
+                    const rhs = s[inst.rhs].readAs(u32);
+                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, @bitCast(std.math.rotr(u32, lhs, rhs & 0x1f))));
+                },
+                .i32_clz => |inst| {
+                    const src = call_stack.items[frame_idx].slots[inst.src].readAs(u32);
+                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, @intCast(@clz(src))));
+                },
+                .i32_ctz => |inst| {
+                    const src = call_stack.items[frame_idx].slots[inst.src].readAs(u32);
+                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, @intCast(@ctz(src))));
+                },
+                .i32_popcnt => |inst| {
+                    const src = call_stack.items[frame_idx].slots[inst.src].readAs(u32);
+                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, @intCast(@popCount(src))));
+                },
                 .i32_eqz => |inst| {
                     const src = call_stack.items[frame_idx].slots[inst.src].readAs(i32);
                     call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, if (src == 0) 1 else 0));

@@ -32,6 +32,33 @@ pub const Op = union(enum) {
         lhs: Slot,
         rhs: Slot,
     },
+
+    // ── i32 integer division / remainder ────────────────────────────────────────
+    // div_s / rem_s may trap: IntegerDivisionByZero (rhs==0) or IntegerOverflow (INT_MIN/-1).
+    // div_u / rem_u may trap: IntegerDivisionByZero (rhs==0).
+    i32_div_s: struct { dst: Slot, lhs: Slot, rhs: Slot },
+    i32_div_u: struct { dst: Slot, lhs: Slot, rhs: Slot },
+    i32_rem_s: struct { dst: Slot, lhs: Slot, rhs: Slot },
+    i32_rem_u: struct { dst: Slot, lhs: Slot, rhs: Slot },
+
+    // ── i32 bitwise operations ───────────────────────────────────────────────────
+    i32_and: struct { dst: Slot, lhs: Slot, rhs: Slot },
+    i32_or: struct { dst: Slot, lhs: Slot, rhs: Slot },
+    i32_xor: struct { dst: Slot, lhs: Slot, rhs: Slot },
+
+    // ── i32 shift / rotate ───────────────────────────────────────────────────────
+    // Wasm spec: shift amount = rhs & 0x1f (mod 32).
+    i32_shl: struct { dst: Slot, lhs: Slot, rhs: Slot },
+    i32_shr_s: struct { dst: Slot, lhs: Slot, rhs: Slot },
+    i32_shr_u: struct { dst: Slot, lhs: Slot, rhs: Slot },
+    i32_rotl: struct { dst: Slot, lhs: Slot, rhs: Slot },
+    i32_rotr: struct { dst: Slot, lhs: Slot, rhs: Slot },
+
+    // ── i32 unary bit-counting ───────────────────────────────────────────────────
+    i32_clz: struct { dst: Slot, src: Slot },
+    i32_ctz: struct { dst: Slot, src: Slot },
+    i32_popcnt: struct { dst: Slot, src: Slot },
+
     i32_eqz: struct {
         dst: Slot,
         src: Slot,

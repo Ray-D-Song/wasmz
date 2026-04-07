@@ -8,3 +8,4 @@ zig-out/
 playgrounds/
 
 tests/**/*.wasm
+*.wasm
