@@ -97,7 +97,11 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         .i32_ge_s => WasmOp.i32_ge_s,
         .i32_ge_u => WasmOp.i32_ge_u,
         .return_ => WasmOp.ret,
-        else => error.UnsupportedOperator,
+        else => |op| {
+            // print unsupported operator, then return error
+            std.debug.print("UnsupportedOperator: {s}\n", .{@tagName(op)});
+            return error.UnsupportedOperator;
+        },
     };
 }
 
