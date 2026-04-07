@@ -89,6 +89,7 @@ pub fn build(b: *std.Build) void {
     //
     // If neither case applies to you, feel free to delete the declaration you
     // don't need and to put everything under a single module.
+
     const exe = b.addExecutable(.{
         .name = "wasmz",
         .root_module = b.createModule(.{

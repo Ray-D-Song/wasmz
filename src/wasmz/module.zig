@@ -42,6 +42,17 @@ pub const ExportEntry = struct {
     function_index: u32,
 };
 
+/// Metadata for a single imported function, extracted from the Wasm Import Section.
+/// The module_name / func_name slices are owned by the Module allocator.
+pub const ImportedFuncDef = struct {
+    /// The module namespace string (e.g. "env", "wasi_snapshot_preview1").
+    module_name: []const u8,
+    /// The function name within that namespace.
+    func_name: []const u8,
+    /// Index into Module.func_types giving this import's signature.
+    type_index: u32,
+};
+
 /// Global variable compilation result, including mutability and the initial value evaluated from constant expressions.
 pub const GlobalInit = struct {
     mutability: Mutability,
@@ -63,7 +74,6 @@ pub const ModuleCompileError = Allocator.Error ||
     func_type_mod.FuncTypeError ||
     error{
         DuplicateExport,
-        ImportedFunctionCallUnsupported,
         InvalidFunctionTypeIndex,
         InvalidMutability,
         InvalidI32Literal,
@@ -82,15 +92,17 @@ pub const ModuleCompileError = Allocator.Error ||
 /// Compiled WebAssembly module, holding all data required for runtime execution.
 ///
 /// Field descriptions:
-///   - functions:         List of compiled functions, indexed according to the Wasm function index space (imported functions come first).
-///   - func_types:        All function signatures defined in the Type Section.
-///   - exports:           Mapping from export names to ExportEntry, currently only function exports are supported.
-///   - globals:           List of global variables, each containing mutability and the initial value evaluated from constant expressions.
-///   - memory:            Linear memory definition (optional), currently supports at most one memory segment.
-///   - start_function:    Optional start function index (from the Wasm Start Section).
-///                        Per the Wasm spec, this function is automatically called during module instantiation.
-///                        It must have no parameters and no return values.
-///   - import_func_count: Number of imported functions; used to offset func_idx when resolving call targets.
+///   - functions:      List of compiled functions, indexed according to the Wasm function index space (imported functions come first).
+///   - func_types:     All function signatures defined in the Type Section.
+///   - exports:        Mapping from export names to ExportEntry, currently only function exports are supported.
+///   - globals:        List of global variables, each containing mutability and the initial value evaluated from constant expressions.
+///   - memory:         Linear memory definition (optional), currently supports at most one memory segment.
+///   - start_function: Optional start function index (from the Wasm Start Section).
+///                     Per the Wasm spec, this function is automatically called during module instantiation.
+///                     It must have no parameters and no return values.
+///   - imported_funcs: Metadata for every imported function (module_name, func_name, type_index).
+///                     The length of this slice equals the number of imported functions, and the
+///                     func_idx offset for local functions (i.e. local_func_idx = func_idx - imported_funcs.len).
 pub const Module = struct {
     allocator: Allocator,
     functions: []CompiledFunction,
@@ -101,9 +113,9 @@ pub const Module = struct {
     /// Wasm Start Section (optional).
     /// If present, Instance.init will automatically call this function after instantiation.
     start_function: ?u32,
-    /// Number of imported functions. The func_idx in the call instruction includes imported functions,
-    /// local functions' index in functions = func_idx - import_func_count.
-    import_func_count: u32,
+    /// Metadata for each imported function in the order they appear in the Import Section.
+    /// Length == number of imported functions == offset of first local function in `functions`.
+    imported_funcs: []ImportedFuncDef,
 
     /// Compile WebAssembly bytecode into a Module.
     ///
@@ -127,13 +139,24 @@ pub const Module = struct {
         var function_type_indices: std.ArrayListUnmanaged(u32) = .empty;
         defer function_type_indices.deinit(allocator);
 
+        // Temporary list of imported function definitions collected during the first pass.
+        // module_name and func_name strings are duped into `allocator` and will be owned by
+        // the resulting `imported_funcs` slice stored in the Module.
+        var imported_funcs_list: std.ArrayListUnmanaged(ImportedFuncDef) = .empty;
+        errdefer {
+            for (imported_funcs_list.items) |def| {
+                allocator.free(def.module_name);
+                allocator.free(def.func_name);
+            }
+            imported_funcs_list.deinit(allocator);
+        }
+
         var globals_list: std.ArrayListUnmanaged(GlobalInit) = .empty;
         defer globals_list.deinit(allocator);
 
         var exports: std.StringHashMapUnmanaged(ExportEntry) = .empty;
         errdefer deinitExports(allocator, &exports);
 
-        var imported_function_count: usize = 0;
         var memory: ?MemoryDef = null;
         var start_function: ?u32 = null;
 
@@ -147,7 +170,18 @@ pub const Module = struct {
                 },
                 .import_entry => |entry| {
                     if (entry.kind == .function) {
-                        imported_function_count += 1;
+                        // func_type_index is guaranteed non-null for function imports per Wasm spec.
+                        const type_idx = entry.func_type_index orelse return error.InvalidFunctionTypeIndex;
+                        // Dupe the strings so they are owned by the Module allocator.
+                        const mod_name = try allocator.dupe(u8, entry.module);
+                        errdefer allocator.free(mod_name);
+                        const fn_name = try allocator.dupe(u8, entry.field);
+                        errdefer allocator.free(fn_name);
+                        try imported_funcs_list.append(allocator, .{
+                            .module_name = mod_name,
+                            .func_name = fn_name,
+                            .type_index = type_idx,
+                        });
                     }
                 },
                 .function_entry => |entry| {
@@ -185,6 +219,7 @@ pub const Module = struct {
             }
         }
 
+        const imported_function_count = imported_funcs_list.items.len;
         const function_count = imported_function_count + function_type_indices.items.len;
         const functions = try allocator.alloc(CompiledFunction, function_count);
         errdefer {
@@ -196,6 +231,14 @@ pub const Module = struct {
             .ops = .empty,
             .call_args = .empty,
         });
+
+        // Build the import type index slice for FuncTypeResolver:
+        // imported_funcs_list.items[i].type_index gives the type of import i.
+        var import_type_indices_list: std.ArrayListUnmanaged(u32) = .empty;
+        defer import_type_indices_list.deinit(allocator);
+        for (imported_funcs_list.items) |def| {
+            try import_type_indices_list.append(allocator, def.type_index);
+        }
 
         var local_function_index: usize = 0;
         for (payloads) |payload| {
@@ -213,10 +256,12 @@ pub const Module = struct {
                     const reserved_slots = try computeReservedSlots(func_types_list.items[type_index], info);
                     const function_index = imported_function_count + local_function_index;
 
-                    // build function type resolver for looking up callee signatures when translating call instructions
+                    // Build function type resolver for looking up callee signatures when translating call instructions.
+                    // import_type_indices allows the resolver to return signatures for imported functions too.
                     const resolver = FuncTypeResolver{
                         .func_types = func_types_list.items,
                         .type_indices = function_type_indices.items,
+                        .import_type_indices = import_type_indices_list.items,
                         .import_count = imported_function_count,
                     };
 
@@ -246,6 +291,8 @@ pub const Module = struct {
         const globals = try globals_list.toOwnedSlice(allocator);
         errdefer allocator.free(globals);
 
+        const imported_funcs = try imported_funcs_list.toOwnedSlice(allocator);
+
         return .{
             .allocator = allocator,
             .functions = functions,
@@ -254,7 +301,7 @@ pub const Module = struct {
             .globals = globals,
             .memory = memory,
             .start_function = start_function,
-            .import_func_count = @intCast(imported_function_count),
+            .imported_funcs = imported_funcs,
         };
     }
 
@@ -269,6 +316,13 @@ pub const Module = struct {
 
         deinitExports(self.allocator, &self.exports);
         self.allocator.free(self.globals);
+
+        for (self.imported_funcs) |def| {
+            self.allocator.free(def.module_name);
+            self.allocator.free(def.func_name);
+        }
+        self.allocator.free(self.imported_funcs);
+
         self.* = undefined;
     }
 
@@ -435,16 +489,26 @@ pub const Module = struct {
 
 /// Function type resolver: look up function signatures (parameter count, return count) by func_idx.
 ///
-/// Wasm function index space = imported functions + local functions, type_indices only cover local functions.
+/// Wasm function index space = imported functions + local functions.
+/// type_indices covers only local functions; import_type_indices covers only imported functions.
 pub const FuncTypeResolver = struct {
     func_types: []const FuncType,
+    /// Type index for each local (non-imported) function, in order.
     type_indices: []const u32,
+    /// Type index for each imported function, in the order they appear in the Import Section.
+    /// Length must equal import_count.
+    import_type_indices: []const u32,
     import_count: usize,
 
     /// Look up the FuncType by func_idx.
-    /// Returns an error if func_idx refers to an imported function or is out of bounds.
+    /// Returns an error if func_idx is out of bounds.
     pub fn resolve(self: FuncTypeResolver, func_idx: u32) ModuleCompileError!*const FuncType {
-        if (func_idx < self.import_count) return error.ImportedFunctionCallUnsupported;
+        if (func_idx < self.import_count) {
+            // Imported function: look up via import_type_indices.
+            const type_idx = self.import_type_indices[func_idx];
+            if (type_idx >= self.func_types.len) return error.InvalidFunctionTypeIndex;
+            return &self.func_types[type_idx];
+        }
         const local_idx = func_idx - @as(u32, @intCast(self.import_count));
         if (local_idx >= self.type_indices.len) return error.InvalidFunctionTypeIndex;
         const type_idx = self.type_indices[local_idx];
@@ -526,7 +590,7 @@ test "module.compile builds exported function bodies" {
     try std.testing.expectEqual(@as(u32, 0), export_entry.function_index);
 
     var vm = VM.init(std.testing.allocator);
-    const result = (try vm.execute(module.functions[@intCast(export_entry.function_index)], &.{}, &.{}, &.{}, &.{})).ok orelse {
+    const result = (try vm.execute(module.functions[@intCast(export_entry.function_index)], &.{}, &.{}, &.{}, &.{}, &.{})).ok orelse {
         return error.MissingReturnValue;
     };
     try std.testing.expectEqual(@as(i32, 1), result.readAs(i32));

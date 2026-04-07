@@ -1,6 +1,7 @@
 const std = @import("std");
 const ir = @import("../compiler/ir.zig");
 const core = @import("core");
+const host_mod = @import("../wasmz/host.zig");
 
 const CompiledFunction = ir.CompiledFunction;
 const Allocator = std.mem.Allocator;
@@ -8,6 +9,7 @@ pub const RawVal = core.raw.RawVal;
 pub const Global = core.Global;
 pub const Trap = core.Trap;
 pub const TrapCode = core.TrapCode;
+pub const HostFunc = host_mod.HostFunc;
 
 /// VM execute result either be void or Wasm trap
 /// Allocation failures and other host environment errors are still propagated through Zig error unions (Allocator.Error).
@@ -42,11 +44,13 @@ pub const VM = struct {
     /// Execute a compiled function.
     ///
     /// Parameters:
-    ///   func      — The entry-point compiled function body (IR instruction list)
-    ///   params    — Function parameters (filled into slots 0..params.len-1)
-    ///   globals   — Slice of module instance globals (needed for global_get/global_set)
-    ///   memory    — Linear memory slice (byte array; null means the module has no memory)
-    ///   functions — All compiled functions in the module (needed to resolve call targets)
+    ///   func       — The entry-point compiled function body (IR instruction list)
+    ///   params     — Function parameters (filled into slots 0..params.len-1)
+    ///   globals    — Slice of module instance globals (needed for global_get/global_set)
+    ///   memory     — Linear memory slice (byte array; null means the module has no memory)
+    ///   functions  — All compiled functions in the module (needed to resolve call targets)
+    ///   host_funcs — Host-provided functions for imported function slots (index matches Wasm func_idx;
+    ///                length == number of imported functions, same as Module.imported_funcs.len)
     ///
     /// Returns:
     ///   Allocator.Error  — Host memory allocation failure (not a Wasm trap)
@@ -59,6 +63,7 @@ pub const VM = struct {
         globals: []Global,
         memory: []u8,
         functions: []const CompiledFunction,
+        host_funcs: []const HostFunc,
     ) Allocator.Error!ExecResult {
         // ── Initialize entry frame ─────────────────────────────────────────────
         const entry_slots_len: usize = @max(
@@ -227,43 +232,66 @@ pub const VM = struct {
 
                 // ── fn call ────────────────────────────────────────────────────
                 .call => |inst| {
-                    const callee = functions[inst.func_idx];
-
-                    // get caller frame's call_args slice for the callee's parameters
-                    // inst.args_start / args_len point caller frame's call_args
+                    // Collect the argument values from the current (caller) frame.
                     const caller_func = call_stack.items[frame_idx].func;
                     const caller_slots = call_stack.items[frame_idx].slots;
                     const arg_slots = caller_func.call_args.items[inst.args_start .. inst.args_start + inst.args_len];
 
-                    // allocate slots for the callee (at least enough to hold the parameters)
-                    const callee_slots_len: usize = @max(
-                        @as(usize, @intCast(callee.slots_len)),
-                        arg_slots.len,
-                    );
-                    const callee_slots = try self.allocator.alloc(RawVal, callee_slots_len);
-                    // Initialize to zero (unused local variables should be 0)
-                    @memset(callee_slots, std.mem.zeroes(RawVal));
+                    if (inst.func_idx < host_funcs.len) {
+                        // ── Host function call ──────────────────────────────
+                        // Collect params into a temporary slice, call the host function,
+                        // and write the result (if any) back to the caller frame's dst slot.
+                        const host_params = try self.allocator.alloc(RawVal, arg_slots.len);
+                        defer self.allocator.free(host_params);
+                        for (arg_slots, 0..) |arg_slot, i| {
+                            host_params[i] = caller_slots[arg_slot];
+                        }
 
-                    // Copy argument values from caller frame's slots to callee frame's slots 0..n
-                    for (arg_slots, 0..) |arg_slot, i| {
-                        callee_slots[i] = caller_slots[arg_slot];
+                        const host_result = try host_funcs[inst.func_idx].call(host_params, self.allocator);
+                        switch (host_result) {
+                            .trap => |t| return .{ .trap = t },
+                            .ok => |ret_val| {
+                                if (inst.dst) |dst_slot| {
+                                    if (ret_val) |rv| {
+                                        call_stack.items[frame_idx].slots[dst_slot] = rv;
+                                    }
+                                }
+                            },
+                        }
+                    } else {
+                        // ── Local (compiled) function call ──────────────────
+                        const callee = functions[inst.func_idx];
+
+                        // Allocate slots for the callee (at least enough to hold the parameters).
+                        const callee_slots_len: usize = @max(
+                            @as(usize, @intCast(callee.slots_len)),
+                            arg_slots.len,
+                        );
+                        const callee_slots = try self.allocator.alloc(RawVal, callee_slots_len);
+                        // Initialize to zero (unused local variables should be 0).
+                        @memset(callee_slots, std.mem.zeroes(RawVal));
+
+                        // Copy argument values from caller frame's slots to callee frame's slots 0..n.
+                        for (arg_slots, 0..) |arg_slot, i| {
+                            callee_slots[i] = caller_slots[arg_slot];
+                        }
+
+                        // Save dst to a local variable before append, to prevent pointer invalidation after slice reallocation.
+                        const callee_dst = inst.dst;
+
+                        call_stack.append(self.allocator, .{
+                            .func = callee,
+                            .slots = callee_slots,
+                            .pc = 0,
+                            .dst = callee_dst,
+                        }) catch |err| {
+                            self.allocator.free(callee_slots);
+                            return err;
+                        };
+                        // append may cause call_stack.items to be reallocated,
+                        // any previously held pointers (e.g., caller_slots) are invalidated,
+                        // do not dereference them.
                     }
-
-                    // Save dst to a local variable before append, to prevent pointer invalidation after slice reallocation
-                    const callee_dst = inst.dst;
-
-                    call_stack.append(self.allocator, .{
-                        .func = callee,
-                        .slots = callee_slots,
-                        .pc = 0,
-                        .dst = callee_dst,
-                    }) catch |err| {
-                        self.allocator.free(callee_slots);
-                        return err;
-                    };
-                    // append may cause call_stack.items to be reallocated,
-                    // any previously held pointers (e.g., caller_slots) are invalidated,
-                    // do not dereference them.
                 },
 
                 // ── Memory load ──────────────────────────────────────────────────────────

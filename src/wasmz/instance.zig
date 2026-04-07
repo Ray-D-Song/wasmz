@@ -2,15 +2,16 @@
 ///
 /// Instance is a runtime instantiation of a Module, containing the mutable state during execution.
 /// It is created from a compiled Module and holds:
-///   - globals: an array of global variables copied and initialized from module.globals
-///   - memory:  linear memory allocated based on module.memory.min_pages
+///   - globals:    an array of global variables copied and initialized from module.globals
+///   - memory:     linear memory allocated based on module.memory.min_pages
+///   - host_funcs: resolved host functions for each imported function slot
 ///
-/// TODO: support imports and exports
 /// TODO: make Instance reference-counted (Arc) to allow sharing between multiple contexts (e.g. threads).
 const std = @import("std");
 const core = @import("core");
 const store_mod = @import("./store.zig");
 const module_mod = @import("./module.zig");
+const host_mod = @import("./host.zig");
 const vm_mod = @import("../vm/mod.zig");
 
 const Allocator = std.mem.Allocator;
@@ -26,12 +27,16 @@ pub const Trap = vm_mod.Trap;
 pub const TrapCode = vm_mod.TrapCode;
 /// Instance.call result: either a normal return (with optional value for void functions) or a Wasm trap
 pub const ExecResult = vm_mod.ExecResult;
+pub const HostFunc = host_mod.HostFunc;
+pub const Imports = host_mod.Imports;
 
 /// The number of bytes in a single WebAssembly memory page (64 KiB).
 const WASM_PAGE_SIZE: usize = 65536;
 
 pub const InstanceError = Allocator.Error || error{
     ExportNotFound,
+    /// A function import required by the module was not provided in the Imports map
+    ImportNotSatisfied,
     /// Start function index overflows the number of functions in the module
     InvalidStartFunctionIndex,
     /// Start function returns a value, which violates the Wasm specification that start functions must be void
@@ -50,15 +55,18 @@ pub const Instance = struct {
     /// Linear memory, allocated based on module.memory.min_pages * WASM_PAGE_SIZE.
     /// If the module has no memory section, this will be an empty slice.
     memory: []u8,
+    /// Resolved host functions for each imported function slot, in the same order as module.imported_funcs.
+    /// Length == module.imported_funcs.len.
+    host_funcs: []HostFunc,
 
     /// Instantiate a Module.
     ///
     /// Parameters:
     ///   store   — The runtime context holding the allocator and engine.
     ///   module  — A compiled read-only Module (the caller is responsible for its lifetime).
-    ///   imports — Not used now, pass void.
-    pub fn init(store: *Store, module: *const Module, imports: anytype) InstanceError!Instance {
-        _ = imports;
+    ///   imports — Host-provided functions satisfying the module's imports.
+    ///             Pass `Imports.empty` for modules with no imports.
+    pub fn init(store: *Store, module: *const Module, imports: Imports) InstanceError!Instance {
         const allocator = store.allocator;
 
         // ── 1. copy globals ──────────────────────────────────────────
@@ -79,8 +87,21 @@ pub const Instance = struct {
             @memset(buf, 0);
             break :blk buf;
         } else &[0]u8{};
+        errdefer if (memory.len > 0) allocator.free(memory);
 
-        // ── 3. call start function (if exists)─────────────────────────────────────
+        // ── 3. resolve host functions ────────────────────────────────────────────
+        // Build a flat slice parallel to module.imported_funcs, looking up each
+        // import by (module_name, func_name) in the provided Imports map.
+        const host_funcs = try allocator.alloc(HostFunc, module.imported_funcs.len);
+        errdefer allocator.free(host_funcs);
+
+        for (module.imported_funcs, 0..) |def, i| {
+            const hf = imports.get(def.module_name, def.func_name) orelse
+                return error.ImportNotSatisfied;
+            host_funcs[i] = hf;
+        }
+
+        // ── 4. call start function (if exists) ──────────────────────────────────
         // Wasm specification: The function specified in the Start Section is automatically executed during instantiation, with no parameters and no return value.
         if (module.start_function) |start_idx| {
             if (start_idx >= module.functions.len) {
@@ -88,7 +109,7 @@ pub const Instance = struct {
             }
             const start_func = module.functions[start_idx];
             var vm = VM.init(store.allocator);
-            const exec_r = try vm.execute(start_func, &.{}, globals, memory, module.functions);
+            const exec_r = try vm.execute(start_func, &.{}, globals, memory, module.functions, host_funcs);
             switch (exec_r) {
                 // start function triggered a trap: instantiation failed
                 .trap => return error.StartFunctionTrapped,
@@ -102,6 +123,7 @@ pub const Instance = struct {
             .module = module,
             .globals = globals,
             .memory = memory,
+            .host_funcs = host_funcs,
         };
     }
 
@@ -112,6 +134,7 @@ pub const Instance = struct {
         if (self.memory.len > 0) {
             allocator.free(self.memory);
         }
+        allocator.free(self.host_funcs);
         self.* = undefined;
     }
 
@@ -130,7 +153,7 @@ pub const Instance = struct {
         const export_entry = self.module.exports.get(name) orelse return error.ExportNotFound;
         const func = self.module.functions[export_entry.function_index];
         var vm = VM.init(self.store.allocator);
-        return vm.execute(func, args, self.globals, self.memory, self.module.functions);
+        return vm.execute(func, args, self.globals, self.memory, self.module.functions, self.host_funcs);
     }
 };
 
@@ -158,7 +181,7 @@ test "Instance.call executes exported function end-to-end" {
     var module = try Module.compile(engine, &add_wasm);
     defer module.deinit();
 
-    var instance = try Instance.init(&store, &module, {});
+    var instance = try Instance.init(&store, &module, Imports.empty);
     defer instance.deinit();
 
     const args = [_]RawVal{
@@ -208,7 +231,7 @@ test "Instance.init allocates globals and memory" {
     var module = try Module.compile(engine, &wasm);
     defer module.deinit();
 
-    var instance = try Instance.init(&store, &module, {});
+    var instance = try Instance.init(&store, &module, Imports.empty);
     defer instance.deinit();
 
     // Verify that globals are correctly copied
@@ -247,7 +270,7 @@ test "Instance.init with no memory section" {
     var module = try Module.compile(engine, &wasm);
     defer module.deinit();
 
-    var instance = try Instance.init(&store, &module, {});
+    var instance = try Instance.init(&store, &module, Imports.empty);
     defer instance.deinit();
 
     try testing.expectEqual(@as(usize, 0), instance.globals.len);
@@ -305,7 +328,7 @@ test "Instance.call supports inter-function calls (double via add)" {
     var module = try Module.compile(engine, &wasm);
     defer module.deinit();
 
-    var instance = try Instance.init(&store, &module, {});
+    var instance = try Instance.init(&store, &module, Imports.empty);
     defer instance.deinit();
 
     const args = [_]RawVal{RawVal.from(@as(i32, 7))};
@@ -368,7 +391,7 @@ test "Instance.init auto-calls start function" {
     // start_function field should be parsed as 0
     try testing.expectEqual(@as(?u32, 0), module.start_function);
 
-    var instance = try Instance.init(&store, &module, {});
+    var instance = try Instance.init(&store, &module, Imports.empty);
     defer instance.deinit();
 
     // start function has been automatically executed during instantiation, global 0 value should be 42
@@ -427,7 +450,7 @@ test "Instance.call: i32.store and i32.load round-trip" {
     var module = try Module.compile(engine, &wasm);
     defer module.deinit();
 
-    var instance = try Instance.init(&store, &module, {});
+    var instance = try Instance.init(&store, &module, Imports.empty);
     defer instance.deinit();
 
     // store 0xDEADBEEF at address 8, then load it back
@@ -481,7 +504,7 @@ test "Instance.call: i32.store8, i32.load8_u, i32.load8_s" {
     var module = try Module.compile(engine, &wasm);
     defer module.deinit();
 
-    var instance = try Instance.init(&store, &module, {});
+    var instance = try Instance.init(&store, &module, Imports.empty);
     defer instance.deinit();
 
     // store 0xFF (= -1 signed, 255 unsigned) at address 4
@@ -538,7 +561,7 @@ test "Instance.call: memory out-of-bounds returns trap" {
     var module = try Module.compile(engine, &wasm);
     defer module.deinit();
 
-    var instance = try Instance.init(&store, &module, {});
+    var instance = try Instance.init(&store, &module, Imports.empty);
     defer instance.deinit();
 
     // address 65533 + 4 bytes = 65537 > 65536: out of bounds
@@ -546,4 +569,174 @@ test "Instance.call: memory out-of-bounds returns trap" {
     const exec_r = try instance.call("f", &.{oob_addr});
     // Expect a trap, trap code should be MemoryOutOfBounds
     try testing.expectEqual(TrapCode.MemoryOutOfBounds, exec_r.trap.trapCode().?);
+}
+
+// ── Host function import tests ────────────────────────────────────────────────
+
+test "Instance: host function import (env.add_one) is called correctly" {
+    // WAT:
+    //   (module
+    //     (type (;0;) (func (param i32) (result i32)))
+    //     (import "env" "add_one" (func (type 0)))   ;; func[0] = import
+    //     (func (type 0)                              ;; func[1] = local
+    //       local.get 0
+    //       call 0)
+    //     (export "run" (func 1))
+    //   )
+    const testing_mod = std.testing;
+    const engine_mod = @import("../engine/mod.zig");
+    const config_mod = @import("../engine/config.zig");
+
+    var engine = try engine_mod.Engine.init(testing_mod.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = Store.init(testing_mod.allocator, engine);
+    defer store.deinit();
+
+    // Wasm binary for the module described above.
+    const wasm = [_]u8{
+        // magic + version
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+        // type section: type[0] = (i32)->i32
+        0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f,
+        // import section: "env"."add_one" kind=func type=0
+        0x02, 0x0f, 0x01,
+        0x03, 0x65, 0x6e, 0x76, // module = "env"
+        0x07, 0x61, 0x64, 0x64, 0x5f, 0x6f, 0x6e, 0x65, // field = "add_one"
+        0x00, 0x00, // kind=function, type_index=0
+        // function section: func[1] = type[0]
+        0x03, 0x02,
+        0x01, 0x00,
+        // export section: "run" -> func[1]
+        0x07, 0x07,
+        0x01, 0x03,
+        0x72, 0x75,
+        0x6e, 0x00,
+        0x01,
+        // code section: 1 body (local.get 0; call 0; end)
+        0x0a,
+        0x08, 0x01,
+        0x06, 0x00,
+        0x20, 0x00,
+        0x10, 0x00,
+        0x0b,
+    };
+
+    var module = try Module.compile(engine, &wasm);
+    defer module.deinit();
+
+    // Verify the import is recorded in module metadata.
+    try testing_mod.expectEqual(@as(usize, 1), module.imported_funcs.len);
+    try testing_mod.expectEqualStrings("env", module.imported_funcs[0].module_name);
+    try testing_mod.expectEqualStrings("add_one", module.imported_funcs[0].func_name);
+
+    // Host implementation: returns param + 1.
+    const HostCtx = struct {
+        fn add_one(
+            _: ?*anyopaque,
+            params: []const RawVal,
+            _: std.mem.Allocator,
+        ) std.mem.Allocator.Error!ExecResult {
+            const x = params[0].readAs(i32);
+            return .{ .ok = RawVal.from(x + 1) };
+        }
+    };
+
+    var imports = Imports.empty;
+    defer imports.deinit(testing_mod.allocator);
+    try imports.define(
+        testing_mod.allocator,
+        "env",
+        "add_one",
+        HostFunc{ .ctx = null, .func = HostCtx.add_one },
+    );
+
+    var instance = try Instance.init(&store, &module, imports);
+    defer instance.deinit();
+
+    // Calling "run" with 41 should return 42 (host adds 1).
+    const exec_r = try instance.call("run", &.{RawVal.from(@as(i32, 41))});
+    const result = exec_r.ok orelse return error.MissingReturnValue;
+    try testing_mod.expectEqual(@as(i32, 42), result.readAs(i32));
+}
+
+test "Instance: host function trap propagates to caller" {
+    // Same Wasm module as the previous test.
+    const testing_mod = std.testing;
+    const engine_mod = @import("../engine/mod.zig");
+    const config_mod = @import("../engine/config.zig");
+
+    var engine = try engine_mod.Engine.init(testing_mod.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = Store.init(testing_mod.allocator, engine);
+    defer store.deinit();
+
+    const wasm = [_]u8{
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+        0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f,
+        0x02, 0x0f, 0x01, 0x03, 0x65, 0x6e, 0x76, 0x07,
+        0x61, 0x64, 0x64, 0x5f, 0x6f, 0x6e, 0x65, 0x00,
+        0x00, 0x03, 0x02, 0x01, 0x00, 0x07, 0x07, 0x01,
+        0x03, 0x72, 0x75, 0x6e, 0x00, 0x01, 0x0a, 0x08,
+        0x01, 0x06, 0x00, 0x20, 0x00, 0x10, 0x00, 0x0b,
+    };
+
+    var module = try Module.compile(engine, &wasm);
+    defer module.deinit();
+
+    // Host implementation: always traps.
+    const HostCtx = struct {
+        fn always_trap(
+            _: ?*anyopaque,
+            _: []const RawVal,
+            _: std.mem.Allocator,
+        ) std.mem.Allocator.Error!ExecResult {
+            return .{ .trap = Trap.fromTrapCode(.UnreachableCodeReached) };
+        }
+    };
+
+    var imports = Imports.empty;
+    defer imports.deinit(testing_mod.allocator);
+    try imports.define(
+        testing_mod.allocator,
+        "env",
+        "add_one",
+        HostFunc{ .ctx = null, .func = HostCtx.always_trap },
+    );
+
+    var instance = try Instance.init(&store, &module, imports);
+    defer instance.deinit();
+
+    const exec_r = try instance.call("run", &.{RawVal.from(@as(i32, 0))});
+    try testing_mod.expectEqual(TrapCode.UnreachableCodeReached, exec_r.trap.trapCode().?);
+}
+
+test "Instance.init returns ImportNotSatisfied when import is missing" {
+    // Same Wasm module that requires env.add_one, but we pass Imports.empty.
+    const testing_mod = std.testing;
+    const engine_mod = @import("../engine/mod.zig");
+    const config_mod = @import("../engine/config.zig");
+
+    var engine = try engine_mod.Engine.init(testing_mod.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = Store.init(testing_mod.allocator, engine);
+    defer store.deinit();
+
+    const wasm = [_]u8{
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+        0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f,
+        0x02, 0x0f, 0x01, 0x03, 0x65, 0x6e, 0x76, 0x07,
+        0x61, 0x64, 0x64, 0x5f, 0x6f, 0x6e, 0x65, 0x00,
+        0x00, 0x03, 0x02, 0x01, 0x00, 0x07, 0x07, 0x01,
+        0x03, 0x72, 0x75, 0x6e, 0x00, 0x01, 0x0a, 0x08,
+        0x01, 0x06, 0x00, 0x20, 0x00, 0x10, 0x00, 0x0b,
+    };
+
+    var module = try Module.compile(engine, &wasm);
+    defer module.deinit();
+
+    const result = Instance.init(&store, &module, Imports.empty);
+    try testing_mod.expectError(error.ImportNotSatisfied, result);
 }

@@ -27,6 +27,7 @@ const Module = wasmz.Module;
 const Store = wasmz.Store;
 const Instance = wasmz.Instance;
 const RawVal = wasmz.RawVal;
+const Imports = wasmz.Imports;
 
 pub fn main() void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -99,7 +100,28 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     var store = Store.init(allocator, engine);
     defer store.deinit();
 
-    var instance = Instance.init(&store, &module, {}) catch |err| {
+    var imports = Imports.empty;
+    imports.define(allocator, "env", "host_print_i32", .{
+        .ctx = null,
+        .func = struct {
+            fn call(
+                _: ?*anyopaque,
+                params: []const RawVal,
+                _: std.mem.Allocator,
+            ) std.mem.Allocator.Error!wasmz.ExecResult {
+                // Wasm type validation guarantees exactly 1 i32 param at compile time.
+                const val = params[0].readAs(i32);
+                std.debug.print("host_print_i32: {d}\n", .{val});
+                return .{ .ok = null };
+            }
+        }.call,
+    }) catch |err| {
+        std.debug.print("error: Failed to define host function: {s}\n", .{@errorName(err)});
+        std.process.exit(1);
+    };
+    defer imports.deinit(allocator);
+
+    var instance = Instance.init(&store, &module, imports) catch |err| {
         std.debug.print("error: Failed to instantiate module: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
