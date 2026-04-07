@@ -81,11 +81,14 @@ pub const ModuleCompileError = Allocator.Error ||
 /// Compiled WebAssembly module, holding all data required for runtime execution.
 ///
 /// Field descriptions:
-///   - functions:  List of compiled functions, indexed according to the Wasm function index space (imported functions come first).
-///   - func_types: All function signatures defined in the Type Section.
-///   - exports:    Mapping from export names to ExportEntry, currently only function exports are supported.
-///   - globals:    List of global variables, each containing mutability and the initial value evaluated from constant expressions.
-///   - memory:     Linear memory definition (optional), currently supports at most one memory segment.
+///   - functions:       List of compiled functions, indexed according to the Wasm function index space (imported functions come first).
+///   - func_types:      All function signatures defined in the Type Section.
+///   - exports:         Mapping from export names to ExportEntry, currently only function exports are supported.
+///   - globals:         List of global variables, each containing mutability and the initial value evaluated from constant expressions.
+///   - memory:          Linear memory definition (optional), currently supports at most one memory segment.
+///   - start_function:  Optional start function index (from the Wasm Start Section).
+///                      Per the Wasm spec, this function is automatically called during module instantiation.
+///                      It must have no parameters and no return values.
 pub const Module = struct {
     allocator: Allocator,
     functions: []CompiledFunction,
@@ -93,6 +96,9 @@ pub const Module = struct {
     exports: std.StringHashMapUnmanaged(ExportEntry),
     globals: []GlobalInit,
     memory: ?MemoryDef,
+    /// Optional start function index (from the Wasm Start Section).
+    /// If present, Instance.init will automatically call this function after instantiation.
+    start_function: ?u32,
 
     /// Compile WebAssembly bytecode into a Module.
     ///
@@ -124,6 +130,7 @@ pub const Module = struct {
 
         var imported_function_count: usize = 0;
         var memory: ?MemoryDef = null;
+        var start_function: ?u32 = null;
 
         for (payloads) |payload| {
             switch (payload) {
@@ -164,6 +171,10 @@ pub const Module = struct {
                         ),
                         else => {},
                     }
+                },
+                // Wasm Start Section: record the start function index, automatically called by Instance.init
+                .start_entry => |entry| {
+                    start_function = entry.index;
                 },
                 else => {},
             }
@@ -227,6 +238,7 @@ pub const Module = struct {
             .exports = exports,
             .globals = globals,
             .memory = memory,
+            .start_function = start_function,
         };
     }
 

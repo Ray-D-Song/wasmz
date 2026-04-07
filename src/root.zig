@@ -1,19 +1,19 @@
-//! By convention, root.zig is the root source file when making a library.
-const std = @import("std");
+/// wasmz public API entry
+///
+/// External consumers can access the following types via `@import("wasmz")`:
+///   - Engine / Config  : Runtime engine and configuration
+///   - Module           : Compiled Wasm module (read-only)
+///   - Store            : Runtime context holding allocator and Engine
+///   - Instance         : Runtime instance of the module (including globals / memory)
+///   - RawVal           : Generic value type (i32/i64/f32/f64 all stored as u64)
+pub const Engine = @import("engine/mod.zig").Engine;
+pub const Config = @import("engine/config.zig").Config;
+pub const Module = @import("wasmz/module.zig").Module;
+pub const Store = @import("wasmz/store.zig").Store;
+pub const Instance = @import("wasmz/instance.zig").Instance;
+pub const RawVal = @import("wasmz/instance.zig").RawVal;
 
-pub fn bufferedPrint() !void {
-    // Stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    var stdout_buffer: [1024]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
-
-    try stdout.flush(); // Don't forget to flush!
-}
-
+// Include all submodule tests in the coverage of `zig build test`
 test {
     _ = @import("engine/func_ty.zig");
     _ = @import("wasmz/module.zig");
