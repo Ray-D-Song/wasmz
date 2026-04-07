@@ -7,7 +7,7 @@ const lower_mod = @import("../../compiler/lower.zig");
 const ir_mod = @import("../../compiler/ir.zig");
 const vm_mod = @import("../../vm/mod.zig");
 const module_mod = @import("../../wasmz/module.zig");
-const value_type_mod = @import("../../core/value/type.zig");
+const core = @import("core");
 
 const Parser = parser_mod.Parser;
 const Type = payload_mod.Type;
@@ -16,16 +16,19 @@ const WasmOp = lower_mod.WasmOp;
 const CompiledFunction = ir_mod.CompiledFunction;
 const VM = vm_mod.VM;
 const RawVal = vm_mod.RawVal;
-const ValType = value_type_mod.ValType;
+const ValType = core.ValType;
 const compileFunctionBody = module_mod.compileFunctionBody;
 
 const simple_add_wasm: []const u8 = @embedFile("fixtures/simple_add.wasm");
 const local_tee_wasm = [_]u8{
     0x00, 0x61, 0x73, 0x6d,
     0x01, 0x00, 0x00, 0x00,
-    0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f,
+    0x01, 0x06, 0x01, 0x60,
+    0x01, 0x7f, 0x01, 0x7f,
     0x03, 0x02, 0x01, 0x00,
-    0x0a, 0x08, 0x01, 0x06, 0x00, 0x20, 0x00, 0x22, 0x00, 0x0b,
+    0x0a, 0x08, 0x01, 0x06,
+    0x00, 0x20, 0x00, 0x22,
+    0x00, 0x0b,
 };
 
 const ParsedFunction = struct {
@@ -290,7 +293,7 @@ test "if-else selects correct branch at runtime" {
 
     const ops = [_]WasmOp{
         .{ .local_get = 0 },
-        .{ .if_ = .i32 },
+        .{ .if_ = .I32 },
         .{ .i32_const = 10 },
         .else_,
         .{ .i32_const = 20 },

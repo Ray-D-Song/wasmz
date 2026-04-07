@@ -1,10 +1,10 @@
 const std = @import("std");
 const ir = @import("../compiler/ir.zig");
-const raw_mod = @import("../core/raw.zig");
+const core = @import("core");
 
 const CompiledFunction = ir.CompiledFunction;
 const Allocator = std.mem.Allocator;
-pub const RawVal = raw_mod.RawVal;
+pub const RawVal = core.raw.RawVal;
 
 pub const Frame = struct {
     slots: []RawVal,

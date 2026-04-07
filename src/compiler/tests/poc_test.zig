@@ -473,7 +473,7 @@ test "lower if-else selects correct branch" {
 
     const ops = [_]WasmOp{
         .{ .local_get = 0 },
-        .{ .if_ = .i32 },
+        .{ .if_ = .I32 },
         .{ .i32_const = 10 },
         .else_,
         .{ .i32_const = 20 },
@@ -512,7 +512,6 @@ test "lower if-else selects correct branch" {
         else => return error.UnexpectedOpTag,
     }
 }
-
 
 test "lower loop with br_if: IR structure has backward jump" {
     // Wasm equivalent (count down from param 0 to 0, returns 0):

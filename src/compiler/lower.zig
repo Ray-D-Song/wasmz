@@ -8,11 +8,13 @@
 const std = @import("std");
 const ir = @import("./ir.zig");
 const ValueStack = @import("./value_stack.zig").ValueStack;
+const core = @import("core");
 
 const Allocator = std.mem.Allocator;
 const Slot = ir.Slot;
 const Op = ir.Op;
 const CompiledFunction = ir.CompiledFunction;
+const ValType = core.ValType;
 
 pub const LowerError = error{
     StackUnderflow,
@@ -75,8 +77,10 @@ pub const WasmOp = union(enum) {
     ret,
 };
 
-/// The optional type carried by block/loop/if.  null means void (no result).
-pub const BlockType = enum { i32 };
+/// Block/loop/if result type. null means void (no result).
+/// TODO: support multi-value block types (positive type index referencing the Type Section),
+/// which require a union(enum) { val_type: ValType, type_index: u32 } instead of a plain alias.
+pub const BlockType = ValType;
 
 // ── Lowering pass ─────────────────────────────────────────────────────────────
 

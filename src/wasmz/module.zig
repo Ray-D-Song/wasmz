@@ -14,11 +14,12 @@ const engine_mod = @import("../engine/mod.zig");
 const lower_mod = @import("../compiler/lower.zig");
 const translate_mod = @import("../compiler/translate.zig");
 const ir = @import("../compiler/ir.zig");
-const func_type_mod = @import("../core/func_type.zig");
-const global_mod = @import("../core/global.zig");
-const raw_mod = @import("../core/raw.zig");
-const typed_mod = @import("../core/typed.zig");
-const value_type_mod = @import("../core/value/type.zig");
+const core = @import("core");
+const func_type_mod = core.func_type;
+const global_mod = core.global;
+const raw_mod = core.raw;
+const typed_mod = core.typed;
+const value_type_mod = core.value_type;
 
 const Allocator = std.mem.Allocator;
 const Parser = parser_mod.Parser;
@@ -35,8 +36,6 @@ const TypedRawVal = typed_mod.TypedRawVal;
 const ValType = value_type_mod.ValType;
 const Engine = engine_mod.Engine;
 const Lower = lower_mod.Lower;
-const WasmOp = lower_mod.WasmOp;
-const BlockType = lower_mod.BlockType;
 
 // TODO: Currently only supports function exports; other export kinds (memory, global, table) are ignored.
 pub const ExportEntry = struct {

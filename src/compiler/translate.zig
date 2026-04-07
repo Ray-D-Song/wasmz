@@ -6,13 +6,13 @@
 const std = @import("std");
 const payload_mod = @import("payload");
 const lower_mod = @import("./lower.zig");
-const value_type_mod = @import("../core/value/type.zig");
+const core = @import("core");
 
 const OperatorInformation = payload_mod.OperatorInformation;
 const Type = payload_mod.Type;
 const WasmOp = lower_mod.WasmOp;
 const BlockType = lower_mod.BlockType;
-const ValType = value_type_mod.ValType;
+const ValType = core.ValType;
 
 pub const TranslateError = error{
     UnsupportedFunctionType,
@@ -50,14 +50,15 @@ pub fn wasmValTypeFromType(typ: Type) TranslateError!ValType {
 }
 
 /// Translates a Wasm block type (optional Type) into a BlockType used by Lower.
-/// empty_block_type corresponds to null (void block), currently only i32 result type blocks are additionally supported.
+/// empty_block_type (0x40) corresponds to null (void block).
+/// All single-value types are delegated to wasmValTypeFromType.
+/// TODO: support multi-value block types (positive type index referencing the Type Section).
 pub fn wasmBlockTypeFromType(block_type: ?Type) TranslateError!?BlockType {
     const typ = block_type orelse return error.UnsupportedBlockType;
     return switch (typ) {
         .kind => |kind| switch (kind) {
             .empty_block_type => null,
-            .i32 => .i32,
-            else => error.UnsupportedBlockType,
+            else => try wasmValTypeFromType(typ),
         },
         else => error.UnsupportedBlockType,
     };

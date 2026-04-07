@@ -47,6 +47,13 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // core is the fundmental module of this package, containing the core data structures
+    const core_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const mod = b.addModule("wasmz", .{
         // The root source file is the "entry point" of this module. Users of
         // this module will only be able to access public declarations contained
@@ -62,6 +69,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zigrc", .module = zigrc_mod },
             .{ .name = "parser", .module = parser_mod_dep },
             .{ .name = "payload", .module = payload_mod_dep },
+            .{ .name = "core", .module = core_mod },
         },
     });
 
@@ -209,6 +217,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/compiler/root.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "core", .module = core_mod },
+            },
         }),
     });
     test_step.dependOn(&b.addRunArtifact(compiler_tests).step);

@@ -1,7 +1,8 @@
 const std = @import("std");
 
 const Allocator = std.mem.Allocator;
-const FuncType = @import("../core/func_type.zig").FuncType;
+const core = @import("core");
+const FuncType = core.func_type.FuncType;
 const DedupArenaWithContext = @import("../utils/arena/dedup.zig").DedupArenaWithContext;
 const EngineId = @import("./mod.zig").EngineId;
 const EngineOwned = @import("./mod.zig").EngineOwned;
@@ -98,7 +99,7 @@ pub const FuncTypeRegistry = struct {
 };
 
 test "FuncTypeRegistry deduplicates identical function types" {
-    const ValType = @import("../core/value/type.zig").ValType;
+    const ValType = core.ValType;
 
     var registry = FuncTypeRegistry.init(std.testing.allocator, EngineId.init());
     defer registry.deinit();
