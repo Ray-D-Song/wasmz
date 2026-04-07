@@ -68,6 +68,7 @@ pub fn wasmBlockTypeFromType(block_type: ?Type) TranslateError!?BlockType {
 /// Unsupported opcodes return the UnsupportedOperator error.
 pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
     return switch (info.code) {
+        .unreachable_ => WasmOp.unreachable_,
         .drop => WasmOp.drop,
         .block => WasmOp{ .block = try wasmBlockTypeFromType(info.block_type) },
         .loop => WasmOp{ .loop = try wasmBlockTypeFromType(info.block_type) },

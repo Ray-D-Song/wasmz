@@ -116,6 +116,9 @@ pub const VM = struct {
             };
 
             switch (op) {
+                .unreachable_ => {
+                    return .{ .trap = Trap.fromTrapCode(.UnreachableCodeReached) };
+                },
                 .const_i32 => |inst| {
                     call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(inst.value);
                 },

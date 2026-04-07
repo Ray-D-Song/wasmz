@@ -48,6 +48,7 @@ pub const ControlFrame = struct {
 // ── Input op enum ─────────────────────────────────────────────────────────────
 
 pub const WasmOp = union(enum) {
+    unreachable_,
     drop,
     block: ?BlockType,
     loop: ?BlockType,
@@ -240,6 +241,10 @@ pub const Lower = struct {
 
     pub fn lower_op(self: *Lower, op: WasmOp) !void {
         switch (op) {
+            .unreachable_ => {
+                try self.emit(.unreachable_);
+            },
+
             .drop => {
                 _ = try self.pop_slot();
             },

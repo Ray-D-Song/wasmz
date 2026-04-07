@@ -712,6 +712,47 @@ test "Instance: host function trap propagates to caller" {
     try testing_mod.expectEqual(TrapCode.UnreachableCodeReached, exec_r.trap.trapCode().?);
 }
 
+test "Instance.call: unreachable instruction returns UnreachableCodeReached trap" {
+    // WAT:
+    //   (module
+    //     (func (export "f")
+    //       unreachable)
+    //   )
+    const testing = std.testing;
+    const engine_mod = @import("../engine/mod.zig");
+    const config_mod = @import("../engine/config.zig");
+
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = Store.init(testing.allocator, engine);
+    defer store.deinit();
+
+    const wasm = [_]u8{
+        // magic + version
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+        // type section: 1 type, func () -> ()
+        0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+        // function section: func[0] = type[0]
+        0x03, 0x02,
+        0x01, 0x00,
+        // export section: "f" -> func[0]
+        0x07, 0x05, 0x01, 0x01, 'f',  0x00,
+        0x00,
+        // code section: 1 body, 3 bytes (no locals, unreachable, end)
+        0x0a, 0x05, 0x01, 0x03, 0x00, 0x00, 0x0b,
+    };
+
+    var module = try Module.compile(engine, &wasm);
+    defer module.deinit();
+
+    var instance = try Instance.init(&store, &module, Imports.empty);
+    defer instance.deinit();
+
+    const exec_r = try instance.call("f", &.{});
+    try testing.expectEqual(TrapCode.UnreachableCodeReached, exec_r.trap.trapCode().?);
+}
+
 test "Instance.init returns ImportNotSatisfied when import is missing" {
     // Same Wasm module that requires env.add_one, but we pass Imports.empty.
     const testing_mod = std.testing;

@@ -3,6 +3,8 @@ const std = @import("std");
 pub const Slot = u32;
 
 pub const Op = union(enum) {
+    /// Trap immediately with UnreachableCodeReached
+    unreachable_,
     const_i32: struct {
         dst: Slot,
         value: i32,
