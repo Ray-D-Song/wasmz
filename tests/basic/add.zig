@@ -1,5 +1,3 @@
-const std = @import("std");
-
 extern fn host_print_i32(value: i32) void;
 
 fn add(a: i32, b: i32) i32 {

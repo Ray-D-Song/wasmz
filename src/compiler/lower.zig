@@ -49,6 +49,7 @@ pub const ControlFrame = struct {
 
 pub const WasmOp = union(enum) {
     unreachable_,
+    nop,
     drop,
     block: ?BlockType,
     loop: ?BlockType,
@@ -57,6 +58,9 @@ pub const WasmOp = union(enum) {
     end,
     br: u32,
     br_if: u32,
+    /// br_table: targets is the full slice including the default as the last element.
+    /// targets[0..len-1] are indexed targets; targets[len-1] is the default target.
+    br_table: struct { targets: []const u32 },
     local_get: u32,
     local_set: u32,
     local_tee: u32,
@@ -104,6 +108,14 @@ pub const WasmOp = union(enum) {
         n_params: u32,
         has_result: bool,
     },
+    /// indirect fn call via table.
+    /// n_params / has_result are filled in by the caller (module.zig) after querying the type section entry.
+    call_indirect: struct {
+        type_index: u32,
+        table_index: u32,
+        n_params: u32,
+        has_result: bool,
+    },
 
     // ── Memory load instructions ─────────────────────────────────────────────
     // `offset` is the static immediate offset encoded in the Wasm instruction (memory_address.offset).
@@ -117,6 +129,10 @@ pub const WasmOp = union(enum) {
     i32_store: struct { offset: u32 },
     i32_store8: struct { offset: u32 },
     i32_store16: struct { offset: u32 },
+    /// select: stack [val1, val2, cond] -> if cond != 0 then val1 else val2
+    select,
+    /// select with explicit type annotation (same semantics, type annotation ignored at runtime)
+    select_with_type,
 };
 
 /// Block/loop/if result type. null means void (no result).
@@ -132,6 +148,7 @@ pub const Lower = struct {
         .slots_len = 0,
         .ops = .empty,
         .call_args = .empty,
+        .br_table_targets = .empty,
     },
     stack: ValueStack = .{},
     next_slot: Slot = 0,
@@ -149,6 +166,7 @@ pub const Lower = struct {
                 .slots_len = reserved_slots,
                 .ops = .empty,
                 .call_args = .empty,
+                .br_table_targets = .empty,
             },
             .next_slot = reserved_slots,
         };
@@ -158,6 +176,7 @@ pub const Lower = struct {
         self.stack.deinit(self.allocator);
         self.compiled.ops.deinit(self.allocator);
         self.compiled.call_args.deinit(self.allocator);
+        self.compiled.br_table_targets.deinit(self.allocator);
         for (self.control_stack.items) |*frame| {
             frame.patch_sites.deinit(self.allocator);
         }
@@ -220,12 +239,20 @@ pub const Lower = struct {
     }
 
     /// Fill in all forward-jump targets in `frame` to point to `target_pc`.
+    /// Patch sites with bit 31 set encode br_table_targets indices (bit 31 cleared gives the index).
+    /// All other sites are op indices for jump / jump_if_z ops.
     fn patch_forward_jumps(self: *Lower, frame: *ControlFrame, target_pc: u32) void {
         for (frame.patch_sites.items) |site| {
-            switch (self.compiled.ops.items[site]) {
-                .jump => |*j| j.target = target_pc,
-                .jump_if_z => |*j| j.target = target_pc,
-                else => unreachable,
+            if (site & 0x8000_0000 != 0) {
+                // br_table_targets patch site
+                const tgt_idx = site & 0x7FFF_FFFF;
+                self.compiled.br_table_targets.items[tgt_idx] = target_pc;
+            } else {
+                switch (self.compiled.ops.items[site]) {
+                    .jump => |*j| j.target = target_pc,
+                    .jump_if_z => |*j| j.target = target_pc,
+                    else => unreachable,
+                }
             }
         }
         frame.patch_sites.clearRetainingCapacity();
@@ -262,6 +289,10 @@ pub const Lower = struct {
         switch (op) {
             .unreachable_ => {
                 try self.emit(.unreachable_);
+            },
+
+            .nop => {
+                // No-op: nothing to emit.
             },
 
             .drop => {
@@ -426,6 +457,68 @@ pub const Lower = struct {
                 switch (self.compiled.ops.items[jiz_pc]) {
                     .jump_if_z => |*j| j.target = continue_pc,
                     else => unreachable,
+                }
+            },
+
+            .br_table => |inst| {
+                // inst.targets slice: [depth_0, depth_1, ..., depth_n-1, default_depth]
+                // Length is n_indexed + 1. Last entry is always the default.
+                const index_slot = try self.pop_slot();
+                const all_targets = inst.targets;
+                const n_indexed: u32 = if (all_targets.len > 0) @intCast(all_targets.len - 1) else 0;
+                const default_depth = if (all_targets.len > 0) all_targets[all_targets.len - 1] else 0;
+
+                // Record where our entries start in br_table_targets.
+                const targets_start: u32 = @intCast(self.compiled.br_table_targets.items.len);
+
+                // Helper closure (inline): for a given depth, emit optional copy and record target.
+                // For loop targets: target PC is known immediately (backward).
+                // For block/if targets: append placeholder 0 and record a patch site.
+                const reserve_and_patch = struct {
+                    fn run(
+                        l: *Lower,
+                        depth: u32,
+                    ) !void {
+                        const f = try l.frame_at_depth(depth);
+                        // Copy result into the frame's result slot (if any).
+                        if (f.result_slot) |rs| {
+                            if (l.stack.peek()) |src| {
+                                try l.emit(.{ .copy = .{ .dst = rs, .src = src } });
+                            }
+                        }
+                        if (f.kind == .loop) {
+                            try l.compiled.br_table_targets.append(l.allocator, f.target_pc);
+                        } else {
+                            const tgt_idx: u32 = @intCast(l.compiled.br_table_targets.items.len);
+                            try l.compiled.br_table_targets.append(l.allocator, 0); // placeholder
+                            // Encode as a br_table_targets patch site (bit 31 set).
+                            try l.add_patch_site(f, 0x8000_0000 | tgt_idx);
+                        }
+                    }
+                }.run;
+
+                // Process indexed arms.
+                for (all_targets[0..n_indexed]) |depth| {
+                    try reserve_and_patch(self, depth);
+                }
+                // Process default arm (at br_table_targets[targets_start + n_indexed]).
+                try reserve_and_patch(self, default_depth);
+
+                // Emit the jump_table op. Indexed targets: [targets_start .. targets_start + n_indexed],
+                // Default at br_table_targets[targets_start + n_indexed].
+                try self.emit(.{ .jump_table = .{
+                    .index = index_slot,
+                    .targets_start = targets_start,
+                    .targets_len = n_indexed,
+                } });
+
+                // After br_table, the rest of the block is unreachable.
+                // Restore the stack to the outermost frame's height.
+                if (self.control_stack.items.len > 0) {
+                    const outermost = self.control_stack.items[0];
+                    self.stack.slots.shrinkRetainingCapacity(outermost.stack_height);
+                } else {
+                    self.stack.slots.shrinkRetainingCapacity(0);
                 }
             },
 
@@ -708,6 +801,38 @@ pub const Lower = struct {
                 if (dst) |s| try self.stack.push(self.allocator, s);
             },
 
+            // ── indirect function call ─────────────────────────────────────────────────
+
+            .call_indirect => |inst| {
+                // Stack: [..., arg0, arg1, ..., argN-1, index]
+                // Pop the runtime table index (TOS), then pop n_params arguments.
+                const index = try self.pop_slot();
+
+                const args_start: u32 = @intCast(self.compiled.call_args.items.len);
+                var i: u32 = 0;
+                while (i < inst.n_params) : (i += 1) {
+                    const slot = try self.pop_slot();
+                    try self.compiled.call_args.append(self.allocator, slot);
+                }
+                // Reverse to match Wasm spec order (first pushed is first)
+                const args = self.compiled.call_args.items[args_start..];
+                std.mem.reverse(Slot, args);
+
+                const dst: ?Slot = if (inst.has_result) self.alloc_slot() else null;
+
+                try self.emit(.{ .call_indirect = .{
+                    .dst = dst,
+                    .index = index,
+                    .type_index = inst.type_index,
+                    .table_index = inst.table_index,
+                    .args_start = args_start,
+                    .args_len = inst.n_params,
+                } });
+
+                // If the call produces a result, push the result slot.
+                if (dst) |s| try self.stack.push(self.allocator, s);
+            },
+
             // ── Memory load ──────────────────────────────────────────────────────────
             // For all load op: pop the address slot, allocate a result slot, emit the corresponding load Op, push the result slot.
 
@@ -760,6 +885,19 @@ pub const Lower = struct {
                 const src = try self.pop_slot();
                 const addr = try self.pop_slot();
                 try self.emit(.{ .i32_store16 = .{ .addr = addr, .src = src, .offset = inst.offset } });
+            },
+
+            // ── select ───────────────────────────────────────────────────────────
+            // Stack order: val1 pushed first, val2 second, cond last (TOS).
+            // Pop cond, then val2, then val1.
+
+            .select, .select_with_type => {
+                const cond = try self.pop_slot();
+                const val2 = try self.pop_slot();
+                const val1 = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .select = .{ .dst = dst, .val1 = val1, .val2 = val2, .cond = cond } });
+                try self.stack.push(self.allocator, dst);
             },
         }
     }

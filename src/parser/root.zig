@@ -1168,10 +1168,13 @@ pub const Parser = struct {
         }
 
         const item_count = self.read_var_uint32();
+        var func_indices: []const u32 = &.{};
         if (is_externval_element_segment_type(segment_type)) {
-            for (0..item_count) |_| {
-                _ = self.read_var_uint32();
+            const indices = self.allocator.alloc(u32, @intCast(item_count)) catch @panic("OOM");
+            for (indices) |*idx| {
+                idx.* = self.read_var_uint32();
             }
+            func_indices = indices;
         } else {
             for (0..item_count) |_| {
                 self.read_code_operator(.expression) catch |err| switch (err) {
@@ -1191,6 +1194,7 @@ pub const Parser = struct {
             .consumed = self.cur_pos - start_pos,
             .payload = .{ .element_segment_body = ElementSegmentBody{
                 .element_type = element_type,
+                .func_indices = func_indices,
             } },
         } };
     }

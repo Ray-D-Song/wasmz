@@ -176,6 +176,42 @@ pub const Op = union(enum) {
         args_start: u32,
         args_len: u32,
     },
+    /// Indirect function call via table.
+    /// The callee function index is read at runtime from tables[table_index][index_slot].
+    /// Runtime checks: TableOutOfBounds, IndirectCallToNull, BadSignature.
+    call_indirect: struct {
+        /// result slot (void functions have null)
+        dst: ?Slot,
+        /// Slot holding the runtime table index (i32, interpreted as u32)
+        index: Slot,
+        /// Type section index — used for runtime signature check
+        type_index: u32,
+        /// Which table to look up (always 0 in MVP)
+        table_index: u32,
+        /// Starting offset of the argument slots in CompiledFunction.call_args
+        args_start: u32,
+        args_len: u32,
+    },
+    /// Conditional select: if cond != 0 write val1 to dst, else write val2 to dst.
+    /// Wasm stack order: val1 pushed first, val2 second, cond last (TOS).
+    select: struct {
+        dst: Slot,
+        val1: Slot,
+        val2: Slot,
+        cond: Slot,
+    },
+    /// Multi-way jump table (br_table lowered form).
+    /// `index` slot holds the branch index. If index >= targets_len, use the default.
+    /// Indexed targets:  br_table_targets[targets_start + 0 .. targets_start + targets_len]
+    /// Default target:   br_table_targets[targets_start + targets_len]
+    /// So total entries reserved = targets_len + 1.
+    jump_table: struct {
+        index: Slot,
+        /// Starting offset into CompiledFunction.br_table_targets
+        targets_start: u32,
+        /// Number of indexed targets (not counting the default)
+        targets_len: u32,
+    },
 };
 
 pub const CompiledFunction = struct {
@@ -184,4 +220,7 @@ pub const CompiledFunction = struct {
     /// All call instruction argument slots are stored here (concatenated in call order).
     /// Op.call indexes into the corresponding argument slot segment using (args_start, args_len).
     call_args: std.ArrayListUnmanaged(Slot),
+    /// Resolved target PCs for jump_table (br_table) ops.
+    /// Each jump_table op indexes into this with (targets_start, targets_len).
+    br_table_targets: std.ArrayListUnmanaged(u32),
 };

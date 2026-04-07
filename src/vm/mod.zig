@@ -44,13 +44,17 @@ pub const VM = struct {
     /// Execute a compiled function.
     ///
     /// Parameters:
-    ///   func       — The entry-point compiled function body (IR instruction list)
-    ///   params     — Function parameters (filled into slots 0..params.len-1)
-    ///   globals    — Slice of module instance globals (needed for global_get/global_set)
-    ///   memory     — Linear memory slice (byte array; null means the module has no memory)
-    ///   functions  — All compiled functions in the module (needed to resolve call targets)
-    ///   host_funcs — Host-provided functions for imported function slots (index matches Wasm func_idx;
-    ///                length == number of imported functions, same as Module.imported_funcs.len)
+    ///   func             — The entry-point compiled function body (IR instruction list)
+    ///   params           — Function parameters (filled into slots 0..params.len-1)
+    ///   globals          — Slice of module instance globals (needed for global_get/global_set)
+    ///   memory           — Linear memory slice (byte array; null means the module has no memory)
+    ///   functions        — All compiled functions in the module (needed to resolve call targets)
+    ///   host_funcs       — Host-provided functions for imported function slots (index matches Wasm func_idx;
+    ///                      length == number of imported functions, same as Module.imported_funcs.len)
+    ///   tables           — Module tables: tables[t][i] is the func_idx at position i in table t.
+    ///                      Used by call_indirect to resolve the callee at runtime.
+    ///   func_type_indices — Maps func_idx → type section index for every function (imports + locals).
+    ///                      Used by call_indirect for runtime type checking.
     ///
     /// Returns:
     ///   Allocator.Error  — Host memory allocation failure (not a Wasm trap)
@@ -64,6 +68,8 @@ pub const VM = struct {
         memory: []u8,
         functions: []const CompiledFunction,
         host_funcs: []const HostFunc,
+        tables: []const []const u32,
+        func_type_indices: []const u32,
     ) Allocator.Error!ExecResult {
         // ── Initialize entry frame ─────────────────────────────────────────────
         const entry_slots_len: usize = @max(
@@ -394,7 +400,77 @@ pub const VM = struct {
                     }
                 },
 
-                // ── Memory load ──────────────────────────────────────────────────────────
+                // ── indirect function call (call_indirect) ──────────────────
+                .call_indirect => |inst| {
+                    const current_slots = call_stack.items[frame_idx].slots;
+                    const caller_func = call_stack.items[frame_idx].func;
+                    const arg_slots = caller_func.call_args.items[inst.args_start .. inst.args_start + inst.args_len];
+
+                    // 1. Read runtime table index from slot.
+                    const raw_index = current_slots[inst.index].readAs(u32);
+
+                    // 2. Bounds check against the table.
+                    if (inst.table_index >= tables.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+                    const table = tables[inst.table_index];
+                    if (raw_index >= table.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+
+                    // 3. Resolve callee func_idx from the table.
+                    const callee_func_idx = table[raw_index];
+
+                    // 4. Null-element check (treat u32 max as null/uninitialized).
+                    if (callee_func_idx == std.math.maxInt(u32)) return .{ .trap = Trap.fromTrapCode(.IndirectCallToNull) };
+
+                    // 5. Signature check: callee's type index must match the expected type index.
+                    if (callee_func_idx >= func_type_indices.len) return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+                    if (func_type_indices[callee_func_idx] != inst.type_index) return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    // 6. Dispatch (same logic as .call).
+                    if (callee_func_idx < host_funcs.len) {
+                        // ── Host function call ──────────────────────────────
+                        const host_params = try self.allocator.alloc(RawVal, arg_slots.len);
+                        defer self.allocator.free(host_params);
+                        for (arg_slots, 0..) |arg_slot, i| {
+                            host_params[i] = current_slots[arg_slot];
+                        }
+                        const host_result = try host_funcs[callee_func_idx].call(host_params, self.allocator);
+                        switch (host_result) {
+                            .trap => |t| return .{ .trap = t },
+                            .ok => |ret_val| {
+                                if (inst.dst) |dst_slot| {
+                                    if (ret_val) |rv| {
+                                        call_stack.items[frame_idx].slots[dst_slot] = rv;
+                                    }
+                                }
+                            },
+                        }
+                    } else {
+                        // ── Local (compiled) function call ──────────────────
+                        const callee = functions[callee_func_idx];
+                        const callee_slots_len: usize = @max(
+                            @as(usize, @intCast(callee.slots_len)),
+                            arg_slots.len,
+                        );
+                        const callee_slots = try self.allocator.alloc(RawVal, callee_slots_len);
+                        @memset(callee_slots, std.mem.zeroes(RawVal));
+
+                        // Capture current_slots reference before appending (may invalidate)
+                        const caller_slots_copy = current_slots;
+                        for (arg_slots, 0..) |arg_slot, i| {
+                            callee_slots[i] = caller_slots_copy[arg_slot];
+                        }
+
+                        const callee_dst = inst.dst;
+                        call_stack.append(self.allocator, .{
+                            .func = callee,
+                            .slots = callee_slots,
+                            .pc = 0,
+                            .dst = callee_dst,
+                        }) catch |err| {
+                            self.allocator.free(callee_slots);
+                            return err;
+                        };
+                    }
+                },
 
                 .i32_load => |inst| {
                     const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
@@ -454,6 +530,25 @@ pub const VM = struct {
                     if (@as(usize, ea) + 2 > memory.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
                     const val = call_stack.items[frame_idx].slots[inst.src].readAs(i32);
                     std.mem.writeInt(u16, memory[ea..][0..2], @truncate(@as(u32, @bitCast(val))), .little);
+                },
+
+                // ── jump_table (br_table lowered form) ───────────────────────────
+                .jump_table => |inst| {
+                    const idx = call_stack.items[frame_idx].slots[inst.index].readAs(u32);
+                    // Clamp: if index >= targets_len, use the default (at targets_start + targets_len).
+                    const entry = if (idx < inst.targets_len) idx else inst.targets_len;
+                    const target = call_stack.items[frame_idx].func.br_table_targets.items[inst.targets_start + entry];
+                    call_stack.items[frame_idx].pc = target;
+                },
+
+                // ── select ────────────────────────────────────────────────────────
+                .select => |inst| {
+                    const cond = call_stack.items[frame_idx].slots[inst.cond].readAs(i32);
+                    const result = if (cond != 0)
+                        call_stack.items[frame_idx].slots[inst.val1]
+                    else
+                        call_stack.items[frame_idx].slots[inst.val2];
+                    call_stack.items[frame_idx].slots[inst.dst] = result;
                 },
 
                 // ── return ────────────────────────────────────────────────────────

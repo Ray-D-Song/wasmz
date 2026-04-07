@@ -849,6 +849,9 @@ pub const ElementSegment = struct {
 
 pub const ElementSegmentBody = struct {
     element_type: Type,
+    /// Function indices for externval-style elements (e.g. legacy_active_funcref_externval).
+    /// Empty for elemexpr-style segments.
+    func_indices: []const u32 = &.{},
 };
 
 pub const DataSegment = struct {

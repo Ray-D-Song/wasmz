@@ -92,17 +92,17 @@ pub const ModuleCompileError = Allocator.Error ||
 /// Compiled WebAssembly module, holding all data required for runtime execution.
 ///
 /// Field descriptions:
-///   - functions:      List of compiled functions, indexed according to the Wasm function index space (imported functions come first).
-///   - func_types:     All function signatures defined in the Type Section.
-///   - exports:        Mapping from export names to ExportEntry, currently only function exports are supported.
-///   - globals:        List of global variables, each containing mutability and the initial value evaluated from constant expressions.
-///   - memory:         Linear memory definition (optional), currently supports at most one memory segment.
-///   - start_function: Optional start function index (from the Wasm Start Section).
-///                     Per the Wasm spec, this function is automatically called during module instantiation.
-///                     It must have no parameters and no return values.
-///   - imported_funcs: Metadata for every imported function (module_name, func_name, type_index).
-///                     The length of this slice equals the number of imported functions, and the
-///                     func_idx offset for local functions (i.e. local_func_idx = func_idx - imported_funcs.len).
+///   - functions:        List of compiled functions, indexed according to the Wasm function index space (imported functions come first).
+///   - func_types:       All function signatures defined in the Type Section.
+///   - exports:          Mapping from export names to ExportEntry, currently only function exports are supported.
+///   - globals:          List of global variables, each containing mutability and the initial value evaluated from constant expressions.
+///   - memory:           Linear memory definition (optional), currently supports at most one memory segment.
+///   - start_function:   Optional start function index (from the Wasm Start Section).
+///   - imported_funcs:   Metadata for every imported function.
+///   - tables:           Each entry is a slice of function indices for one table (table 0, table 1, ...).
+///                       Populated from active element segments in the Element Section.
+///   - func_type_indices: Maps func_idx → type section index for every function (imports + locals).
+///                        Used by call_indirect for runtime type checking.
 pub const Module = struct {
     allocator: Allocator,
     functions: []CompiledFunction,
@@ -116,6 +116,13 @@ pub const Module = struct {
     /// Metadata for each imported function in the order they appear in the Import Section.
     /// Length == number of imported functions == offset of first local function in `functions`.
     imported_funcs: []ImportedFuncDef,
+    /// Tables: each entry is an owned slice of function indices (func_idx) for that table.
+    /// tables[t][i] gives the func_idx stored at position i in table t.
+    /// Populated from active externval element segments.
+    tables: [][]u32,
+    /// Type index for every function in the module (imports + locals), in func_idx order.
+    /// func_type_indices[func_idx] = type section index.
+    func_type_indices: []u32,
 
     /// Compile WebAssembly bytecode into a Module.
     ///
@@ -159,6 +166,17 @@ pub const Module = struct {
 
         var memory: ?MemoryDef = null;
         var start_function: ?u32 = null;
+
+        // Element section: track pending segments to build tables.
+        // We track the last seen element_segment (for mode/table_index) then consume
+        // the func_indices from element_segment_body.
+        var pending_element_mode: payload_mod.ElementMode = .passive;
+        var pending_element_table_index: ?u32 = null;
+        var tables_lists: std.ArrayListUnmanaged(std.ArrayListUnmanaged(u32)) = .empty;
+        errdefer {
+            for (tables_lists.items) |*tl| tl.deinit(allocator);
+            tables_lists.deinit(allocator);
+        }
 
         for (payloads) |payload| {
             switch (payload) {
@@ -215,6 +233,25 @@ pub const Module = struct {
                 .start_entry => |entry| {
                     start_function = entry.index;
                 },
+                .element_segment => |seg| {
+                    // Record metadata for the upcoming element_segment_body.
+                    pending_element_mode = seg.mode;
+                    pending_element_table_index = seg.table_index;
+                },
+                .element_segment_body => |body| {
+                    // Only handle active externval segments (they have direct func indices).
+                    if (pending_element_mode == .active) {
+                        const tbl_idx = pending_element_table_index orelse 0;
+                        // Grow tables_lists to accommodate tbl_idx.
+                        while (tables_lists.items.len <= tbl_idx) {
+                            try tables_lists.append(allocator, .empty);
+                        }
+                        // Append all func indices from this segment to the table.
+                        for (body.func_indices) |fi| {
+                            try tables_lists.items[tbl_idx].append(allocator, fi);
+                        }
+                    }
+                },
                 else => {},
             }
         }
@@ -230,6 +267,7 @@ pub const Module = struct {
             .slots_len = 0,
             .ops = .empty,
             .call_args = .empty,
+            .br_table_targets = .empty,
         });
 
         // Build the import type index slice for FuncTypeResolver:
@@ -293,6 +331,29 @@ pub const Module = struct {
 
         const imported_funcs = try imported_funcs_list.toOwnedSlice(allocator);
 
+        // ── Build tables slice from tables_lists ──────────────────────────────
+        // Convert ArrayListUnmanaged(ArrayListUnmanaged(u32)) -> [][]u32.
+        const tables = try allocator.alloc([]u32, tables_lists.items.len);
+        errdefer {
+            for (tables) |t| allocator.free(t);
+            allocator.free(tables);
+        }
+        for (tables_lists.items, 0..) |*tl, i| {
+            tables[i] = try tl.toOwnedSlice(allocator);
+        }
+        tables_lists.clearRetainingCapacity();
+
+        // ── Build func_type_indices: imports first, then locals ───────────────
+        // Total entries = imported_function_count + function_type_indices.items.len
+        const func_type_indices = try allocator.alloc(u32, function_count);
+        errdefer allocator.free(func_type_indices);
+        for (import_type_indices_list.items, 0..) |ti, i| {
+            func_type_indices[i] = ti;
+        }
+        for (function_type_indices.items, 0..) |ti, i| {
+            func_type_indices[imported_function_count + i] = ti;
+        }
+
         return .{
             .allocator = allocator,
             .functions = functions,
@@ -302,6 +363,8 @@ pub const Module = struct {
             .memory = memory,
             .start_function = start_function,
             .imported_funcs = imported_funcs,
+            .tables = tables,
+            .func_type_indices = func_type_indices,
         };
     }
 
@@ -323,6 +386,13 @@ pub const Module = struct {
         }
         self.allocator.free(self.imported_funcs);
 
+        for (self.tables) |t| {
+            self.allocator.free(t);
+        }
+        self.allocator.free(self.tables);
+
+        self.allocator.free(self.func_type_indices);
+
         self.* = undefined;
     }
 
@@ -333,6 +403,7 @@ pub const Module = struct {
         for (functions) |*function| {
             function.call_args.deinit(allocator);
             function.ops.deinit(allocator);
+            function.br_table_targets.deinit(allocator);
         }
     }
 
@@ -548,6 +619,22 @@ pub fn compileFunctionBody(
                 .n_params = @intCast(func_type.params().len),
                 .has_result = func_type.results().len > 0,
             } };
+        } else if (parsed.info.code == .call_indirect) blk: {
+            // type_index is encoded as a HeapType in parsed.info.type_index.
+            const heap_type = parsed.info.type_index orelse return error.UnsupportedOperator;
+            const type_index: u32 = switch (heap_type) {
+                .index => |idx| idx,
+                .kind => return error.UnsupportedOperator,
+            };
+            if (type_index >= resolver.func_types.len) return error.InvalidFunctionTypeIndex;
+            const func_type = &resolver.func_types[type_index];
+            // table_index: the parser discards it (reads as var_uint1), so always use 0.
+            break :blk .{ .call_indirect = .{
+                .type_index = type_index,
+                .table_index = 0,
+                .n_params = @intCast(func_type.params().len),
+                .has_result = func_type.results().len > 0,
+            } };
         } else try translate_mod.operatorToWasmOp(parsed.info);
 
         try lower.lower_op(wasm_op);
@@ -556,6 +643,7 @@ pub fn compileFunctionBody(
     const compiled = lower.finish();
     lower.compiled.ops = .empty;
     lower.compiled.call_args = .empty;
+    lower.compiled.br_table_targets = .empty;
     lower.deinit();
     return compiled;
 }
@@ -590,7 +678,7 @@ test "module.compile builds exported function bodies" {
     try std.testing.expectEqual(@as(u32, 0), export_entry.function_index);
 
     var vm = VM.init(std.testing.allocator);
-    const result = (try vm.execute(module.functions[@intCast(export_entry.function_index)], &.{}, &.{}, &.{}, &.{}, &.{})).ok orelse {
+    const result = (try vm.execute(module.functions[@intCast(export_entry.function_index)], &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{})).ok orelse {
         return error.MissingReturnValue;
     };
     try std.testing.expectEqual(@as(i32, 1), result.readAs(i32));

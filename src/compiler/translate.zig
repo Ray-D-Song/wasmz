@@ -69,6 +69,7 @@ pub fn wasmBlockTypeFromType(block_type: ?Type) TranslateError!?BlockType {
 pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
     return switch (info.code) {
         .unreachable_ => WasmOp.unreachable_,
+        .nop => WasmOp.nop,
         .drop => WasmOp.drop,
         .block => WasmOp{ .block = try wasmBlockTypeFromType(info.block_type) },
         .loop => WasmOp{ .loop = try wasmBlockTypeFromType(info.block_type) },
@@ -77,6 +78,7 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         .end => WasmOp.end,
         .br => WasmOp{ .br = info.br_depth orelse return error.UnsupportedOperator },
         .br_if => WasmOp{ .br_if = info.br_depth orelse return error.UnsupportedOperator },
+        .br_table => WasmOp{ .br_table = .{ .targets = info.br_table } },
         .local_get => WasmOp{ .local_get = info.local_index orelse return error.UnsupportedOperator },
         .local_set => WasmOp{ .local_set = info.local_index orelse return error.UnsupportedOperator },
         .local_tee => WasmOp{ .local_tee = info.local_index orelse return error.UnsupportedOperator },
@@ -141,6 +143,8 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         .i32_ge_s => WasmOp.i32_ge_s,
         .i32_ge_u => WasmOp.i32_ge_u,
         .return_ => WasmOp.ret,
+        .select => WasmOp.select,
+        .select_with_type => WasmOp.select_with_type,
         else => |op| {
             // print unsupported operator, then return error
             std.debug.print("UnsupportedOperator: {s}\n", .{@tagName(op)});
