@@ -2,119 +2,85 @@ const std = @import("std");
 const core = @import("core");
 const wasmz = @import("wasmz");
 const types = @import("./types.zig");
-const env_args = @import("./env_args.zig");
-const clock = @import("./clock.zig");
 const fd_io = @import("./fd_io.zig");
+const clock = @import("./clock.zig");
+const env_args = @import("./env_args.zig");
 
 const Allocator = std.mem.Allocator;
 const RawVal = core.RawVal;
 const ValType = core.ValType;
 const Linker = wasmz.Linker;
 const HostContext = wasmz.HostContext;
+const HostFunc = wasmz.HostFunc;
 
-pub const WriteError = error{Io};
-
-pub const Output = struct {
-    ctx: ?*anyopaque,
-    write_fn: *const fn (?*anyopaque, bytes: []const u8) WriteError!void,
-
-    pub fn stdout() Output {
-        return .{ .ctx = null, .write_fn = write_stdout };
-    }
-
-    pub fn stderr() Output {
-        return .{ .ctx = null, .write_fn = write_stderr };
-    }
-
-    pub fn writeAll(self: Output, bytes: []const u8) WriteError!void {
-        return self.write_fn(self.ctx, bytes);
-    }
-
-    fn write_stdout(_: ?*anyopaque, bytes: []const u8) WriteError!void {
-        std.fs.File.stdout().writeAll(bytes) catch return error.Io;
-    }
-
-    fn write_stderr(_: ?*anyopaque, bytes: []const u8) WriteError!void {
-        std.fs.File.stderr().writeAll(bytes) catch return error.Io;
-    }
-};
-
-pub const ClockSource = struct {
-    ctx: ?*anyopaque = null,
-    now_fn: *const fn (?*anyopaque) u64,
-    resolution_ns: u64 = 1,
-
-    pub fn realtime() ClockSource {
-        return .{ .now_fn = default_realtime_now, .resolution_ns = 1 };
-    }
-
-    pub fn monotonic() ClockSource {
-        return .{ .now_fn = default_monotonic_now, .resolution_ns = 1 };
-    }
-
-    pub fn now(self: ClockSource) u64 {
-        return self.now_fn(self.ctx);
-    }
-
-    fn default_realtime_now(_: ?*anyopaque) u64 {
-        const ts = std.time.nanoTimestamp();
-        return @intCast(@max(ts, 0));
-    }
-
-    fn default_monotonic_now(_: ?*anyopaque) u64 {
-        const ts = std.time.nanoTimestamp();
-        return @intCast(@max(ts, 0));
-    }
-};
-
-pub const EnvVar = struct {
-    key: []const u8,
-    value: []const u8,
-};
+pub const FdIO = fd_io.FdIO;
+pub const Clock = clock.Clock;
+pub const EnvArgs = env_args.EnvArgs;
+pub const EnvVar = env_args.EnvVar;
+pub const Output = fd_io.Output;
+pub const ClockSource = clock.ClockSource;
 
 pub const Host = struct {
     allocator: Allocator,
-    args: []const []const u8,
-    env: []const EnvVar,
-    stdout: Output,
-    stderr: Output,
-    realtime_clock: ClockSource,
-    monotonic_clock: ClockSource,
+    fd_io: *FdIO,
+    clock: *Clock,
+    env_args: *EnvArgs,
 
     pub fn init(allocator: Allocator) Host {
+        const fd_io_ptr = allocator.create(FdIO) catch @panic("OOM");
+        fd_io_ptr.* = FdIO.init(allocator);
+
+        const clock_ptr = allocator.create(Clock) catch @panic("OOM");
+        clock_ptr.* = Clock.init();
+
+        const env_args_ptr = allocator.create(EnvArgs) catch @panic("OOM");
+        env_args_ptr.* = EnvArgs.init(allocator);
+
         return .{
             .allocator = allocator,
-            .args = &.{},
-            .env = &.{},
-            .stdout = Output.stdout(),
-            .stderr = Output.stderr(),
-            .realtime_clock = ClockSource.realtime(),
-            .monotonic_clock = ClockSource.monotonic(),
+            .fd_io = fd_io_ptr,
+            .clock = clock_ptr,
+            .env_args = env_args_ptr,
         };
     }
 
     pub fn deinit(self: *Host) void {
-        free_args(self.allocator, self.args);
-        free_env(self.allocator, self.env);
+        self.fd_io.deinit();
+        self.allocator.destroy(self.fd_io);
+
+        self.env_args.deinit();
+        self.allocator.destroy(self.env_args);
+
+        self.allocator.destroy(self.clock);
         self.* = undefined;
     }
 
     pub fn setArgs(self: *Host, args: []const []const u8) Allocator.Error!void {
-        free_args(self.allocator, self.args);
-        self.args = try dup_string_list(self.allocator, args);
+        try self.env_args.setArgs(args);
     }
 
     pub fn setEnv(self: *Host, env: []const EnvVar) Allocator.Error!void {
-        free_env(self.allocator, self.env);
-        self.env = try dup_env_list(self.allocator, env);
+        try self.env_args.setEnv(env);
     }
 
     pub fn setStdout(self: *Host, output: Output) void {
-        self.stdout = output;
+        self.fd_io.setStdout(output);
     }
 
     pub fn setStderr(self: *Host, output: Output) void {
-        self.stderr = output;
+        self.fd_io.setStderr(output);
+    }
+
+    pub fn setRealtimeClock(self: *Host, source: ClockSource) void {
+        self.clock.setRealtime(source);
+    }
+
+    pub fn setMonotonicClock(self: *Host, source: ClockSource) void {
+        self.clock.setMonotonic(source);
+    }
+
+    pub fn addPreopen(self: *Host, path: []const u8) !types.Fd {
+        return self.fd_io.addPreopen(path);
     }
 
     pub fn addToLinker(self: *Host, linker: *Linker, allocator: Allocator) Allocator.Error!void {
@@ -184,110 +150,128 @@ pub const Host = struct {
             &[_]ValType{ .I32, .I32, .I32, .I64, .I32 },
             &[_]ValType{.I32},
         ));
+        try linker.define(allocator, types.module_name, "fd_pread", HostFunc.init(
+            self,
+            fd_pread,
+            &[_]ValType{ .I32, .I32, .I32, .I64, .I32 },
+            &[_]ValType{.I32},
+        ));
+        try linker.define(allocator, types.module_name, "path_open", HostFunc.init(
+            self,
+            path_open,
+            &[_]ValType{ .I32, .I32, .I32, .I32, .I32, .I64, .I64, .I32, .I32 },
+            &[_]ValType{.I32},
+        ));
+        try linker.define(allocator, types.module_name, "fd_close", HostFunc.init(
+            self,
+            fd_close,
+            &[_]ValType{.I32},
+            &[_]ValType{.I32},
+        ));
+        try linker.define(allocator, types.module_name, "fd_fdstat_get", HostFunc.init(
+            self,
+            fd_fdstat_get,
+            &[_]ValType{ .I32, .I32 },
+            &[_]ValType{.I32},
+        ));
+        try linker.define(allocator, types.module_name, "fd_prestat_get", HostFunc.init(
+            self,
+            fd_prestat_get,
+            &[_]ValType{ .I32, .I32 },
+            &[_]ValType{.I32},
+        ));
+        try linker.define(allocator, types.module_name, "fd_prestat_dir_name", HostFunc.init(
+            self,
+            fd_prestat_dir_name,
+            &[_]ValType{ .I32, .I32, .I32 },
+            &[_]ValType{.I32},
+        ));
     }
 };
 
-const HostFunc = wasmz.HostFunc;
-
 fn args_sizes_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-    return env_args.argsSizesGet(cast_host(host_data), ctx, params, results);
+    const host: *Host = @ptrCast(@alignCast(host_data.?));
+    return host.env_args.argsSizesGet(ctx, params, results);
 }
 
 fn args_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-    return env_args.argsGet(cast_host(host_data), ctx, params, results);
+    const host: *Host = @ptrCast(@alignCast(host_data.?));
+    return host.env_args.argsGet(ctx, params, results);
 }
 
 fn environ_sizes_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-    return env_args.environSizesGet(cast_host(host_data), ctx, params, results);
+    const host: *Host = @ptrCast(@alignCast(host_data.?));
+    return host.env_args.environSizesGet(ctx, params, results);
 }
 
 fn environ_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-    return env_args.environGet(cast_host(host_data), ctx, params, results);
+    const host: *Host = @ptrCast(@alignCast(host_data.?));
+    return host.env_args.environGet(ctx, params, results);
 }
 
 fn clock_res_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-    return clock.clockResGet(cast_host(host_data), ctx, params, results);
+    const host: *Host = @ptrCast(@alignCast(host_data.?));
+    return host.clock.clockResGet(ctx, params, results);
 }
 
 fn clock_time_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-    return clock.clockTimeGet(cast_host(host_data), ctx, params, results);
+    const host: *Host = @ptrCast(@alignCast(host_data.?));
+    return host.clock.clockTimeGet(ctx, params, results);
 }
 
 fn fd_write(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-    return fd_io.fdWrite(cast_host(host_data), ctx, params, results);
+    const host: *Host = @ptrCast(@alignCast(host_data.?));
+    return host.fd_io.fdWrite(ctx, params, results);
 }
 
 fn fd_seek(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-    return fd_io.fdSeek(cast_host(host_data), ctx, params, results);
+    const host: *Host = @ptrCast(@alignCast(host_data.?));
+    return host.fd_io.fdSeek(ctx, params, results);
 }
 
 fn fd_filestat_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-    return fd_io.fdFilestatGet(cast_host(host_data), ctx, params, results);
+    const host: *Host = @ptrCast(@alignCast(host_data.?));
+    return host.fd_io.fdFilestatGet(ctx, params, results);
 }
 
 fn fd_read(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-    return fd_io.fdRead(cast_host(host_data), ctx, params, results);
+    const host: *Host = @ptrCast(@alignCast(host_data.?));
+    return host.fd_io.fdRead(ctx, params, results);
 }
 
 fn fd_pwrite(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-    return fd_io.fdPwrite(cast_host(host_data), ctx, params, results);
+    const host: *Host = @ptrCast(@alignCast(host_data.?));
+    return host.fd_io.fdPwrite(ctx, params, results);
 }
 
-fn cast_host(host_data: ?*anyopaque) *Host {
-    return @ptrCast(@alignCast(host_data.?));
+fn fd_pread(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
+    const host: *Host = @ptrCast(@alignCast(host_data.?));
+    return host.fd_io.fdPread(ctx, params, results);
 }
 
-fn dup_string_list(allocator: Allocator, items: []const []const u8) Allocator.Error![]const []const u8 {
-    const duped = try allocator.alloc([]const u8, items.len);
-    errdefer allocator.free(duped);
-
-    var initialized: usize = 0;
-    errdefer {
-        for (duped[0..initialized]) |item| allocator.free(item);
-    }
-
-    for (items, 0..) |item, index| {
-        duped[index] = try allocator.dupe(u8, item);
-        initialized += 1;
-    }
-
-    return duped;
+fn path_open(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
+    const host: *Host = @ptrCast(@alignCast(host_data.?));
+    return host.fd_io.pathOpen(ctx, params, results);
 }
 
-fn free_args(allocator: Allocator, items: []const []const u8) void {
-    for (items) |item| allocator.free(item);
-    allocator.free(items);
+fn fd_close(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
+    const host: *Host = @ptrCast(@alignCast(host_data.?));
+    return host.fd_io.fdClose(ctx, params, results);
 }
 
-fn dup_env_list(allocator: Allocator, items: []const EnvVar) Allocator.Error![]const EnvVar {
-    const duped = try allocator.alloc(EnvVar, items.len);
-    errdefer allocator.free(duped);
-
-    var initialized: usize = 0;
-    errdefer {
-        for (duped[0..initialized]) |entry| {
-            allocator.free(entry.key);
-            allocator.free(entry.value);
-        }
-    }
-
-    for (items, 0..) |item, index| {
-        duped[index] = .{
-            .key = try allocator.dupe(u8, item.key),
-            .value = try allocator.dupe(u8, item.value),
-        };
-        initialized += 1;
-    }
-
-    return duped;
+fn fd_fdstat_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
+    const host: *Host = @ptrCast(@alignCast(host_data.?));
+    return host.fd_io.fdFdstatGet(ctx, params, results);
 }
 
-fn free_env(allocator: Allocator, items: []const EnvVar) void {
-    for (items) |entry| {
-        allocator.free(entry.key);
-        allocator.free(entry.value);
-    }
-    allocator.free(items);
+fn fd_prestat_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
+    const host: *Host = @ptrCast(@alignCast(host_data.?));
+    return host.fd_io.fdPrestatGet(ctx, params, results);
+}
+
+fn fd_prestat_dir_name(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
+    const host: *Host = @ptrCast(@alignCast(host_data.?));
+    return host.fd_io.fdPrestatDirName(ctx, params, results);
 }
 
 test "preview1 args and env write guest memory correctly" {
@@ -368,7 +352,7 @@ test "preview1 clock and fd_write use host implementations" {
     defer sink.deinit(testing.allocator);
 
     const Sink = struct {
-        fn write(ctx: ?*anyopaque, bytes: []const u8) WriteError!void {
+        fn write(ctx: ?*anyopaque, bytes: []const u8) fd_io.WriteError!void {
             var list: *std.ArrayList(u8) = @ptrCast(@alignCast(ctx.?));
             list.appendSlice(testing.allocator, bytes) catch return error.Io;
         }
@@ -377,11 +361,11 @@ test "preview1 clock and fd_write use host implementations" {
     var host = Host.init(testing.allocator);
     defer host.deinit();
     host.setStdout(.{ .ctx = &sink, .write_fn = Sink.write });
-    host.realtime_clock = .{ .ctx = null, .now_fn = struct {
+    host.setRealtimeClock(.{ .ctx = null, .now_fn = struct {
         fn now(_: ?*anyopaque) u64 {
             return 1234;
         }
-    }.now, .resolution_ns = 99 };
+    }.now, .resolution_ns = 99 });
 
     var linker = Linker.empty;
     defer linker.deinit(testing.allocator);
@@ -462,4 +446,67 @@ test "preview1 linker only registers implemented imports" {
     defer module.deinit();
 
     try testing.expectError(error.ImportNotSatisfied, wasmz.Instance.init(&store, &module, linker));
+}
+
+test "preview1 file operations" {
+    const testing = std.testing;
+
+    var engine = try wasmz.Engine.init(testing.allocator, wasmz.Config{});
+    defer engine.deinit();
+
+    var store = wasmz.Store.init(testing.allocator, engine);
+    defer store.deinit();
+
+    var host = Host.init(testing.allocator);
+    defer host.deinit();
+
+    const preopen_fd = try host.addPreopen(".");
+
+    var linker = Linker.empty;
+    defer linker.deinit(testing.allocator);
+    try host.addToLinker(&linker, testing.allocator);
+
+    var module = try wasmz.Module.compile(engine, &[_]u8{
+        0x00, 0x61, 0x73, 0x6d,
+        0x01, 0x00, 0x00, 0x00,
+        0x01, 0x04, 0x01, 0x60,
+        0x00, 0x00, 0x03, 0x02,
+        0x01, 0x00, 0x0a, 0x04,
+        0x01, 0x02, 0x00, 0x0b,
+    });
+    defer module.deinit();
+
+    var globals = [_]core.Global{};
+    const memory = try testing.allocator.alloc(u8, 4096);
+    defer testing.allocator.free(memory);
+    @memset(memory, 0);
+    const tables = [_][]const u32{};
+    var host_instance = wasmz.HostInstance{
+        .module = &module,
+        .globals = globals[0..],
+        .memory = memory,
+        .tables = tables[0..],
+    };
+    var ctx = HostContext.init(&store, &host_instance, &host);
+    var results = [_]RawVal{RawVal.from(@as(i32, -1))};
+
+    const fd_prestat_get_func = linker.get(types.module_name, "fd_prestat_get").?;
+    try fd_prestat_get_func.call(&ctx, &.{ RawVal.from(@as(u32, preopen_fd)), RawVal.from(@as(u32, 0)) }, &results);
+    try testing.expectEqual(@as(i32, 0), results[0].readAs(i32));
+
+    const Prestat = extern struct {
+        pr_type: packed struct(u32) { tag: u32 = 0 },
+        u: extern union {
+            dir: extern struct {
+                pr_len: u32,
+            },
+        },
+    };
+    const prestat: Prestat = @bitCast(try ctx.readValue(0, u64));
+    try testing.expectEqual(@as(u32, 1), prestat.pr_type.tag);
+    try testing.expectEqual(@as(u32, 1), prestat.u.dir.pr_len);
+
+    const fd_fdstat_get_func = linker.get(types.module_name, "fd_fdstat_get").?;
+    try fd_fdstat_get_func.call(&ctx, &.{ RawVal.from(@as(u32, preopen_fd)), RawVal.from(@as(u32, 16)) }, &results);
+    try testing.expectEqual(@as(i32, 0), results[0].readAs(i32));
 }
