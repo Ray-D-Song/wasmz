@@ -128,6 +128,39 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         .f64_ge,
     };
 
+    const simple_convert_ops = [_]OperatorCode{
+        .i32_wrap_i64,
+        .i32_trunc_f32_s,
+        .i32_trunc_f32_u,
+        .i32_trunc_f64_s,
+        .i32_trunc_f64_u,
+        .i64_extend_i32_s,
+        .i64_extend_i32_u,
+        .i64_trunc_f32_s,
+        .i64_trunc_f32_u,
+        .i64_trunc_f64_s,
+        .i64_trunc_f64_u,
+        .f32_convert_i32_s,
+        .f32_convert_i32_u,
+        .f32_convert_i64_s,
+        .f32_convert_i64_u,
+        .f32_demote_f64,
+        .f64_convert_i32_s,
+        .f64_convert_i32_u,
+        .f64_convert_i64_s,
+        .f64_convert_i64_u,
+        .f64_promote_f32,
+        .i32_reinterpret_f32,
+        .i64_reinterpret_f64,
+        .f32_reinterpret_i32,
+        .f64_reinterpret_i64,
+        .i32_extend8_s,
+        .i32_extend16_s,
+        .i64_extend8_s,
+        .i64_extend16_s,
+        .i64_extend32_s,
+    };
+
     // Auto-generate mappings for binary operations
     inline for (simple_binary_ops) |op| {
         if (info.code == op) {
@@ -144,6 +177,13 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
 
     // Auto-generate mappings for comparison operations
     inline for (simple_compare_ops) |op| {
+        if (info.code == op) {
+            return @field(WasmOp, @tagName(op));
+        }
+    }
+
+    // Auto-generate mappings for conversion and sign-extension operations
+    inline for (simple_convert_ops) |op| {
         if (info.code == op) {
             return @field(WasmOp, @tagName(op));
         }

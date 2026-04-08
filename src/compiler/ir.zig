@@ -27,6 +27,18 @@ pub fn UnaryOp(comptime T: type) type {
     };
 }
 
+/// Conversion operation: consumes one source value and produces one destination value.
+/// Generic over source and destination types.
+pub fn ConvertOp(comptime SrcT: type, comptime DstT: type) type {
+    return struct {
+        dst: Slot,
+        src: Slot,
+
+        pub const SrcType = SrcT;
+        pub const DstType = DstT;
+    };
+}
+
 /// Compare operation: result is always i32, but input can be any type
 /// Generic over the input value type (i32, i64, f32, f64)
 pub fn CompareOp(comptime InputT: type) type {
@@ -199,6 +211,40 @@ pub const Op = union(enum) {
     f64_gt: CompareOp(f64),
     f64_le: CompareOp(f64),
     f64_ge: CompareOp(f64),
+
+    // ── Numeric conversion and reinterpret operations ────────────────────────
+    i32_wrap_i64: ConvertOp(i64, i32),
+    i32_trunc_f32_s: ConvertOp(f32, i32),
+    i32_trunc_f32_u: ConvertOp(f32, i32),
+    i32_trunc_f64_s: ConvertOp(f64, i32),
+    i32_trunc_f64_u: ConvertOp(f64, i32),
+    i64_extend_i32_s: ConvertOp(i32, i64),
+    i64_extend_i32_u: ConvertOp(i32, i64),
+    i64_trunc_f32_s: ConvertOp(f32, i64),
+    i64_trunc_f32_u: ConvertOp(f32, i64),
+    i64_trunc_f64_s: ConvertOp(f64, i64),
+    i64_trunc_f64_u: ConvertOp(f64, i64),
+    f32_convert_i32_s: ConvertOp(i32, f32),
+    f32_convert_i32_u: ConvertOp(i32, f32),
+    f32_convert_i64_s: ConvertOp(i64, f32),
+    f32_convert_i64_u: ConvertOp(i64, f32),
+    f32_demote_f64: ConvertOp(f64, f32),
+    f64_convert_i32_s: ConvertOp(i32, f64),
+    f64_convert_i32_u: ConvertOp(i32, f64),
+    f64_convert_i64_s: ConvertOp(i64, f64),
+    f64_convert_i64_u: ConvertOp(i64, f64),
+    f64_promote_f32: ConvertOp(f32, f64),
+    i32_reinterpret_f32: ConvertOp(f32, i32),
+    i64_reinterpret_f64: ConvertOp(f64, i64),
+    f32_reinterpret_i32: ConvertOp(i32, f32),
+    f64_reinterpret_i64: ConvertOp(i64, f64),
+
+    // ── Sign-extension operations ────────────────────────────────────────────
+    i32_extend8_s: ConvertOp(i32, i32),
+    i32_extend16_s: ConvertOp(i32, i32),
+    i64_extend8_s: ConvertOp(i64, i64),
+    i64_extend16_s: ConvertOp(i64, i64),
+    i64_extend32_s: ConvertOp(i64, i64),
     /// Unconditional jump. `target` is an index into CompiledFunction.ops.
     jump: struct {
         target: u32,

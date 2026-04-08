@@ -46,6 +46,21 @@ inline fn effectiveAddr(slots: []RawVal, addr_slot: u32, offset: u32, size: usiz
     return ea;
 }
 
+inline fn UnsignedOf(comptime T: type) type {
+    return std.meta.Int(.unsigned, @bitSizeOf(T));
+}
+
+inline fn trapFromTruncateError(err: helper.TruncateError) Trap {
+    return Trap.fromTrapCode(switch (err) {
+        error.NaN => .BadConversionToInteger,
+        error.OutOfRange => .IntegerOverflow,
+    });
+}
+
+inline fn reinterpretUnsignedAsSigned(comptime T: type, value: UnsignedOf(T)) T {
+    return @as(T, @bitCast(value));
+}
+
 pub const VM = struct {
     allocator: Allocator,
 
@@ -350,6 +365,77 @@ pub const VM = struct {
                 inline .f32_sqrt, .f64_sqrt => |inst| {
                     const T = @TypeOf(inst).ValueType;
                     slots[inst.dst] = RawVal.from(helper.sqrt(slots[inst.src].readAs(T)));
+                },
+
+                // ── Numeric conversion: wrap / extend ───────────────────────
+                .i32_wrap_i64 => |inst| {
+                    const bits = @as(u32, @truncate(slots[inst.src].readAs(u64)));
+                    slots[inst.dst] = RawVal.from(@as(i32, @bitCast(bits)));
+                },
+                .i64_extend_i32_s => |inst| {
+                    slots[inst.dst] = RawVal.from(@as(i64, slots[inst.src].readAs(i32)));
+                },
+                .i64_extend_i32_u => |inst| {
+                    slots[inst.dst] = RawVal.from(@as(i64, @intCast(slots[inst.src].readAs(u32))));
+                },
+
+                // ── Numeric conversion: float -> int (may trap) ─────────────
+                inline .i32_trunc_f32_s, .i32_trunc_f64_s, .i64_trunc_f32_s, .i64_trunc_f64_s => |inst| {
+                    const SrcT = @TypeOf(inst).SrcType;
+                    const DstT = @TypeOf(inst).DstType;
+                    const result = helper.tryTruncateInto(DstT, slots[inst.src].readAs(SrcT)) catch |err| return .{ .trap = trapFromTruncateError(err) };
+                    slots[inst.dst] = RawVal.from(result);
+                },
+                inline .i32_trunc_f32_u, .i32_trunc_f64_u, .i64_trunc_f32_u, .i64_trunc_f64_u => |inst| {
+                    const SrcT = @TypeOf(inst).SrcType;
+                    const DstT = @TypeOf(inst).DstType;
+                    const U = UnsignedOf(DstT);
+                    const result = helper.tryTruncateInto(U, slots[inst.src].readAs(SrcT)) catch |err| return .{ .trap = trapFromTruncateError(err) };
+                    slots[inst.dst] = RawVal.from(reinterpretUnsignedAsSigned(DstT, result));
+                },
+
+                // ── Numeric conversion: int -> float ────────────────────────
+                inline .f32_convert_i32_s, .f32_convert_i64_s, .f64_convert_i32_s, .f64_convert_i64_s => |inst| {
+                    const SrcT = @TypeOf(inst).SrcType;
+                    const DstT = @TypeOf(inst).DstType;
+                    slots[inst.dst] = RawVal.from(@as(DstT, @floatFromInt(slots[inst.src].readAs(SrcT))));
+                },
+                inline .f32_convert_i32_u, .f32_convert_i64_u, .f64_convert_i32_u, .f64_convert_i64_u => |inst| {
+                    const SrcT = @TypeOf(inst).SrcType;
+                    const DstT = @TypeOf(inst).DstType;
+                    const U = UnsignedOf(SrcT);
+                    slots[inst.dst] = RawVal.from(@as(DstT, @floatFromInt(slots[inst.src].readAs(U))));
+                },
+
+                // ── Numeric conversion: float resize ────────────────────────
+                inline .f32_demote_f64, .f64_promote_f32 => |inst| {
+                    const SrcT = @TypeOf(inst).SrcType;
+                    const DstT = @TypeOf(inst).DstType;
+                    slots[inst.dst] = RawVal.from(@as(DstT, @floatCast(slots[inst.src].readAs(SrcT))));
+                },
+
+                // ── Reinterpret ──────────────────────────────────────────────
+                inline .i32_reinterpret_f32, .i64_reinterpret_f64, .f32_reinterpret_i32, .f64_reinterpret_i64 => |inst| {
+                    const SrcT = @TypeOf(inst).SrcType;
+                    const DstT = @TypeOf(inst).DstType;
+                    slots[inst.dst] = RawVal.from(@as(DstT, @bitCast(slots[inst.src].readAs(SrcT))));
+                },
+
+                // ── Sign-extension ───────────────────────────────────────────
+                .i32_extend8_s => |inst| {
+                    slots[inst.dst] = RawVal.from(helper.signExtendFrom(i8, slots[inst.src].readAs(i32)));
+                },
+                .i32_extend16_s => |inst| {
+                    slots[inst.dst] = RawVal.from(helper.signExtendFrom(i16, slots[inst.src].readAs(i32)));
+                },
+                .i64_extend8_s => |inst| {
+                    slots[inst.dst] = RawVal.from(helper.signExtendFrom(i8, slots[inst.src].readAs(i64)));
+                },
+                .i64_extend16_s => |inst| {
+                    slots[inst.dst] = RawVal.from(helper.signExtendFrom(i16, slots[inst.src].readAs(i64)));
+                },
+                .i64_extend32_s => |inst| {
+                    slots[inst.dst] = RawVal.from(helper.signExtendFrom(i32, slots[inst.src].readAs(i64)));
                 },
 
                 // ── Comparisons: eq / ne (all 4 types) ───────────────────────

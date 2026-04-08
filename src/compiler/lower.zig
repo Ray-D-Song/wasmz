@@ -195,6 +195,40 @@ pub const WasmOp = union(enum) {
     f64_le,
     f64_ge,
 
+    // ── Numeric conversion and reinterpret operations ────────────────────────
+    i32_wrap_i64,
+    i32_trunc_f32_s,
+    i32_trunc_f32_u,
+    i32_trunc_f64_s,
+    i32_trunc_f64_u,
+    i64_extend_i32_s,
+    i64_extend_i32_u,
+    i64_trunc_f32_s,
+    i64_trunc_f32_u,
+    i64_trunc_f64_s,
+    i64_trunc_f64_u,
+    f32_convert_i32_s,
+    f32_convert_i32_u,
+    f32_convert_i64_s,
+    f32_convert_i64_u,
+    f32_demote_f64,
+    f64_convert_i32_s,
+    f64_convert_i32_u,
+    f64_convert_i64_s,
+    f64_convert_i64_u,
+    f64_promote_f32,
+    i32_reinterpret_f32,
+    i64_reinterpret_f64,
+    f32_reinterpret_i32,
+    f64_reinterpret_i64,
+
+    // ── Sign-extension operations ────────────────────────────────────────────
+    i32_extend8_s,
+    i32_extend16_s,
+    i64_extend8_s,
+    i64_extend16_s,
+    i64_extend32_s,
+
     ret,
     /// direct fn call with known func_idx, param count and result presence.
     /// n_params / has_result are filled in by the caller (module.zig) after querying the function type signature.
@@ -426,6 +460,22 @@ pub const Lower = struct {
 
     /// Handle unary operations: pop one operand, allocate result slot, emit, push result.
     fn lower_unary_op(
+        self: *Lower,
+        comptime op_tag: []const u8,
+    ) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+
+        try self.emit(@unionInit(Op, op_tag, .{
+            .dst = dst,
+            .src = src,
+        }));
+
+        try self.stack.push(self.allocator, dst);
+    }
+
+    /// Handle conversion operations: pop one operand, allocate result slot, emit, push result.
+    fn lower_convert_op(
         self: *Lower,
         comptime op_tag: []const u8,
     ) !void {
@@ -878,6 +928,40 @@ pub const Lower = struct {
             .f64_gt => try self.lower_compare_op("f64_gt"),
             .f64_le => try self.lower_compare_op("f64_le"),
             .f64_ge => try self.lower_compare_op("f64_ge"),
+
+            // ── Numeric conversion and reinterpret operations ───────────────
+            .i32_wrap_i64 => try self.lower_convert_op("i32_wrap_i64"),
+            .i32_trunc_f32_s => try self.lower_convert_op("i32_trunc_f32_s"),
+            .i32_trunc_f32_u => try self.lower_convert_op("i32_trunc_f32_u"),
+            .i32_trunc_f64_s => try self.lower_convert_op("i32_trunc_f64_s"),
+            .i32_trunc_f64_u => try self.lower_convert_op("i32_trunc_f64_u"),
+            .i64_extend_i32_s => try self.lower_convert_op("i64_extend_i32_s"),
+            .i64_extend_i32_u => try self.lower_convert_op("i64_extend_i32_u"),
+            .i64_trunc_f32_s => try self.lower_convert_op("i64_trunc_f32_s"),
+            .i64_trunc_f32_u => try self.lower_convert_op("i64_trunc_f32_u"),
+            .i64_trunc_f64_s => try self.lower_convert_op("i64_trunc_f64_s"),
+            .i64_trunc_f64_u => try self.lower_convert_op("i64_trunc_f64_u"),
+            .f32_convert_i32_s => try self.lower_convert_op("f32_convert_i32_s"),
+            .f32_convert_i32_u => try self.lower_convert_op("f32_convert_i32_u"),
+            .f32_convert_i64_s => try self.lower_convert_op("f32_convert_i64_s"),
+            .f32_convert_i64_u => try self.lower_convert_op("f32_convert_i64_u"),
+            .f32_demote_f64 => try self.lower_convert_op("f32_demote_f64"),
+            .f64_convert_i32_s => try self.lower_convert_op("f64_convert_i32_s"),
+            .f64_convert_i32_u => try self.lower_convert_op("f64_convert_i32_u"),
+            .f64_convert_i64_s => try self.lower_convert_op("f64_convert_i64_s"),
+            .f64_convert_i64_u => try self.lower_convert_op("f64_convert_i64_u"),
+            .f64_promote_f32 => try self.lower_convert_op("f64_promote_f32"),
+            .i32_reinterpret_f32 => try self.lower_convert_op("i32_reinterpret_f32"),
+            .i64_reinterpret_f64 => try self.lower_convert_op("i64_reinterpret_f64"),
+            .f32_reinterpret_i32 => try self.lower_convert_op("f32_reinterpret_i32"),
+            .f64_reinterpret_i64 => try self.lower_convert_op("f64_reinterpret_i64"),
+
+            // ── Sign-extension operations ────────────────────────────────────
+            .i32_extend8_s => try self.lower_convert_op("i32_extend8_s"),
+            .i32_extend16_s => try self.lower_convert_op("i32_extend16_s"),
+            .i64_extend8_s => try self.lower_convert_op("i64_extend8_s"),
+            .i64_extend16_s => try self.lower_convert_op("i64_extend16_s"),
+            .i64_extend32_s => try self.lower_convert_op("i64_extend32_s"),
 
             .ret => {
                 const value = self.stack.pop();

@@ -17,6 +17,7 @@ const CompiledFunction = ir_mod.CompiledFunction;
 const VM = vm_mod.VM;
 const RawVal = vm_mod.RawVal;
 const ValType = core.ValType;
+const TrapCode = core.TrapCode;
 const compileFunctionBody = module_mod.compileFunctionBody;
 const FuncTypeResolver = module_mod.FuncTypeResolver;
 
@@ -37,6 +38,26 @@ const local_tee_wasm = [_]u8{
     0x0a, 0x08, 0x01, 0x06,
     0x00, 0x20, 0x00, 0x22,
     0x00, 0x0b,
+};
+const trunc_f64_s_wasm = [_]u8{
+    0x00, 0x61, 0x73, 0x6d,
+    0x01, 0x00, 0x00, 0x00,
+    0x01, 0x06, 0x01, 0x60,
+    0x01, 0x7c, 0x01, 0x7f,
+    0x03, 0x02, 0x01, 0x00,
+    0x0a, 0x07, 0x01, 0x05,
+    0x00, 0x20, 0x00, 0xaa,
+    0x0b,
+};
+const extend8_s_wasm = [_]u8{
+    0x00, 0x61, 0x73, 0x6d,
+    0x01, 0x00, 0x00, 0x00,
+    0x01, 0x06, 0x01, 0x60,
+    0x01, 0x7f, 0x01, 0x7f,
+    0x03, 0x02, 0x01, 0x00,
+    0x0a, 0x07, 0x01, 0x05,
+    0x00, 0x20, 0x00, 0xc0,
+    0x0b,
 };
 
 const ParsedFunction = struct {
@@ -185,6 +206,44 @@ fn lowerParsedFunction(allocator: std.mem.Allocator, reserved_slots: u32, body_e
     return try compileFunctionBody(allocator, reserved_slots, body_expr, empty_resolver);
 }
 
+fn executeUnaryOp(op: WasmOp, param: RawVal) !vm_mod.ExecResult {
+    var lower = Lower.init_with_reserved_slots(testing.allocator, 1);
+    defer lower.deinit();
+
+    const ops = [_]WasmOp{
+        .{ .local_get = 0 },
+        op,
+        .ret,
+    };
+    for (ops) |item| {
+        try lower.lower_op(item);
+    }
+
+    var vm = VM.init(testing.allocator);
+    const params = [_]RawVal{param};
+    return try vm.execute(lower.compiled, &params, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{});
+}
+
+fn expectUnaryResult(comptime T: type, op: WasmOp, param: RawVal, expected: T) !void {
+    const exec_result = try executeUnaryOp(op, param);
+    const result = exec_result.ok orelse return error.MissingReturnValue;
+    try testing.expectEqual(expected, result.readAs(T));
+}
+
+fn expectUnaryBitsResult(comptime T: type, op: WasmOp, param: RawVal, expected_bits: T) !void {
+    const exec_result = try executeUnaryOp(op, param);
+    const result = exec_result.ok orelse return error.MissingReturnValue;
+    try testing.expectEqual(expected_bits, result.readAs(T));
+}
+
+fn expectUnaryTrap(op: WasmOp, param: RawVal, expected: TrapCode) !void {
+    const exec_result = try executeUnaryOp(op, param);
+    switch (exec_result) {
+        .trap => |trap| try testing.expectEqual(expected, trap.trapCode().?),
+        .ok => return error.ExpectedTrap,
+    }
+}
+
 test "simple_add fixture runs through parser lower ir vm" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -321,4 +380,62 @@ test "if-else selects correct branch at runtime" {
     const params_false = [_]RawVal{RawVal.from(@as(i32, 0))};
     const r_false = (try vm.execute(lower.compiled, &params_false, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{})).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 20), r_false.readAs(i32));
+}
+
+test "numeric conversion instructions execute correctly" {
+    try expectUnaryBitsResult(u32, .i32_wrap_i64, RawVal.from(@as(i64, @bitCast(@as(u64, 0x1234_5678_9abc_def0)))), 0x9abc_def0);
+    try expectUnaryResult(i64, .i64_extend_i32_s, RawVal.from(@as(i32, -1)), -1);
+    try expectUnaryBitsResult(u64, .i64_extend_i32_u, RawVal.from(@as(i32, -1)), 0x0000_0000_ffff_ffff);
+    try expectUnaryResult(f32, .f32_convert_i64_u, RawVal.from(@as(i64, std.math.minInt(i64))), @as(f32, 9_223_372_036_854_775_808.0));
+    try expectUnaryResult(f64, .f64_convert_i32_s, RawVal.from(@as(i32, -123)), @as(f64, -123.0));
+    try expectUnaryResult(f32, .f32_demote_f64, RawVal.from(@as(f64, 42.25)), @as(f32, 42.25));
+    try expectUnaryResult(f64, .f64_promote_f32, RawVal.from(@as(f32, -13.5)), @as(f64, -13.5));
+}
+
+test "reinterpret instructions preserve bit patterns" {
+    try expectUnaryBitsResult(u32, .i32_reinterpret_f32, RawVal.from(@as(f32, @bitCast(@as(u32, 0x4049_0fdb)))), 0x4049_0fdb);
+    try expectUnaryBitsResult(u64, .i64_reinterpret_f64, RawVal.from(@as(f64, @bitCast(@as(u64, 0x4009_21fb_5444_2d18)))), 0x4009_21fb_5444_2d18);
+    try expectUnaryBitsResult(u32, .f32_reinterpret_i32, RawVal.from(@as(i32, @bitCast(@as(u32, 0x7fc0_0000)))), 0x7fc0_0000);
+    try expectUnaryBitsResult(u64, .f64_reinterpret_i64, RawVal.from(@as(i64, @bitCast(@as(u64, 0x7ff8_0000_0000_0000)))), 0x7ff8_0000_0000_0000);
+}
+
+test "sign-extension instructions extend from narrow signed widths" {
+    try expectUnaryResult(i32, .i32_extend8_s, RawVal.from(@as(i32, @bitCast(@as(u32, 0x0000_0080)))), -128);
+    try expectUnaryResult(i32, .i32_extend16_s, RawVal.from(@as(i32, @bitCast(@as(u32, 0x0000_8000)))), -32768);
+    try expectUnaryResult(i64, .i64_extend8_s, RawVal.from(@as(i64, @bitCast(@as(u64, 0x0000_0000_0000_0080)))), -128);
+    try expectUnaryResult(i64, .i64_extend16_s, RawVal.from(@as(i64, @bitCast(@as(u64, 0x0000_0000_0000_8000)))), -32768);
+    try expectUnaryResult(i64, .i64_extend32_s, RawVal.from(@as(i64, @bitCast(@as(u64, 0x0000_0000_8000_0000)))), -2147483648);
+}
+
+test "truncation instructions map NaN and range failures to wasm trap codes" {
+    try expectUnaryTrap(.i32_trunc_f32_s, RawVal.from(std.math.nan(f32)), .BadConversionToInteger);
+    try expectUnaryTrap(.i32_trunc_f32_s, RawVal.from(@as(f32, 2147483648.0)), .IntegerOverflow);
+}
+
+test "real wasm conversion opcode runs through parser lower and vm" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const parsed = try parse_single_function_module(arena.allocator(), &trunc_f64_s_wasm);
+    var compiled = try lowerParsedFunction(testing.allocator, parsed.reserved_slots, parsed.body_expr);
+    defer compiled.ops.deinit(testing.allocator);
+
+    var vm = VM.init(testing.allocator);
+    const params = [_]RawVal{RawVal.from(@as(f64, 42.9))};
+    const result = (try vm.execute(compiled, &params, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{})).ok orelse return error.MissingReturnValue;
+    try testing.expectEqual(@as(i32, 42), result.readAs(i32));
+}
+
+test "real wasm sign-extension opcode runs through parser lower and vm" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const parsed = try parse_single_function_module(arena.allocator(), &extend8_s_wasm);
+    var compiled = try lowerParsedFunction(testing.allocator, parsed.reserved_slots, parsed.body_expr);
+    defer compiled.ops.deinit(testing.allocator);
+
+    var vm = VM.init(testing.allocator);
+    const params = [_]RawVal{RawVal.from(@as(i32, @bitCast(@as(u32, 0x0000_0080))))};
+    const result = (try vm.execute(compiled, &params, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{})).ok orelse return error.MissingReturnValue;
+    try testing.expectEqual(@as(i32, -128), result.readAs(i32));
 }

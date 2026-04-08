@@ -31,6 +31,26 @@ fn expect_binary_cmp_lowered(op: WasmOp, comptime tag: std.meta.Tag(Op)) !void {
     try testing.expectEqual(.ret, std.meta.activeTag(lower.compiled.ops.items[1]));
 }
 
+fn expect_convert_lowered(op: WasmOp, comptime tag: std.meta.Tag(Op)) !void {
+    var lower = Lower.init_with_reserved_slots(testing.allocator, 1);
+    defer lower.deinit();
+
+    const ops = [_]WasmOp{
+        .{ .local_get = 0 },
+        op,
+        .ret,
+    };
+
+    for (ops) |item| {
+        try lower.lower_op(item);
+    }
+
+    try testing.expectEqual(@as(u32, 2), lower.compiled.slots_len);
+    try testing.expectEqual(@as(usize, 2), lower.compiled.ops.items.len);
+    try testing.expectEqual(tag, std.meta.activeTag(lower.compiled.ops.items[0]));
+    try testing.expectEqual(.ret, std.meta.activeTag(lower.compiled.ops.items[1]));
+}
+
 test "lower simple add function into slot IR" {
     var lower = Lower.init_with_reserved_slots(testing.allocator, 2);
     defer lower.deinit();
@@ -371,6 +391,14 @@ test "lower i32 comparison family into slot IR" {
     try expect_binary_cmp_lowered(.i32_le_u, .i32_le_u);
     try expect_binary_cmp_lowered(.i32_ge_s, .i32_ge_s);
     try expect_binary_cmp_lowered(.i32_ge_u, .i32_ge_u);
+}
+
+test "lower conversion and sign-extension family into slot IR" {
+    try expect_convert_lowered(.i32_wrap_i64, .i32_wrap_i64);
+    try expect_convert_lowered(.i64_extend_i32_u, .i64_extend_i32_u);
+    try expect_convert_lowered(.f32_demote_f64, .f32_demote_f64);
+    try expect_convert_lowered(.i32_reinterpret_f32, .i32_reinterpret_f32);
+    try expect_convert_lowered(.i64_extend32_s, .i64_extend32_s);
 }
 
 // ── Control flow tests ────────────────────────────────────────────────────────
