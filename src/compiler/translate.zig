@@ -113,6 +113,12 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
             .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
         } },
 
+        // ── Bulk memory instructions ──────────────────────────────────────────
+        .memory_init => WasmOp{ .memory_init = info.segment_index orelse return error.UnsupportedOperator },
+        .data_drop => WasmOp{ .data_drop = info.segment_index orelse return error.UnsupportedOperator },
+        .memory_copy => WasmOp.memory_copy,
+        .memory_fill => WasmOp.memory_fill,
+
         .i32_add => WasmOp.i32_add,
         .i32_sub => WasmOp.i32_sub,
         .i32_mul => WasmOp.i32_mul,

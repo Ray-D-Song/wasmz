@@ -66,6 +66,17 @@ pub const MemoryDef = struct {
     max_pages: ?u32,
 };
 
+/// Compiled data segment, holding the data bytes and metadata for runtime initialization.
+pub const CompiledDataSegment = struct {
+    mode: payload_mod.DataMode,
+    memory_index: u32,
+    /// For active segments, the offset in linear memory where data should be written.
+    /// For passive segments, this is unused.
+    offset: u32,
+    /// The actual data bytes to be written to memory.
+    data: []const u8,
+};
+
 /// All possible errors that can occur during module compilation.
 pub const ModuleCompileError = Allocator.Error ||
     parser_mod.ParseAllError ||
@@ -123,6 +134,9 @@ pub const Module = struct {
     /// Type index for every function in the module (imports + locals), in func_idx order.
     /// func_type_indices[func_idx] = type section index.
     func_type_indices: []u32,
+    /// Data segments: each entry holds data bytes and initialization metadata.
+    /// Active segments are applied during instantiation; passive segments are used by memory.init.
+    data_segments: []CompiledDataSegment,
 
     /// Compile WebAssembly bytecode into a Module.
     ///
@@ -176,6 +190,15 @@ pub const Module = struct {
         errdefer {
             for (tables_lists.items) |*tl| tl.deinit(allocator);
             tables_lists.deinit(allocator);
+        }
+
+        // Data section: track pending segments to build data_segments.
+        var pending_data_mode: payload_mod.DataMode = .passive;
+        var pending_data_memory_index: ?u32 = null;
+        var data_segments_list: std.ArrayListUnmanaged(CompiledDataSegment) = .empty;
+        errdefer {
+            for (data_segments_list.items) |*seg| allocator.free(seg.data);
+            data_segments_list.deinit(allocator);
         }
 
         for (payloads) |payload| {
@@ -251,6 +274,23 @@ pub const Module = struct {
                             try tables_lists.items[tbl_idx].append(allocator, fi);
                         }
                     }
+                },
+                .data_segment => |seg| {
+                    pending_data_mode = seg.mode;
+                    pending_data_memory_index = seg.memory_index;
+                },
+                .data_segment_body => |body| {
+                    const data_copy = try allocator.dupe(u8, body.data);
+                    const compiled = CompiledDataSegment{
+                        .mode = pending_data_mode,
+                        .memory_index = pending_data_memory_index orelse 0,
+                        .offset = if (pending_data_mode == .active)
+                            (try evaluateConstExpr(arena.allocator(), body.offset_expr, .I32)).readAs(u32)
+                        else
+                            0,
+                        .data = data_copy,
+                    };
+                    try data_segments_list.append(allocator, compiled);
                 },
                 else => {},
             }
@@ -343,6 +383,9 @@ pub const Module = struct {
         }
         tables_lists.clearRetainingCapacity();
 
+        // ── Build data_segments slice ────────────────────────────────────────
+        const data_segments = try data_segments_list.toOwnedSlice(allocator);
+
         // ── Build func_type_indices: imports first, then locals ───────────────
         // Total entries = imported_function_count + function_type_indices.items.len
         const func_type_indices = try allocator.alloc(u32, function_count);
@@ -365,6 +408,7 @@ pub const Module = struct {
             .imported_funcs = imported_funcs,
             .tables = tables,
             .func_type_indices = func_type_indices,
+            .data_segments = data_segments,
         };
     }
 
@@ -392,6 +436,11 @@ pub const Module = struct {
         self.allocator.free(self.tables);
 
         self.allocator.free(self.func_type_indices);
+
+        for (self.data_segments) |*seg| {
+            self.allocator.free(seg.data);
+        }
+        self.allocator.free(self.data_segments);
 
         self.* = undefined;
     }
@@ -678,7 +727,7 @@ test "module.compile builds exported function bodies" {
     try std.testing.expectEqual(@as(u32, 0), export_entry.function_index);
 
     var vm = VM.init(std.testing.allocator);
-    const result = (try vm.execute(module.functions[@intCast(export_entry.function_index)], &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{})).ok orelse {
+    const result = (try vm.execute(module.functions[@intCast(export_entry.function_index)], &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{})).ok orelse {
         return error.MissingReturnValue;
     };
     try std.testing.expectEqual(@as(i32, 1), result.readAs(i32));

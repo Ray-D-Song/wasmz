@@ -861,6 +861,9 @@ pub const DataSegment = struct {
 
 pub const DataSegmentBody = struct {
     data: []const u8,
+    /// For active segments, contains the init expression bytes for the offset.
+    /// For passive segments, this is empty.
+    offset_expr: []const u8 = &.{},
 };
 
 pub const ImportEntryType = union(enum) {

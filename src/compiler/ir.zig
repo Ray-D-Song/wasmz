@@ -212,6 +212,40 @@ pub const Op = union(enum) {
         /// Number of indexed targets (not counting the default)
         targets_len: u32,
     },
+
+    // ── Bulk memory instructions ─────────────────────────────────────────────────
+    /// memory.init: Copy data from a data segment to linear memory.
+    /// `dst_addr` slot holds the destination memory address.
+    /// `src_offset` slot holds the offset within the data segment.
+    /// `len` slot holds the number of bytes to copy.
+    memory_init: struct {
+        segment_idx: u32,
+        dst_addr: Slot,
+        src_offset: Slot,
+        len: Slot,
+    },
+    /// data.drop: Mark a data segment as dropped (no longer usable).
+    data_drop: struct {
+        segment_idx: u32,
+    },
+    /// memory.copy: Copy bytes within linear memory.
+    /// `dst_addr` slot holds the destination address.
+    /// `src_addr` slot holds the source address.
+    /// `len` slot holds the number of bytes to copy.
+    memory_copy: struct {
+        dst_addr: Slot,
+        src_addr: Slot,
+        len: Slot,
+    },
+    /// memory.fill: Fill memory region with a byte value.
+    /// `dst_addr` slot holds the destination address.
+    /// `value` slot holds the byte value to fill.
+    /// `len` slot holds the number of bytes to fill.
+    memory_fill: struct {
+        dst_addr: Slot,
+        value: Slot,
+        len: Slot,
+    },
 };
 
 pub const CompiledFunction = struct {

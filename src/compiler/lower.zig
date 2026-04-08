@@ -129,6 +129,12 @@ pub const WasmOp = union(enum) {
     i32_store: struct { offset: u32 },
     i32_store8: struct { offset: u32 },
     i32_store16: struct { offset: u32 },
+
+    // ── Bulk memory instructions ──────────────────────────────────────────────
+    memory_init: u32,
+    data_drop: u32,
+    memory_copy,
+    memory_fill,
     /// select: stack [val1, val2, cond] -> if cond != 0 then val1 else val2
     select,
     /// select with explicit type annotation (same semantics, type annotation ignored at runtime)
@@ -885,6 +891,33 @@ pub const Lower = struct {
                 const src = try self.pop_slot();
                 const addr = try self.pop_slot();
                 try self.emit(.{ .i32_store16 = .{ .addr = addr, .src = src, .offset = inst.offset } });
+            },
+
+            // ── Bulk memory ─────────────────────────────────────────────────────────
+            // memory.init: [dst_addr, src_offset, len] -> []  (pop len, then src_offset, then dst_addr)
+            .memory_init => |segment_idx| {
+                const len = try self.pop_slot();
+                const src_offset = try self.pop_slot();
+                const dst_addr = try self.pop_slot();
+                try self.emit(.{ .memory_init = .{ .segment_idx = segment_idx, .dst_addr = dst_addr, .src_offset = src_offset, .len = len } });
+            },
+            // data.drop: no stack operands
+            .data_drop => |segment_idx| {
+                try self.emit(.{ .data_drop = .{ .segment_idx = segment_idx } });
+            },
+            // memory.copy: [dst_addr, src_addr, len] -> []  (pop len, then src_addr, then dst_addr)
+            .memory_copy => {
+                const len = try self.pop_slot();
+                const src_addr = try self.pop_slot();
+                const dst_addr = try self.pop_slot();
+                try self.emit(.{ .memory_copy = .{ .dst_addr = dst_addr, .src_addr = src_addr, .len = len } });
+            },
+            // memory.fill: [dst_addr, value, len] -> []  (pop len, then value, then dst_addr)
+            .memory_fill => {
+                const len = try self.pop_slot();
+                const value = try self.pop_slot();
+                const dst_addr = try self.pop_slot();
+                try self.emit(.{ .memory_fill = .{ .dst_addr = dst_addr, .value = value, .len = len } });
             },
 
             // ── select ───────────────────────────────────────────────────────────

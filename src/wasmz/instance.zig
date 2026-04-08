@@ -109,7 +109,7 @@ pub const Instance = struct {
             }
             const start_func = module.functions[start_idx];
             var vm = VM.init(store.allocator);
-            const exec_r = try vm.execute(start_func, &.{}, globals, memory, module.functions, host_funcs, module.tables, module.func_type_indices);
+            const exec_r = try vm.execute(start_func, &.{}, globals, memory, module.functions, host_funcs, module.tables, module.func_type_indices, module.data_segments);
             switch (exec_r) {
                 // start function triggered a trap: instantiation failed
                 .trap => return error.StartFunctionTrapped,
@@ -153,7 +153,7 @@ pub const Instance = struct {
         const export_entry = self.module.exports.get(name) orelse return error.ExportNotFound;
         const func = self.module.functions[export_entry.function_index];
         var vm = VM.init(self.store.allocator);
-        return vm.execute(func, args, self.globals, self.memory, self.module.functions, self.host_funcs, self.module.tables, self.module.func_type_indices);
+        return vm.execute(func, args, self.globals, self.memory, self.module.functions, self.host_funcs, self.module.tables, self.module.func_type_indices, self.module.data_segments);
     }
 };
 

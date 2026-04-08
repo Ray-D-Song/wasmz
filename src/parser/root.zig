@@ -1063,7 +1063,9 @@ pub const Parser = struct {
 
     fn read_data_entry_body(self: *Parser) ParseResult {
         const start_pos = self.cur_pos;
+        var offset_expr: []const u8 = &.{};
         if (self.cur_data_segment_active) {
+            const offset_expr_start = self.cur_pos;
             self.read_code_operator(.expression) catch |err| switch (err) {
                 error.NeedMoreData => return .need_more_data,
                 error.UnknownOperator => return self.fail_with_state(ParserError.UnknownOperator),
@@ -1072,6 +1074,7 @@ pub const Parser = struct {
                 },
                 error.UnsupportedState => return self.fail_with_state(ParserError.UnsupportedState),
             };
+            offset_expr = self.cur_data[offset_expr_start..self.cur_pos];
         }
         if (!self.has_str_bytes()) {
             self.cur_pos = start_pos;
@@ -1083,7 +1086,7 @@ pub const Parser = struct {
         self.cur_data_segment_active = false;
         return .{ .parsed = .{
             .consumed = self.cur_pos - start_pos,
-            .payload = .{ .data_segment_body = DataSegmentBody{ .data = data } },
+            .payload = .{ .data_segment_body = DataSegmentBody{ .data = data, .offset_expr = offset_expr } },
         } };
     }
 

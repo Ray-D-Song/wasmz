@@ -2,8 +2,10 @@ const std = @import("std");
 const ir = @import("../compiler/ir.zig");
 const core = @import("core");
 const host_mod = @import("../wasmz/host.zig");
+const module_mod = @import("../wasmz/module.zig");
 
 const CompiledFunction = ir.CompiledFunction;
+const CompiledDataSegment = module_mod.CompiledDataSegment;
 const Allocator = std.mem.Allocator;
 pub const RawVal = core.raw.RawVal;
 pub const Global = core.Global;
@@ -55,6 +57,7 @@ pub const VM = struct {
     ///                      Used by call_indirect to resolve the callee at runtime.
     ///   func_type_indices — Maps func_idx → type section index for every function (imports + locals).
     ///                      Used by call_indirect for runtime type checking.
+    ///   data_segments    — Module data segments (needed for memory.init).
     ///
     /// Returns:
     ///   Allocator.Error  — Host memory allocation failure (not a Wasm trap)
@@ -70,6 +73,7 @@ pub const VM = struct {
         host_funcs: []const HostFunc,
         tables: []const []const u32,
         func_type_indices: []const u32,
+        data_segments: []const CompiledDataSegment,
     ) Allocator.Error!ExecResult {
         // ── Initialize entry frame ─────────────────────────────────────────────
         const entry_slots_len: usize = @max(
@@ -549,6 +553,75 @@ pub const VM = struct {
                     else
                         call_stack.items[frame_idx].slots[inst.val2];
                     call_stack.items[frame_idx].slots[inst.dst] = result;
+                },
+
+                // ── Bulk memory instructions ────────────────────────────────────────
+                .memory_init => |inst| {
+                    const dst_addr = call_stack.items[frame_idx].slots[inst.dst_addr].readAs(u32);
+                    const src_offset = call_stack.items[frame_idx].slots[inst.src_offset].readAs(u32);
+                    const len = call_stack.items[frame_idx].slots[inst.len].readAs(u32);
+
+                    if (inst.segment_idx >= data_segments.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    const segment = data_segments[inst.segment_idx];
+
+                    // Bounds check: src_offset + len <= segment.data.len && dst_addr + len <= memory.len
+                    const src_end = src_offset +% len;
+                    const dst_end = dst_addr +% len;
+                    if (src_end > segment.data.len or dst_end > memory.len) {
+                        return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    }
+
+                    // Copy from segment to memory
+                    @memcpy(memory[dst_addr..][0..len], segment.data[src_offset..][0..len]);
+                },
+                .data_drop => |inst| {
+                    // Mark segment as dropped by setting data.len to 0
+                    // Note: This modifies the slice in the data_segments parameter (which is const),
+                    // so we need to use a different approach. For now, we'll just skip this.
+                    // TODO: Implement proper data.drop tracking with a dropped[] bool array.
+                    _ = inst.segment_idx;
+                },
+                .memory_copy => |inst| {
+                    const dst_addr = call_stack.items[frame_idx].slots[inst.dst_addr].readAs(u32);
+                    const src_addr = call_stack.items[frame_idx].slots[inst.src_addr].readAs(u32);
+                    const len = call_stack.items[frame_idx].slots[inst.len].readAs(u32);
+
+                    // Bounds check: src_addr + len <= memory.len && dst_addr + len <= memory.len
+                    const src_end = src_addr +% len;
+                    const dst_end = dst_addr +% len;
+                    if (src_end > memory.len or dst_end > memory.len) {
+                        return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    }
+
+                    // Handle overlapping regions correctly
+                    if (len > 0) {
+                        if (dst_addr < src_addr) {
+                            // Copy forward
+                            @memcpy(memory[dst_addr .. dst_addr + len], memory[src_addr .. src_addr + len]);
+                        } else if (dst_addr > src_addr) {
+                            // Copy backward to handle overlap
+                            var i: usize = len;
+                            while (i > 0) {
+                                i -= 1;
+                                memory[dst_addr + i] = memory[src_addr + i];
+                            }
+                        }
+                        // If dst_addr == src_addr, no-op
+                    }
+                },
+                .memory_fill => |inst| {
+                    const dst_addr = call_stack.items[frame_idx].slots[inst.dst_addr].readAs(u32);
+                    const value = call_stack.items[frame_idx].slots[inst.value].readAs(u32);
+                    const len = call_stack.items[frame_idx].slots[inst.len].readAs(u32);
+
+                    // Bounds check: dst_addr + len <= memory.len
+                    const dst_end = dst_addr +% len;
+                    if (dst_end > memory.len) {
+                        return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    }
+
+                    // Fill memory with byte value
+                    @memset(memory[dst_addr .. dst_addr + len], @truncate(value));
                 },
 
                 // ── return ────────────────────────────────────────────────────────
