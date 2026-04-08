@@ -3,16 +3,21 @@ const ir = @import("../compiler/ir.zig");
 const core = @import("core");
 const host_mod = @import("../wasmz/host.zig");
 const module_mod = @import("../wasmz/module.zig");
+const store_mod = @import("../wasmz/store.zig");
 
 const helper = core.helper;
 const CompiledFunction = ir.CompiledFunction;
 const CompiledDataSegment = module_mod.CompiledDataSegment;
+const FuncType = core.func_type.FuncType;
 const Allocator = std.mem.Allocator;
+const Store = store_mod.Store;
 pub const RawVal = core.raw.RawVal;
 pub const Global = core.Global;
 pub const Trap = core.Trap;
 pub const TrapCode = core.TrapCode;
 pub const HostFunc = host_mod.HostFunc;
+const HostContext = host_mod.HostContext;
+const HostInstance = host_mod.HostInstance;
 
 /// VM execute result either be void or Wasm trap
 /// Allocation failures and other host environment errors are still propagated through Zig error unions (Allocator.Error).
@@ -61,6 +66,34 @@ inline fn reinterpretUnsignedAsSigned(comptime T: type, value: UnsignedOf(T)) T 
     return @as(T, @bitCast(value));
 }
 
+fn invokeHostCall(
+    self: *VM,
+    store: *Store,
+    host_instance: *HostInstance,
+    host_func: HostFunc,
+    arg_slots: []const ir.Slot,
+    slots: []RawVal,
+    result_len: usize,
+) Allocator.Error!ExecResult {
+    const host_params = try self.allocator.alloc(RawVal, arg_slots.len);
+    defer self.allocator.free(host_params);
+    for (arg_slots, 0..) |arg_slot, i| {
+        host_params[i] = slots[arg_slot];
+    }
+
+    const host_results = try self.allocator.alloc(RawVal, result_len);
+    defer self.allocator.free(host_results);
+    @memset(host_results, std.mem.zeroes(RawVal));
+
+    var ctx = HostContext.init(store, host_instance, host_func.host_data);
+    host_func.call(&ctx, host_params, host_results) catch |err| switch (err) {
+        error.HostTrap => return .{ .trap = ctx.takeTrap() },
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+
+    return .{ .ok = if (result_len > 0) host_results[0] else null };
+}
+
 pub const VM = struct {
     allocator: Allocator,
 
@@ -93,9 +126,12 @@ pub const VM = struct {
         self: *VM,
         func: CompiledFunction,
         params: []const RawVal,
+        store: *Store,
+        host_instance: *HostInstance,
         globals: []Global,
         memory: []u8,
         functions: []const CompiledFunction,
+        func_types: []const FuncType,
         host_funcs: []const HostFunc,
         tables: []const []const u32,
         func_type_indices: []const u32,
@@ -496,14 +532,15 @@ pub const VM = struct {
                     const arg_slots = caller_func.call_args.items[inst.args_start .. inst.args_start + inst.args_len];
 
                     if (inst.func_idx < host_funcs.len) {
-                        // ── Host function call ──────────────────────────────
-                        const host_params = try self.allocator.alloc(RawVal, arg_slots.len);
-                        defer self.allocator.free(host_params);
-                        for (arg_slots, 0..) |arg_slot, i| {
-                            host_params[i] = slots[arg_slot];
-                        }
-
-                        const host_result = try host_funcs[inst.func_idx].call(host_params, self.allocator);
+                        const host_result = try invokeHostCall(
+                            self,
+                            store,
+                            host_instance,
+                            host_funcs[inst.func_idx],
+                            arg_slots,
+                            slots,
+                            func_types[func_type_indices[inst.func_idx]].results().len,
+                        );
                         switch (host_result) {
                             .trap => |t| return .{ .trap = t },
                             .ok => |ret_val| {
@@ -572,13 +609,15 @@ pub const VM = struct {
 
                     // 6. Dispatch (same logic as .call).
                     if (callee_func_idx < host_funcs.len) {
-                        // ── Host function call ──────────────────────────────
-                        const host_params = try self.allocator.alloc(RawVal, arg_slots.len);
-                        defer self.allocator.free(host_params);
-                        for (arg_slots, 0..) |arg_slot, i| {
-                            host_params[i] = slots[arg_slot];
-                        }
-                        const host_result = try host_funcs[callee_func_idx].call(host_params, self.allocator);
+                        const host_result = try invokeHostCall(
+                            self,
+                            store,
+                            host_instance,
+                            host_funcs[callee_func_idx],
+                            arg_slots,
+                            slots,
+                            func_types[func_type_indices[callee_func_idx]].results().len,
+                        );
                         switch (host_result) {
                             .trap => |t| return .{ .trap = t },
                             .ok => |ret_val| {

@@ -20,6 +20,7 @@ const Module = module_mod.Module;
 const Global = core.Global;
 const GlobalType = core.GlobalType;
 const VM = vm_mod.VM;
+const HostInstance = host_mod.HostInstance;
 pub const RawVal = vm_mod.RawVal;
 /// Wasm runtime trap, carrying TrapCode and optional description
 pub const Trap = vm_mod.Trap;
@@ -28,7 +29,8 @@ pub const TrapCode = vm_mod.TrapCode;
 /// Instance.call result: either a normal return (with optional value for void functions) or a Wasm trap
 pub const ExecResult = vm_mod.ExecResult;
 pub const HostFunc = host_mod.HostFunc;
-pub const Imports = host_mod.Imports;
+pub const Linker = host_mod.Linker;
+pub const Imports = Linker;
 
 /// The number of bytes in a single WebAssembly memory page (64 KiB).
 const WASM_PAGE_SIZE: usize = 65536;
@@ -37,6 +39,8 @@ pub const InstanceError = Allocator.Error || error{
     ExportNotFound,
     /// A function import required by the module was not provided in the Imports map
     ImportNotSatisfied,
+    /// A host-provided function's signature does not match the imported function type.
+    ImportSignatureMismatch,
     /// Start function index overflows the number of functions in the module
     InvalidStartFunctionIndex,
     /// Start function returns a value, which violates the Wasm specification that start functions must be void
@@ -58,6 +62,7 @@ pub const Instance = struct {
     /// Resolved host functions for each imported function slot, in the same order as module.imported_funcs.
     /// Length == module.imported_funcs.len.
     host_funcs: []HostFunc,
+    host_view: HostInstance,
     /// Tracks which data segments have been dropped via data.drop instruction.
     /// data_segments_dropped[i] == true means segment i cannot be used by memory.init.
     data_segments_dropped: []bool,
@@ -69,7 +74,7 @@ pub const Instance = struct {
     ///   module  — A compiled read-only Module (the caller is responsible for its lifetime).
     ///   imports — Host-provided functions satisfying the module's imports.
     ///             Pass `Imports.empty` for modules with no imports.
-    pub fn init(store: *Store, module: *const Module, imports: Imports) InstanceError!Instance {
+    pub fn init(store: *Store, module: *const Module, imports: Linker) InstanceError!Instance {
         const allocator = store.allocator;
 
         // ── 1. copy globals ──────────────────────────────────────────
@@ -99,15 +104,30 @@ pub const Instance = struct {
         errdefer allocator.free(host_funcs);
 
         for (module.imported_funcs, 0..) |def, i| {
-            const hf = imports.get(def.module_name, def.func_name) orelse
+            const hf = imports.get(def.module_name, def.func_name) orelse {
+                std.debug.print("ImportNotSatisfied: module='{s}' func='{s}'\n", .{ def.module_name, def.func_name });
                 return error.ImportNotSatisfied;
+            };
+            if (!hf.matches(module.func_types[def.type_index])) {
+                return error.ImportSignatureMismatch;
+            }
             host_funcs[i] = hf;
         }
+
+        var host_view = HostInstance{
+            .module = module,
+            .globals = globals,
+            .memory = memory,
+            .tables = module.tables,
+        };
 
         // ── 4. initialize data segment dropped flags ───────────────────────────────
         const data_segments_dropped = try allocator.alloc(bool, module.data_segments.len);
         errdefer allocator.free(data_segments_dropped);
         @memset(data_segments_dropped, false);
+
+        store.registerInstance();
+        errdefer store.unregisterInstance();
 
         // ── 5. call start function (if exists) ──────────────────────────────────
         // Wasm specification: The function specified in the Start Section is automatically executed during instantiation, with no parameters and no return value.
@@ -120,9 +140,12 @@ pub const Instance = struct {
             const exec_r = try vm.execute(
                 start_func,
                 &.{},
+                store,
+                &host_view,
                 globals,
                 memory,
                 module.functions,
+                module.func_types,
                 host_funcs,
                 module.tables,
                 module.func_type_indices,
@@ -143,6 +166,7 @@ pub const Instance = struct {
             .globals = globals,
             .memory = memory,
             .host_funcs = host_funcs,
+            .host_view = host_view,
             .data_segments_dropped = data_segments_dropped,
         };
     }
@@ -156,6 +180,7 @@ pub const Instance = struct {
         }
         allocator.free(self.host_funcs);
         allocator.free(self.data_segments_dropped);
+        self.store.unregisterInstance();
         self.* = undefined;
     }
 
@@ -177,9 +202,12 @@ pub const Instance = struct {
         return vm.execute(
             func,
             args,
+            self.store,
+            &self.host_view,
             self.globals,
             self.memory,
             self.module.functions,
+            self.module.func_types,
             self.host_funcs,
             self.module.tables,
             self.module.func_type_indices,
@@ -666,11 +694,12 @@ test "Instance: host function import (env.add_one) is called correctly" {
     const HostCtx = struct {
         fn add_one(
             _: ?*anyopaque,
+            _: *host_mod.HostContext,
             params: []const RawVal,
-            _: std.mem.Allocator,
-        ) std.mem.Allocator.Error!ExecResult {
+            results: []RawVal,
+        ) host_mod.HostError!void {
             const x = params[0].readAs(i32);
-            return .{ .ok = RawVal.from(x + 1) };
+            results[0] = RawVal.from(x + 1);
         }
     };
 
@@ -680,7 +709,12 @@ test "Instance: host function import (env.add_one) is called correctly" {
         testing_mod.allocator,
         "env",
         "add_one",
-        HostFunc{ .ctx = null, .func = HostCtx.add_one },
+        HostFunc.init(
+            null,
+            HostCtx.add_one,
+            &[_]core.ValType{.I32},
+            &[_]core.ValType{.I32},
+        ),
     );
 
     var instance = try Instance.init(&store, &module, imports);
@@ -721,10 +755,11 @@ test "Instance: host function trap propagates to caller" {
     const HostCtx = struct {
         fn always_trap(
             _: ?*anyopaque,
+            ctx: *host_mod.HostContext,
             _: []const RawVal,
-            _: std.mem.Allocator,
-        ) std.mem.Allocator.Error!ExecResult {
-            return .{ .trap = Trap.fromTrapCode(.UnreachableCodeReached) };
+            _: []RawVal,
+        ) host_mod.HostError!void {
+            return ctx.raiseTrap(Trap.fromTrapCode(.UnreachableCodeReached));
         }
     };
 
@@ -734,7 +769,12 @@ test "Instance: host function trap propagates to caller" {
         testing_mod.allocator,
         "env",
         "add_one",
-        HostFunc{ .ctx = null, .func = HostCtx.always_trap },
+        HostFunc.init(
+            null,
+            HostCtx.always_trap,
+            &[_]core.ValType{.I32},
+            &[_]core.ValType{.I32},
+        ),
     );
 
     var instance = try Instance.init(&store, &module, imports);
@@ -812,4 +852,54 @@ test "Instance.init returns ImportNotSatisfied when import is missing" {
 
     const result = Instance.init(&store, &module, Imports.empty);
     try testing_mod.expectError(error.ImportNotSatisfied, result);
+}
+
+test "Instance.init returns ImportSignatureMismatch when host signature differs" {
+    const testing_mod = std.testing;
+    const engine_mod = @import("../engine/mod.zig");
+    const config_mod = @import("../engine/config.zig");
+
+    var engine = try engine_mod.Engine.init(testing_mod.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = Store.init(testing_mod.allocator, engine);
+    defer store.deinit();
+
+    const wasm = [_]u8{
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+        0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f,
+        0x02, 0x0f, 0x01, 0x03, 0x65, 0x6e, 0x76, 0x07,
+        0x61, 0x64, 0x64, 0x5f, 0x6f, 0x6e, 0x65, 0x00,
+        0x00, 0x03, 0x02, 0x01, 0x00, 0x07, 0x07, 0x01,
+        0x03, 0x72, 0x75, 0x6e, 0x00, 0x01, 0x0a, 0x08,
+        0x01, 0x06, 0x00, 0x20, 0x00, 0x10, 0x00, 0x0b,
+    };
+
+    var module = try Module.compile(engine, &wasm);
+    defer module.deinit();
+
+    const HostCtx = struct {
+        fn wrong_sig(
+            _: ?*anyopaque,
+            _: *host_mod.HostContext,
+            _: []const RawVal,
+            _: []RawVal,
+        ) host_mod.HostError!void {}
+    };
+
+    var linker = Linker.empty;
+    defer linker.deinit(testing_mod.allocator);
+    try linker.define(
+        testing_mod.allocator,
+        "env",
+        "add_one",
+        HostFunc.init(
+            null,
+            HostCtx.wrong_sig,
+            &.{},
+            &[_]core.ValType{.I32},
+        ),
+    );
+
+    try testing_mod.expectError(error.ImportSignatureMismatch, Instance.init(&store, &module, linker));
 }

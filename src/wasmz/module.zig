@@ -31,6 +31,7 @@ const OperatorInformation = payload_mod.OperatorInformation;
 const CompiledFunction = ir.CompiledFunction;
 const FuncType = func_type_mod.FuncType;
 const Mutability = global_mod.Mutability;
+const Global = core.Global;
 const RawVal = raw_mod.RawVal;
 const TypedRawVal = typed_mod.TypedRawVal;
 const ValType = value_type_mod.ValType;
@@ -152,10 +153,10 @@ pub const Module = struct {
         defer arena.deinit();
 
         var parser = Parser.init(arena.allocator());
-        const payloads = try parser.parse_all(bytes);
+        const payloads = try parser.parseAll(bytes);
 
         var func_types_list: std.ArrayListUnmanaged(FuncType) = .empty;
-        errdefer deinitFuncTypeList(allocator, &func_types_list);
+        errdefer deinit_func_type_list(allocator, &func_types_list);
 
         var function_type_indices: std.ArrayListUnmanaged(u32) = .empty;
         defer function_type_indices.deinit(allocator);
@@ -176,7 +177,7 @@ pub const Module = struct {
         defer globals_list.deinit(allocator);
 
         var exports: std.StringHashMapUnmanaged(ExportEntry) = .empty;
-        errdefer deinitExports(allocator, &exports);
+        errdefer deinit_exports(allocator, &exports);
 
         var memory: ?MemoryDef = null;
         var start_function: ?u32 = null;
@@ -206,7 +207,7 @@ pub const Module = struct {
                 .type_entry => |entry| {
                     try func_types_list.append(
                         allocator,
-                        try compileFuncType(allocator, arena.allocator(), entry),
+                        try compile_func_type(allocator, arena.allocator(), entry),
                     );
                 },
                 .import_entry => |entry| {
@@ -231,7 +232,7 @@ pub const Module = struct {
                 .global_variable => |entry| {
                     try globals_list.append(
                         allocator,
-                        try compileGlobalInit(arena.allocator(), entry),
+                        try compile_global_init(arena.allocator(), entry),
                     );
                 },
                 .memory_type => |entry| {
@@ -243,7 +244,7 @@ pub const Module = struct {
                 },
                 .export_entry => |entry| {
                     switch (entry.kind) {
-                        .function => try putFunctionExport(
+                        .function => try put_function_export(
                             allocator,
                             &exports,
                             entry.field,
@@ -285,7 +286,7 @@ pub const Module = struct {
                         .mode = pending_data_mode,
                         .memory_index = pending_data_memory_index orelse 0,
                         .offset = if (pending_data_mode == .active)
-                            (try evaluateConstExpr(arena.allocator(), body.offset_expr, .I32)).readAs(u32)
+                            (try evaluate_const_expr(arena.allocator(), body.offset_expr, .I32)).readAs(u32)
                         else
                             0,
                         .data = data_copy,
@@ -300,7 +301,7 @@ pub const Module = struct {
         const function_count = imported_function_count + function_type_indices.items.len;
         const functions = try allocator.alloc(CompiledFunction, function_count);
         errdefer {
-            deinitFunctions(allocator, functions);
+            deinit_functions(allocator, functions);
             allocator.free(functions);
         }
         @memset(functions, .{
@@ -331,7 +332,7 @@ pub const Module = struct {
                         return error.InvalidFunctionTypeIndex;
                     }
 
-                    const reserved_slots = try computeReservedSlots(func_types_list.items[type_index], info);
+                    const reserved_slots = try compute_reserved_slots(func_types_list.items[type_index], info);
                     const function_index = imported_function_count + local_function_index;
 
                     // Build function type resolver for looking up callee signatures when translating call instructions.
@@ -413,7 +414,7 @@ pub const Module = struct {
     }
 
     pub fn deinit(self: *Module) void {
-        deinitFunctions(self.allocator, self.functions);
+        deinit_functions(self.allocator, self.functions);
         self.allocator.free(self.functions);
 
         for (self.func_types) |func_type| {
@@ -421,7 +422,7 @@ pub const Module = struct {
         }
         self.allocator.free(self.func_types);
 
-        deinitExports(self.allocator, &self.exports);
+        deinit_exports(self.allocator, &self.exports);
         self.allocator.free(self.globals);
 
         for (self.imported_funcs) |def| {
@@ -448,7 +449,7 @@ pub const Module = struct {
     // ── deinit helpers ───────────────────────────────────────────────────────────
 
     /// Free the operations list held by each CompiledFunction in the functions slice.
-    fn deinitFunctions(allocator: Allocator, functions: []CompiledFunction) void {
+    fn deinit_functions(allocator: Allocator, functions: []CompiledFunction) void {
         for (functions) |*function| {
             function.call_args.deinit(allocator);
             function.ops.deinit(allocator);
@@ -457,7 +458,7 @@ pub const Module = struct {
     }
 
     /// Free the FuncType list: first free each element, then free the list itself.
-    fn deinitFuncTypeList(allocator: Allocator, list: *std.ArrayListUnmanaged(FuncType)) void {
+    fn deinit_func_type_list(allocator: Allocator, list: *std.ArrayListUnmanaged(FuncType)) void {
         for (list.items) |func_type| {
             func_type.deinit(allocator);
         }
@@ -465,7 +466,7 @@ pub const Module = struct {
     }
 
     /// Free the exports map: first free each key (the heap memory of the export name), then free the map itself.
-    fn deinitExports(allocator: Allocator, exports_map: *std.StringHashMapUnmanaged(ExportEntry)) void {
+    fn deinit_exports(allocator: Allocator, exports_map: *std.StringHashMapUnmanaged(ExportEntry)) void {
         var iterator = exports_map.iterator();
         while (iterator.next()) |entry| {
             allocator.free(entry.key_ptr.*);
@@ -478,7 +479,7 @@ pub const Module = struct {
     /// Insert a function export entry into the exports map.
     /// The export name `name` will be copied to heap memory (`owned_name`), and the exports map is responsible for its lifecycle.
     /// If an export with the same name already exists, a `DuplicateExport` error is returned.
-    fn putFunctionExport(
+    fn put_function_export(
         allocator: Allocator,
         exports_map: *std.StringHashMapUnmanaged(ExportEntry),
         name: []const u8,
@@ -497,7 +498,7 @@ pub const Module = struct {
     /// Compile a TypeEntry from the parser into a runtime FuncType.
     /// Currently, only func types are supported; parameter and return types are temporarily allocated
     /// using temp_allocator, and finally copied into memory managed by allocator via FuncType.init.
-    fn compileFuncType(
+    fn compile_func_type(
         allocator: Allocator,
         temp_allocator: Allocator,
         entry: payload_mod.TypeEntry,
@@ -523,8 +524,8 @@ pub const Module = struct {
     ///   - typ: value type (content_type) and mutability
     ///   - init_expr: the initialization expression of the global variable, which is a sequence of raw bytecode (constant expression)
     ///
-    /// This function parses the init_expr bytecode and evaluates it (using evaluateConstExpr) to obtain the concrete initial value of the global variable.
-    fn compileGlobalInit(
+    /// This function parses the init_expr bytecode and evaluates it (using evaluate_const_expr) to obtain the concrete initial value of the global variable.
+    fn compile_global_init(
         temp_allocator: Allocator,
         global_variable: payload_mod.GlobalVariable,
     ) ModuleCompileError!GlobalInit {
@@ -539,7 +540,7 @@ pub const Module = struct {
             .mutability = mutability,
             .value = TypedRawVal.init(
                 val_type,
-                try evaluateConstExpr(temp_allocator, global_variable.init_expr, val_type),
+                try evaluate_const_expr(temp_allocator, global_variable.init_expr, val_type),
             ),
         };
     }
@@ -553,7 +554,7 @@ pub const Module = struct {
     /// The expression must end with an end instruction.
     ///
     /// expected_type determines how to interpret the literal in the bytecode.
-    fn evaluateConstExpr(
+    fn evaluate_const_expr(
         allocator: Allocator,
         expr: []const u8,
         expected_type: ValType,
@@ -598,7 +599,7 @@ pub const Module = struct {
 
     /// Compute the total number of value slots needed for executing a function,
     /// including both parameters and all local variables declared in the function body.
-    fn computeReservedSlots(func_type: FuncType, function_info: payload_mod.FunctionInformation) ModuleCompileError!u32 {
+    fn compute_reserved_slots(func_type: FuncType, function_info: payload_mod.FunctionInformation) ModuleCompileError!u32 {
         var locals_count: usize = func_type.params().len;
         for (function_info.locals) |local_group| {
             locals_count += local_group.count;
@@ -652,7 +653,7 @@ pub fn compileFunctionBody(
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    var lower = Lower.init_with_reserved_slots(allocator, reserved_slots);
+    var lower = Lower.initWithReservedSlots(allocator, reserved_slots);
     errdefer lower.deinit();
 
     var cursor: usize = 0;
@@ -686,7 +687,7 @@ pub fn compileFunctionBody(
             } };
         } else try translate_mod.operatorToWasmOp(parsed.info);
 
-        try lower.lower_op(wasm_op);
+        try lower.lowerOp(wasm_op);
     }
 
     const compiled = lower.finish();
@@ -700,6 +701,8 @@ pub fn compileFunctionBody(
 test "module.compile builds exported function bodies" {
     const VM = @import("../vm/mod.zig").VM;
     const Config = @import("../engine/config.zig").Config;
+    const Store = @import("./store.zig").Store;
+    const HostInstance = @import("./host.zig").HostInstance;
 
     const exported_const_wasm = [_]u8{
         0x00, 0x61, 0x73, 0x6d,
@@ -727,14 +730,28 @@ test "module.compile builds exported function bodies" {
     try std.testing.expectEqual(@as(u32, 0), export_entry.function_index);
 
     var vm = VM.init(std.testing.allocator);
+    var store = Store.init(std.testing.allocator, engine);
+    defer store.deinit();
+    var globals = [_]Global{};
+    var memory: [0]u8 = .{};
+    const tables = [_][]const u32{};
+    var host_instance = HostInstance{
+        .module = &module,
+        .globals = globals[0..],
+        .memory = memory[0..],
+        .tables = tables[0..],
+    };
     const result = (try vm.execute(
         module.functions[@intCast(export_entry.function_index)],
         &.{},
+        &store,
+        &host_instance,
+        globals[0..],
+        memory[0..],
         &.{},
+        module.func_types,
         &.{},
-        &.{},
-        &.{},
-        &.{},
+        tables[0..],
         &.{},
         &.{},
         &.{},

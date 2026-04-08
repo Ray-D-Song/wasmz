@@ -73,6 +73,16 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const wasi_mod = b.createModule(.{
+        .root_source_file = b.path("src/wasi/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "core", .module = core_mod },
+            .{ .name = "wasmz", .module = mod },
+        },
+    });
+
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
     // to the module defined above, it's sometimes preferable to split business
@@ -100,6 +110,7 @@ pub fn build(b: *std.Build) void {
             // wasmz internal already has core/parser/payload/zigrc
             .imports = &.{
                 .{ .name = "wasmz", .module = mod },
+                .{ .name = "wasi", .module = wasi_mod },
             },
             // strip when Release mode
             .strip = switch (optimize) {

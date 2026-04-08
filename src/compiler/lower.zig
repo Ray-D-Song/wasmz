@@ -313,7 +313,7 @@ pub const Lower = struct {
         return .{ .allocator = allocator };
     }
 
-    pub fn init_with_reserved_slots(allocator: Allocator, reserved_slots: u32) Lower {
+    pub fn initWithReservedSlots(allocator: Allocator, reserved_slots: u32) Lower {
         return .{
             .allocator = allocator,
             .compiled = .{
@@ -510,7 +510,7 @@ pub const Lower = struct {
 
     // ── Main dispatch ─────────────────────────────────────────────────────────
 
-    pub fn lower_op(self: *Lower, op: WasmOp) !void {
+    pub fn lowerOp(self: *Lower, op: WasmOp) !void {
         switch (op) {
             .unreachable_ => {
                 try self.emit(.unreachable_);

@@ -12,6 +12,8 @@ pub const Store = struct {
     allocator: Allocator,
     /// Arc reference, ensures the engine is not released during the store's lifetime.
     engine: Engine,
+    user_data: ?*anyopaque = null,
+    runtime_instance_count: usize = 0,
 
     pub fn init(allocator: Allocator, engine: Engine) Store {
         return .{
@@ -19,6 +21,24 @@ pub const Store = struct {
             // clone increments the Arc reference count, ensuring the Store holds an independent reference.
             .engine = engine.clone(),
         };
+    }
+
+    pub fn setUserData(self: *Store, user_data: ?*anyopaque) void {
+        self.user_data = user_data;
+    }
+
+    pub fn getUserData(self: *Store, comptime T: type) ?*T {
+        const ptr = self.user_data orelse return null;
+        return @ptrCast(@alignCast(ptr));
+    }
+
+    pub fn registerInstance(self: *Store) void {
+        self.runtime_instance_count += 1;
+    }
+
+    pub fn unregisterInstance(self: *Store) void {
+        std.debug.assert(self.runtime_instance_count > 0);
+        self.runtime_instance_count -= 1;
     }
 
     pub fn deinit(self: *Store) void {

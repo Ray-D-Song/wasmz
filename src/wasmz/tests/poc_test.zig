@@ -7,6 +7,10 @@ const lower_mod = @import("../../compiler/lower.zig");
 const ir_mod = @import("../../compiler/ir.zig");
 const vm_mod = @import("../../vm/mod.zig");
 const module_mod = @import("../../wasmz/module.zig");
+const store_mod = @import("../../wasmz/store.zig");
+const host_mod = @import("../../wasmz/host.zig");
+const engine_mod = @import("../../engine/mod.zig");
+const config_mod = @import("../../engine/config.zig");
 const core = @import("core");
 
 const Parser = parser_mod.Parser;
@@ -17,7 +21,12 @@ const CompiledFunction = ir_mod.CompiledFunction;
 const VM = vm_mod.VM;
 const RawVal = vm_mod.RawVal;
 const ValType = core.ValType;
+const Global = core.Global;
 const TrapCode = core.TrapCode;
+const Store = store_mod.Store;
+const HostInstance = host_mod.HostInstance;
+const Engine = engine_mod.Engine;
+const Config = config_mod.Config;
 const compileFunctionBody = module_mod.compileFunctionBody;
 const FuncTypeResolver = module_mod.FuncTypeResolver;
 
@@ -58,6 +67,14 @@ const extend8_s_wasm = [_]u8{
     0x0a, 0x07, 0x01, 0x05,
     0x00, 0x20, 0x00, 0xc0,
     0x0b,
+};
+const empty_runtime_module_wasm = [_]u8{
+    0x00, 0x61, 0x73, 0x6d,
+    0x01, 0x00, 0x00, 0x00,
+    0x01, 0x04, 0x01, 0x60,
+    0x00, 0x00, 0x03, 0x02,
+    0x01, 0x00, 0x0a, 0x04,
+    0x01, 0x02, 0x00, 0x0b,
 };
 
 const ParsedFunction = struct {
@@ -137,7 +154,7 @@ fn findFunctionExprBytes(wasm: []const u8) ![]const u8 {
 
 fn parse_single_function_module(allocator: std.mem.Allocator, wasm: []const u8) !ParsedFunction {
     var parser = Parser.init(allocator);
-    const payloads = try parser.parse_all(wasm);
+    const payloads = try parser.parseAll(wasm);
 
     var function_type_index: ?u32 = null;
     var params: []ValType = &.{};
@@ -191,7 +208,7 @@ fn parse_single_function_module(allocator: std.mem.Allocator, wasm: []const u8) 
     if (!found_signature) return error.SignatureNotFound;
 
     const body_expr = try findFunctionExprBytes(wasm);
-    const expr_len = parser_mod.testing.consume_expression(body_expr);
+    const expr_len = parser_mod.testing.consumeExpression(body_expr);
     try testing.expectEqual(body_expr.len, expr_len);
 
     return .{
@@ -207,7 +224,7 @@ fn lowerParsedFunction(allocator: std.mem.Allocator, reserved_slots: u32, body_e
 }
 
 fn executeUnaryOp(op: WasmOp, param: RawVal) !vm_mod.ExecResult {
-    var lower = Lower.init_with_reserved_slots(testing.allocator, 1);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 1);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -216,12 +233,53 @@ fn executeUnaryOp(op: WasmOp, param: RawVal) !vm_mod.ExecResult {
         .ret,
     };
     for (ops) |item| {
-        try lower.lower_op(item);
+        try lower.lowerOp(item);
     }
 
     var vm = VM.init(testing.allocator);
     const params = [_]RawVal{param};
-    return try vm.execute(lower.compiled, &params, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{});
+    return try executeWithEmptyRuntime(&vm, lower.compiled, &params);
+}
+
+fn executeWithEmptyRuntime(
+    vm: *VM,
+    compiled: CompiledFunction,
+    params: []const RawVal,
+) !vm_mod.ExecResult {
+    var engine = try Engine.init(testing.allocator, Config{});
+    defer engine.deinit();
+
+    var store = Store.init(testing.allocator, engine);
+    defer store.deinit();
+
+    var module = try module_mod.Module.compile(engine, &empty_runtime_module_wasm);
+    defer module.deinit();
+
+    var globals = [_]Global{};
+    var memory: [0]u8 = .{};
+    const tables = [_][]const u32{};
+    var host_instance = HostInstance{
+        .module = &module,
+        .globals = globals[0..],
+        .memory = memory[0..],
+        .tables = tables[0..],
+    };
+
+    return try vm.execute(
+        compiled,
+        params,
+        &store,
+        &host_instance,
+        globals[0..],
+        memory[0..],
+        &.{},
+        &.{},
+        &.{},
+        tables[0..],
+        &.{},
+        &.{},
+        &.{},
+    );
 }
 
 fn expectUnaryResult(comptime T: type, op: WasmOp, param: RawVal, expected: T) !void {
@@ -266,7 +324,7 @@ test "simple_add fixture runs through parser lower ir vm" {
         RawVal.from(@as(i32, 20)),
         RawVal.from(@as(i32, 22)),
     };
-    const result = (try vm.execute(compiled, &params, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{})).ok orelse return error.MissingReturnValue;
+    const result = (try executeWithEmptyRuntime(&vm, compiled, &params)).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 42), result.readAs(i32));
 }
 
@@ -290,7 +348,7 @@ test "local_tee module runs through parser lower ir vm" {
     const params = [_]RawVal{
         RawVal.from(@as(i32, 9)),
     };
-    const result = (try vm.execute(compiled, &params, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{})).ok orelse return error.MissingReturnValue;
+    const result = (try executeWithEmptyRuntime(&vm, compiled, &params)).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 9), result.readAs(i32));
 }
 
@@ -311,7 +369,7 @@ test "countdown loop: block+loop+br_if runs correctly through lower and vm" {
     //   local.get 0
     //   ret
 
-    var lower = Lower.init_with_reserved_slots(testing.allocator, 1);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 1);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -330,18 +388,18 @@ test "countdown loop: block+loop+br_if runs correctly through lower and vm" {
         .{ .local_get = 0 },
         .ret,
     };
-    for (ops) |o| try lower.lower_op(o);
+    for (ops) |o| try lower.lowerOp(o);
 
     var vm = VM.init(testing.allocator);
 
     // Start at 3, should return 0.
     const params3 = [_]RawVal{RawVal.from(@as(i32, 3))};
-    const r3 = (try vm.execute(lower.compiled, &params3, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{})).ok orelse return error.MissingReturnValue;
+    const r3 = (try executeWithEmptyRuntime(&vm, lower.compiled, &params3)).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 0), r3.readAs(i32));
 
     // Start at 0, loop never runs, should return 0.
     const params0 = [_]RawVal{RawVal.from(@as(i32, 0))};
-    const r0 = (try vm.execute(lower.compiled, &params0, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{})).ok orelse return error.MissingReturnValue;
+    const r0 = (try executeWithEmptyRuntime(&vm, lower.compiled, &params0)).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 0), r0.readAs(i32));
 }
 
@@ -355,7 +413,7 @@ test "if-else selects correct branch at runtime" {
     //   end
     //   ret
 
-    var lower = Lower.init_with_reserved_slots(testing.allocator, 1);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 1);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -367,18 +425,18 @@ test "if-else selects correct branch at runtime" {
         .end,
         .ret,
     };
-    for (ops) |o| try lower.lower_op(o);
+    for (ops) |o| try lower.lowerOp(o);
 
     var vm = VM.init(testing.allocator);
 
     // Non-zero condition → then branch → 10
     const params_true = [_]RawVal{RawVal.from(@as(i32, 1))};
-    const r_true = (try vm.execute(lower.compiled, &params_true, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{})).ok orelse return error.MissingReturnValue;
+    const r_true = (try executeWithEmptyRuntime(&vm, lower.compiled, &params_true)).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 10), r_true.readAs(i32));
 
     // Zero condition → else branch → 20
     const params_false = [_]RawVal{RawVal.from(@as(i32, 0))};
-    const r_false = (try vm.execute(lower.compiled, &params_false, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{})).ok orelse return error.MissingReturnValue;
+    const r_false = (try executeWithEmptyRuntime(&vm, lower.compiled, &params_false)).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 20), r_false.readAs(i32));
 }
 
@@ -422,7 +480,7 @@ test "real wasm conversion opcode runs through parser lower and vm" {
 
     var vm = VM.init(testing.allocator);
     const params = [_]RawVal{RawVal.from(@as(f64, 42.9))};
-    const result = (try vm.execute(compiled, &params, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{})).ok orelse return error.MissingReturnValue;
+    const result = (try executeWithEmptyRuntime(&vm, compiled, &params)).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 42), result.readAs(i32));
 }
 
@@ -436,6 +494,6 @@ test "real wasm sign-extension opcode runs through parser lower and vm" {
 
     var vm = VM.init(testing.allocator);
     const params = [_]RawVal{RawVal.from(@as(i32, @bitCast(@as(u32, 0x0000_0080))))};
-    const result = (try vm.execute(compiled, &params, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{})).ok orelse return error.MissingReturnValue;
+    const result = (try executeWithEmptyRuntime(&vm, compiled, &params)).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, -128), result.readAs(i32));
 }

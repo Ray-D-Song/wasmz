@@ -60,11 +60,11 @@ fn fail_parse(parser: *Parser, err: ParserError) error{ParseFailed} {
     return error.ParseFailed;
 }
 
-fn fail_parse_all(parser: *Parser, err: parser_mod.ParseAllError) parser_mod.ParseAllError {
+fn failParseAll(parser: *Parser, err: parser_mod.ParseAllError) parser_mod.ParseAllError {
     switch (err) {
         error.OutOfMemory, error.UnexpectedNeedMoreData => {
             std.debug.print(
-                "parse_all failed: err={s}, state={any}, arg={}, last_state={}\n",
+                "parseAll failed: err={s}, state={any}, arg={}, last_state={}\n",
                 .{ @errorName(err), parser.cur_state, parser.last_err_arg, parser.last_err_state },
             );
         },
@@ -75,7 +75,7 @@ fn fail_parse_all(parser: *Parser, err: parser_mod.ParseAllError) parser_mod.Par
 
             parser_mod.formatParserError(parser, parser_err, detail_stream.writer()) catch {};
             std.debug.print(
-                "parse_all failed: err={s}, detail={s}, state={any}, arg={}, last_state={}\n",
+                "parseAll failed: err={s}, detail={s}, state={any}, arg={}, last_state={}\n",
                 .{
                     @errorName(parser_err),
                     detail_stream.getWritten(),
@@ -86,7 +86,6 @@ fn fail_parse_all(parser: *Parser, err: parser_mod.ParseAllError) parser_mod.Par
             );
         },
     }
-
     return err;
 }
 
@@ -209,12 +208,12 @@ test "stream parses globals fixture one byte at a time" {
     try std.testing.expectEqual(globals_wasm.len, stats.total_consumed);
 }
 
-test "parse_all parses nop fixture with the same event granularity" {
+test "parseAll parses nop fixture with the same event granularity" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
     var parser = Parser.init(arena.allocator());
-    const payloads = try parser.parse_all(nop_wasm);
+    const payloads = try parser.parseAll(nop_wasm);
     const stats = collect_payload_stats(payloads);
     const streaming_stats = try parse_fixture_streaming(nop_wasm, 7);
 
@@ -226,12 +225,12 @@ test "parse_all parses nop fixture with the same event granularity" {
     try std.testing.expectEqual(streaming_stats.parsed_events, payloads.len);
 }
 
-test "parse_all accepts experimental version 0x0d fixture" {
+test "parseAll accepts experimental version 0x0d fixture" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
     var parser = Parser.init(arena.allocator());
-    const payloads = try parser.parse_all(malloc_v13_wasm);
+    const payloads = try parser.parseAll(malloc_v13_wasm);
 
     try std.testing.expect(payloads.len > 1);
     switch (payloads[0]) {

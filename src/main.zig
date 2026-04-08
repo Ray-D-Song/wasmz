@@ -9,6 +9,7 @@
 ///   - Return values are printed as i32 (void functions do not output)
 const std = @import("std");
 const wasmz = @import("wasmz");
+const wasi_preview1 = @import("wasi").preview1;
 
 /// Custom panic handler: simply print the message to stderr and abort, without unwinding with DWARF.
 /// This eliminates about 127 KB of DWARF parsing code from std.debug
@@ -27,7 +28,10 @@ const Module = wasmz.Module;
 const Store = wasmz.Store;
 const Instance = wasmz.Instance;
 const RawVal = wasmz.RawVal;
-const Imports = wasmz.Imports;
+const Linker = wasmz.Linker;
+const HostFunc = wasmz.HostFunc;
+const HostContext = wasmz.HostContext;
+const ValType = wasmz.ValType;
 
 pub fn main() void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -100,28 +104,15 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     var store = Store.init(allocator, engine);
     defer store.deinit();
 
-    var imports = Imports.empty;
-    imports.define(allocator, "env", "host_print_i32", .{
-        .ctx = null,
-        .func = struct {
-            fn call(
-                _: ?*anyopaque,
-                params: []const RawVal,
-                _: std.mem.Allocator,
-            ) std.mem.Allocator.Error!wasmz.ExecResult {
-                // Wasm type validation guarantees exactly 1 i32 param at compile time.
-                const val = params[0].readAs(i32);
-                std.debug.print("host_print_i32: {d}\n", .{val});
-                return .{ .ok = null };
-            }
-        }.call,
-    }) catch |err| {
-        std.debug.print("error: Failed to define host function: {s}\n", .{@errorName(err)});
-        std.process.exit(1);
-    };
-    defer imports.deinit(allocator);
+    var wasi_host = wasi_preview1.Host.init(allocator);
+    defer wasi_host.deinit();
+    try wasi_host.setArgs(args[1..]);
 
-    var instance = Instance.init(&store, &module, imports) catch |err| {
+    var linker = Linker.empty;
+    try wasi_host.addToLinker(&linker, allocator);
+    defer linker.deinit(allocator);
+
+    var instance = Instance.init(&store, &module, linker) catch |err| {
         std.debug.print("error: Failed to instantiate module: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };

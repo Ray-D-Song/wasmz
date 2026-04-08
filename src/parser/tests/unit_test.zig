@@ -923,21 +923,21 @@ test "reloc section entry parses header and entry" {
 }
 
 test "read_heap_type decodes a single-byte negative heap type" {
-    switch (parser_testing.read_heap_type(&[_]u8{0x70})) {
+    switch (parser_testing.readHeapType(&[_]u8{0x70})) {
         .kind => |kind| try std.testing.expectEqual(TypeKind.funcref, kind),
         else => return error.UnexpectedPayload,
     }
 }
 
 test "read_heap_type decodes a continued heap type index" {
-    switch (parser_testing.read_heap_type(&[_]u8{ 0xff, 0x00 })) {
+    switch (parser_testing.readHeapType(&[_]u8{ 0xff, 0x00 })) {
         .index => |index| try std.testing.expectEqual(@as(u32, 127), index),
         else => return error.UnexpectedPayload,
     }
 }
 
 test "read_type decodes a type index" {
-    const typ = parser_testing.read_type(&[_]u8{ 0xff, 0x00 });
+    const typ = parser_testing.readType(&[_]u8{ 0xff, 0x00 });
 
     switch (typ) {
         .index => |index| try std.testing.expectEqual(@as(u32, 127), index),
@@ -946,7 +946,7 @@ test "read_type decodes a type index" {
 }
 
 test "read_type decodes a primitive value type" {
-    const typ = parser_testing.read_type(&[_]u8{0x7f});
+    const typ = parser_testing.readType(&[_]u8{0x7f});
 
     switch (typ) {
         .kind => |kind| try std.testing.expectEqual(TypeKind.i32, kind),
@@ -955,7 +955,7 @@ test "read_type decodes a primitive value type" {
 }
 
 test "read_type decodes a nullable reference type" {
-    const typ = parser_testing.read_type(&[_]u8{ 0x63, 0x70 });
+    const typ = parser_testing.readType(&[_]u8{ 0x63, 0x70 });
 
     switch (typ) {
         .ref_type => |ref_type| {
@@ -974,8 +974,8 @@ test "read_code_operator consumes a complete expression" {
     try std.testing.expectEqual(@as(usize, 3), consumed);
 }
 
-test "read_single_operator decodes ref.null" {
-    const operator = parser_testing.read_single_operator(&[_]u8{ 0xd0, 0x70 });
+test "readSingleOperator decodes ref.null" {
+    const operator = parser_testing.readSingleOperator(&[_]u8{ 0xd0, 0x70 });
     try std.testing.expectEqual(OperatorCode.ref_null, operator.code);
     switch (operator.ref_type.?) {
         .kind => |kind| try std.testing.expectEqual(TypeKind.funcref, kind),

@@ -209,7 +209,7 @@ pub const Parser = struct {
 
     // Parse a complete module from a contiguous input buffer and collect
     // every observable payload event in order.
-    pub fn parse_all(self: *Parser, input: []const u8) ParseAllError![]Payload {
+    pub fn parseAll(self: *Parser, input: []const u8) ParseAllError![]Payload {
         var payloads: std.ArrayList(Payload) = .empty;
         errdefer payloads.deinit(self.allocator);
 
@@ -661,7 +661,7 @@ pub const Parser = struct {
 
         const typ = self.read_global_type();
         const init_expr_start = self.cur_pos;
-        self.read_code_operator(.expression) catch |err| switch (err) {
+        self.readCodeOperator(.expression) catch |err| switch (err) {
             error.NeedMoreData => return .need_more_data,
             error.UnknownOperator => return self.fail_with_state(ParserError.UnknownOperator),
             error.AtomicFenceConsistencyModelMustBeZero => {
@@ -790,13 +790,13 @@ pub const Parser = struct {
         for (locals) |*local| {
             local.* = .{
                 .count = self.read_var_uint32(),
-                .typ = self.read_type(),
+                .typ = self.readTypeInternal(),
             };
         }
 
         const body_start = self.cur_pos;
         self.cur_fn_range = .{ .start = self.cur_pos, .end = body_end };
-        self.read_code_operator(.function_body) catch |err| switch (err) {
+        self.readCodeOperator(.function_body) catch |err| switch (err) {
             error.NeedMoreData => return .need_more_data,
             error.UnknownOperator => return self.fail_with_state(ParserError.UnknownOperator),
             error.AtomicFenceConsistencyModelMustBeZero => {
@@ -1066,7 +1066,7 @@ pub const Parser = struct {
         var offset_expr: []const u8 = &.{};
         if (self.cur_data_segment_active) {
             const offset_expr_start = self.cur_pos;
-            self.read_code_operator(.expression) catch |err| switch (err) {
+            self.readCodeOperator(.expression) catch |err| switch (err) {
                 error.NeedMoreData => return .need_more_data,
                 error.UnknownOperator => return self.fail_with_state(ParserError.UnknownOperator),
                 error.AtomicFenceConsistencyModelMustBeZero => {
@@ -1149,7 +1149,7 @@ pub const Parser = struct {
         }
 
         if (is_active_element_segment_type(segment_type)) {
-            self.read_code_operator(.expression) catch |err| switch (err) {
+            self.readCodeOperator(.expression) catch |err| switch (err) {
                 error.NeedMoreData => return .need_more_data,
                 error.UnknownOperator => return self.fail_with_state(ParserError.UnknownOperator),
                 error.AtomicFenceConsistencyModelMustBeZero => {
@@ -1165,7 +1165,7 @@ pub const Parser = struct {
                 _ = self.read_u8();
             },
             .passive_elemexpr, .active_elemexpr, .declared_elemexpr => {
-                element_type = self.read_type();
+                element_type = self.readTypeInternal();
             },
             .legacy_active_funcref_externval, .legacy_active_funcref_elemexpr => {},
         }
@@ -1180,7 +1180,7 @@ pub const Parser = struct {
             func_indices = indices;
         } else {
             for (0..item_count) |_| {
-                self.read_code_operator(.expression) catch |err| switch (err) {
+                self.readCodeOperator(.expression) catch |err| switch (err) {
                     error.NeedMoreData => return .need_more_data,
                     error.UnknownOperator => return self.fail_with_state(ParserError.UnknownOperator),
                     error.AtomicFenceConsistencyModelMustBeZero => {
@@ -1329,7 +1329,7 @@ pub const Parser = struct {
         const field_types = try self.allocator.alloc(Type, @intCast(field_count));
         const field_mutabilities = try self.allocator.alloc(bool, @intCast(field_count));
         for (field_types, field_mutabilities) |*field_type, *field_mutability| {
-            field_type.* = self.read_type();
+            field_type.* = self.readTypeInternal();
             field_mutability.* = self.read_var_uint1() != 0;
         }
         return .{
@@ -1340,7 +1340,7 @@ pub const Parser = struct {
     }
 
     fn read_array_type(self: *Parser) !TypeEntry {
-        const element_type = self.read_type();
+        const element_type = self.readTypeInternal();
         const mutability = self.read_var_uint1() != 0;
         return .{
             .type = .array_type,
@@ -1363,7 +1363,7 @@ pub const Parser = struct {
         const super_count = self.read_var_uint32();
         const super_types = try self.allocator.alloc(HeapType, @intCast(super_count));
         for (super_types) |*super_type| {
-            super_type.* = self.read_heap_type();
+            super_type.* = self.readHeapTypeInternal();
         }
         var result = try self.read_base_type();
         result.final = is_final;
@@ -1375,12 +1375,12 @@ pub const Parser = struct {
         const param_count = self.read_var_uint32();
         const param_types = try self.allocator.alloc(Type, @intCast(param_count));
         for (param_types) |*param_type| {
-            param_type.* = self.read_type();
+            param_type.* = self.readTypeInternal();
         }
         const return_count = self.read_var_uint32();
         const return_types = try self.allocator.alloc(Type, @intCast(return_count));
         for (return_types) |*return_type| {
-            return_type.* = self.read_type();
+            return_type.* = self.readTypeInternal();
         }
         return .{
             .type = .func,
@@ -1390,7 +1390,7 @@ pub const Parser = struct {
     }
 
     // Heap is used to represent reference types and type indices in WebAssembly
-    fn read_heap_type(self: *Parser) HeapType {
+    fn readHeapTypeInternal(self: *Parser) HeapType {
         const lsb = self.read_u8();
 
         const raw: i64 = if ((lsb & 0x80) != 0) blk: {
@@ -1414,13 +1414,13 @@ pub const Parser = struct {
     }
 
     // Read Wasm type, create Type or RefType
-    fn read_type(self: *Parser) Type {
-        return switch (self.read_heap_type()) {
+    fn readTypeInternal(self: *Parser) Type {
+        return switch (self.readHeapTypeInternal()) {
             .index => |index| .{ .index = index },
             .kind => |kind| switch (kind) {
                 .ref_null, .ref_ => .{ .ref_type = .{
                     .nullable = kind == .ref_null,
-                    .ref_index = self.read_heap_type(),
+                    .ref_index = self.readHeapTypeInternal(),
                 } },
                 .i32,
                 .i64,
@@ -1464,7 +1464,7 @@ pub const Parser = struct {
     }
 
     fn read_table_type(self: *Parser) TableType {
-        const element_type = self.read_type();
+        const element_type = self.readTypeInternal();
         const flags = self.read_var_uint32();
         return .{
             .element_type = element_type,
@@ -1482,7 +1482,7 @@ pub const Parser = struct {
 
     fn read_global_type(self: *Parser) GlobalType {
         return .{
-            .content_type = self.read_type(),
+            .content_type = self.readTypeInternal(),
             .mutability = self.read_var_uint1(),
         };
     }
@@ -1509,7 +1509,7 @@ pub const Parser = struct {
         return names;
     }
 
-    fn read_code_operator(self: *Parser, unit: CodeUnitKind) CodeReadError!void {
+    fn readCodeOperator(self: *Parser, unit: CodeUnitKind) CodeReadError!void {
         const start_pos = self.cur_pos;
         errdefer self.cur_pos = start_pos;
 
@@ -1518,12 +1518,12 @@ pub const Parser = struct {
                 const fn_range = self.cur_fn_range orelse return error.UnsupportedState;
                 if (!self.has_bytes(fn_range.end - self.cur_pos)) return error.NeedMoreData;
                 while (self.cur_pos < fn_range.end) {
-                    _ = try self.read_single_operator();
+                    _ = try self.readSingleOperator();
                 }
             },
             .expression => {
                 while (true) {
-                    const operator = try self.read_single_operator();
+                    const operator = try self.readSingleOperator();
                     if (operator.code == .end) break;
                 }
             },
@@ -1541,13 +1541,13 @@ pub const Parser = struct {
     fn read_type_checked(self: *Parser) CodeReadError!Type {
         var probe = self.*;
         if (!probe.skip_type()) return error.NeedMoreData;
-        return self.read_type();
+        return self.readTypeInternal();
     }
 
     fn read_heap_type_checked(self: *Parser) CodeReadError!HeapType {
         var probe = self.*;
         _ = probe.skip_heap_type() orelse return error.NeedMoreData;
-        return self.read_heap_type();
+        return self.readHeapTypeInternal();
     }
 
     fn read_br_table(self: *Parser) CodeReadError![]const u32 {
@@ -2114,7 +2114,7 @@ pub const Parser = struct {
         return info;
     }
 
-    fn read_single_operator(self: *Parser) CodeReadError!OperatorInformation {
+    fn readSingleOperator(self: *Parser) CodeReadError!OperatorInformation {
         const start_pos = self.cur_pos;
         errdefer self.cur_pos = start_pos;
 
@@ -2833,25 +2833,37 @@ pub const ConsumedCodeOperator = struct {
 };
 
 pub fn consumeExpression(allocator: std.mem.Allocator, bytes: []const u8) CodeReadError!usize {
+    return consumeExpressionInternal(allocator, bytes);
+}
+
+fn consumeExpressionInternal(allocator: std.mem.Allocator, bytes: []const u8) CodeReadError!usize {
     var parser = Parser.init(allocator);
     parser.cur_data = bytes;
     parser.cur_len = bytes.len;
-    try parser.read_code_operator(.expression);
+    try parser.readCodeOperator(.expression);
     return parser.cur_pos;
 }
 
 pub fn readSingleOperator(allocator: std.mem.Allocator, bytes: []const u8) CodeReadError!OperatorInformation {
+    return readSingleOperatorInternal(allocator, bytes);
+}
+
+fn readSingleOperatorInternal(allocator: std.mem.Allocator, bytes: []const u8) CodeReadError!OperatorInformation {
     var parser = Parser.init(allocator);
     parser.cur_data = bytes;
     parser.cur_len = bytes.len;
-    return try parser.read_single_operator();
+    return try parser.readSingleOperator();
 }
 
 pub fn readNextOperator(allocator: std.mem.Allocator, bytes: []const u8) CodeReadError!ConsumedCodeOperator {
+    return readNextOperatorInternal(allocator, bytes);
+}
+
+fn readNextOperatorInternal(allocator: std.mem.Allocator, bytes: []const u8) CodeReadError!ConsumedCodeOperator {
     var parser = Parser.init(allocator);
     parser.cur_data = bytes;
     parser.cur_len = bytes.len;
-    const info = try parser.read_single_operator();
+    const info = try parser.readSingleOperator();
     return .{
         .consumed = parser.cur_pos,
         .info = info,
@@ -2861,34 +2873,34 @@ pub fn readNextOperator(allocator: std.mem.Allocator, bytes: []const u8) CodeRea
 pub const testing = if (builtin.is_test) struct {
     pub const ConsumedOperator = ConsumedCodeOperator;
 
-    pub fn read_heap_type(bytes: []const u8) HeapType {
+    pub fn readHeapType(bytes: []const u8) HeapType {
         var parser = Parser.init(std.heap.page_allocator);
         parser.cur_data = bytes;
         parser.cur_len = bytes.len;
-        return parser.read_heap_type();
+        return parser.readHeapTypeInternal();
     }
 
-    pub fn read_type(bytes: []const u8) Type {
+    pub fn readType(bytes: []const u8) Type {
         var parser = Parser.init(std.heap.page_allocator);
         parser.cur_data = bytes;
         parser.cur_len = bytes.len;
-        return parser.read_type();
+        return parser.readTypeInternal();
     }
 
-    pub fn consume_expression(bytes: []const u8) usize {
-        return consumeExpression(std.heap.page_allocator, bytes) catch |err| {
+    pub fn consumeExpression(bytes: []const u8) usize {
+        return consumeExpressionInternal(std.heap.page_allocator, bytes) catch |err| {
             @panic(@errorName(err));
         };
     }
 
-    pub fn read_single_operator(bytes: []const u8) OperatorInformation {
-        return readSingleOperator(std.heap.page_allocator, bytes) catch |err| {
+    pub fn readSingleOperator(bytes: []const u8) OperatorInformation {
+        return readSingleOperatorInternal(std.heap.page_allocator, bytes) catch |err| {
             @panic(@errorName(err));
         };
     }
 
-    pub fn read_next_operator(bytes: []const u8) ConsumedOperator {
-        const parsed = readNextOperator(std.heap.page_allocator, bytes) catch |err| {
+    pub fn readNextOperator(bytes: []const u8) ConsumedOperator {
+        const parsed = readNextOperatorInternal(std.heap.page_allocator, bytes) catch |err| {
             @panic(@errorName(err));
         };
         return .{
