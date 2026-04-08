@@ -815,9 +815,9 @@ test "name section entry skips unknown subsections and parses function names" {
 test "name section trailing skipped subsection preserves consumed bytes for the next section" {
     const header = [_]u8{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
     const name_then_type = [_]u8{
-        0x00, 0x0b, 0x04, 'n', 'a', 'm', 'e',
-        0x09, 0x04, 0x01, 0x00, 0x01, 'd',
-        0x01, 0x01, 0x00,
+        0x00, 0x0b, 0x04, 'n',  'a',  'm', 'e',
+        0x09, 0x04, 0x01, 0x00, 0x01, 'd', 0x01,
+        0x01, 0x00,
     };
 
     var parser = Parser.init(std.testing.allocator);
@@ -981,6 +981,47 @@ test "read_single_operator decodes ref.null" {
         .kind => |kind| try std.testing.expectEqual(TypeKind.funcref, kind),
         else => return error.UnexpectedPayload,
     }
+}
+
+test "read_next_operator consumes padded zero immediates for call_indirect" {
+    const parsed = parser_testing.read_next_operator(&[_]u8{
+        0x11,
+        0x80,
+        0x80,
+        0x80,
+        0x80,
+        0x00,
+        0x80,
+        0x80,
+        0x80,
+        0x80,
+        0x00,
+        0x20,
+        0x00,
+    });
+
+    try std.testing.expectEqual(@as(usize, 11), parsed.consumed);
+    try std.testing.expectEqual(OperatorCode.call_indirect, parsed.info.code);
+    switch (parsed.info.type_index.?) {
+        .index => |index| try std.testing.expectEqual(@as(u32, 0), index),
+        else => return error.UnexpectedPayload,
+    }
+}
+
+test "read_next_operator consumes padded zero reserved immediate for memory.grow" {
+    const parsed = parser_testing.read_next_operator(&[_]u8{
+        0x40,
+        0x80,
+        0x80,
+        0x80,
+        0x80,
+        0x00,
+        0x20,
+        0x00,
+    });
+
+    try std.testing.expectEqual(@as(usize, 6), parsed.consumed);
+    try std.testing.expectEqual(OperatorCode.memory_grow, parsed.info.code);
 }
 
 fn expect_need_more_data(result: ParseResult) !void {

@@ -1685,13 +1685,14 @@ pub const Parser = struct {
             .i64_trunc_sat_f64_u,
             => {},
             .memory_copy => {
-                if (!self.has_bytes(2)) return error.NeedMoreData;
-                _ = self.read_var_uint1();
-                _ = self.read_var_uint1();
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                _ = self.read_var_uint32();
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                _ = self.read_var_uint32();
             },
             .memory_fill => {
-                if (!self.has_bytes(1)) return error.NeedMoreData;
-                _ = self.read_var_uint1();
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                _ = self.read_var_uint32();
             },
             .table_init => {
                 if (!self.has_var_int_bytes()) return error.NeedMoreData;
@@ -1712,8 +1713,8 @@ pub const Parser = struct {
             .memory_init => {
                 if (!self.has_var_int_bytes()) return error.NeedMoreData;
                 info.segment_index = self.read_var_uint32();
-                if (!self.has_bytes(1)) return error.NeedMoreData;
-                _ = self.read_var_uint1();
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                _ = self.read_var_uint32();
             },
             .data_drop, .elem_drop => {
                 if (!self.has_var_int_bytes()) return error.NeedMoreData;
@@ -2160,8 +2161,8 @@ pub const Parser = struct {
             .call_indirect, .return_call_indirect => {
                 if (!self.has_var_int_bytes()) return error.NeedMoreData;
                 info.type_index = .{ .index = self.read_var_uint32() };
-                if (!self.has_bytes(1)) return error.NeedMoreData;
-                _ = self.read_var_uint1();
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                _ = self.read_var_uint32();
             },
             .local_get, .local_set, .local_tee => {
                 if (!self.has_var_int_bytes()) return error.NeedMoreData;
@@ -2201,8 +2202,8 @@ pub const Parser = struct {
             .i64_store32,
             => info.memory_address = try self.read_memory_immediate(),
             .memory_size, .memory_grow => {
-                if (!self.has_bytes(1)) return error.NeedMoreData;
-                _ = self.read_var_uint1();
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                _ = self.read_var_uint32();
             },
             .i32_const => {
                 if (!self.has_var_int_bytes()) return error.NeedMoreData;
