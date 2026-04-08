@@ -58,6 +58,9 @@ pub const Instance = struct {
     /// Resolved host functions for each imported function slot, in the same order as module.imported_funcs.
     /// Length == module.imported_funcs.len.
     host_funcs: []HostFunc,
+    /// Tracks which data segments have been dropped via data.drop instruction.
+    /// data_segments_dropped[i] == true means segment i cannot be used by memory.init.
+    data_segments_dropped: []bool,
 
     /// Instantiate a Module.
     ///
@@ -101,7 +104,12 @@ pub const Instance = struct {
             host_funcs[i] = hf;
         }
 
-        // ── 4. call start function (if exists) ──────────────────────────────────
+        // ── 4. initialize data segment dropped flags ───────────────────────────────
+        const data_segments_dropped = try allocator.alloc(bool, module.data_segments.len);
+        errdefer allocator.free(data_segments_dropped);
+        @memset(data_segments_dropped, false);
+
+        // ── 5. call start function (if exists) ──────────────────────────────────
         // Wasm specification: The function specified in the Start Section is automatically executed during instantiation, with no parameters and no return value.
         if (module.start_function) |start_idx| {
             if (start_idx >= module.functions.len) {
@@ -109,7 +117,18 @@ pub const Instance = struct {
             }
             const start_func = module.functions[start_idx];
             var vm = VM.init(store.allocator);
-            const exec_r = try vm.execute(start_func, &.{}, globals, memory, module.functions, host_funcs, module.tables, module.func_type_indices, module.data_segments);
+            const exec_r = try vm.execute(
+                start_func,
+                &.{},
+                globals,
+                memory,
+                module.functions,
+                host_funcs,
+                module.tables,
+                module.func_type_indices,
+                module.data_segments,
+                data_segments_dropped,
+            );
             switch (exec_r) {
                 // start function triggered a trap: instantiation failed
                 .trap => return error.StartFunctionTrapped,
@@ -124,6 +143,7 @@ pub const Instance = struct {
             .globals = globals,
             .memory = memory,
             .host_funcs = host_funcs,
+            .data_segments_dropped = data_segments_dropped,
         };
     }
 
@@ -135,6 +155,7 @@ pub const Instance = struct {
             allocator.free(self.memory);
         }
         allocator.free(self.host_funcs);
+        allocator.free(self.data_segments_dropped);
         self.* = undefined;
     }
 
@@ -153,7 +174,18 @@ pub const Instance = struct {
         const export_entry = self.module.exports.get(name) orelse return error.ExportNotFound;
         const func = self.module.functions[export_entry.function_index];
         var vm = VM.init(self.store.allocator);
-        return vm.execute(func, args, self.globals, self.memory, self.module.functions, self.host_funcs, self.module.tables, self.module.func_type_indices, self.module.data_segments);
+        return vm.execute(
+            func,
+            args,
+            self.globals,
+            self.memory,
+            self.module.functions,
+            self.host_funcs,
+            self.module.tables,
+            self.module.func_type_indices,
+            self.module.data_segments,
+            self.data_segments_dropped,
+        );
     }
 };
 

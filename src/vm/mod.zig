@@ -58,6 +58,7 @@ pub const VM = struct {
     ///   func_type_indices — Maps func_idx → type section index for every function (imports + locals).
     ///                      Used by call_indirect for runtime type checking.
     ///   data_segments    — Module data segments (needed for memory.init).
+    ///   data_segments_dropped — Tracks which data segments have been dropped via data.drop.
     ///
     /// Returns:
     ///   Allocator.Error  — Host memory allocation failure (not a Wasm trap)
@@ -74,6 +75,7 @@ pub const VM = struct {
         tables: []const []const u32,
         func_type_indices: []const u32,
         data_segments: []const CompiledDataSegment,
+        data_segments_dropped: []bool,
     ) Allocator.Error!ExecResult {
         // ── Initialize entry frame ─────────────────────────────────────────────
         const entry_slots_len: usize = @max(
@@ -561,7 +563,14 @@ pub const VM = struct {
                     const src_offset = call_stack.items[frame_idx].slots[inst.src_offset].readAs(u32);
                     const len = call_stack.items[frame_idx].slots[inst.len].readAs(u32);
 
+                    // Check if segment index is valid
                     if (inst.segment_idx >= data_segments.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+
+                    // Check if segment has been dropped
+                    if (data_segments_dropped[inst.segment_idx]) {
+                        return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    }
+
                     const segment = data_segments[inst.segment_idx];
 
                     // Bounds check: src_offset + len <= segment.data.len && dst_addr + len <= memory.len
@@ -575,11 +584,11 @@ pub const VM = struct {
                     @memcpy(memory[dst_addr..][0..len], segment.data[src_offset..][0..len]);
                 },
                 .data_drop => |inst| {
-                    // Mark segment as dropped by setting data.len to 0
-                    // Note: This modifies the slice in the data_segments parameter (which is const),
-                    // so we need to use a different approach. For now, we'll just skip this.
-                    // TODO: Implement proper data.drop tracking with a dropped[] bool array.
-                    _ = inst.segment_idx;
+                    // Check if segment index is valid
+                    if (inst.segment_idx >= data_segments.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+
+                    // Mark segment as dropped
+                    data_segments_dropped[inst.segment_idx] = true;
                 },
                 .memory_copy => |inst| {
                     const dst_addr = call_stack.items[frame_idx].slots[inst.dst_addr].readAs(u32);
