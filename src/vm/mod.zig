@@ -4,6 +4,7 @@ const core = @import("core");
 const host_mod = @import("../wasmz/host.zig");
 const module_mod = @import("../wasmz/module.zig");
 
+const helper = core.helper;
 const CompiledFunction = ir.CompiledFunction;
 const CompiledDataSegment = module_mod.CompiledDataSegment;
 const Allocator = std.mem.Allocator;
@@ -35,6 +36,15 @@ const CallFrame = struct {
     // return value destination slot in caller frame (null if void function)
     dst: ?ir.Slot,
 };
+
+/// Compute effective address and perform bounds check.
+/// Returns the effective address (EA = base +% offset) if in-bounds, null if out-of-bounds.
+inline fn effectiveAddr(slots: []RawVal, addr_slot: u32, offset: u32, size: usize, memory: []u8) ?u32 {
+    const base = slots[addr_slot].readAs(u32);
+    const ea = base +% offset;
+    if (@as(usize, ea) + size > memory.len) return null;
+    return ea;
+}
 
 pub const VM = struct {
     allocator: Allocator,
@@ -127,236 +137,284 @@ pub const VM = struct {
                 break :blk o;
             };
 
+            // Bind the current frame's slots once per iteration.
+            // slots points to separately-allocated memory; call_stack.append() does not invalidate it.
+            const slots = call_stack.items[frame_idx].slots;
+
             switch (op) {
                 .unreachable_ => {
                     return .{ .trap = Trap.fromTrapCode(.UnreachableCodeReached) };
                 },
-                .const_i32 => |inst| {
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(inst.value);
+
+                // ── Constants ─────────────────────────────────────────────────
+                inline .const_i32, .const_i64, .const_f32, .const_f64 => |inst| {
+                    slots[inst.dst] = RawVal.from(inst.value);
                 },
+
+                // ── Variable access ───────────────────────────────────────────
                 .local_get => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    call_stack.items[frame_idx].slots[inst.dst] = s[inst.local];
+                    slots[inst.dst] = slots[inst.local];
                 },
                 .local_set => |inst| {
-                    const src_val = call_stack.items[frame_idx].slots[inst.src];
-                    call_stack.items[frame_idx].slots[inst.local] = src_val;
+                    slots[inst.local] = slots[inst.src];
                 },
                 .global_get => |inst| {
-                    call_stack.items[frame_idx].slots[inst.dst] = globals[inst.global_idx].getRawValue();
+                    slots[inst.dst] = globals[inst.global_idx].getRawValue();
                 },
                 .global_set => |inst| {
-                    const src_val = call_stack.items[frame_idx].slots[inst.src];
-                    globals[inst.global_idx].value = src_val;
+                    globals[inst.global_idx].value = slots[inst.src];
                 },
                 .copy => |inst| {
-                    const src_val = call_stack.items[frame_idx].slots[inst.src];
-                    call_stack.items[frame_idx].slots[inst.dst] = src_val;
+                    slots[inst.dst] = slots[inst.src];
                 },
+
+                // ── Control flow ──────────────────────────────────────────────
                 .jump => |inst| {
                     call_stack.items[frame_idx].pc = inst.target;
                 },
                 .jump_if_z => |inst| {
-                    const cond = call_stack.items[frame_idx].slots[inst.cond].readAs(i32);
-                    if (cond == 0) {
+                    if (slots[inst.cond].readAs(i32) == 0) {
                         call_stack.items[frame_idx].pc = inst.target;
                     }
                 },
-                .i32_add => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(i32);
-                    const rhs = s[inst.rhs].readAs(i32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(lhs +% rhs);
+                .jump_table => |inst| {
+                    const idx = slots[inst.index].readAs(u32);
+                    const entry = if (idx < inst.targets_len) idx else inst.targets_len;
+                    const target = call_stack.items[frame_idx].func.br_table_targets.items[inst.targets_start + entry];
+                    call_stack.items[frame_idx].pc = target;
                 },
-                .i32_sub => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(i32);
-                    const rhs = s[inst.rhs].readAs(i32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(lhs -% rhs);
+                .select => |inst| {
+                    const cond = slots[inst.cond].readAs(i32);
+                    slots[inst.dst] = if (cond != 0) slots[inst.val1] else slots[inst.val2];
                 },
-                .i32_mul => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(i32);
-                    const rhs = s[inst.rhs].readAs(i32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(lhs *% rhs);
+
+                // ── Arithmetic: add / sub / mul (integer wrapping + float) ────
+                inline .i32_add, .i64_add, .f32_add, .f64_add => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    const lhs = slots[inst.lhs].readAs(T);
+                    const rhs = slots[inst.rhs].readAs(T);
+                    slots[inst.dst] = RawVal.from(if (comptime @typeInfo(T) == .int) lhs +% rhs else lhs + rhs);
                 },
-                .i32_div_s => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(i32);
-                    const rhs = s[inst.rhs].readAs(i32);
-                    if (rhs == 0) return .{ .trap = Trap.fromTrapCode(.IntegerDivisionByZero) };
-                    if (lhs == std.math.minInt(i32) and rhs == -1) return .{ .trap = Trap.fromTrapCode(.IntegerOverflow) };
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@divTrunc(lhs, rhs));
+                inline .i32_sub, .i64_sub, .f32_sub, .f64_sub => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    const lhs = slots[inst.lhs].readAs(T);
+                    const rhs = slots[inst.rhs].readAs(T);
+                    slots[inst.dst] = RawVal.from(if (comptime @typeInfo(T) == .int) lhs -% rhs else lhs - rhs);
                 },
-                .i32_div_u => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(u32);
-                    const rhs = s[inst.rhs].readAs(u32);
-                    if (rhs == 0) return .{ .trap = Trap.fromTrapCode(.IntegerDivisionByZero) };
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, @bitCast(lhs / rhs)));
+                inline .i32_mul, .i64_mul, .f32_mul, .f64_mul => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    const lhs = slots[inst.lhs].readAs(T);
+                    const rhs = slots[inst.rhs].readAs(T);
+                    slots[inst.dst] = RawVal.from(if (comptime @typeInfo(T) == .int) lhs *% rhs else lhs * rhs);
                 },
-                .i32_rem_s => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(i32);
-                    const rhs = s[inst.rhs].readAs(i32);
-                    if (rhs == 0) return .{ .trap = Trap.fromTrapCode(.IntegerDivisionByZero) };
-                    // INT_MIN % -1 == 0 per Wasm spec (no trap)
-                    if (lhs == std.math.minInt(i32) and rhs == -1) {
-                        call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, 0));
-                    } else {
-                        call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@rem(lhs, rhs));
-                    }
+
+                // ── Float division ────────────────────────────────────────────
+                inline .f32_div, .f64_div => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(slots[inst.lhs].readAs(T) / slots[inst.rhs].readAs(T));
                 },
-                .i32_rem_u => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(u32);
-                    const rhs = s[inst.rhs].readAs(u32);
-                    if (rhs == 0) return .{ .trap = Trap.fromTrapCode(.IntegerDivisionByZero) };
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, @bitCast(lhs % rhs)));
+
+                // ── Integer signed division (may trap) ────────────────────────
+                inline .i32_div_s, .i64_div_s => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    const result = helper.divS(slots[inst.lhs].readAs(T), slots[inst.rhs].readAs(T)) catch |e| return .{ .trap = Trap.fromTrapCode(switch (e) {
+                        error.IntegerDivisionByZero => .IntegerDivisionByZero,
+                        error.IntegerOverflow => .IntegerOverflow,
+                    }) };
+                    slots[inst.dst] = RawVal.from(result);
                 },
-                .i32_and => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(i32);
-                    const rhs = s[inst.rhs].readAs(i32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(lhs & rhs);
+
+                // ── Integer unsigned division (may trap) ──────────────────────
+                inline .i32_div_u, .i64_div_u => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    const U = std.meta.Int(.unsigned, @bitSizeOf(T));
+                    const result = helper.divU(T, slots[inst.lhs].readAs(U), slots[inst.rhs].readAs(U)) catch return .{ .trap = Trap.fromTrapCode(.IntegerDivisionByZero) };
+                    slots[inst.dst] = RawVal.from(@as(T, @bitCast(result)));
                 },
-                .i32_or => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(i32);
-                    const rhs = s[inst.rhs].readAs(i32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(lhs | rhs);
+
+                // ── Integer signed remainder (may trap) ───────────────────────
+                inline .i32_rem_s, .i64_rem_s => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    const result = helper.remS(slots[inst.lhs].readAs(T), slots[inst.rhs].readAs(T)) catch return .{ .trap = Trap.fromTrapCode(.IntegerDivisionByZero) };
+                    slots[inst.dst] = RawVal.from(result);
                 },
-                .i32_xor => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(i32);
-                    const rhs = s[inst.rhs].readAs(i32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(lhs ^ rhs);
+
+                // ── Integer unsigned remainder (may trap) ─────────────────────
+                inline .i32_rem_u, .i64_rem_u => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    const U = std.meta.Int(.unsigned, @bitSizeOf(T));
+                    const result = helper.remU(T, slots[inst.lhs].readAs(U), slots[inst.rhs].readAs(U)) catch return .{ .trap = Trap.fromTrapCode(.IntegerDivisionByZero) };
+                    slots[inst.dst] = RawVal.from(@as(T, @bitCast(result)));
                 },
-                .i32_shl => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(i32);
-                    const rhs = s[inst.rhs].readAs(i32);
-                    const shift: u5 = @intCast(@as(u32, @bitCast(rhs)) & 0x1f);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(lhs << shift);
+
+                // ── Bitwise and / or / xor ────────────────────────────────────
+                inline .i32_and, .i64_and => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(slots[inst.lhs].readAs(T) & slots[inst.rhs].readAs(T));
                 },
-                .i32_shr_s => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(i32);
-                    const rhs = s[inst.rhs].readAs(i32);
-                    const shift: u5 = @intCast(@as(u32, @bitCast(rhs)) & 0x1f);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(lhs >> shift);
+                inline .i32_or, .i64_or => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(slots[inst.lhs].readAs(T) | slots[inst.rhs].readAs(T));
                 },
-                .i32_shr_u => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(u32);
-                    const rhs = s[inst.rhs].readAs(u32);
-                    const shift: u5 = @intCast(rhs & 0x1f);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, @bitCast(lhs >> shift)));
+                inline .i32_xor, .i64_xor => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(slots[inst.lhs].readAs(T) ^ slots[inst.rhs].readAs(T));
                 },
-                .i32_rotl => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(u32);
-                    const rhs = s[inst.rhs].readAs(u32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, @bitCast(std.math.rotl(u32, lhs, rhs & 0x1f))));
+
+                // ── Shifts ────────────────────────────────────────────────────
+                inline .i32_shl, .i64_shl => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(helper.shl(slots[inst.lhs].readAs(T), slots[inst.rhs].readAs(T)));
                 },
-                .i32_rotr => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(u32);
-                    const rhs = s[inst.rhs].readAs(u32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, @bitCast(std.math.rotr(u32, lhs, rhs & 0x1f))));
+                inline .i32_shr_s, .i64_shr_s => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(helper.shrS(slots[inst.lhs].readAs(T), slots[inst.rhs].readAs(T)));
                 },
-                .i32_clz => |inst| {
-                    const src = call_stack.items[frame_idx].slots[inst.src].readAs(u32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, @intCast(@clz(src))));
+                inline .i32_shr_u, .i64_shr_u => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    const U = std.meta.Int(.unsigned, @bitSizeOf(T));
+                    slots[inst.dst] = RawVal.from(@as(T, @bitCast(
+                        helper.shrU(T, slots[inst.lhs].readAs(U), slots[inst.rhs].readAs(U)),
+                    )));
                 },
-                .i32_ctz => |inst| {
-                    const src = call_stack.items[frame_idx].slots[inst.src].readAs(u32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, @intCast(@ctz(src))));
+
+                // ── Rotates ───────────────────────────────────────────────────
+                inline .i32_rotl, .i64_rotl => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(helper.rotl(slots[inst.lhs].readAs(T), slots[inst.rhs].readAs(T)));
                 },
-                .i32_popcnt => |inst| {
-                    const src = call_stack.items[frame_idx].slots[inst.src].readAs(u32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, @intCast(@popCount(src))));
+                inline .i32_rotr, .i64_rotr => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(helper.rotr(slots[inst.lhs].readAs(T), slots[inst.rhs].readAs(T)));
                 },
-                .i32_eqz => |inst| {
-                    const src = call_stack.items[frame_idx].slots[inst.src].readAs(i32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, if (src == 0) 1 else 0));
+
+                // ── Float binary (min / max / copysign) ───────────────────────
+                inline .f32_min, .f64_min => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(helper.min(slots[inst.lhs].readAs(T), slots[inst.rhs].readAs(T)));
                 },
-                .i32_eq => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(i32);
-                    const rhs = s[inst.rhs].readAs(i32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, if (lhs == rhs) 1 else 0));
+                inline .f32_max, .f64_max => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(helper.max(slots[inst.lhs].readAs(T), slots[inst.rhs].readAs(T)));
                 },
-                .i32_ne => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(i32);
-                    const rhs = s[inst.rhs].readAs(i32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, if (lhs != rhs) 1 else 0));
+                inline .f32_copysign, .f64_copysign => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(helper.copySign(slots[inst.lhs].readAs(T), slots[inst.rhs].readAs(T)));
                 },
-                .i32_lt_s => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(i32);
-                    const rhs = s[inst.rhs].readAs(i32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, if (lhs < rhs) 1 else 0));
+
+                // ── Integer unary: clz / ctz / popcnt ────────────────────────
+                inline .i32_clz, .i64_clz => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(helper.leadingZeros(slots[inst.src].readAs(T)));
                 },
-                .i32_lt_u => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(u32);
-                    const rhs = s[inst.rhs].readAs(u32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, if (lhs < rhs) 1 else 0));
+                inline .i32_ctz, .i64_ctz => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(helper.trailingZeros(slots[inst.src].readAs(T)));
                 },
-                .i32_gt_s => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(i32);
-                    const rhs = s[inst.rhs].readAs(i32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, if (lhs > rhs) 1 else 0));
+                inline .i32_popcnt, .i64_popcnt => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(helper.countOnes(slots[inst.src].readAs(T)));
                 },
-                .i32_gt_u => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(u32);
-                    const rhs = s[inst.rhs].readAs(u32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, if (lhs > rhs) 1 else 0));
+
+                // ── Integer unary: eqz ────────────────────────────────────────
+                inline .i32_eqz, .i64_eqz => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(@as(i32, if (slots[inst.src].readAs(T) == 0) 1 else 0));
                 },
-                .i32_le_s => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(i32);
-                    const rhs = s[inst.rhs].readAs(i32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, if (lhs <= rhs) 1 else 0));
+
+                // ── Float unary ───────────────────────────────────────────────
+                inline .f32_abs, .f64_abs => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(helper.abs(slots[inst.src].readAs(T)));
                 },
-                .i32_le_u => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(u32);
-                    const rhs = s[inst.rhs].readAs(u32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, if (lhs <= rhs) 1 else 0));
+                inline .f32_neg, .f64_neg => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(-slots[inst.src].readAs(T));
                 },
-                .i32_ge_s => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(i32);
-                    const rhs = s[inst.rhs].readAs(i32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, if (lhs >= rhs) 1 else 0));
+                inline .f32_ceil, .f64_ceil => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(helper.ceil(slots[inst.src].readAs(T)));
                 },
-                .i32_ge_u => |inst| {
-                    const s = call_stack.items[frame_idx].slots;
-                    const lhs = s[inst.lhs].readAs(u32);
-                    const rhs = s[inst.rhs].readAs(u32);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, if (lhs >= rhs) 1 else 0));
+                inline .f32_floor, .f64_floor => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(helper.floor(slots[inst.src].readAs(T)));
+                },
+                inline .f32_trunc, .f64_trunc => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(helper.trunc(slots[inst.src].readAs(T)));
+                },
+                inline .f32_nearest, .f64_nearest => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(helper.nearest(slots[inst.src].readAs(T)));
+                },
+                inline .f32_sqrt, .f64_sqrt => |inst| {
+                    const T = @TypeOf(inst).ValueType;
+                    slots[inst.dst] = RawVal.from(helper.sqrt(slots[inst.src].readAs(T)));
+                },
+
+                // ── Comparisons: eq / ne (all 4 types) ───────────────────────
+                inline .i32_eq, .i64_eq, .f32_eq, .f64_eq => |inst| {
+                    const T = @TypeOf(inst).InputType;
+                    slots[inst.dst] = RawVal.from(@as(i32, if (slots[inst.lhs].readAs(T) == slots[inst.rhs].readAs(T)) 1 else 0));
+                },
+                inline .i32_ne, .i64_ne, .f32_ne, .f64_ne => |inst| {
+                    const T = @TypeOf(inst).InputType;
+                    slots[inst.dst] = RawVal.from(@as(i32, if (slots[inst.lhs].readAs(T) != slots[inst.rhs].readAs(T)) 1 else 0));
+                },
+
+                // ── Signed / float comparisons: lt / gt / le / ge ────────────
+                inline .i32_lt_s, .i64_lt_s, .f32_lt, .f64_lt => |inst| {
+                    const T = @TypeOf(inst).InputType;
+                    slots[inst.dst] = RawVal.from(@as(i32, if (slots[inst.lhs].readAs(T) < slots[inst.rhs].readAs(T)) 1 else 0));
+                },
+                inline .i32_gt_s, .i64_gt_s, .f32_gt, .f64_gt => |inst| {
+                    const T = @TypeOf(inst).InputType;
+                    slots[inst.dst] = RawVal.from(@as(i32, if (slots[inst.lhs].readAs(T) > slots[inst.rhs].readAs(T)) 1 else 0));
+                },
+                inline .i32_le_s, .i64_le_s, .f32_le, .f64_le => |inst| {
+                    const T = @TypeOf(inst).InputType;
+                    slots[inst.dst] = RawVal.from(@as(i32, if (slots[inst.lhs].readAs(T) <= slots[inst.rhs].readAs(T)) 1 else 0));
+                },
+                inline .i32_ge_s, .i64_ge_s, .f32_ge, .f64_ge => |inst| {
+                    const T = @TypeOf(inst).InputType;
+                    slots[inst.dst] = RawVal.from(@as(i32, if (slots[inst.lhs].readAs(T) >= slots[inst.rhs].readAs(T)) 1 else 0));
+                },
+
+                // ── Unsigned integer comparisons: lt_u / gt_u / le_u / ge_u ──
+                inline .i32_lt_u, .i64_lt_u => |inst| {
+                    const T = @TypeOf(inst).InputType;
+                    const U = std.meta.Int(.unsigned, @bitSizeOf(T));
+                    slots[inst.dst] = RawVal.from(@as(i32, if (slots[inst.lhs].readAs(U) < slots[inst.rhs].readAs(U)) 1 else 0));
+                },
+                inline .i32_gt_u, .i64_gt_u => |inst| {
+                    const T = @TypeOf(inst).InputType;
+                    const U = std.meta.Int(.unsigned, @bitSizeOf(T));
+                    slots[inst.dst] = RawVal.from(@as(i32, if (slots[inst.lhs].readAs(U) > slots[inst.rhs].readAs(U)) 1 else 0));
+                },
+                inline .i32_le_u, .i64_le_u => |inst| {
+                    const T = @TypeOf(inst).InputType;
+                    const U = std.meta.Int(.unsigned, @bitSizeOf(T));
+                    slots[inst.dst] = RawVal.from(@as(i32, if (slots[inst.lhs].readAs(U) <= slots[inst.rhs].readAs(U)) 1 else 0));
+                },
+                inline .i32_ge_u, .i64_ge_u => |inst| {
+                    const T = @TypeOf(inst).InputType;
+                    const U = std.meta.Int(.unsigned, @bitSizeOf(T));
+                    slots[inst.dst] = RawVal.from(@as(i32, if (slots[inst.lhs].readAs(U) >= slots[inst.rhs].readAs(U)) 1 else 0));
                 },
 
                 // ── fn call ────────────────────────────────────────────────────
                 .call => |inst| {
                     // Collect the argument values from the current (caller) frame.
+                    // Capture caller_func before potential call_stack reallocation.
                     const caller_func = call_stack.items[frame_idx].func;
-                    const caller_slots = call_stack.items[frame_idx].slots;
                     const arg_slots = caller_func.call_args.items[inst.args_start .. inst.args_start + inst.args_len];
 
                     if (inst.func_idx < host_funcs.len) {
                         // ── Host function call ──────────────────────────────
-                        // Collect params into a temporary slice, call the host function,
-                        // and write the result (if any) back to the caller frame's dst slot.
                         const host_params = try self.allocator.alloc(RawVal, arg_slots.len);
                         defer self.allocator.free(host_params);
                         for (arg_slots, 0..) |arg_slot, i| {
-                            host_params[i] = caller_slots[arg_slot];
+                            host_params[i] = slots[arg_slot];
                         }
 
                         const host_result = try host_funcs[inst.func_idx].call(host_params, self.allocator);
@@ -365,7 +423,7 @@ pub const VM = struct {
                             .ok => |ret_val| {
                                 if (inst.dst) |dst_slot| {
                                     if (ret_val) |rv| {
-                                        call_stack.items[frame_idx].slots[dst_slot] = rv;
+                                        slots[dst_slot] = rv;
                                     }
                                 }
                             },
@@ -383,14 +441,13 @@ pub const VM = struct {
                         // Initialize to zero (unused local variables should be 0).
                         @memset(callee_slots, std.mem.zeroes(RawVal));
 
-                        // Copy argument values from caller frame's slots to callee frame's slots 0..n.
+                        // Copy argument values from caller slots to callee slots 0..n.
+                        // slots points to separately-allocated memory; it remains valid after append.
                         for (arg_slots, 0..) |arg_slot, i| {
-                            callee_slots[i] = caller_slots[arg_slot];
+                            callee_slots[i] = slots[arg_slot];
                         }
 
-                        // Save dst to a local variable before append, to prevent pointer invalidation after slice reallocation.
                         const callee_dst = inst.dst;
-
                         call_stack.append(self.allocator, .{
                             .func = callee,
                             .slots = callee_slots,
@@ -400,20 +457,17 @@ pub const VM = struct {
                             self.allocator.free(callee_slots);
                             return err;
                         };
-                        // append may cause call_stack.items to be reallocated,
-                        // any previously held pointers (e.g., caller_slots) are invalidated,
-                        // do not dereference them.
+                        // append may reallocate call_stack.items; slots still valid (external allocation)
                     }
                 },
 
                 // ── indirect function call (call_indirect) ──────────────────
                 .call_indirect => |inst| {
-                    const current_slots = call_stack.items[frame_idx].slots;
                     const caller_func = call_stack.items[frame_idx].func;
                     const arg_slots = caller_func.call_args.items[inst.args_start .. inst.args_start + inst.args_len];
 
                     // 1. Read runtime table index from slot.
-                    const raw_index = current_slots[inst.index].readAs(u32);
+                    const raw_index = slots[inst.index].readAs(u32);
 
                     // 2. Bounds check against the table.
                     if (inst.table_index >= tables.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
@@ -436,7 +490,7 @@ pub const VM = struct {
                         const host_params = try self.allocator.alloc(RawVal, arg_slots.len);
                         defer self.allocator.free(host_params);
                         for (arg_slots, 0..) |arg_slot, i| {
-                            host_params[i] = current_slots[arg_slot];
+                            host_params[i] = slots[arg_slot];
                         }
                         const host_result = try host_funcs[callee_func_idx].call(host_params, self.allocator);
                         switch (host_result) {
@@ -444,7 +498,7 @@ pub const VM = struct {
                             .ok => |ret_val| {
                                 if (inst.dst) |dst_slot| {
                                     if (ret_val) |rv| {
-                                        call_stack.items[frame_idx].slots[dst_slot] = rv;
+                                        slots[dst_slot] = rv;
                                     }
                                 }
                             },
@@ -459,10 +513,9 @@ pub const VM = struct {
                         const callee_slots = try self.allocator.alloc(RawVal, callee_slots_len);
                         @memset(callee_slots, std.mem.zeroes(RawVal));
 
-                        // Capture current_slots reference before appending (may invalidate)
-                        const caller_slots_copy = current_slots;
+                        // slots remains valid after append (external allocation)
                         for (arg_slots, 0..) |arg_slot, i| {
-                            callee_slots[i] = caller_slots_copy[arg_slot];
+                            callee_slots[i] = slots[arg_slot];
                         }
 
                         const callee_dst = inst.dst;
@@ -478,191 +531,193 @@ pub const VM = struct {
                     }
                 },
 
+                // ── i32 Memory load ───────────────────────────────────────────
                 .i32_load => |inst| {
-                    const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
-                    const ea = base +% inst.offset;
-                    if (@as(usize, ea) + 4 > memory.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
-                    const val = std.mem.readInt(i32, memory[ea..][0..4], .little);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(val);
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 4, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    slots[inst.dst] = RawVal.from(std.mem.readInt(i32, memory[ea..][0..4], .little));
                 },
                 .i32_load8_s => |inst| {
-                    const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
-                    const ea = base +% inst.offset;
-                    if (@as(usize, ea) + 1 > memory.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
-                    const byte: i8 = @bitCast(memory[ea]);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, byte));
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 1, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    slots[inst.dst] = RawVal.from(@as(i32, @as(i8, @bitCast(memory[ea]))));
                 },
                 .i32_load8_u => |inst| {
-                    const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
-                    const ea = base +% inst.offset;
-                    if (@as(usize, ea) + 1 > memory.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
-                    const byte: u8 = memory[ea];
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, byte));
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 1, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    slots[inst.dst] = RawVal.from(@as(i32, memory[ea]));
                 },
                 .i32_load16_s => |inst| {
-                    const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
-                    const ea = base +% inst.offset;
-                    if (@as(usize, ea) + 2 > memory.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 2, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
                     const half: i16 = @bitCast(std.mem.readInt(u16, memory[ea..][0..2], .little));
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, half));
+                    slots[inst.dst] = RawVal.from(@as(i32, half));
                 },
                 .i32_load16_u => |inst| {
-                    const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
-                    const ea = base +% inst.offset;
-                    if (@as(usize, ea) + 2 > memory.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
-                    const half: u16 = std.mem.readInt(u16, memory[ea..][0..2], .little);
-                    call_stack.items[frame_idx].slots[inst.dst] = RawVal.from(@as(i32, half));
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 2, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    slots[inst.dst] = RawVal.from(@as(i32, std.mem.readInt(u16, memory[ea..][0..2], .little)));
                 },
 
-                // ── Memory store ─────────────────────────────────────────────────────────
+                // ── i64 Memory load ───────────────────────────────────────────
+                .i64_load => |inst| {
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 8, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    slots[inst.dst] = RawVal.from(std.mem.readInt(i64, memory[ea..][0..8], .little));
+                },
+                .i64_load8_s => |inst| {
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 1, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    slots[inst.dst] = RawVal.from(@as(i64, @as(i8, @bitCast(memory[ea]))));
+                },
+                .i64_load8_u => |inst| {
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 1, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    slots[inst.dst] = RawVal.from(@as(i64, memory[ea]));
+                },
+                .i64_load16_s => |inst| {
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 2, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    const half: i16 = @bitCast(std.mem.readInt(u16, memory[ea..][0..2], .little));
+                    slots[inst.dst] = RawVal.from(@as(i64, half));
+                },
+                .i64_load16_u => |inst| {
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 2, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    slots[inst.dst] = RawVal.from(@as(i64, std.mem.readInt(u16, memory[ea..][0..2], .little)));
+                },
+                .i64_load32_s => |inst| {
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 4, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    const word: i32 = @bitCast(std.mem.readInt(u32, memory[ea..][0..4], .little));
+                    slots[inst.dst] = RawVal.from(@as(i64, word));
+                },
+                .i64_load32_u => |inst| {
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 4, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    slots[inst.dst] = RawVal.from(@as(i64, std.mem.readInt(u32, memory[ea..][0..4], .little)));
+                },
 
+                // ── f32 / f64 Memory load ─────────────────────────────────────
+                .f32_load => |inst| {
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 4, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    const bits = std.mem.readInt(u32, memory[ea..][0..4], .little);
+                    slots[inst.dst] = RawVal.from(@as(f32, @bitCast(bits)));
+                },
+                .f64_load => |inst| {
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 8, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    const bits = std.mem.readInt(u64, memory[ea..][0..8], .little);
+                    slots[inst.dst] = RawVal.from(@as(f64, @bitCast(bits)));
+                },
+
+                // ── i32 Memory store ──────────────────────────────────────────
                 .i32_store => |inst| {
-                    const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
-                    const ea = base +% inst.offset;
-                    if (@as(usize, ea) + 4 > memory.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
-                    const val = call_stack.items[frame_idx].slots[inst.src].readAs(i32);
-                    std.mem.writeInt(i32, memory[ea..][0..4], val, .little);
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 4, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    std.mem.writeInt(i32, memory[ea..][0..4], slots[inst.src].readAs(i32), .little);
                 },
                 .i32_store8 => |inst| {
-                    const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
-                    const ea = base +% inst.offset;
-                    if (@as(usize, ea) + 1 > memory.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
-                    const val = call_stack.items[frame_idx].slots[inst.src].readAs(i32);
-                    memory[ea] = @truncate(@as(u32, @bitCast(val)));
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 1, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    memory[ea] = @truncate(@as(u32, @bitCast(slots[inst.src].readAs(i32))));
                 },
                 .i32_store16 => |inst| {
-                    const base: u32 = call_stack.items[frame_idx].slots[inst.addr].readAs(u32);
-                    const ea = base +% inst.offset;
-                    if (@as(usize, ea) + 2 > memory.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
-                    const val = call_stack.items[frame_idx].slots[inst.src].readAs(i32);
-                    std.mem.writeInt(u16, memory[ea..][0..2], @truncate(@as(u32, @bitCast(val))), .little);
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 2, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    std.mem.writeInt(u16, memory[ea..][0..2], @truncate(@as(u32, @bitCast(slots[inst.src].readAs(i32)))), .little);
                 },
 
-                // ── jump_table (br_table lowered form) ───────────────────────────
-                .jump_table => |inst| {
-                    const idx = call_stack.items[frame_idx].slots[inst.index].readAs(u32);
-                    // Clamp: if index >= targets_len, use the default (at targets_start + targets_len).
-                    const entry = if (idx < inst.targets_len) idx else inst.targets_len;
-                    const target = call_stack.items[frame_idx].func.br_table_targets.items[inst.targets_start + entry];
-                    call_stack.items[frame_idx].pc = target;
+                // ── i64 Memory store ──────────────────────────────────────────
+                .i64_store => |inst| {
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 8, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    std.mem.writeInt(i64, memory[ea..][0..8], slots[inst.src].readAs(i64), .little);
+                },
+                .i64_store8 => |inst| {
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 1, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    memory[ea] = @truncate(@as(u64, @bitCast(slots[inst.src].readAs(i64))));
+                },
+                .i64_store16 => |inst| {
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 2, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    std.mem.writeInt(u16, memory[ea..][0..2], @truncate(@as(u64, @bitCast(slots[inst.src].readAs(i64)))), .little);
+                },
+                .i64_store32 => |inst| {
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 4, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    std.mem.writeInt(u32, memory[ea..][0..4], @truncate(@as(u64, @bitCast(slots[inst.src].readAs(i64)))), .little);
                 },
 
-                // ── select ────────────────────────────────────────────────────────
-                .select => |inst| {
-                    const cond = call_stack.items[frame_idx].slots[inst.cond].readAs(i32);
-                    const result = if (cond != 0)
-                        call_stack.items[frame_idx].slots[inst.val1]
-                    else
-                        call_stack.items[frame_idx].slots[inst.val2];
-                    call_stack.items[frame_idx].slots[inst.dst] = result;
+                // ── f32 / f64 Memory store ────────────────────────────────────
+                .f32_store => |inst| {
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 4, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    std.mem.writeInt(u32, memory[ea..][0..4], @as(u32, @bitCast(slots[inst.src].readAs(f32))), .little);
+                },
+                .f64_store => |inst| {
+                    const ea = effectiveAddr(slots, inst.addr, inst.offset, 8, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    std.mem.writeInt(u64, memory[ea..][0..8], @as(u64, @bitCast(slots[inst.src].readAs(f64))), .little);
                 },
 
                 // ── Bulk memory instructions ────────────────────────────────────────
                 .memory_init => |inst| {
-                    const dst_addr = call_stack.items[frame_idx].slots[inst.dst_addr].readAs(u32);
-                    const src_offset = call_stack.items[frame_idx].slots[inst.src_offset].readAs(u32);
-                    const len = call_stack.items[frame_idx].slots[inst.len].readAs(u32);
+                    const dst_addr = slots[inst.dst_addr].readAs(u32);
+                    const src_offset = slots[inst.src_offset].readAs(u32);
+                    const len = slots[inst.len].readAs(u32);
 
-                    // Check if segment index is valid
                     if (inst.segment_idx >= data_segments.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
-
-                    // Check if segment has been dropped
                     if (data_segments_dropped[inst.segment_idx]) {
                         return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
                     }
 
                     const segment = data_segments[inst.segment_idx];
-
-                    // Bounds check: src_offset + len <= segment.data.len && dst_addr + len <= memory.len
                     const src_end = src_offset +% len;
                     const dst_end = dst_addr +% len;
                     if (src_end > segment.data.len or dst_end > memory.len) {
                         return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
                     }
-
-                    // Copy from segment to memory
                     @memcpy(memory[dst_addr..][0..len], segment.data[src_offset..][0..len]);
                 },
                 .data_drop => |inst| {
-                    // Check if segment index is valid
                     if (inst.segment_idx >= data_segments.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
-
-                    // Mark segment as dropped
                     data_segments_dropped[inst.segment_idx] = true;
                 },
                 .memory_copy => |inst| {
-                    const dst_addr = call_stack.items[frame_idx].slots[inst.dst_addr].readAs(u32);
-                    const src_addr = call_stack.items[frame_idx].slots[inst.src_addr].readAs(u32);
-                    const len = call_stack.items[frame_idx].slots[inst.len].readAs(u32);
+                    const dst_addr = slots[inst.dst_addr].readAs(u32);
+                    const src_addr = slots[inst.src_addr].readAs(u32);
+                    const len = slots[inst.len].readAs(u32);
 
-                    // Bounds check: src_addr + len <= memory.len && dst_addr + len <= memory.len
                     const src_end = src_addr +% len;
                     const dst_end = dst_addr +% len;
                     if (src_end > memory.len or dst_end > memory.len) {
                         return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
                     }
 
-                    // Handle overlapping regions correctly
                     if (len > 0) {
                         if (dst_addr < src_addr) {
-                            // Copy forward
                             @memcpy(memory[dst_addr .. dst_addr + len], memory[src_addr .. src_addr + len]);
                         } else if (dst_addr > src_addr) {
-                            // Copy backward to handle overlap
                             var i: usize = len;
                             while (i > 0) {
                                 i -= 1;
                                 memory[dst_addr + i] = memory[src_addr + i];
                             }
                         }
-                        // If dst_addr == src_addr, no-op
                     }
                 },
                 .memory_fill => |inst| {
-                    const dst_addr = call_stack.items[frame_idx].slots[inst.dst_addr].readAs(u32);
-                    const value = call_stack.items[frame_idx].slots[inst.value].readAs(u32);
-                    const len = call_stack.items[frame_idx].slots[inst.len].readAs(u32);
+                    const dst_addr = slots[inst.dst_addr].readAs(u32);
+                    const value = slots[inst.value].readAs(u32);
+                    const len = slots[inst.len].readAs(u32);
 
-                    // Bounds check: dst_addr + len <= memory.len
                     const dst_end = dst_addr +% len;
                     if (dst_end > memory.len) {
                         return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
                     }
-
-                    // Fill memory with byte value
                     @memset(memory[dst_addr .. dst_addr + len], @truncate(value));
                 },
 
                 // ── return ────────────────────────────────────────────────────────
                 .ret => |inst| {
-                    // Collect the return value of the current frame (if any)
                     const ret_val: ?RawVal = if (inst.value) |slot|
-                        call_stack.items[frame_idx].slots[slot]
+                        slots[slot]
                     else
                         null;
 
-                    // Pop the current frame and free its slots
                     const popped_frame = call_stack.pop().?;
                     self.allocator.free(popped_frame.slots);
 
                     if (call_stack.items.len == 0) {
-                        // Top-level frame returned: execution finished
                         return .{ .ok = ret_val };
                     }
 
-                    // Write the return value to the caller frame's dst slot
                     const caller_idx = call_stack.items.len - 1;
                     if (popped_frame.dst) |dst_slot| {
                         if (ret_val) |rv| {
                             call_stack.items[caller_idx].slots[dst_slot] = rv;
                         }
                     }
-                },
-                // ── Unimplemented operations (i64/f32/f64 support) ────────────────────
-                // TODO: Implement runtime support for these operations
-                else => |unimpl_op| {
-                    std.debug.print("Unimplemented Op: {s}\n", .{@tagName(unimpl_op)});
-                    return .{ .trap = Trap.fromTrapCode(.UnreachableCodeReached) };
                 },
             }
         }

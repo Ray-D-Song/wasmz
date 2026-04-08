@@ -1,5 +1,4 @@
 const std = @import("std");
-const trap = @import("trap");
 
 pub const TruncateError = error{
     NaN,
@@ -173,55 +172,64 @@ pub fn shrU(comptime T: type, lhs: UnsignedOf(T), rhs: UnsignedOf(T)) UnsignedOf
 pub fn rotl(lhs: anytype, rhs: @TypeOf(lhs)) @TypeOf(lhs) {
     const T = @TypeOf(lhs);
     comptime ensureSignedInt(T);
-    const amount: std.math.Log2Int(T) = @truncate(@as(UnsignedOf(T), @bitCast(rhs)));
-    return std.math.rotl(T, lhs, amount);
+    const U = UnsignedOf(T);
+    const amount: std.math.Log2Int(U) = @truncate(@as(U, @bitCast(rhs)));
+    return @bitCast(std.math.rotl(U, @as(U, @bitCast(lhs)), amount));
 }
 
 // Rotates the bits of `lhs` to the right by the wrapped shift amount in `rhs`.
 pub fn rotr(lhs: anytype, rhs: @TypeOf(lhs)) @TypeOf(lhs) {
     const T = @TypeOf(lhs);
     comptime ensureSignedInt(T);
-    const amount: std.math.Log2Int(T) = @truncate(@as(UnsignedOf(T), @bitCast(rhs)));
-    return std.math.rotr(T, lhs, amount);
+    const U = UnsignedOf(T);
+    const amount: std.math.Log2Int(U) = @truncate(@as(U, @bitCast(rhs)));
+    return @bitCast(std.math.rotr(U, @as(U, @bitCast(lhs)), amount));
 }
 
+pub const IntDivError = error{
+    IntegerDivisionByZero,
+    IntegerOverflow,
+};
+
 // Divides `lhs` by `rhs` using signed integer semantics.
-pub fn divS(lhs: anytype, rhs: @TypeOf(lhs)) trap.TrapCode!@TypeOf(lhs) {
+pub fn divS(lhs: anytype, rhs: @TypeOf(lhs)) IntDivError!@TypeOf(lhs) {
     const T = @TypeOf(lhs);
     comptime ensureSignedInt(T);
     if (rhs == 0) {
-        return trap.TrapCode.IntegerDivisionByZero;
+        return error.IntegerDivisionByZero;
     }
     if (lhs == std.math.minInt(T) and rhs == -1) {
-        return trap.TrapCode.IntegerOverflow;
+        return error.IntegerOverflow;
     }
     return @divTrunc(lhs, rhs);
 }
 
 // Divides `lhs` by `rhs` using unsigned integer semantics.
-pub fn divU(comptime T: type, lhs: UnsignedOf(T), rhs: UnsignedOf(T)) trap.TrapCode!UnsignedOf(T) {
+pub fn divU(comptime T: type, lhs: UnsignedOf(T), rhs: UnsignedOf(T)) error{IntegerDivisionByZero}!UnsignedOf(T) {
     comptime ensureSignedInt(T);
     if (rhs == 0) {
-        return trap.TrapCode.IntegerDivisionByZero;
+        return error.IntegerDivisionByZero;
     }
     return @divTrunc(lhs, rhs);
 }
 
 // Computes the signed integer remainder of `lhs` divided by `rhs`.
-pub fn remS(lhs: anytype, rhs: @TypeOf(lhs)) trap.TrapCode!@TypeOf(lhs) {
+pub fn remS(lhs: anytype, rhs: @TypeOf(lhs)) error{IntegerDivisionByZero}!@TypeOf(lhs) {
     const T = @TypeOf(lhs);
     comptime ensureSignedInt(T);
     if (rhs == 0) {
-        return trap.TrapCode.IntegerDivisionByZero;
+        return error.IntegerDivisionByZero;
     }
+    // Wasm spec: rem_s(INT_MIN, -1) == 0 (no trap, unlike div_s)
+    if (lhs == std.math.minInt(T) and rhs == -1) return @as(T, 0);
     return @rem(lhs, rhs);
 }
 
 // Computes the unsigned integer remainder of `lhs` divided by `rhs`.
-pub fn remU(comptime T: type, lhs: UnsignedOf(T), rhs: UnsignedOf(T)) trap.TrapCode!UnsignedOf(T) {
+pub fn remU(comptime T: type, lhs: UnsignedOf(T), rhs: UnsignedOf(T)) error{IntegerDivisionByZero}!UnsignedOf(T) {
     comptime ensureSignedInt(T);
     if (rhs == 0) {
-        return trap.TrapCode.IntegerDivisionByZero;
+        return error.IntegerDivisionByZero;
     }
     return @rem(lhs, rhs);
 }
