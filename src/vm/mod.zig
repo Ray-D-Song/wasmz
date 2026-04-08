@@ -658,6 +658,12 @@ pub const VM = struct {
                         }
                     }
                 },
+                // ── Unimplemented operations (i64/f32/f64 support) ────────────────────
+                // TODO: Implement runtime support for these operations
+                else => |unimpl_op| {
+                    std.debug.print("Unimplemented Op: {s}\n", .{@tagName(unimpl_op)});
+                    return .{ .trap = Trap.fromTrapCode(.UnreachableCodeReached) };
+                },
             }
         }
 

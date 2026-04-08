@@ -2,13 +2,69 @@ const std = @import("std");
 
 pub const Slot = u32;
 
+// ── Generic Operation Types ─────────────────────────────────────────────────────
+
+/// Binary operation: applies to all add/sub/mul/and/or/xor/shl/shr/div/rem operations, etc.
+/// Generic over the value type (i32, i64, f32, f64)
+pub fn BinaryOp(comptime T: type) type {
+    return struct {
+        dst: Slot,
+        lhs: Slot,
+        rhs: Slot,
+
+        pub const ValueType = T;
+    };
+}
+
+/// Unary operation: applies to clz/ctz/popcnt/eqz operations, etc.
+/// Generic over the value type (i32, i64)
+pub fn UnaryOp(comptime T: type) type {
+    return struct {
+        dst: Slot,
+        src: Slot,
+
+        pub const ValueType = T;
+    };
+}
+
+/// Compare operation: result is always i32, but input can be any type
+/// Generic over the input value type (i32, i64, f32, f64)
+pub fn CompareOp(comptime InputT: type) type {
+    return struct {
+        dst: Slot,
+        lhs: Slot,
+        rhs: Slot,
+
+        pub const InputType = InputT;
+        pub const ResultType = i32;
+    };
+}
+
+// ── Main Op Union ──────────────────────────────────────────────────────────────
+
 pub const Op = union(enum) {
     /// Trap immediately with UnreachableCodeReached
     unreachable_,
+
+    // ── Constants ───────────────────────────────────────────────────────────────
     const_i32: struct {
         dst: Slot,
         value: i32,
     },
+    const_i64: struct {
+        dst: Slot,
+        value: i64,
+    },
+    const_f32: struct {
+        dst: Slot,
+        value: f32,
+    },
+    const_f64: struct {
+        dst: Slot,
+        value: f64,
+    },
+
+    // ── Variable access ─────────────────────────────────────────────────────────
     local_get: struct {
         dst: Slot,
         local: u32,
@@ -17,102 +73,132 @@ pub const Op = union(enum) {
         local: u32,
         src: Slot,
     },
-    i32_add: struct {
-        dst: Slot,
-        lhs: Slot,
-        rhs: Slot,
-    },
-    i32_sub: struct {
-        dst: Slot,
-        lhs: Slot,
-        rhs: Slot,
-    },
-    i32_mul: struct {
-        dst: Slot,
-        lhs: Slot,
-        rhs: Slot,
-    },
 
-    // ── i32 integer division / remainder ────────────────────────────────────────
+    // ── i32 arithmetic operations (using generic BinaryOp) ──────────────────────
+    i32_add: BinaryOp(i32),
+    i32_sub: BinaryOp(i32),
+    i32_mul: BinaryOp(i32),
     // div_s / rem_s may trap: IntegerDivisionByZero (rhs==0) or IntegerOverflow (INT_MIN/-1).
     // div_u / rem_u may trap: IntegerDivisionByZero (rhs==0).
-    i32_div_s: struct { dst: Slot, lhs: Slot, rhs: Slot },
-    i32_div_u: struct { dst: Slot, lhs: Slot, rhs: Slot },
-    i32_rem_s: struct { dst: Slot, lhs: Slot, rhs: Slot },
-    i32_rem_u: struct { dst: Slot, lhs: Slot, rhs: Slot },
+    i32_div_s: BinaryOp(i32),
+    i32_div_u: BinaryOp(i32),
+    i32_rem_s: BinaryOp(i32),
+    i32_rem_u: BinaryOp(i32),
+    // bitwise
+    i32_and: BinaryOp(i32),
+    i32_or: BinaryOp(i32),
+    i32_xor: BinaryOp(i32),
+    // shift / rotate (Wasm spec: shift amount = rhs & 0x1f mod 32)
+    i32_shl: BinaryOp(i32),
+    i32_shr_s: BinaryOp(i32),
+    i32_shr_u: BinaryOp(i32),
+    i32_rotl: BinaryOp(i32),
+    i32_rotr: BinaryOp(i32),
 
-    // ── i32 bitwise operations ───────────────────────────────────────────────────
-    i32_and: struct { dst: Slot, lhs: Slot, rhs: Slot },
-    i32_or: struct { dst: Slot, lhs: Slot, rhs: Slot },
-    i32_xor: struct { dst: Slot, lhs: Slot, rhs: Slot },
+    // ── i64 arithmetic operations ───────────────────────────────────────────────
+    i64_add: BinaryOp(i64),
+    i64_sub: BinaryOp(i64),
+    i64_mul: BinaryOp(i64),
+    i64_div_s: BinaryOp(i64),
+    i64_div_u: BinaryOp(i64),
+    i64_rem_s: BinaryOp(i64),
+    i64_rem_u: BinaryOp(i64),
+    i64_and: BinaryOp(i64),
+    i64_or: BinaryOp(i64),
+    i64_xor: BinaryOp(i64),
+    i64_shl: BinaryOp(i64),
+    i64_shr_s: BinaryOp(i64),
+    i64_shr_u: BinaryOp(i64),
+    i64_rotl: BinaryOp(i64),
+    i64_rotr: BinaryOp(i64),
 
-    // ── i32 shift / rotate ───────────────────────────────────────────────────────
-    // Wasm spec: shift amount = rhs & 0x1f (mod 32).
-    i32_shl: struct { dst: Slot, lhs: Slot, rhs: Slot },
-    i32_shr_s: struct { dst: Slot, lhs: Slot, rhs: Slot },
-    i32_shr_u: struct { dst: Slot, lhs: Slot, rhs: Slot },
-    i32_rotl: struct { dst: Slot, lhs: Slot, rhs: Slot },
-    i32_rotr: struct { dst: Slot, lhs: Slot, rhs: Slot },
+    // ── f32 arithmetic operations ───────────────────────────────────────────────
+    f32_add: BinaryOp(f32),
+    f32_sub: BinaryOp(f32),
+    f32_mul: BinaryOp(f32),
+    f32_div: BinaryOp(f32),
+    f32_min: BinaryOp(f32),
+    f32_max: BinaryOp(f32),
+    f32_copysign: BinaryOp(f32),
 
-    // ── i32 unary bit-counting ───────────────────────────────────────────────────
-    i32_clz: struct { dst: Slot, src: Slot },
-    i32_ctz: struct { dst: Slot, src: Slot },
-    i32_popcnt: struct { dst: Slot, src: Slot },
+    // ── f64 arithmetic operations ───────────────────────────────────────────────
+    f64_add: BinaryOp(f64),
+    f64_sub: BinaryOp(f64),
+    f64_mul: BinaryOp(f64),
+    f64_div: BinaryOp(f64),
+    f64_min: BinaryOp(f64),
+    f64_max: BinaryOp(f64),
+    f64_copysign: BinaryOp(f64),
 
-    i32_eqz: struct {
-        dst: Slot,
-        src: Slot,
-    },
-    i32_eq: struct {
-        dst: Slot,
-        lhs: Slot,
-        rhs: Slot,
-    },
-    i32_ne: struct {
-        dst: Slot,
-        lhs: Slot,
-        rhs: Slot,
-    },
-    i32_lt_s: struct {
-        dst: Slot,
-        lhs: Slot,
-        rhs: Slot,
-    },
-    i32_lt_u: struct {
-        dst: Slot,
-        lhs: Slot,
-        rhs: Slot,
-    },
-    i32_gt_s: struct {
-        dst: Slot,
-        lhs: Slot,
-        rhs: Slot,
-    },
-    i32_gt_u: struct {
-        dst: Slot,
-        lhs: Slot,
-        rhs: Slot,
-    },
-    i32_le_s: struct {
-        dst: Slot,
-        lhs: Slot,
-        rhs: Slot,
-    },
-    i32_le_u: struct {
-        dst: Slot,
-        lhs: Slot,
-        rhs: Slot,
-    },
-    i32_ge_s: struct {
-        dst: Slot,
-        lhs: Slot,
-        rhs: Slot,
-    },
-    i32_ge_u: struct {
-        dst: Slot,
-        lhs: Slot,
-        rhs: Slot,
-    },
+    // ── i32 unary operations (using generic UnaryOp) ────────────────────────────
+    i32_clz: UnaryOp(i32),
+    i32_ctz: UnaryOp(i32),
+    i32_popcnt: UnaryOp(i32),
+
+    // ── i64 unary operations ────────────────────────────────────────────────────
+    i64_clz: UnaryOp(i64),
+    i64_ctz: UnaryOp(i64),
+    i64_popcnt: UnaryOp(i64),
+
+    // ── f32 unary operations ────────────────────────────────────────────────────
+    f32_abs: UnaryOp(f32),
+    f32_neg: UnaryOp(f32),
+    f32_ceil: UnaryOp(f32),
+    f32_floor: UnaryOp(f32),
+    f32_trunc: UnaryOp(f32),
+    f32_nearest: UnaryOp(f32),
+    f32_sqrt: UnaryOp(f32),
+
+    // ── f64 unary operations ────────────────────────────────────────────────────
+    f64_abs: UnaryOp(f64),
+    f64_neg: UnaryOp(f64),
+    f64_ceil: UnaryOp(f64),
+    f64_floor: UnaryOp(f64),
+    f64_trunc: UnaryOp(f64),
+    f64_nearest: UnaryOp(f64),
+    f64_sqrt: UnaryOp(f64),
+
+    // ── i32 comparison operations (using generic CompareOp) ─────────────────────
+    i32_eqz: UnaryOp(i32), // special: unary, result is i32
+    i32_eq: CompareOp(i32),
+    i32_ne: CompareOp(i32),
+    i32_lt_s: CompareOp(i32),
+    i32_lt_u: CompareOp(i32),
+    i32_gt_s: CompareOp(i32),
+    i32_gt_u: CompareOp(i32),
+    i32_le_s: CompareOp(i32),
+    i32_le_u: CompareOp(i32),
+    i32_ge_s: CompareOp(i32),
+    i32_ge_u: CompareOp(i32),
+
+    // ── i64 comparison operations ───────────────────────────────────────────────
+    i64_eqz: UnaryOp(i64), // special: unary, result is i32
+    i64_eq: CompareOp(i64),
+    i64_ne: CompareOp(i64),
+    i64_lt_s: CompareOp(i64),
+    i64_lt_u: CompareOp(i64),
+    i64_gt_s: CompareOp(i64),
+    i64_gt_u: CompareOp(i64),
+    i64_le_s: CompareOp(i64),
+    i64_le_u: CompareOp(i64),
+    i64_ge_s: CompareOp(i64),
+    i64_ge_u: CompareOp(i64),
+
+    // ── f32 comparison operations ───────────────────────────────────────────────
+    f32_eq: CompareOp(f32),
+    f32_ne: CompareOp(f32),
+    f32_lt: CompareOp(f32),
+    f32_gt: CompareOp(f32),
+    f32_le: CompareOp(f32),
+    f32_ge: CompareOp(f32),
+
+    // ── f64 comparison operations ───────────────────────────────────────────────
+    f64_eq: CompareOp(f64),
+    f64_ne: CompareOp(f64),
+    f64_lt: CompareOp(f64),
+    f64_gt: CompareOp(f64),
+    f64_le: CompareOp(f64),
+    f64_ge: CompareOp(f64),
     /// Unconditional jump. `target` is an index into CompiledFunction.ops.
     jump: struct {
         target: u32,
@@ -146,23 +232,40 @@ pub const Op = union(enum) {
     // `addr` is the slot holding the base address (i32), `offset` is the static immediate offset.
     // The effective address = addr_value + offset.
 
-    /// i32.load — load 4 bytes from memory (little-endian) as i32, write into `dst`
+    // ── i32 load instructions ───────────────────────────────────────────────────
     i32_load: struct { dst: Slot, addr: Slot, offset: u32 },
-    /// i32.load8_s — load 1 byte from memory, sign-extend to i32, write into `dst`
     i32_load8_s: struct { dst: Slot, addr: Slot, offset: u32 },
-    /// i32.load8_u — load 1 byte from memory, zero-extend to i32, write into `dst`
     i32_load8_u: struct { dst: Slot, addr: Slot, offset: u32 },
-    /// i32.load16_s — load 2 bytes from memory (little-endian), sign-extend to i32, write into `dst`
     i32_load16_s: struct { dst: Slot, addr: Slot, offset: u32 },
-    /// i32.load16_u — load 2 bytes from memory (little-endian), zero-extend to i32, write into `dst`
     i32_load16_u: struct { dst: Slot, addr: Slot, offset: u32 },
 
-    /// i32.store — store 4-byte i32 value from `src` slot to memory at (addr + offset)
+    // ── i64 load instructions ───────────────────────────────────────────────────
+    i64_load: struct { dst: Slot, addr: Slot, offset: u32 },
+    i64_load8_s: struct { dst: Slot, addr: Slot, offset: u32 },
+    i64_load8_u: struct { dst: Slot, addr: Slot, offset: u32 },
+    i64_load16_s: struct { dst: Slot, addr: Slot, offset: u32 },
+    i64_load16_u: struct { dst: Slot, addr: Slot, offset: u32 },
+    i64_load32_s: struct { dst: Slot, addr: Slot, offset: u32 },
+    i64_load32_u: struct { dst: Slot, addr: Slot, offset: u32 },
+
+    // ── f32/f64 load instructions ───────────────────────────────────────────────
+    f32_load: struct { dst: Slot, addr: Slot, offset: u32 },
+    f64_load: struct { dst: Slot, addr: Slot, offset: u32 },
+
+    // ── i32 store instructions ──────────────────────────────────────────────────
     i32_store: struct { addr: Slot, src: Slot, offset: u32 },
-    /// i32.store8 — store lowest 8 bits of i32 from `src` to memory
     i32_store8: struct { addr: Slot, src: Slot, offset: u32 },
-    /// i32.store16 — store lowest 16 bits of i32 from `src` to memory (little-endian)
     i32_store16: struct { addr: Slot, src: Slot, offset: u32 },
+
+    // ── i64 store instructions ──────────────────────────────────────────────────
+    i64_store: struct { addr: Slot, src: Slot, offset: u32 },
+    i64_store8: struct { addr: Slot, src: Slot, offset: u32 },
+    i64_store16: struct { addr: Slot, src: Slot, offset: u32 },
+    i64_store32: struct { addr: Slot, src: Slot, offset: u32 },
+
+    // ── f32/f64 store instructions ──────────────────────────────────────────────
+    f32_store: struct { addr: Slot, src: Slot, offset: u32 },
+    f64_store: struct { addr: Slot, src: Slot, offset: u32 },
     /// direct fn call
     ///
     /// args slots are stored in CompiledFunction.call_args, indexed by (args_start, args_len).

@@ -9,6 +9,7 @@ const lower_mod = @import("./lower.zig");
 const core = @import("core");
 
 const OperatorInformation = payload_mod.OperatorInformation;
+const OperatorCode = payload_mod.OperatorCode;
 const Type = payload_mod.Type;
 const WasmOp = lower_mod.WasmOp;
 const BlockType = lower_mod.BlockType;
@@ -67,6 +68,89 @@ pub fn wasmBlockTypeFromType(block_type: ?Type) TranslateError!?BlockType {
 /// Translates OperatorInformation produced by the parser into a WasmOp recognized by Lower.
 /// Unsupported opcodes return the UnsupportedOperator error.
 pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
+    // ── Comptime-generated simple operation mappings ─────────────────────────
+    // These operations have a 1:1 mapping from OperatorCode to WasmOp (no payload)
+
+    const simple_binary_ops = [_]OperatorCode{
+        .i32_add,   .i32_sub,      .i32_mul, .i32_div_s, .i32_div_u, .i32_rem_s, .i32_rem_u,
+        .i32_and,   .i32_or,       .i32_xor, .i32_shl,   .i32_shr_s, .i32_shr_u, .i32_rotl,
+        .i32_rotr,  .i64_add,      .i64_sub, .i64_mul,   .i64_div_s, .i64_div_u, .i64_rem_s,
+        .i64_rem_u, .i64_and,      .i64_or,  .i64_xor,   .i64_shl,   .i64_shr_s, .i64_shr_u,
+        .i64_rotl,  .i64_rotr,     .f32_add, .f32_sub,   .f32_mul,   .f32_div,   .f32_min,
+        .f32_max,   .f32_copysign, .f64_add, .f64_sub,   .f64_mul,   .f64_div,   .f64_min,
+        .f64_max,   .f64_copysign,
+    };
+
+    const simple_unary_ops = [_]OperatorCode{
+        .i32_clz,     .i32_ctz,   .i32_popcnt,
+        .i64_clz,     .i64_ctz,   .i64_popcnt,
+        .f32_abs,     .f32_neg,   .f32_ceil,
+        .f32_floor,   .f32_trunc, .f32_nearest,
+        .f32_sqrt,    .f64_abs,   .f64_neg,
+        .f64_ceil,    .f64_floor, .f64_trunc,
+        .f64_nearest, .f64_sqrt,
+    };
+
+    const simple_compare_ops = [_]OperatorCode{
+        .i32_eqz,
+        .i32_eq,
+        .i32_ne,
+        .i32_lt_s,
+        .i32_lt_u,
+        .i32_gt_s,
+        .i32_gt_u,
+        .i32_le_s,
+        .i32_le_u,
+        .i32_ge_s,
+        .i32_ge_u,
+        .i64_eqz,
+        .i64_eq,
+        .i64_ne,
+        .i64_lt_s,
+        .i64_lt_u,
+        .i64_gt_s,
+        .i64_gt_u,
+        .i64_le_s,
+        .i64_le_u,
+        .i64_ge_s,
+        .i64_ge_u,
+        .f32_eq,
+        .f32_ne,
+        .f32_lt,
+        .f32_gt,
+        .f32_le,
+        .f32_ge,
+        .f64_eq,
+        .f64_ne,
+        .f64_lt,
+        .f64_gt,
+        .f64_le,
+        .f64_ge,
+    };
+
+    // Auto-generate mappings for binary operations
+    inline for (simple_binary_ops) |op| {
+        if (info.code == op) {
+            return @field(WasmOp, @tagName(op));
+        }
+    }
+
+    // Auto-generate mappings for unary operations
+    inline for (simple_unary_ops) |op| {
+        if (info.code == op) {
+            return @field(WasmOp, @tagName(op));
+        }
+    }
+
+    // Auto-generate mappings for comparison operations
+    inline for (simple_compare_ops) |op| {
+        if (info.code == op) {
+            return @field(WasmOp, @tagName(op));
+        }
+    }
+
+    // ── Manual mapping for operations with special payloads ───────────────────
+
     return switch (info.code) {
         .unreachable_ => WasmOp.unreachable_,
         .nop => WasmOp.nop,
@@ -84,10 +168,14 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         .local_tee => WasmOp{ .local_tee = info.local_index orelse return error.UnsupportedOperator },
         .global_get => WasmOp{ .global_get = info.global_index orelse return error.UnsupportedOperator },
         .global_set => WasmOp{ .global_set = info.global_index orelse return error.UnsupportedOperator },
-        .i32_const => WasmOp{ .i32_const = try literalAsI32(info) },
 
-        // ── Memory instructions ───────────────────────────────────────────────
-        // All memory instructions require memory_address field (with offset), align field is ignored for now (not validated at runtime).
+        // ── Constants ───────────────────────────────────────────────────────
+        .i32_const => WasmOp{ .i32_const = try literalAsI32(info) },
+        .i64_const => WasmOp{ .i64_const = try literalAsI64(info) },
+        .f32_const => WasmOp{ .f32_const = try literalAsF32(info) },
+        .f64_const => WasmOp{ .f64_const = try literalAsF64(info) },
+
+        // ── Memory load instructions ─────────────────────────────────────────
         .i32_load => WasmOp{ .i32_load = .{
             .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
         } },
@@ -103,6 +191,35 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         .i32_load16_u => WasmOp{ .i32_load16_u = .{
             .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
         } },
+        .i64_load => WasmOp{ .i64_load = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+        .i64_load8_s => WasmOp{ .i64_load8_s = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+        .i64_load8_u => WasmOp{ .i64_load8_u = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+        .i64_load16_s => WasmOp{ .i64_load16_s = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+        .i64_load16_u => WasmOp{ .i64_load16_u = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+        .i64_load32_s => WasmOp{ .i64_load32_s = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+        .i64_load32_u => WasmOp{ .i64_load32_u = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+        .f32_load => WasmOp{ .f32_load = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+        .f64_load => WasmOp{ .f64_load = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+
+        // ── Memory store instructions ───────────────────────────────────────
         .i32_store => WasmOp{ .i32_store = .{
             .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
         } },
@@ -112,47 +229,36 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         .i32_store16 => WasmOp{ .i32_store16 = .{
             .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
         } },
+        .i64_store => WasmOp{ .i64_store = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+        .i64_store8 => WasmOp{ .i64_store8 = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+        .i64_store16 => WasmOp{ .i64_store16 = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+        .i64_store32 => WasmOp{ .i64_store32 = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+        .f32_store => WasmOp{ .f32_store = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
+        .f64_store => WasmOp{ .f64_store = .{
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+        } },
 
-        // ── Bulk memory instructions ──────────────────────────────────────────
+        // ── Bulk memory instructions ────────────────────────────────────────
         .memory_init => WasmOp{ .memory_init = info.segment_index orelse return error.UnsupportedOperator },
         .data_drop => WasmOp{ .data_drop = info.segment_index orelse return error.UnsupportedOperator },
         .memory_copy => WasmOp.memory_copy,
         .memory_fill => WasmOp.memory_fill,
 
-        .i32_add => WasmOp.i32_add,
-        .i32_sub => WasmOp.i32_sub,
-        .i32_mul => WasmOp.i32_mul,
-        .i32_div_s => WasmOp.i32_div_s,
-        .i32_div_u => WasmOp.i32_div_u,
-        .i32_rem_s => WasmOp.i32_rem_s,
-        .i32_rem_u => WasmOp.i32_rem_u,
-        .i32_and => WasmOp.i32_and,
-        .i32_or => WasmOp.i32_or,
-        .i32_xor => WasmOp.i32_xor,
-        .i32_shl => WasmOp.i32_shl,
-        .i32_shr_s => WasmOp.i32_shr_s,
-        .i32_shr_u => WasmOp.i32_shr_u,
-        .i32_rotl => WasmOp.i32_rotl,
-        .i32_rotr => WasmOp.i32_rotr,
-        .i32_clz => WasmOp.i32_clz,
-        .i32_ctz => WasmOp.i32_ctz,
-        .i32_popcnt => WasmOp.i32_popcnt,
-        .i32_eqz => WasmOp.i32_eqz,
-        .i32_eq => WasmOp.i32_eq,
-        .i32_ne => WasmOp.i32_ne,
-        .i32_lt_s => WasmOp.i32_lt_s,
-        .i32_lt_u => WasmOp.i32_lt_u,
-        .i32_gt_s => WasmOp.i32_gt_s,
-        .i32_gt_u => WasmOp.i32_gt_u,
-        .i32_le_s => WasmOp.i32_le_s,
-        .i32_le_u => WasmOp.i32_le_u,
-        .i32_ge_s => WasmOp.i32_ge_s,
-        .i32_ge_u => WasmOp.i32_ge_u,
         .return_ => WasmOp.ret,
         .select => WasmOp.select,
         .select_with_type => WasmOp.select_with_type,
+
         else => |op| {
-            // print unsupported operator, then return error
             std.debug.print("UnsupportedOperator: {s}\n", .{@tagName(op)});
             return error.UnsupportedOperator;
         },
