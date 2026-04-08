@@ -41,12 +41,6 @@ pub const InstanceError = Allocator.Error || error{
     ImportNotSatisfied,
     /// A host-provided function's signature does not match the imported function type.
     ImportSignatureMismatch,
-    /// Start function index overflows the number of functions in the module
-    InvalidStartFunctionIndex,
-    /// Start function returns a value, which violates the Wasm specification that start functions must be void
-    StartFunctionMustBeVoid,
-    /// Start function raised a Wasm trap during instantiation
-    StartFunctionTrapped,
 };
 
 pub const Instance = struct {
@@ -114,7 +108,7 @@ pub const Instance = struct {
             host_funcs[i] = hf;
         }
 
-        var host_view = HostInstance{
+        const host_view = HostInstance{
             .module = module,
             .globals = globals,
             .memory = memory,
@@ -128,37 +122,6 @@ pub const Instance = struct {
 
         store.registerInstance();
         errdefer store.unregisterInstance();
-
-        // ── 5. call start function (if exists) ──────────────────────────────────
-        // Wasm specification: The function specified in the Start Section is automatically executed during instantiation, with no parameters and no return value.
-        if (module.start_function) |start_idx| {
-            if (start_idx >= module.functions.len) {
-                return error.InvalidStartFunctionIndex;
-            }
-            const start_func = module.functions[start_idx];
-            var vm = VM.init(store.allocator);
-            const exec_r = try vm.execute(
-                start_func,
-                &.{},
-                store,
-                &host_view,
-                globals,
-                memory,
-                module.functions,
-                module.func_types,
-                host_funcs,
-                module.tables,
-                module.func_type_indices,
-                module.data_segments,
-                data_segments_dropped,
-            );
-            switch (exec_r) {
-                // start function triggered a trap: instantiation failed
-                .trap => return error.StartFunctionTrapped,
-                // start function has a return value: violates Wasm specification
-                .ok => |ret_val| if (ret_val != null) return error.StartFunctionMustBeVoid,
-            }
-        }
 
         return .{
             .store = store,
@@ -395,67 +358,6 @@ test "Instance.call supports inter-function calls (double via add)" {
     const exec_r = try instance.call("double", &args);
     const result = exec_r.ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 14), result.readAs(i32));
-}
-
-test "Instance.init auto-calls start function" {
-    // Verify that the start function is automatically called during instantiation:
-    // The module contains a mutable global (initial value 0), and the start function sets it to 42;
-    // After instantiation, we directly check that the global value has become 42.
-    //
-    // WAT equivalent:
-    //   (module
-    //     (global (mut i32) (i32.const 0))   ;; global 0
-    //     (func (global.set 0 (i32.const 42)))  ;; func 0 = start
-    //     (start 0)
-    //   )
-    //
-    // Binary manually constructed:
-    //   magic+version
-    //   type section:   1 type, () -> ()
-    //   func section:   func 0 -> type 0
-    //   global section: 1 global, i32 mut, init = i32.const 0
-    //   start section:  func index 0
-    //   code section:   func 0 body: global.set 0 (i32.const 42), end
-    const testing = std.testing;
-    const engine_mod = @import("../engine/mod.zig");
-    const config_mod = @import("../engine/config.zig");
-
-    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
-    defer engine.deinit();
-
-    var store = Store.init(testing.allocator, engine);
-    defer store.deinit();
-
-    const wasm = [_]u8{
-        // magic + version
-        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-        // type section: 1 type, () -> ()
-        0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
-        // function section: func 0 -> type 0
-        0x03, 0x02,
-        0x01, 0x00,
-        // global section: 1 global, i32 var, init = i32.const 0
-        0x06, 0x06, 0x01, 0x7f, 0x01, 0x41,
-        0x00, 0x0b,
-        // start section: func index 0
-        0x08, 0x01, 0x00,
-        // code section: func 0 body = i32.const 42, global.set 0, end
-        // body length = 6: local count = 0x00, i32.const (0x41) 42 (0x2a), global.set (0x24) 0 (0x00), end (0x0b)
-        0x0a, 0x08, 0x01,
-        0x06, 0x00, 0x41, 0x2a, 0x24, 0x00, 0x0b,
-    };
-
-    var module = try Module.compile(engine, &wasm);
-    defer module.deinit();
-
-    // start_function field should be parsed as 0
-    try testing.expectEqual(@as(?u32, 0), module.start_function);
-
-    var instance = try Instance.init(&store, &module, Imports.empty);
-    defer instance.deinit();
-
-    // start function has been automatically executed during instantiation, global 0 value should be 42
-    try testing.expectEqual(@as(i32, 42), instance.globals[0].getRawValue().readAs(i32));
 }
 
 test "Instance.call: i32.store and i32.load round-trip" {

@@ -130,13 +130,28 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     };
     defer instance.deinit();
 
-    // ── No function name → List exports (start function automatically executed during instantiation) ──────────────
+    // ── No function name → List exports or run _start ─────────────────────────
 
     if (args.len < 3) {
-        // If there is a start function, indicate it has been automatically executed
-        if (module.start_function) |idx| {
-            try stdout.print("start function (index {d}) has been automatically executed during instantiation.\n", .{idx});
+        // If the module exports a "_start" function, call it automatically (WASI command pattern)
+        if (module.exports.get("_start")) |_| {
+            const result = instance.call("_start", &.{}) catch |err| {
+                std.debug.print("error: Failed to call _start: {s}\n", .{@errorName(err)});
+                std.process.exit(1);
+            };
+            switch (result) {
+                .ok => {},
+                .trap => |t| {
+                    const msg = try t.allocPrint(allocator);
+                    defer allocator.free(msg);
+                    std.debug.print("error: trap: {s}\n", .{msg});
+                    std.process.exit(1);
+                },
+            }
+            return;
         }
+
+        // No _start export → list all exported functions
         if (module.exports.count() == 0) {
             try stdout.writeAll("(module has no exported functions)\n");
             return;
