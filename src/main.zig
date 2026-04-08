@@ -51,6 +51,12 @@ pub fn main() void {
     bw.interface.flush() catch {};
 }
 
+fn host_print_i32(_: ?*anyopaque, _: *HostContext, params: []const RawVal, _: []RawVal) wasmz.HostError!void {
+    const val = params[0].readAs(i32);
+    std.debug.print("host_print_i32: {d}\n", .{val});
+    return;
+}
+
 fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -110,6 +116,12 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
 
     var linker = Linker.empty;
     try wasi_host.addToLinker(&linker, allocator);
+    try linker.define(allocator, "env", "host_print_i32", HostFunc.init(
+        null,
+        host_print_i32,
+        &[_]ValType{.I32},
+        &[_]ValType{},
+    ));
     defer linker.deinit(allocator);
 
     var instance = Instance.init(&store, &module, linker) catch |err| {

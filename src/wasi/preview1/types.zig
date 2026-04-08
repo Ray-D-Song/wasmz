@@ -41,5 +41,27 @@ pub const Whence = enum(u32) {
     end = 2,
 };
 
+pub const Filetype = enum(u8) {
+    unknown = 0,
+    block_device = 1,
+    character_device = 2,
+    directory = 3,
+    regular_file = 4,
+    socket_dgram = 5,
+    socket_stream = 6,
+    symbolic_link = 7,
+};
+
+pub const Filestat = extern struct {
+    dev: u64,
+    ino: u64,
+    filetype: Filetype,
+    nlink: u64,
+    size: u64,
+    atim: u64,
+    mtim: u64,
+    ctim: u64,
+};
+
 pub const Size = u32;
 pub const Filesize = u64;

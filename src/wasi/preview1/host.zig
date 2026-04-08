@@ -94,19 +94,19 @@ pub const Host = struct {
     }
 
     pub fn deinit(self: *Host) void {
-        freeArgs(self.allocator, self.args);
-        freeEnv(self.allocator, self.env);
+        free_args(self.allocator, self.args);
+        free_env(self.allocator, self.env);
         self.* = undefined;
     }
 
     pub fn setArgs(self: *Host, args: []const []const u8) Allocator.Error!void {
-        freeArgs(self.allocator, self.args);
-        self.args = try dupStringList(self.allocator, args);
+        free_args(self.allocator, self.args);
+        self.args = try dup_string_list(self.allocator, args);
     }
 
     pub fn setEnv(self: *Host, env: []const EnvVar) Allocator.Error!void {
-        freeEnv(self.allocator, self.env);
-        self.env = try dupEnvList(self.allocator, env);
+        free_env(self.allocator, self.env);
+        self.env = try dup_env_list(self.allocator, env);
     }
 
     pub fn setStdout(self: *Host, output: Output) void {
@@ -120,50 +120,68 @@ pub const Host = struct {
     pub fn addToLinker(self: *Host, linker: *Linker, allocator: Allocator) Allocator.Error!void {
         try linker.define(allocator, types.module_name, "args_sizes_get", HostFunc.init(
             self,
-            argsSizesGet,
+            args_sizes_get,
             &[_]ValType{ .I32, .I32 },
             &[_]ValType{.I32},
         ));
         try linker.define(allocator, types.module_name, "args_get", HostFunc.init(
             self,
-            argsGet,
+            args_get,
             &[_]ValType{ .I32, .I32 },
             &[_]ValType{.I32},
         ));
         try linker.define(allocator, types.module_name, "environ_sizes_get", HostFunc.init(
             self,
-            environSizesGet,
+            environ_sizes_get,
             &[_]ValType{ .I32, .I32 },
             &[_]ValType{.I32},
         ));
         try linker.define(allocator, types.module_name, "environ_get", HostFunc.init(
             self,
-            environGet,
+            environ_get,
             &[_]ValType{ .I32, .I32 },
             &[_]ValType{.I32},
         ));
         try linker.define(allocator, types.module_name, "clock_res_get", HostFunc.init(
             self,
-            clockResGet,
+            clock_res_get,
             &[_]ValType{ .I32, .I32 },
             &[_]ValType{.I32},
         ));
         try linker.define(allocator, types.module_name, "clock_time_get", HostFunc.init(
             self,
-            clockTimeGet,
+            clock_time_get,
             &[_]ValType{ .I32, .I64, .I32 },
             &[_]ValType{.I32},
         ));
         try linker.define(allocator, types.module_name, "fd_write", HostFunc.init(
             self,
-            fdWrite,
+            fd_write,
             &[_]ValType{ .I32, .I32, .I32, .I32 },
             &[_]ValType{.I32},
         ));
         try linker.define(allocator, types.module_name, "fd_seek", HostFunc.init(
             self,
-            fdSeek,
+            fd_seek,
             &[_]ValType{ .I32, .I64, .I32, .I32 },
+            &[_]ValType{.I32},
+        ));
+        try linker.define(allocator, types.module_name, "fd_filestat_get", HostFunc.init(
+            self,
+            fd_filestat_get,
+            &[_]ValType{ .I32, .I32 },
+            &[_]ValType{.I32},
+        ));
+        try linker.define(allocator, types.module_name, "fd_read", HostFunc.init(
+            self,
+            fd_read,
+            &[_]ValType{ .I32, .I32, .I32, .I32 },
+            &[_]ValType{.I32},
+        ));
+        try linker.define(allocator, types.module_name, "fd_pwrite", HostFunc.init(
+            self,
+            fd_pwrite,
+            &[_]ValType{ .I32, .I32, .I32, .I64, .I32 },
             &[_]ValType{.I32},
         ));
     }
@@ -171,43 +189,55 @@ pub const Host = struct {
 
 const HostFunc = wasmz.HostFunc;
 
-fn argsSizesGet(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-    return env_args.argsSizesGet(castHost(host_data), ctx, params, results);
+fn args_sizes_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
+    return env_args.argsSizesGet(cast_host(host_data), ctx, params, results);
 }
 
-fn argsGet(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-    return env_args.argsGet(castHost(host_data), ctx, params, results);
+fn args_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
+    return env_args.argsGet(cast_host(host_data), ctx, params, results);
 }
 
-fn environSizesGet(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-    return env_args.environSizesGet(castHost(host_data), ctx, params, results);
+fn environ_sizes_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
+    return env_args.environSizesGet(cast_host(host_data), ctx, params, results);
 }
 
-fn environGet(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-    return env_args.environGet(castHost(host_data), ctx, params, results);
+fn environ_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
+    return env_args.environGet(cast_host(host_data), ctx, params, results);
 }
 
-fn clockResGet(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-    return clock.clockResGet(castHost(host_data), ctx, params, results);
+fn clock_res_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
+    return clock.clockResGet(cast_host(host_data), ctx, params, results);
 }
 
-fn clockTimeGet(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-    return clock.clockTimeGet(castHost(host_data), ctx, params, results);
+fn clock_time_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
+    return clock.clockTimeGet(cast_host(host_data), ctx, params, results);
 }
 
-fn fdWrite(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-    return fd_io.fdWrite(castHost(host_data), ctx, params, results);
+fn fd_write(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
+    return fd_io.fdWrite(cast_host(host_data), ctx, params, results);
 }
 
-fn fdSeek(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-    return fd_io.fdSeek(castHost(host_data), ctx, params, results);
+fn fd_seek(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
+    return fd_io.fdSeek(cast_host(host_data), ctx, params, results);
 }
 
-fn castHost(host_data: ?*anyopaque) *Host {
+fn fd_filestat_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
+    return fd_io.fdFilestatGet(cast_host(host_data), ctx, params, results);
+}
+
+fn fd_read(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
+    return fd_io.fdRead(cast_host(host_data), ctx, params, results);
+}
+
+fn fd_pwrite(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
+    return fd_io.fdPwrite(cast_host(host_data), ctx, params, results);
+}
+
+fn cast_host(host_data: ?*anyopaque) *Host {
     return @ptrCast(@alignCast(host_data.?));
 }
 
-fn dupStringList(allocator: Allocator, items: []const []const u8) Allocator.Error![]const []const u8 {
+fn dup_string_list(allocator: Allocator, items: []const []const u8) Allocator.Error![]const []const u8 {
     const duped = try allocator.alloc([]const u8, items.len);
     errdefer allocator.free(duped);
 
@@ -224,12 +254,12 @@ fn dupStringList(allocator: Allocator, items: []const []const u8) Allocator.Erro
     return duped;
 }
 
-fn freeArgs(allocator: Allocator, items: []const []const u8) void {
+fn free_args(allocator: Allocator, items: []const []const u8) void {
     for (items) |item| allocator.free(item);
     allocator.free(items);
 }
 
-fn dupEnvList(allocator: Allocator, items: []const EnvVar) Allocator.Error![]const EnvVar {
+fn dup_env_list(allocator: Allocator, items: []const EnvVar) Allocator.Error![]const EnvVar {
     const duped = try allocator.alloc(EnvVar, items.len);
     errdefer allocator.free(duped);
 
@@ -252,7 +282,7 @@ fn dupEnvList(allocator: Allocator, items: []const EnvVar) Allocator.Error![]con
     return duped;
 }
 
-fn freeEnv(allocator: Allocator, items: []const EnvVar) void {
+fn free_env(allocator: Allocator, items: []const EnvVar) void {
     for (items) |entry| {
         allocator.free(entry.key);
         allocator.free(entry.value);
