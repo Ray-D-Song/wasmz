@@ -382,7 +382,7 @@ pub const Module = struct {
         for (tables_lists.items, 0..) |*tl, i| {
             tables[i] = try tl.toOwnedSlice(allocator);
         }
-        tables_lists.clearRetainingCapacity();
+        tables_lists.deinit(allocator);
 
         // ── Build data_segments slice ────────────────────────────────────────
         const data_segments = try data_segments_list.toOwnedSlice(allocator);
