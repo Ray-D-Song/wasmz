@@ -84,108 +84,36 @@ pub const Host = struct {
     }
 
     pub fn addToLinker(self: *Host, linker: *Linker, allocator: Allocator) Allocator.Error!void {
-        try linker.define(allocator, types.module_name, "args_sizes_get", HostFunc.init(
-            self,
-            args_sizes_get,
-            &[_]ValType{ .I32, .I32 },
-            &[_]ValType{.I32},
-        ));
-        try linker.define(allocator, types.module_name, "args_get", HostFunc.init(
-            self,
-            args_get,
-            &[_]ValType{ .I32, .I32 },
-            &[_]ValType{.I32},
-        ));
-        try linker.define(allocator, types.module_name, "environ_sizes_get", HostFunc.init(
-            self,
-            environ_sizes_get,
-            &[_]ValType{ .I32, .I32 },
-            &[_]ValType{.I32},
-        ));
-        try linker.define(allocator, types.module_name, "environ_get", HostFunc.init(
-            self,
-            environ_get,
-            &[_]ValType{ .I32, .I32 },
-            &[_]ValType{.I32},
-        ));
-        try linker.define(allocator, types.module_name, "clock_res_get", HostFunc.init(
-            self,
-            clock_res_get,
-            &[_]ValType{ .I32, .I32 },
-            &[_]ValType{.I32},
-        ));
-        try linker.define(allocator, types.module_name, "clock_time_get", HostFunc.init(
-            self,
-            clock_time_get,
-            &[_]ValType{ .I32, .I64, .I32 },
-            &[_]ValType{.I32},
-        ));
-        try linker.define(allocator, types.module_name, "fd_write", HostFunc.init(
-            self,
-            fd_write,
-            &[_]ValType{ .I32, .I32, .I32, .I32 },
-            &[_]ValType{.I32},
-        ));
-        try linker.define(allocator, types.module_name, "fd_seek", HostFunc.init(
-            self,
-            fd_seek,
-            &[_]ValType{ .I32, .I64, .I32, .I32 },
-            &[_]ValType{.I32},
-        ));
-        try linker.define(allocator, types.module_name, "fd_filestat_get", HostFunc.init(
-            self,
-            fd_filestat_get,
-            &[_]ValType{ .I32, .I32 },
-            &[_]ValType{.I32},
-        ));
-        try linker.define(allocator, types.module_name, "fd_read", HostFunc.init(
-            self,
-            fd_read,
-            &[_]ValType{ .I32, .I32, .I32, .I32 },
-            &[_]ValType{.I32},
-        ));
-        try linker.define(allocator, types.module_name, "fd_pwrite", HostFunc.init(
-            self,
-            fd_pwrite,
-            &[_]ValType{ .I32, .I32, .I32, .I64, .I32 },
-            &[_]ValType{.I32},
-        ));
-        try linker.define(allocator, types.module_name, "fd_pread", HostFunc.init(
-            self,
-            fd_pread,
-            &[_]ValType{ .I32, .I32, .I32, .I64, .I32 },
-            &[_]ValType{.I32},
-        ));
-        try linker.define(allocator, types.module_name, "path_open", HostFunc.init(
-            self,
-            path_open,
-            &[_]ValType{ .I32, .I32, .I32, .I32, .I32, .I64, .I64, .I32, .I32 },
-            &[_]ValType{.I32},
-        ));
-        try linker.define(allocator, types.module_name, "fd_close", HostFunc.init(
-            self,
-            fd_close,
-            &[_]ValType{.I32},
-            &[_]ValType{.I32},
-        ));
-        try linker.define(allocator, types.module_name, "fd_fdstat_get", HostFunc.init(
-            self,
-            fd_fdstat_get,
-            &[_]ValType{ .I32, .I32 },
-            &[_]ValType{.I32},
-        ));
-        try linker.define(allocator, types.module_name, "fd_prestat_get", HostFunc.init(
-            self,
-            fd_prestat_get,
-            &[_]ValType{ .I32, .I32 },
-            &[_]ValType{.I32},
-        ));
-        try linker.define(allocator, types.module_name, "fd_prestat_dir_name", HostFunc.init(
-            self,
-            fd_prestat_dir_name,
-            &[_]ValType{ .I32, .I32, .I32 },
-            &[_]ValType{.I32},
-        ));
+        const specs = .{
+            .{ "args_sizes_get", args_sizes_get, &[_]ValType{ .I32, .I32 } },
+            .{ "args_get", args_get, &[_]ValType{ .I32, .I32 } },
+            .{ "environ_sizes_get", environ_sizes_get, &[_]ValType{ .I32, .I32 } },
+            .{ "environ_get", environ_get, &[_]ValType{ .I32, .I32 } },
+            .{ "clock_res_get", clock_res_get, &[_]ValType{ .I32, .I32 } },
+            .{ "clock_time_get", clock_time_get, &[_]ValType{ .I32, .I64, .I32 } },
+            .{ "fd_write", fd_write, &[_]ValType{ .I32, .I32, .I32, .I32 } },
+            .{ "fd_seek", fd_seek, &[_]ValType{ .I32, .I64, .I32, .I32 } },
+            .{ "fd_filestat_get", fd_filestat_get, &[_]ValType{ .I32, .I32 } },
+            .{ "fd_read", fd_read, &[_]ValType{ .I32, .I32, .I32, .I32 } },
+            .{ "fd_pwrite", fd_pwrite, &[_]ValType{ .I32, .I32, .I32, .I64, .I32 } },
+            .{ "fd_pread", fd_pread, &[_]ValType{ .I32, .I32, .I32, .I64, .I32 } },
+            .{ "path_open", path_open, &[_]ValType{ .I32, .I32, .I32, .I32, .I32, .I64, .I64, .I32, .I32 } },
+            .{ "fd_close", fd_close, &[_]ValType{.I32} },
+            .{ "fd_fdstat_get", fd_fdstat_get, &[_]ValType{ .I32, .I32 } },
+            .{ "fd_prestat_get", fd_prestat_get, &[_]ValType{ .I32, .I32 } },
+            .{ "fd_prestat_dir_name", fd_prestat_dir_name, &[_]ValType{ .I32, .I32, .I32 } },
+        };
+
+        const result_types = &[_]ValType{.I32};
+
+        inline for (specs) |spec| {
+            try linker.define(allocator, types.module_name, spec[0], HostFunc.init(
+                self,
+                spec[1],
+                spec[2],
+                result_types,
+            ));
+        }
     }
 };
 
