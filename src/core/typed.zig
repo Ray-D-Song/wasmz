@@ -60,7 +60,7 @@ pub const TypedRawVal = struct {
     }
 
     pub fn into(self: TypedRawVal, comptime T: type) T {
-        std.debug.assert(self.ty == wasmTypeOf(T));
+        std.debug.assert(self.ty.eql(wasmTypeOf(T)));
         return self.value.readAs(T);
     }
 };

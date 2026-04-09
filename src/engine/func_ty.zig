@@ -25,8 +25,8 @@ const FuncTypeContext = struct {
     }
 
     pub fn eql(_: @This(), lhs: FuncType, rhs: FuncType) bool {
-        return std.mem.eql(std.meta.Child(@TypeOf(lhs.params())), lhs.params(), rhs.params()) and
-            std.mem.eql(std.meta.Child(@TypeOf(lhs.results())), lhs.results(), rhs.results());
+        return core.ValType.eqlSlice(lhs.params(), rhs.params()) and
+            core.ValType.eqlSlice(lhs.results(), rhs.results());
     }
 };
 
