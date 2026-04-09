@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const payload = @import("payload");
 const float = @import("../float.zig");
 const raw_mod = @import("../raw.zig");
@@ -256,6 +257,51 @@ fn isUnaryOpcode(opcode: SimdOpcode) bool {
         => true,
         else => false,
     };
+}
+
+fn Vector(comptime T: type, comptime N: usize) type {
+    return @Vector(N, T);
+}
+
+fn UnsignedLane(comptime T: type) type {
+    return switch (@typeInfo(T)) {
+        .int => std.meta.Int(.unsigned, @bitSizeOf(T)),
+        .float => std.meta.Int(.unsigned, @bitSizeOf(T)),
+        else => @compileError("unsupported lane type"),
+    };
+}
+
+fn vecFromV128(comptime T: type, comptime N: usize, value: V128) Vector(T, N) {
+    const U = UnsignedLane(T);
+    var bits: Vector(U, N) = @bitCast(value.bytes);
+    if (@sizeOf(T) > 1 and comptime builtin.cpu.arch.endian() == .big) {
+        bits = @byteSwap(bits);
+    }
+    return switch (@typeInfo(T)) {
+        .int => if (@typeInfo(T).int.signedness == .signed) @bitCast(bits) else bits,
+        .float => @bitCast(bits),
+        else => unreachable,
+    };
+}
+
+fn v128FromVec(comptime T: type, comptime N: usize, lanes: Vector(T, N)) V128 {
+    const U = UnsignedLane(T);
+    var bits: Vector(U, N) = switch (@typeInfo(T)) {
+        .int => if (@typeInfo(T).int.signedness == .signed) @bitCast(lanes) else lanes,
+        .float => @bitCast(lanes),
+        else => unreachable,
+    };
+    if (@sizeOf(T) > 1 and comptime builtin.cpu.arch.endian() == .big) {
+        bits = @byteSwap(bits);
+    }
+    return v128FromBytes(@bitCast(bits));
+}
+
+fn vectorMaskToV128(comptime T: type, comptime N: usize, mask: @Vector(N, bool)) V128 {
+    const U = UnsignedLane(T);
+    const ones: @Vector(N, U) = @splat(std.math.maxInt(U));
+    const zeros: @Vector(N, U) = @splat(0);
+    return v128FromVec(U, N, @select(U, mask, ones, zeros));
 }
 
 pub fn executeUnary(opcode: SimdOpcode, src: RawVal) RawVal {
@@ -574,29 +620,27 @@ pub fn store(opcode: SimdOpcode, memory: []u8, addr: u32, offset: u32, lane: ?u8
 }
 
 fn mapBytesUnary(value: V128, comptime func: fn (u8) u8) V128 {
-    var out = value;
-    for (&out.bytes) |*byte| byte.* = func(byte.*);
-    return out;
+    const lanes: @Vector(16, u8) = @bitCast(value.bytes);
+    var out: @Vector(16, u8) = undefined;
+    inline for (0..16) |i| out[i] = func(lanes[i]);
+    return v128FromBytes(@bitCast(out));
 }
 
 fn bytesBinary(lhs: V128, rhs: V128, comptime kind: enum { @"and", andnot, @"or", xor }) V128 {
-    var out: [16]u8 = undefined;
-    for (0..16) |i| {
-        out[i] = switch (kind) {
-            .@"and" => lhs.bytes[i] & rhs.bytes[i],
-            .andnot => lhs.bytes[i] & ~rhs.bytes[i],
-            .@"or" => lhs.bytes[i] | rhs.bytes[i],
-            .xor => lhs.bytes[i] ^ rhs.bytes[i],
-        };
-    }
-    return v128FromBytes(out);
+    const a: @Vector(16, u8) = @bitCast(lhs.bytes);
+    const b: @Vector(16, u8) = @bitCast(rhs.bytes);
+    const out: @Vector(16, u8) = switch (kind) {
+        .@"and" => a & b,
+        .andnot => a & ~b,
+        .@"or" => a | b,
+        .xor => a ^ b,
+    };
+    return v128FromBytes(@bitCast(out));
 }
 
 fn anyTrue(value: V128) bool {
-    for (value.bytes) |byte| {
-        if (byte != 0) return true;
-    }
-    return false;
+    const lanes: @Vector(16, u8) = @bitCast(value.bytes);
+    return @reduce(.Or, lanes != @as(@Vector(16, u8), @splat(0)));
 }
 
 fn splat(opcode: SimdOpcode, src: RawVal) V128 {
@@ -611,9 +655,7 @@ fn splat(opcode: SimdOpcode, src: RawVal) V128 {
 }
 
 fn splatGeneric(comptime T: type, comptime N: usize, value: T) V128 {
-    var out = std.mem.zeroes([16]u8);
-    inline for (0..N) |i| writeLane(T, &out, i, value);
-    return v128FromBytes(out);
+    return v128FromVec(T, N, @as(Vector(T, N), @splat(value)));
 }
 
 fn readLane(comptime T: type, bytes: [16]u8, lane: u8) T {
@@ -654,10 +696,9 @@ fn writeLane(comptime T: type, bytes: *[16]u8, lane: u8, value: T) void {
 }
 
 fn allTrue(comptime T: type, comptime N: usize, value: V128) bool {
-    inline for (0..N) |i| {
-        if (readLane(T, value.bytes, @intCast(i)) == 0) return false;
-    }
-    return true;
+    const lanes = vecFromV128(T, N, value);
+    const zero: Vector(T, N) = @splat(0);
+    return @reduce(.And, lanes != zero);
 }
 
 fn bitmask(comptime T: type, comptime N: usize, value: V128) i32 {
@@ -674,16 +715,13 @@ fn bitmask(comptime T: type, comptime N: usize, value: V128) i32 {
 }
 
 fn unaryInt(comptime T: type, comptime N: usize, value: V128, comptime kind: enum { abs, neg }) V128 {
-    var out = std.mem.zeroes([16]u8);
-    inline for (0..N) |i| {
-        const lane = readLane(T, value.bytes, @intCast(i));
-        const result: T = switch (kind) {
-            .abs => if (lane < 0) 0 -% lane else lane,
-            .neg => 0 -% lane,
-        };
-        writeLane(T, &out, @intCast(i), result);
-    }
-    return v128FromBytes(out);
+    const lanes = vecFromV128(T, N, value);
+    const zero: Vector(T, N) = @splat(0);
+    const results: Vector(T, N) = switch (kind) {
+        .neg => zero -% lanes,
+        .abs => @select(T, lanes < zero, zero -% lanes, lanes),
+    };
+    return v128FromVec(T, N, results);
 }
 
 fn unaryI8Popcnt(value: V128) V128 {
@@ -696,6 +734,17 @@ fn unaryI8Popcnt(value: V128) V128 {
 }
 
 fn unaryFloat(comptime T: type, comptime N: usize, value: V128, comptime kind: enum { abs, neg, ceil, floor, trunc, nearest, sqrt }) V128 {
+    const lanes = vecFromV128(T, N, value);
+    switch (kind) {
+        .abs => return v128FromVec(T, N, @abs(lanes)),
+        .neg => return v128FromVec(T, N, -lanes),
+        .sqrt => return v128FromVec(T, N, @sqrt(lanes)),
+        .ceil => return v128FromVec(T, N, @ceil(lanes)),
+        .floor => return v128FromVec(T, N, @floor(lanes)),
+        .trunc => return v128FromVec(T, N, @trunc(lanes)),
+        .nearest => {},
+    }
+
     var out = std.mem.zeroes([16]u8);
     inline for (0..N) |i| {
         const lane = readLane(T, value.bytes, @intCast(i));
@@ -805,21 +854,32 @@ fn convertLowI32x4ToF64x2(value: V128, comptime signed: bool) V128 {
 }
 
 fn binaryInt(comptime T: type, comptime N: usize, lhs: V128, rhs: V128, comptime kind: enum { add, add_sat_s, add_sat_u, sub, sub_sat_s, sub_sat_u, mul, min, max, avgr_u }) V128 {
+    const a = vecFromV128(T, N, lhs);
+    const b = vecFromV128(T, N, rhs);
+    switch (kind) {
+        .add => return v128FromVec(T, N, a +% b),
+        .sub => return v128FromVec(T, N, a -% b),
+        .mul => return v128FromVec(T, N, a *% b),
+        .min => return v128FromVec(T, N, @select(T, a < b, a, b)),
+        .max => return v128FromVec(T, N, @select(T, a > b, a, b)),
+        else => {},
+    }
+
     var out = std.mem.zeroes([16]u8);
     inline for (0..N) |i| {
-        const a = readLane(T, lhs.bytes, @intCast(i));
-        const b = readLane(T, rhs.bytes, @intCast(i));
+        const lane_a = readLane(T, lhs.bytes, @intCast(i));
+        const lane_b = readLane(T, rhs.bytes, @intCast(i));
         const result: T = switch (kind) {
-            .add => a +% b,
-            .sub => a -% b,
-            .mul => a *% b,
-            .min => if (a < b) a else b,
-            .max => if (a > b) a else b,
-            .avgr_u => avgUnsigned(T, a, b),
-            .add_sat_s => satAddSigned(T, a, b),
-            .sub_sat_s => satSubSigned(T, a, b),
-            .add_sat_u => satAddUnsigned(T, a, b),
-            .sub_sat_u => satSubUnsigned(T, a, b),
+            .add => lane_a +% lane_b,
+            .sub => lane_a -% lane_b,
+            .mul => lane_a *% lane_b,
+            .min => if (lane_a < lane_b) lane_a else lane_b,
+            .max => if (lane_a > lane_b) lane_a else lane_b,
+            .avgr_u => avgUnsigned(T, lane_a, lane_b),
+            .add_sat_s => satAddSigned(T, lane_a, lane_b),
+            .sub_sat_s => satSubSigned(T, lane_a, lane_b),
+            .add_sat_u => satAddUnsigned(T, lane_a, lane_b),
+            .sub_sat_u => satSubUnsigned(T, lane_a, lane_b),
         };
         writeLane(T, &out, @intCast(i), result);
     }
@@ -839,19 +899,29 @@ fn q15mulr(lhs: V128, rhs: V128) V128 {
 }
 
 fn binaryFloat(comptime T: type, comptime N: usize, lhs: V128, rhs: V128, comptime kind: enum { add, sub, mul, div, min, max, pmin, pmax }) V128 {
+    const a = vecFromV128(T, N, lhs);
+    const b = vecFromV128(T, N, rhs);
+    switch (kind) {
+        .add => return v128FromVec(T, N, a + b),
+        .sub => return v128FromVec(T, N, a - b),
+        .mul => return v128FromVec(T, N, a * b),
+        .div => return v128FromVec(T, N, a / b),
+        else => {},
+    }
+
     var out = std.mem.zeroes([16]u8);
     inline for (0..N) |i| {
-        const a = readLane(T, lhs.bytes, @intCast(i));
-        const b = readLane(T, rhs.bytes, @intCast(i));
+        const lane_a = readLane(T, lhs.bytes, @intCast(i));
+        const lane_b = readLane(T, rhs.bytes, @intCast(i));
         const result: T = switch (kind) {
-            .add => a + b,
-            .sub => a - b,
-            .mul => a * b,
-            .div => a / b,
-            .min => helper.min(a, b),
-            .max => helper.max(a, b),
-            .pmin => pmin(a, b),
-            .pmax => pmax(a, b),
+            .add => lane_a + lane_b,
+            .sub => lane_a - lane_b,
+            .mul => lane_a * lane_b,
+            .div => lane_a / lane_b,
+            .min => helper.min(lane_a, lane_b),
+            .max => helper.max(lane_a, lane_b),
+            .pmin => pmin(lane_a, lane_b),
+            .pmax => pmax(lane_a, lane_b),
         };
         writeLane(T, &out, @intCast(i), result);
     }
@@ -919,67 +989,62 @@ fn relaxedDotAddI8x16ToI32x4(first: V128, second: V128, acc: V128) V128 {
 }
 
 fn floatMulAddVec(comptime T: type, comptime N: usize, first: V128, second: V128, third: V128, comptime negate_first: bool) V128 {
-    var out = std.mem.zeroes([16]u8);
-    inline for (0..N) |i| {
-        var a = readLane(T, first.bytes, @intCast(i));
-        if (negate_first) a = -a;
-        const b = readLane(T, second.bytes, @intCast(i));
-        const c = readLane(T, third.bytes, @intCast(i));
-        writeLane(T, &out, @intCast(i), helper.floatMulAdd(a, b, c));
-    }
-    return v128FromBytes(out);
+    var a = vecFromV128(T, N, first);
+    const b = vecFromV128(T, N, second);
+    const c = vecFromV128(T, N, third);
+    if (negate_first) a = -a;
+    return v128FromVec(T, N, @mulAdd(Vector(T, N), a, b, c));
 }
 
 fn compareInt(comptime T: type, comptime N: usize, lhs: V128, rhs: V128, comptime kind: enum { eq, ne, lt, gt, le, ge }) V128 {
-    var out = std.mem.zeroes([16]u8);
-    inline for (0..N) |i| {
-        const a = readLane(T, lhs.bytes, @intCast(i));
-        const b = readLane(T, rhs.bytes, @intCast(i));
-        const ok = switch (kind) {
-            .eq => a == b,
-            .ne => a != b,
-            .lt => a < b,
-            .gt => a > b,
-            .le => a <= b,
-            .ge => a >= b,
-        };
-        setMaskLane(&out, @intCast(i), @sizeOf(T), ok);
-    }
-    return v128FromBytes(out);
+    const a = vecFromV128(T, N, lhs);
+    const b = vecFromV128(T, N, rhs);
+    const mask = switch (kind) {
+        .eq => a == b,
+        .ne => a != b,
+        .lt => a < b,
+        .gt => a > b,
+        .le => a <= b,
+        .ge => a >= b,
+    };
+    return vectorMaskToV128(T, N, mask);
 }
 
 fn compareFloat(comptime T: type, comptime N: usize, lhs: V128, rhs: V128, comptime kind: enum { eq, ne, lt, gt, le, ge }) V128 {
-    var out = std.mem.zeroes([16]u8);
-    inline for (0..N) |i| {
-        const a = readLane(T, lhs.bytes, @intCast(i));
-        const b = readLane(T, rhs.bytes, @intCast(i));
-        const ok = switch (kind) {
-            .eq => a == b,
-            .ne => a != b,
-            .lt => a < b,
-            .gt => a > b,
-            .le => a <= b,
-            .ge => a >= b,
-        };
-        setMaskLane(&out, @intCast(i), @sizeOf(T), ok);
-    }
-    return v128FromBytes(out);
+    const a = vecFromV128(T, N, lhs);
+    const b = vecFromV128(T, N, rhs);
+    const mask = switch (kind) {
+        .eq => a == b,
+        .ne => a != b,
+        .lt => a < b,
+        .gt => a > b,
+        .le => a <= b,
+        .ge => a >= b,
+    };
+    return vectorMaskToV128(T, N, mask);
 }
 
 fn shiftInt(comptime T: type, comptime N: usize, value: V128, amount: u32, comptime kind: enum { shl, shr_s, shr_u }) V128 {
     const ShiftT = std.math.Log2Int(T);
     const shift: ShiftT = @intCast(amount % @bitSizeOf(T));
-    var out = std.mem.zeroes([16]u8);
-    inline for (0..N) |i| {
-        const lane = readLane(T, value.bytes, @intCast(i));
-        const result: T = switch (kind) {
-            .shl => lane << shift,
-            .shr_s => lane >> shift,
-            .shr_u => @as(T, @bitCast(@as(std.meta.Int(.unsigned, @bitSizeOf(T)), @bitCast(lane)) >> shift)),
-        };
-        writeLane(T, &out, @intCast(i), result);
+    switch (kind) {
+        .shl => {
+            const lanes = vecFromV128(T, N, value);
+            const shifts: @Vector(N, ShiftT) = @splat(shift);
+            return v128FromVec(T, N, lanes << shifts);
+        },
+        .shr_s => {
+            const lanes = vecFromV128(T, N, value);
+            const shifts: @Vector(N, ShiftT) = @splat(shift);
+            return v128FromVec(T, N, lanes >> shifts);
+        },
+        .shr_u => {
+            const U = std.meta.Int(.unsigned, @bitSizeOf(T));
+            const lanes = vecFromV128(U, N, value);
+            const shifts: @Vector(N, ShiftT) = @splat(shift);
+            return v128FromVec(U, N, lanes >> shifts);
+        },
     }
-    return v128FromBytes(out);
 }
 
 fn swizzle(lhs: V128, rhs: V128) V128 {
@@ -1001,9 +1066,10 @@ fn shuffleBytes(lhs: V128, rhs: V128, lanes: [16]u8) V128 {
 }
 
 fn bitselect(first: V128, second: V128, mask: V128) V128 {
-    var out = std.mem.zeroes([16]u8);
-    inline for (0..16) |i| out[i] = (first.bytes[i] & mask.bytes[i]) | (second.bytes[i] & ~mask.bytes[i]);
-    return v128FromBytes(out);
+    const a: @Vector(16, u8) = @bitCast(first.bytes);
+    const b: @Vector(16, u8) = @bitCast(second.bytes);
+    const m: @Vector(16, u8) = @bitCast(mask.bytes);
+    return v128FromBytes(@bitCast((a & m) | (b & ~m)));
 }
 
 fn wideningLoad(comptime SrcT: type, comptime DstT: type, comptime N: usize, slice: []const u8, comptime signed: bool) V128 {
