@@ -9,3 +9,10 @@ playgrounds/
 
 tests/**/*.wasm
 *.wasm
+
+*.map
+*.js
+*.mjs
+
+.gradle
+tests/gc/build/

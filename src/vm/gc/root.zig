@@ -1,5 +1,6 @@
 pub const header = @import("./header.zig");
 pub const layout = @import("./layout.zig");
+pub const instance = @import("./instance.zig");
 
 pub const GcHeader = header.GcHeader;
 pub const GcKind = header.GcKind;
@@ -10,3 +11,10 @@ pub const valTypeSize = layout.valTypeSize;
 pub const isGcRef = layout.isGcRef;
 pub const computeStructLayout = layout.computeStructLayout;
 pub const computeArrayLayout = layout.computeArrayLayout;
+pub const GcHeap = instance.GcHeap;
+pub const readField = instance.readField;
+pub const writeField = instance.writeField;
+pub const readElem = instance.readElem;
+pub const writeElem = instance.writeElem;
+pub const getLength = instance.getLength;
+pub const setLength = instance.setLength;
