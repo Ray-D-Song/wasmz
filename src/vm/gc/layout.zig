@@ -91,7 +91,7 @@ pub fn computeStructLayout(struct_type: StructType, allocator: std.mem.Allocator
         field_offsets[i] = current_offset;
 
         if (isGcRef(field.storage_type)) {
-            gc_ref_fields[gc_ref_idx] = i;
+            gc_ref_fields[gc_ref_idx] = @intCast(i);
             gc_ref_idx += 1;
         }
 
