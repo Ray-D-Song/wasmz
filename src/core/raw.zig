@@ -1,5 +1,6 @@
 const vec = @import("./value/vec.zig");
 const float = @import("./float.zig");
+const GcRef = @import("./gc_ref.zig").GcRef;
 
 pub const RawVal = struct {
     // The low 64-bits of an [`RawVal`].
@@ -48,6 +49,10 @@ pub const RawVal = struct {
         }
 
         if (T == bool) return self.low64 != 0;
+
+        if (T == GcRef) {
+            return GcRef.encode(@as(u32, @truncate(self.low64)));
+        }
 
         @compileError("unsupported readAs type");
     }
@@ -134,10 +139,23 @@ pub const RawVal = struct {
             return;
         }
 
+        if (T == GcRef) {
+            self.writeLow64(@as(u64, value.decode()));
+            return;
+        }
+
         @compileError("unsupported writeAs type");
     }
 
     pub fn toBits64(self: RawVal) u64 {
         return self.low64;
+    }
+
+    pub fn fromGcRef(ref: GcRef) RawVal {
+        return fromBits64(ref.decode());
+    }
+
+    pub fn readAsGcRef(self: RawVal) GcRef {
+        return GcRef.encode(@as(u32, @truncate(self.low64)));
     }
 };
