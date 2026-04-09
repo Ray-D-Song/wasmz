@@ -11,9 +11,19 @@ const core = @import("core");
 const OperatorInformation = payload_mod.OperatorInformation;
 const OperatorCode = payload_mod.OperatorCode;
 const Type = payload_mod.Type;
+const TypeKind = payload_mod.TypeKind;
+const TypeEntry = payload_mod.TypeEntry;
 const WasmOp = lower_mod.WasmOp;
 const BlockType = lower_mod.BlockType;
 const ValType = core.ValType;
+const HeapType = core.HeapType;
+const RefType = core.RefType;
+const StorageType = core.StorageType;
+const FieldType = core.FieldType;
+const StructType = core.StructType;
+const ArrayType = core.ArrayType;
+const CompositeType = core.CompositeType;
+const FuncType = core.func_type.FuncType;
 const simd = core.simd;
 const V128 = simd.V128;
 
@@ -24,6 +34,10 @@ pub const TranslateError = error{
     InvalidI32Literal,
     InvalidI64Literal,
     UnsupportedConstExpr,
+    UnsupportedStorageType,
+    OutOfMemory,
+    TooManyFunctionParams,
+    TooManyFunctionResults,
 };
 
 /// Translates a Wasm type (payload Type) into a runtime value type (ValType).
@@ -443,4 +457,90 @@ fn literalAsShuffleLanes(info: OperatorInformation) TranslateError![16]u8 {
 
 fn laneIndexAsU8(info: OperatorInformation) TranslateError!u8 {
     return @as(u8, @intCast(info.line_index orelse return error.UnsupportedOperator));
+}
+
+/// Translates a Wasm type (payload Type) into a runtime storage type (StorageType).
+/// Supports value types (i32/i64/f32/f64/v128/ref) and packed types (i8/i16).
+pub fn wasmStorageTypeFromType(typ: Type) TranslateError!StorageType {
+    return switch (typ) {
+        .kind => |kind| switch (kind) {
+            .i32 => StorageType{ .valtype = .I32 },
+            .i64 => StorageType{ .valtype = .I64 },
+            .f32 => StorageType{ .valtype = .F32 },
+            .f64 => StorageType{ .valtype = .F64 },
+            .v128 => StorageType{ .valtype = .V128 },
+            .i8 => StorageType{ .packed_type = .I8 },
+            .i16 => StorageType{ .packed_type = .I16 },
+            .funcref, .null_funcref => StorageType{ .valtype = ValType.funcref() },
+            .externref, .null_externref => StorageType{ .valtype = ValType.externref() },
+            .anyref, .null_ref => StorageType{ .valtype = ValType.anyref() },
+            .eqref => StorageType{ .valtype = ValType.eqref() },
+            .i31ref => StorageType{ .valtype = ValType.i31ref() },
+            .structref => StorageType{ .valtype = ValType.structref() },
+            .arrayref => StorageType{ .valtype = ValType.arrayref() },
+            else => error.UnsupportedStorageType,
+        },
+        .ref_type => |ref_type| blk: {
+            const heap_type = switch (ref_type.ref_index) {
+                .kind => |kind| switch (kind) {
+                    .funcref, .null_funcref => core.HeapType.Func,
+                    .externref, .null_externref => core.HeapType.Extern,
+                    .anyref, .null_ref => core.HeapType.Any,
+                    .eqref => core.HeapType.Eq,
+                    .i31ref => core.HeapType.I31,
+                    .structref => core.HeapType.Struct,
+                    .arrayref => core.HeapType.Array,
+                    else => return error.UnsupportedStorageType,
+                },
+                .index => |idx| core.HeapType.fromConcreteType(idx),
+            };
+            const ref_ty = core.RefType.init(ref_type.nullable, heap_type);
+            break :blk StorageType{ .valtype = .{ .Ref = ref_ty } };
+        },
+        else => error.UnsupportedStorageType,
+    };
+}
+
+/// Compiles a TypeEntry into a CompositeType.
+/// Supports func, struct, and array types.
+pub fn wasmCompositeTypeFromTypeEntry(
+    allocator: std.mem.Allocator,
+    entry: TypeEntry,
+) (TranslateError || std.mem.Allocator.Error)!CompositeType {
+    return switch (entry.type) {
+        .func => blk: {
+            const param_types = try allocator.alloc(ValType, entry.params.len);
+            defer allocator.free(param_types);
+            for (entry.params, 0..) |param, i| {
+                param_types[i] = try wasmValTypeFromType(param);
+            }
+            const result_types = try allocator.alloc(ValType, entry.returns.len);
+            defer allocator.free(result_types);
+            for (entry.returns, 0..) |result, i| {
+                result_types[i] = try wasmValTypeFromType(result);
+            }
+            break :blk CompositeType{ .func = try FuncType.init(allocator, param_types, result_types) };
+        },
+        .struct_type => blk: {
+            const fields = try allocator.alloc(FieldType, entry.fields.len);
+            for (entry.fields, entry.mutabilities, 0..) |field_type, mutable, i| {
+                fields[i] = .{
+                    .storage_type = try wasmStorageTypeFromType(field_type),
+                    .mutable = mutable,
+                };
+            }
+            break :blk CompositeType{ .struct_type = .{ .fields = fields } };
+        },
+        .array_type => blk: {
+            const element_type = entry.element_type orelse return error.UnsupportedStorageType;
+            const mutable = entry.mutability orelse false;
+            break :blk CompositeType{ .array_type = .{
+                .field = .{
+                    .storage_type = try wasmStorageTypeFromType(element_type),
+                    .mutable = mutable,
+                },
+            } };
+        },
+        else => error.UnsupportedFunctionType,
+    };
 }

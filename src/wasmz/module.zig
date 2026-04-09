@@ -22,6 +22,7 @@ const raw_mod = core.raw;
 const simd = core.simd;
 const typed_mod = core.typed;
 const value_type_mod = core.value_type;
+const gc_mod = @import("../vm/gc/root.zig");
 
 const Allocator = std.mem.Allocator;
 const Parser = parser_mod.Parser;
@@ -37,6 +38,9 @@ const Global = core.Global;
 const RawVal = raw_mod.RawVal;
 const TypedRawVal = typed_mod.TypedRawVal;
 const ValType = value_type_mod.ValType;
+const CompositeType = core.CompositeType;
+const StructLayout = gc_mod.StructLayout;
+const ArrayLayout = gc_mod.ArrayLayout;
 const Engine = engine_mod.Engine;
 const Lower = lower_mod.Lower;
 const EngineConfig = engine_config_mod.Config;
@@ -98,6 +102,7 @@ pub const ModuleCompileError = Allocator.Error ||
     parser_mod.CodeReadError ||
     lower_mod.LowerError ||
     func_type_mod.FuncTypeError ||
+    translate_mod.TranslateError ||
     error{
         DuplicateExport,
         InvalidFunctionTypeIndex,
@@ -131,6 +136,9 @@ pub const ModuleCompileError = Allocator.Error ||
 ///                       Populated from active element segments in the Element Section.
 ///   - func_type_indices: Maps func_idx → type section index for every function (imports + locals).
 ///                        Used by call_indirect for runtime type checking.
+///   - composite_types:  All types from the Type Section (func, struct, array).
+///   - struct_layouts:   Precomputed memory layouts for struct types (index matches composite_types).
+///   - array_layouts:    Precomputed memory layouts for array types (index matches composite_types).
 pub const Module = struct {
     allocator: Allocator,
     functions: []CompiledFunction,
@@ -157,6 +165,15 @@ pub const Module = struct {
     /// Element segments: each entry holds function indices and mode metadata.
     /// Passive segments are used by table.init; active segments are applied during instantiation.
     elem_segments: []CompiledElemSegment,
+    /// All types from the Type Section (func, struct, array).
+    /// Index corresponds to type index in Wasm.
+    composite_types: []CompositeType,
+    /// Precomputed memory layouts for struct types.
+    /// Index matches composite_types; null for non-struct types.
+    struct_layouts: []?StructLayout,
+    /// Precomputed memory layouts for array types.
+    /// Index matches composite_types; null for non-array types.
+    array_layouts: []ArrayLayout,
 
     /// Compile WebAssembly bytecode into a Module.
     ///
@@ -176,6 +193,28 @@ pub const Module = struct {
 
         var func_types_list: std.ArrayListUnmanaged(FuncType) = .empty;
         errdefer deinit_func_type_list(allocator, &func_types_list);
+
+        // GC types: composite types and their layouts
+        var composite_types_list: std.ArrayListUnmanaged(CompositeType) = .empty;
+        errdefer {
+            for (composite_types_list.items) |*ct| {
+                ct.deinit(allocator);
+            }
+            composite_types_list.deinit(allocator);
+        }
+
+        var struct_layouts_list: std.ArrayListUnmanaged(?StructLayout) = .empty;
+        errdefer {
+            for (struct_layouts_list.items) |*sl| {
+                if (sl.*) |layout| {
+                    layout.deinit(allocator);
+                }
+            }
+            struct_layouts_list.deinit(allocator);
+        }
+
+        var array_layouts_list: std.ArrayListUnmanaged(ArrayLayout) = .empty;
+        errdefer array_layouts_list.deinit(allocator);
 
         var function_type_indices: std.ArrayListUnmanaged(u32) = .empty;
         defer function_type_indices.deinit(allocator);
@@ -231,10 +270,29 @@ pub const Module = struct {
         for (payloads) |payload| {
             switch (payload) {
                 .type_entry => |entry| {
-                    try func_types_list.append(
-                        allocator,
-                        try compile_func_type(allocator, arena.allocator(), entry),
-                    );
+                    const composite_type = try translate_mod.wasmCompositeTypeFromTypeEntry(allocator, entry);
+                    try composite_types_list.append(allocator, composite_type);
+
+                    // Precompute layout for struct and array types
+                    switch (composite_type) {
+                        .func => |f| {
+                            // Note: FuncType is moved to func_types_list to avoid double-free.
+                            // The composite_type will be deinitialized later, so we need to
+                            // ensure the func variant doesn't double-free the FuncType.
+                            try func_types_list.append(allocator, f);
+                            try struct_layouts_list.append(allocator, null);
+                            try array_layouts_list.append(allocator, undefined);
+                        },
+                        .struct_type => |s| {
+                            const layout = try gc_mod.computeStructLayout(s, allocator);
+                            try struct_layouts_list.append(allocator, layout);
+                            try array_layouts_list.append(allocator, undefined);
+                        },
+                        .array_type => |a| {
+                            try struct_layouts_list.append(allocator, null);
+                            try array_layouts_list.append(allocator, gc_mod.computeArrayLayout(a));
+                        },
+                    }
                 },
                 .import_entry => |entry| {
                     if (entry.kind == .function) {
@@ -467,6 +525,11 @@ pub const Module = struct {
             func_type_indices[imported_function_count + i] = ti;
         }
 
+        // ── Build composite_types, struct_layouts, array_layouts ──────────────
+        const composite_types = try composite_types_list.toOwnedSlice(allocator);
+        const struct_layouts = try struct_layouts_list.toOwnedSlice(allocator);
+        const array_layouts = try array_layouts_list.toOwnedSlice(allocator);
+
         return .{
             .allocator = allocator,
             .functions = functions,
@@ -480,6 +543,9 @@ pub const Module = struct {
             .func_type_indices = func_type_indices,
             .data_segments = data_segments,
             .elem_segments = elem_segments,
+            .composite_types = composite_types,
+            .struct_layouts = struct_layouts,
+            .array_layouts = array_layouts,
         };
     }
 
@@ -517,6 +583,23 @@ pub const Module = struct {
             self.allocator.free(seg.func_indices);
         }
         self.allocator.free(self.elem_segments);
+
+        for (self.composite_types) |*ct| {
+            switch (ct.*) {
+                .func => {}, // FuncType is owned by func_types, don't double-free
+                else => ct.deinit(self.allocator),
+            }
+        }
+        self.allocator.free(self.composite_types);
+
+        for (self.struct_layouts) |*sl| {
+            if (sl.*) |layout| {
+                layout.deinit(self.allocator);
+            }
+        }
+        self.allocator.free(self.struct_layouts);
+
+        self.allocator.free(self.array_layouts);
 
         self.* = undefined;
     }
