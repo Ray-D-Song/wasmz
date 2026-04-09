@@ -38,10 +38,10 @@ pub const GcRefKind = packed struct {
     pub const Struct: u6 = 0b101100;
     pub const Array: u6 = 0b101010;
     pub const None: u6 = 0b100001;
-    pub const Func: u6 = 0b100010;
-    pub const NoFunc: u6 = 0b100011;
-    pub const Extern: u6 = 0b100100;
-    pub const NoExtern: u6 = 0b100101;
+    pub const Func: u6 = 0b010000;
+    pub const NoFunc: u6 = 0b010001;
+    pub const Extern: u6 = 0b001000;
+    pub const NoExtern: u6 = 0b001001;
 
     pub fn init(bits: u6) GcRefKind {
         return .{ .bits = bits };

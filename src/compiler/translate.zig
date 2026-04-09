@@ -36,14 +36,14 @@ pub fn wasmValTypeFromType(typ: Type) TranslateError!ValType {
             .f32 => .F32,
             .f64 => .F64,
             .v128 => .V128,
-            .funcref, .null_funcref => .FuncRef,
-            .externref, .null_externref => .ExternRef,
+            .funcref, .null_funcref => ValType.funcref(),
+            .externref, .null_externref => ValType.externref(),
             else => error.UnsupportedFunctionType,
         },
         .ref_type => |ref_type| switch (ref_type.ref_index) {
             .kind => |kind| switch (kind) {
-                .funcref, .null_funcref => .FuncRef,
-                .externref, .null_externref => .ExternRef,
+                .funcref, .null_funcref => ValType.funcref(),
+                .externref, .null_externref => ValType.externref(),
                 else => error.UnsupportedFunctionType,
             },
             else => error.UnsupportedFunctionType,

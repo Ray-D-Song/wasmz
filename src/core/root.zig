@@ -7,6 +7,7 @@ pub const typed = @import("./typed.zig");
 pub const trap = @import("./trap.zig");
 pub const helper = @import("./value/helper.zig");
 pub const heap_type = @import("./heap_type.zig");
+pub const ref_type = @import("./ref_type.zig");
 
 pub const ValType = value_type.ValType;
 pub const Global = global.Global;
@@ -18,3 +19,4 @@ pub const Trap = trap.Trap;
 pub const TrapCode = trap.TrapCode;
 pub const HeapType = heap_type.HeapType;
 pub const GcRefKind = heap_type.GcRefKind;
+pub const RefType = ref_type.RefType;

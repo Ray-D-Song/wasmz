@@ -4,6 +4,7 @@
 const RawVal = @import("../raw.zig").RawVal;
 const RefType = @import("./type.zig").RefType;
 const TypedRawVal = @import("../typed.zig").TypedRawVal;
+const ValType = @import("../value/type.zig").ValType;
 
 pub const RawRef = struct {
     // The raw bits of the reference value.
@@ -46,8 +47,8 @@ pub const RawRef = struct {
     pub fn toTypedRawVal(self: TypedRawRef) TypedRawVal {
         const val = RawVal.from(self.raw.toBits());
         const ty = switch (self.ty) {
-            .Func => .FuncRef,
-            .Extern => .ExternRef,
+            .Func => ValType.funcref(),
+            .Extern => ValType.externref(),
         };
         return TypedRawVal.init(ty, val);
     }

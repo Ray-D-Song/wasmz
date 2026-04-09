@@ -198,8 +198,8 @@ pub const HostFunc = struct {
     }
 
     pub fn matches(self: HostFunc, func_type: FuncType) bool {
-        return std.mem.eql(ValType, self.param_types, func_type.params()) and
-            std.mem.eql(ValType, self.result_types, func_type.results());
+        return ValType.eqlSlice(self.param_types, func_type.params()) and
+            ValType.eqlSlice(self.result_types, func_type.results());
     }
 };
 
