@@ -693,6 +693,150 @@ pub const VM = struct {
                     }
                 },
 
+                // ── tail call (return_call) ─────────────────────────────────────────
+                .return_call => |inst| {
+                    const caller_func = call_stack.items[frame_idx].func;
+                    const arg_slots = caller_func.call_args.items[inst.args_start .. inst.args_start + inst.args_len];
+
+                    if (inst.func_idx < host_funcs.len) {
+                        // Tail call to host function: invoke and return result directly
+                        const host_result = try invokeHostCall(
+                            self,
+                            store,
+                            host_instance,
+                            host_funcs[inst.func_idx],
+                            arg_slots,
+                            slots,
+                            func_types[func_type_indices[inst.func_idx]].results().len,
+                        );
+                        switch (host_result) {
+                            .trap => |t| return .{ .trap = t },
+                            .ok => |ret_val| {
+                                // Pop current frame and return result to caller's caller
+                                const popped_frame = call_stack.pop().?;
+                                self.allocator.free(popped_frame.slots);
+                                if (call_stack.items.len == 0) {
+                                    return .{ .ok = ret_val };
+                                }
+                                const caller_idx = call_stack.items.len - 1;
+                                if (popped_frame.dst) |dst_slot| {
+                                    if (ret_val) |rv| {
+                                        call_stack.items[caller_idx].slots[dst_slot] = rv;
+                                    }
+                                }
+                            },
+                        }
+                    } else {
+                        // Tail call to local function: replace current frame
+                        const callee = functions[inst.func_idx];
+                        const callee_slots_len: usize = @max(
+                            @as(usize, @intCast(callee.slots_len)),
+                            arg_slots.len,
+                        );
+                        const callee_slots = try self.allocator.alloc(RawVal, callee_slots_len);
+                        @memset(callee_slots, std.mem.zeroes(RawVal));
+
+                        for (arg_slots, 0..) |arg_slot, i| {
+                            callee_slots[i] = slots[arg_slot];
+                        }
+
+                        // Preserve the dst from current frame (return to caller's caller)
+                        const tail_dst = call_stack.items[frame_idx].dst;
+
+                        // Free current frame slots
+                        self.allocator.free(call_stack.items[frame_idx].slots);
+
+                        // Replace current frame with callee
+                        call_stack.items[frame_idx] = .{
+                            .func = callee,
+                            .slots = callee_slots,
+                            .pc = 0,
+                            .dst = tail_dst,
+                        };
+                    }
+                },
+
+                // ── tail call indirect (return_call_indirect) ──────────────────────
+                .return_call_indirect => |inst| {
+                    const caller_func = call_stack.items[frame_idx].func;
+                    const arg_slots = caller_func.call_args.items[inst.args_start .. inst.args_start + inst.args_len];
+
+                    // 1. Read runtime table index from slot.
+                    const raw_index = slots[inst.index].readAs(u32);
+
+                    // 2. Bounds check against the table.
+                    if (inst.table_index >= tables.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+                    const table = tables[inst.table_index];
+                    if (raw_index >= table.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+
+                    // 3. Resolve callee func_idx from the table.
+                    const callee_func_idx = table[raw_index];
+
+                    // 4. Null-element check.
+                    if (callee_func_idx == std.math.maxInt(u32)) return .{ .trap = Trap.fromTrapCode(.IndirectCallToNull) };
+
+                    // 5. Signature check.
+                    if (callee_func_idx >= func_type_indices.len) return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+                    if (func_type_indices[callee_func_idx] != inst.type_index) return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    // 6. Dispatch
+                    if (callee_func_idx < host_funcs.len) {
+                        // Tail call to host function
+                        const host_result = try invokeHostCall(
+                            self,
+                            store,
+                            host_instance,
+                            host_funcs[callee_func_idx],
+                            arg_slots,
+                            slots,
+                            func_types[func_type_indices[callee_func_idx]].results().len,
+                        );
+                        switch (host_result) {
+                            .trap => |t| return .{ .trap = t },
+                            .ok => |ret_val| {
+                                const popped_frame = call_stack.pop().?;
+                                self.allocator.free(popped_frame.slots);
+                                if (call_stack.items.len == 0) {
+                                    return .{ .ok = ret_val };
+                                }
+                                const caller_idx = call_stack.items.len - 1;
+                                if (popped_frame.dst) |dst_slot| {
+                                    if (ret_val) |rv| {
+                                        call_stack.items[caller_idx].slots[dst_slot] = rv;
+                                    }
+                                }
+                            },
+                        }
+                    } else {
+                        // Tail call to local function: replace current frame
+                        const callee = functions[callee_func_idx];
+                        const callee_slots_len: usize = @max(
+                            @as(usize, @intCast(callee.slots_len)),
+                            arg_slots.len,
+                        );
+                        const callee_slots = try self.allocator.alloc(RawVal, callee_slots_len);
+                        @memset(callee_slots, std.mem.zeroes(RawVal));
+
+                        for (arg_slots, 0..) |arg_slot, i| {
+                            callee_slots[i] = slots[arg_slot];
+                        }
+
+                        // Preserve the dst from current frame
+                        const tail_dst = call_stack.items[frame_idx].dst;
+
+                        // Free current frame slots
+                        self.allocator.free(call_stack.items[frame_idx].slots);
+
+                        // Replace current frame with callee
+                        call_stack.items[frame_idx] = .{
+                            .func = callee,
+                            .slots = callee_slots,
+                            .pc = 0,
+                            .dst = tail_dst,
+                        };
+                    }
+                },
+
                 // ── i32 Memory load ───────────────────────────────────────────
                 .i32_load => |inst| {
                     const ea = effectiveAddr(slots, inst.addr, inst.offset, 4, memory) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };

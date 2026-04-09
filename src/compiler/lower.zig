@@ -253,6 +253,17 @@ pub const WasmOp = union(enum) {
         n_params: u32,
         has_result: bool,
     },
+    /// Tail call: direct function call that reuses the current stack frame.
+    return_call: struct {
+        func_idx: u32,
+        n_params: u32,
+    },
+    /// Tail call indirect: indirect function call via table that reuses the current stack frame.
+    return_call_indirect: struct {
+        type_index: u32,
+        table_index: u32,
+        n_params: u32,
+    },
 
     // ── Memory load instructions ─────────────────────────────────────────────
     // `offset` is the static immediate offset encoded in the Wasm instruction (memory_address.offset).
@@ -1070,6 +1081,59 @@ pub const Lower = struct {
 
                 // If the call produces a result, push the result slot.
                 if (dst) |s| try self.stack.push(self.allocator, s);
+            },
+
+            // ── tail call ─────────────────────────────────────────────────────────
+
+            .return_call => |inst| {
+                // Pop n_params argument slots from the value stack in reverse order.
+                const args_start: u32 = @intCast(self.compiled.call_args.items.len);
+                var i: u32 = 0;
+                while (i < inst.n_params) : (i += 1) {
+                    const slot = try self.pop_slot();
+                    try self.compiled.call_args.append(self.allocator, slot);
+                }
+                // Reverse to match Wasm spec order.
+                const args = self.compiled.call_args.items[args_start..];
+                std.mem.reverse(Slot, args);
+
+                try self.emit(.{ .return_call = .{
+                    .func_idx = inst.func_idx,
+                    .args_start = args_start,
+                    .args_len = inst.n_params,
+                } });
+
+                // Tail call never returns; clear the stack.
+                self.stack.slots.shrinkRetainingCapacity(0);
+            },
+
+            // ── tail call indirect ─────────────────────────────────────────────────
+
+            .return_call_indirect => |inst| {
+                // Stack: [..., arg0, arg1, ..., argN-1, index]
+                // Pop the runtime table index (TOS), then pop n_params arguments.
+                const index = try self.pop_slot();
+
+                const args_start: u32 = @intCast(self.compiled.call_args.items.len);
+                var i: u32 = 0;
+                while (i < inst.n_params) : (i += 1) {
+                    const slot = try self.pop_slot();
+                    try self.compiled.call_args.append(self.allocator, slot);
+                }
+                // Reverse to match Wasm spec order.
+                const args = self.compiled.call_args.items[args_start..];
+                std.mem.reverse(Slot, args);
+
+                try self.emit(.{ .return_call_indirect = .{
+                    .index = index,
+                    .type_index = inst.type_index,
+                    .table_index = inst.table_index,
+                    .args_start = args_start,
+                    .args_len = inst.n_params,
+                } });
+
+                // Tail call never returns; clear the stack.
+                self.stack.slots.shrinkRetainingCapacity(0);
             },
 
             // ── Memory load ──────────────────────────────────────────────────────────

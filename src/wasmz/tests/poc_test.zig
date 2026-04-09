@@ -667,3 +667,116 @@ test "ref.eq: different funcrefs → 0" {
     const result = (try executeWithEmptyRuntime(&vm, lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 0), result.readAs(i32));
 }
+
+test "return_call: tail call replaces current frame" {
+    // This test verifies that return_call correctly replaces the current frame
+    // instead of pushing a new one. We test this with a recursive countdown
+    // that would overflow the stack with regular calls.
+    //
+    // Function 0 (entry): calls function 1
+    // Function 1 (recursive): tail-calls itself until counter reaches 0
+    //
+    // Stack behavior:
+    // - Regular call: [f0] -> [f0, f1] -> [f0, f1, f1] -> ... (grows)
+    // - Tail call:    [f0] -> [f0, f1] -> [f0, f1] -> ... (constant)
+
+    const FuncType = core.func_type.FuncType;
+    const func_types = [_]FuncType{
+        try FuncType.init(testing.allocator, &.{}, &.{.I32}),
+        try FuncType.init(testing.allocator, &.{.I32}, &.{.I32}),
+    };
+    defer for (func_types) |ft| ft.deinit(testing.allocator);
+
+    var lower0 = Lower.initWithReservedSlots(testing.allocator, 0);
+    defer lower0.deinit();
+
+    // Function 0: calls function 1 with arg 100
+    // (func (export "entry") (result i32)
+    //   i32.const 100
+    //   call 1
+    // )
+    const ops0 = [_]WasmOp{
+        .{ .i32_const = 100 },
+        .{ .call = .{ .func_idx = 1, .n_params = 1, .has_result = true } },
+        .ret,
+    };
+    for (ops0) |o| try lower0.lowerOp(o);
+    const compiled0 = lower0.finish();
+
+    var lower1 = Lower.initWithReservedSlots(testing.allocator, 1);
+    defer lower1.deinit();
+
+    // Function 1: recursive countdown with tail call
+    // (func $countdown (param $n i32) (result i32)
+    //   local.get 0
+    //   i32.eqz
+    //   if (result i32)
+    //     i32.const 0
+    //   else
+    //     local.get 0
+    //     i32.const 1
+    //     i32.sub
+    //     return_call 1
+    //   end
+    // )
+    const ops1 = [_]WasmOp{
+        .{ .local_get = 0 },
+        .i32_eqz,
+        .{ .if_ = .I32 },
+        .{ .i32_const = 0 },
+        .else_,
+        .{ .local_get = 0 },
+        .{ .i32_const = 1 },
+        .i32_sub,
+        .{ .return_call = .{ .func_idx = 1, .n_params = 1 } },
+        .end,
+        .ret,
+    };
+    for (ops1) |o| try lower1.lowerOp(o);
+    const compiled1 = lower1.finish();
+
+    var vm = VM.init(testing.allocator);
+
+    var engine = try Engine.init(testing.allocator, Config{});
+    defer engine.deinit();
+
+    var store = Store.init(testing.allocator, engine);
+    defer store.deinit();
+
+    var module = try module_mod.Module.compile(engine, &empty_runtime_module_wasm);
+    defer module.deinit();
+
+    var globals = [_]Global{};
+    var memory: [0]u8 = .{};
+    var tables = [_][]u32{};
+    var host_instance = HostInstance{
+        .module = &module,
+        .globals = globals[0..],
+        .memory = memory[0..],
+        .tables = tables[0..],
+    };
+
+    const func_type_indices = [_]u32{ 0, 1 };
+    const functions = [_]CompiledFunction{ compiled0, compiled1 };
+
+    const result = try vm.execute(
+        compiled0,
+        &.{},
+        &store,
+        &host_instance,
+        globals[0..],
+        memory[0..],
+        &functions,
+        &func_types,
+        &.{},
+        tables[0..],
+        &func_type_indices,
+        &.{},
+        &.{},
+        &.{},
+        &.{},
+    );
+
+    const ret_val = result.ok orelse return error.MissingReturnValue;
+    try testing.expectEqual(@as(i32, 0), ret_val.readAs(i32));
+}

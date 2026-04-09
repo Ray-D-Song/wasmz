@@ -375,6 +375,28 @@ pub const Op = union(enum) {
         args_start: u32,
         args_len: u32,
     },
+    /// Tail call: direct function call that reuses the current stack frame.
+    /// Unlike regular call, this does not create a new frame; instead it replaces
+    /// the current frame with the callee, passing the return value to the caller's caller.
+    return_call: struct {
+        /// Index of the callee function in module.functions
+        func_idx: u32,
+        /// Starting offset of the argument slots in CompiledFunction.call_args
+        args_start: u32,
+        args_len: u32,
+    },
+    /// Tail call indirect: indirect function call via table that reuses the current stack frame.
+    return_call_indirect: struct {
+        /// Slot holding the runtime table index (i32, interpreted as u32)
+        index: Slot,
+        /// Type section index — used for runtime signature check
+        type_index: u32,
+        /// Which table to look up (always 0 in MVP)
+        table_index: u32,
+        /// Starting offset of the argument slots in CompiledFunction.call_args
+        args_start: u32,
+        args_len: u32,
+    },
     /// Conditional select: if cond != 0 write val1 to dst, else write val2 to dst.
     /// Wasm stack order: val1 pushed first, val2 second, cond last (TOS).
     select: struct {

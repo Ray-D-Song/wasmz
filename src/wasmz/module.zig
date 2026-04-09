@@ -755,6 +755,26 @@ pub fn compileFunctionBody(
                 .n_params = @intCast(func_type.params().len),
                 .has_result = func_type.results().len > 0,
             } };
+        } else if (parsed.info.code == .return_call) blk: {
+            const func_idx = parsed.info.func_index orelse return error.UnsupportedOperator;
+            const func_type = try resolver.resolve(func_idx);
+            break :blk .{ .return_call = .{
+                .func_idx = func_idx,
+                .n_params = @intCast(func_type.params().len),
+            } };
+        } else if (parsed.info.code == .return_call_indirect) blk: {
+            const heap_type = parsed.info.type_index orelse return error.UnsupportedOperator;
+            const type_index: u32 = switch (heap_type) {
+                .index => |idx| idx,
+                .kind => return error.UnsupportedOperator,
+            };
+            if (type_index >= resolver.func_types.len) return error.InvalidFunctionTypeIndex;
+            const func_type = &resolver.func_types[type_index];
+            break :blk .{ .return_call_indirect = .{
+                .type_index = type_index,
+                .table_index = 0,
+                .n_params = @intCast(func_type.params().len),
+            } };
         } else try translate_mod.operatorToWasmOp(parsed.info);
 
         try lower.lowerOp(wasm_op);
