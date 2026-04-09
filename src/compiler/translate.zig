@@ -304,6 +304,23 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         .ref_func => WasmOp{ .ref_func = info.func_index orelse return error.UnsupportedOperator },
         .ref_eq => WasmOp.ref_eq,
 
+
+        // ── Table instructions ──────────────────────────────────────────────────
+        .table_get => WasmOp{ .table_get = info.table_index orelse return error.UnsupportedOperator },
+        .table_set => WasmOp{ .table_set = info.table_index orelse return error.UnsupportedOperator },
+        .table_size => WasmOp{ .table_size = info.table_index orelse return error.UnsupportedOperator },
+        .table_grow => WasmOp{ .table_grow = info.table_index orelse return error.UnsupportedOperator },
+        .table_fill => WasmOp{ .table_fill = info.table_index orelse return error.UnsupportedOperator },
+        .table_copy => WasmOp{ .table_copy = .{
+            .dst_table = info.table_index orelse return error.UnsupportedOperator,
+            .src_table = info.destination_index orelse return error.UnsupportedOperator,
+        } },
+        .table_init => WasmOp{ .table_init = .{
+            .table_index = info.table_index orelse return error.UnsupportedOperator,
+            .segment_idx = info.segment_index orelse return error.UnsupportedOperator,
+        } },
+        .elem_drop => WasmOp{ .elem_drop = info.segment_index orelse return error.UnsupportedOperator },
+
         else => |op| {
             std.debug.print("UnsupportedOperator: {s}\n", .{@tagName(op)});
             return error.UnsupportedOperator;

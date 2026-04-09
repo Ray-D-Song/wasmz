@@ -60,6 +60,9 @@ pub const Instance = struct {
     /// Tracks which data segments have been dropped via data.drop instruction.
     /// data_segments_dropped[i] == true means segment i cannot be used by memory.init.
     data_segments_dropped: []bool,
+    /// Tracks which element segments have been dropped via elem.drop instruction.
+    /// elem_segments_dropped[i] == true means segment i cannot be used by table.init.
+    elem_segments_dropped: []bool,
 
     /// Instantiate a Module.
     ///
@@ -120,6 +123,11 @@ pub const Instance = struct {
         errdefer allocator.free(data_segments_dropped);
         @memset(data_segments_dropped, false);
 
+        // ── 5. initialize element segment dropped flags ──────────────────────────────
+        const elem_segments_dropped = try allocator.alloc(bool, module.elem_segments.len);
+        errdefer allocator.free(elem_segments_dropped);
+        @memset(elem_segments_dropped, false);
+
         store.registerInstance();
         errdefer store.unregisterInstance();
 
@@ -131,6 +139,7 @@ pub const Instance = struct {
             .host_funcs = host_funcs,
             .host_view = host_view,
             .data_segments_dropped = data_segments_dropped,
+            .elem_segments_dropped = elem_segments_dropped,
         };
     }
 
@@ -143,6 +152,7 @@ pub const Instance = struct {
         }
         allocator.free(self.host_funcs);
         allocator.free(self.data_segments_dropped);
+        allocator.free(self.elem_segments_dropped);
         self.store.unregisterInstance();
         self.* = undefined;
     }
@@ -176,6 +186,8 @@ pub const Instance = struct {
             self.module.func_type_indices,
             self.module.data_segments,
             self.data_segments_dropped,
+            self.module.elem_segments,
+            self.elem_segments_dropped,
         );
     }
 };
@@ -804,4 +816,354 @@ test "Instance.init returns ImportSignatureMismatch when host signature differs"
     );
 
     try testing_mod.expectError(error.ImportSignatureMismatch, Instance.init(&store, &module, linker));
+}
+
+// ── Table instruction tests ───────────────────────────────────────────────────
+
+test "Instance.call: table.size returns initial table element count" {
+    // WAT:
+    //   (module
+    //     (table 3 funcref)
+    //     (func (export "f") (result i32) table.size 0)
+    //   )
+    const testing = std.testing;
+    const engine_mod = @import("../engine/root.zig");
+    const config_mod = @import("../engine/config.zig");
+
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = Store.init(testing.allocator, engine);
+    defer store.deinit();
+
+    const wasm = [_]u8{
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60,
+        0x00, 0x01, 0x7f, 0x03, 0x02, 0x01, 0x00, 0x04, 0x04, 0x01, 0x70, 0x00,
+        0x03, 0x07, 0x05, 0x01, 0x01, 0x66, 0x00, 0x00, 0x0a, 0x07, 0x01, 0x05,
+        0x00, 0xfc, 0x10, 0x00, 0x0b,
+    };
+
+    var module = try Module.compile(engine, &wasm);
+    defer module.deinit();
+
+    var instance = try Instance.init(&store, &module, Imports.empty);
+    defer instance.deinit();
+
+    const exec_r = try instance.call("f", &.{});
+    const result = exec_r.ok orelse return error.MissingReturnValue;
+    try testing.expectEqual(@as(i32, 3), result.readAs(i32));
+}
+
+test "Instance.call: table.grow returns old size on success" {
+    // WAT:
+    //   (module
+    //     (table 2 funcref)
+    //     (func (export "f") (result i32)
+    //       ref.null func
+    //       i32.const 3
+    //       table.grow 0)   ;; grows by 3, returns 2 (old size)
+    //   )
+    const testing = std.testing;
+    const engine_mod = @import("../engine/root.zig");
+    const config_mod = @import("../engine/config.zig");
+
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = Store.init(testing.allocator, engine);
+    defer store.deinit();
+
+    const wasm = [_]u8{
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60,
+        0x00, 0x01, 0x7f, 0x03, 0x02, 0x01, 0x00, 0x04, 0x04, 0x01, 0x70, 0x00,
+        0x02, 0x07, 0x05, 0x01, 0x01, 0x66, 0x00, 0x00, 0x0a, 0x0b, 0x01, 0x09,
+        0x00, 0xd0, 0x70, 0x41, 0x03, 0xfc, 0x0f, 0x00, 0x0b,
+    };
+
+    var module = try Module.compile(engine, &wasm);
+    defer module.deinit();
+
+    var instance = try Instance.init(&store, &module, Imports.empty);
+    defer instance.deinit();
+
+    const exec_r = try instance.call("f", &.{});
+    const result = exec_r.ok orelse return error.MissingReturnValue;
+    // table.grow should return 2 (the old size)
+    try testing.expectEqual(@as(i32, 2), result.readAs(i32));
+}
+
+test "Instance.call: table.get returns non-null for populated element" {
+    // WAT:
+    //   (module
+    //     (type (func (result i32)))
+    //     (func (result i32) i32.const 42)      ;; func 0
+    //     (table 2 funcref)
+    //     (elem (i32.const 0) func 0)           ;; table[0] = func 0
+    //     (func (export "get_nonnull") (result i32)
+    //       i32.const 0 table.get 0 ref.is_null i32.const 1 i32.xor)
+    //     (func (export "get_null") (result i32)
+    //       i32.const 1 table.get 0 ref.is_null)
+    //   )
+    const testing = std.testing;
+    const engine_mod = @import("../engine/root.zig");
+    const config_mod = @import("../engine/config.zig");
+
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = Store.init(testing.allocator, engine);
+    defer store.deinit();
+
+    const wasm = [_]u8{
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60,
+        0x00, 0x01, 0x7f, 0x03, 0x04, 0x03, 0x00, 0x00, 0x00, 0x04, 0x04, 0x01,
+        0x70, 0x00, 0x02, 0x07, 0x1a, 0x02, 0x0b, 0x67, 0x65, 0x74, 0x5f, 0x6e,
+        0x6f, 0x6e, 0x6e, 0x75, 0x6c, 0x6c, 0x00, 0x01, 0x08, 0x67, 0x65, 0x74,
+        0x5f, 0x6e, 0x75, 0x6c, 0x6c, 0x00, 0x02, 0x09, 0x07, 0x01, 0x00, 0x41,
+        0x00, 0x0b, 0x01, 0x00, 0x0a, 0x19, 0x03, 0x04, 0x00, 0x41, 0x2a, 0x0b,
+        0x0a, 0x00, 0x41, 0x00, 0x25, 0x00, 0xd1, 0x41, 0x01, 0x73, 0x0b, 0x07,
+        0x00, 0x41, 0x01, 0x25, 0x00, 0xd1, 0x0b,
+    };
+
+    var module = try Module.compile(engine, &wasm);
+    defer module.deinit();
+
+    var instance = try Instance.init(&store, &module, Imports.empty);
+    defer instance.deinit();
+
+    // table[0] is func 0 (non-null) → get_nonnull should return 1
+    const r1 = try instance.call("get_nonnull", &.{});
+    const v1 = r1.ok orelse return error.MissingReturnValue;
+    try testing.expectEqual(@as(i32, 1), v1.readAs(i32));
+
+    // table[1] is null → get_null should return 1 (ref.is_null == true)
+    const r2 = try instance.call("get_null", &.{});
+    const v2 = r2.ok orelse return error.MissingReturnValue;
+    try testing.expectEqual(@as(i32, 1), v2.readAs(i32));
+}
+
+test "Instance.call: table.set then table.get roundtrip" {
+    // WAT:
+    //   (module
+    //     (type (func (result i32)))
+    //     (func (result i32) i32.const 99)      ;; func 0
+    //     (table 2 funcref)
+    //     (elem func 0)                          ;; declarative (referenceable)
+    //     (func (export "set_and_check") (result i32)
+    //       i32.const 0
+    //       ref.func 0
+    //       table.set 0
+    //       i32.const 0
+    //       table.get 0
+    //       ref.is_null
+    //       i32.const 1
+    //       i32.xor)                             ;; returns 1 if non-null
+    //   )
+    const testing = std.testing;
+    const engine_mod = @import("../engine/root.zig");
+    const config_mod = @import("../engine/config.zig");
+
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = Store.init(testing.allocator, engine);
+    defer store.deinit();
+
+    const wasm = [_]u8{
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60,
+        0x00, 0x01, 0x7f, 0x03, 0x03, 0x02, 0x00, 0x00, 0x04, 0x04, 0x01, 0x70,
+        0x00, 0x02, 0x07, 0x11, 0x01, 0x0d, 0x73, 0x65, 0x74, 0x5f, 0x61, 0x6e,
+        0x64, 0x5f, 0x63, 0x68, 0x65, 0x63, 0x6b, 0x00, 0x01, 0x09, 0x05, 0x01,
+        0x01, 0x00, 0x01, 0x00, 0x0a, 0x18, 0x02, 0x05, 0x00, 0x41, 0xe3, 0x00,
+        0x0b, 0x10, 0x00, 0x41, 0x00, 0xd2, 0x00, 0x26, 0x00, 0x41, 0x00, 0x25,
+        0x00, 0xd1, 0x41, 0x01, 0x73, 0x0b,
+    };
+
+    var module = try Module.compile(engine, &wasm);
+    defer module.deinit();
+
+    var instance = try Instance.init(&store, &module, Imports.empty);
+    defer instance.deinit();
+
+    const exec_r = try instance.call("set_and_check", &.{});
+    const result = exec_r.ok orelse return error.MissingReturnValue;
+    // After table.set, table[0] is non-null → returns 1
+    try testing.expectEqual(@as(i32, 1), result.readAs(i32));
+}
+
+test "Instance.call: table.fill sets elements and table.get reads non-null" {
+    // WAT:
+    //   (module
+    //     (type (func (result i32)))
+    //     (func (result i32) i32.const 55)      ;; func 0
+    //     (table 4 funcref)
+    //     (elem func 0)                          ;; declarative
+    //     (func (export "fill_and_check") (result i32)
+    //       i32.const 1  ref.func 0  i32.const 2
+    //       table.fill 0
+    //       i32.const 2  table.get 0  ref.is_null  i32.const 1  i32.xor)
+    //   )
+    const testing = std.testing;
+    const engine_mod = @import("../engine/root.zig");
+    const config_mod = @import("../engine/config.zig");
+
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = Store.init(testing.allocator, engine);
+    defer store.deinit();
+
+    const wasm = [_]u8{
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60,
+        0x00, 0x01, 0x7f, 0x03, 0x03, 0x02, 0x00, 0x00, 0x04, 0x04, 0x01, 0x70,
+        0x00, 0x04, 0x07, 0x12, 0x01, 0x0e, 0x66, 0x69, 0x6c, 0x6c, 0x5f, 0x61,
+        0x6e, 0x64, 0x5f, 0x63, 0x68, 0x65, 0x63, 0x6b, 0x00, 0x01, 0x09, 0x05,
+        0x01, 0x01, 0x00, 0x01, 0x00, 0x0a, 0x1a, 0x02, 0x04, 0x00, 0x41, 0x37,
+        0x0b, 0x13, 0x00, 0x41, 0x01, 0xd2, 0x00, 0x41, 0x02, 0xfc, 0x11, 0x00,
+        0x41, 0x02, 0x25, 0x00, 0xd1, 0x41, 0x01, 0x73, 0x0b,
+    };
+
+    var module = try Module.compile(engine, &wasm);
+    defer module.deinit();
+
+    var instance = try Instance.init(&store, &module, Imports.empty);
+    defer instance.deinit();
+
+    const exec_r = try instance.call("fill_and_check", &.{});
+    const result = exec_r.ok orelse return error.MissingReturnValue;
+    // table.fill puts func 0 at indices 1..2, so table[2] is non-null → returns 1
+    try testing.expectEqual(@as(i32, 1), result.readAs(i32));
+}
+
+test "Instance.call: table.copy copies elements within same table" {
+    // WAT:
+    //   (module
+    //     (type (func (result i32)))
+    //     (func (result i32) i32.const 77)      ;; func 0
+    //     (table 4 funcref)
+    //     (elem (i32.const 0) func 0)           ;; active: table[0] = func 0
+    //     (func (export "copy_and_check") (result i32)
+    //       i32.const 2  i32.const 0  i32.const 1
+    //       table.copy 0 0
+    //       i32.const 2  table.get 0  ref.is_null  i32.const 1  i32.xor)
+    //   )
+    const testing = std.testing;
+    const engine_mod = @import("../engine/root.zig");
+    const config_mod = @import("../engine/config.zig");
+
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = Store.init(testing.allocator, engine);
+    defer store.deinit();
+
+    const wasm = [_]u8{
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60,
+        0x00, 0x01, 0x7f, 0x03, 0x03, 0x02, 0x00, 0x00, 0x04, 0x04, 0x01, 0x70,
+        0x00, 0x04, 0x07, 0x12, 0x01, 0x0e, 0x63, 0x6f, 0x70, 0x79, 0x5f, 0x61,
+        0x6e, 0x64, 0x5f, 0x63, 0x68, 0x65, 0x63, 0x6b, 0x00, 0x01, 0x09, 0x07,
+        0x01, 0x00, 0x41, 0x00, 0x0b, 0x01, 0x00, 0x0a, 0x1c, 0x02, 0x05, 0x00,
+        0x41, 0xcd, 0x00, 0x0b, 0x14, 0x00, 0x41, 0x02, 0x41, 0x00, 0x41, 0x01,
+        0xfc, 0x0e, 0x00, 0x00, 0x41, 0x02, 0x25, 0x00, 0xd1, 0x41, 0x01, 0x73,
+        0x0b,
+    };
+
+    var module = try Module.compile(engine, &wasm);
+    defer module.deinit();
+
+    var instance = try Instance.init(&store, &module, Imports.empty);
+    defer instance.deinit();
+
+    const exec_r = try instance.call("copy_and_check", &.{});
+    const result = exec_r.ok orelse return error.MissingReturnValue;
+    // table[0] was func 0; after table.copy dst=2 src=0 len=1, table[2] is non-null → returns 1
+    try testing.expectEqual(@as(i32, 1), result.readAs(i32));
+}
+
+test "Instance.call: table.init copies from passive element segment" {
+    // WAT:
+    //   (module
+    //     (type (func (result i32)))
+    //     (func (result i32) i32.const 88)      ;; func 0
+    //     (table 4 funcref)
+    //     (elem func 0)                          ;; passive elem segment 0
+    //     (func (export "init_and_check") (result i32)
+    //       i32.const 2  i32.const 0  i32.const 1
+    //       table.init 0 0
+    //       i32.const 2  table.get 0  ref.is_null  i32.const 1  i32.xor)
+    //   )
+    const testing = std.testing;
+    const engine_mod = @import("../engine/root.zig");
+    const config_mod = @import("../engine/config.zig");
+
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = Store.init(testing.allocator, engine);
+    defer store.deinit();
+
+    const wasm = [_]u8{
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60,
+        0x00, 0x01, 0x7f, 0x03, 0x03, 0x02, 0x00, 0x00, 0x04, 0x04, 0x01, 0x70,
+        0x00, 0x04, 0x07, 0x12, 0x01, 0x0e, 0x69, 0x6e, 0x69, 0x74, 0x5f, 0x61,
+        0x6e, 0x64, 0x5f, 0x63, 0x68, 0x65, 0x63, 0x6b, 0x00, 0x01, 0x09, 0x05,
+        0x01, 0x01, 0x00, 0x01, 0x00, 0x0a, 0x1c, 0x02, 0x05, 0x00, 0x41, 0xd8,
+        0x00, 0x0b, 0x14, 0x00, 0x41, 0x02, 0x41, 0x00, 0x41, 0x01, 0xfc, 0x0c,
+        0x00, 0x00, 0x41, 0x02, 0x25, 0x00, 0xd1, 0x41, 0x01, 0x73, 0x0b,
+    };
+
+    var module = try Module.compile(engine, &wasm);
+    defer module.deinit();
+
+    var instance = try Instance.init(&store, &module, Imports.empty);
+    defer instance.deinit();
+
+    const exec_r = try instance.call("init_and_check", &.{});
+    const result = exec_r.ok orelse return error.MissingReturnValue;
+    // table.init copies func 0 from segment[0] to table[2]; table[2] is non-null → 1
+    try testing.expectEqual(@as(i32, 1), result.readAs(i32));
+}
+
+test "Instance.call: elem.drop makes table.init trap" {
+    // WAT:
+    //   (module
+    //     (type (func (result i32)))
+    //     (func (result i32) i32.const 11)      ;; func 0
+    //     (table 4 funcref)
+    //     (elem func 0)                          ;; passive elem segment 0
+    //     (func (export "drop_then_init") (result i32)
+    //       elem.drop 0
+    //       i32.const 0  i32.const 0  i32.const 1
+    //       table.init 0 0
+    //       i32.const 99)                        ;; unreachable if trap
+    //   )
+    const testing = std.testing;
+    const engine_mod = @import("../engine/root.zig");
+    const config_mod = @import("../engine/config.zig");
+
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = Store.init(testing.allocator, engine);
+    defer store.deinit();
+
+    const wasm = [_]u8{
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60,
+        0x00, 0x01, 0x7f, 0x03, 0x03, 0x02, 0x00, 0x00, 0x04, 0x04, 0x01, 0x70,
+        0x00, 0x04, 0x07, 0x12, 0x01, 0x0e, 0x64, 0x72, 0x6f, 0x70, 0x5f, 0x74,
+        0x68, 0x65, 0x6e, 0x5f, 0x69, 0x6e, 0x69, 0x74, 0x00, 0x01, 0x09, 0x05,
+        0x01, 0x01, 0x00, 0x01, 0x00, 0x0a, 0x19, 0x02, 0x04, 0x00, 0x41, 0x0b,
+        0x0b, 0x12, 0x00, 0xfc, 0x0d, 0x00, 0x41, 0x00, 0x41, 0x00, 0x41, 0x01,
+        0xfc, 0x0c, 0x00, 0x00, 0x41, 0xe3, 0x00, 0x0b,
+    };
+
+    var module = try Module.compile(engine, &wasm);
+    defer module.deinit();
+
+    var instance = try Instance.init(&store, &module, Imports.empty);
+    defer instance.deinit();
+
+    const exec_r = try instance.call("drop_then_init", &.{});
+    // elem.drop drops segment 0; subsequent table.init should trap
+    try testing.expectEqual(TrapCode.TableOutOfBounds, exec_r.trap.trapCode().?);
 }

@@ -421,6 +421,68 @@ pub const Op = union(enum) {
         value: Slot,
         len: Slot,
     },
+
+    // ── Table instructions ────────────────────────────────────────────────────────
+    /// table.get: read the element at `index` from table `table_index`.
+    /// Traps if `index` is out of bounds.
+    /// Pushes the funcref value (u32 func_idx, or maxInt(u32) for null) into `dst`.
+    table_get: struct {
+        dst: Slot,
+        table_index: u32,
+        index: Slot,
+    },
+    /// table.set: write `value` (funcref as u32) into table `table_index` at position `index`.
+    /// Traps if `index` is out of bounds.
+    table_set: struct {
+        table_index: u32,
+        index: Slot,
+        value: Slot,
+    },
+    /// table.size: push i32 current element count of table `table_index`.
+    table_size: struct {
+        dst: Slot,
+        table_index: u32,
+    },
+    /// table.grow: grow table `table_index` by `delta` elements initialised to `init`.
+    /// Pushes i32 old size on success, or -1 if growth fails.
+    table_grow: struct {
+        dst: Slot,
+        table_index: u32,
+        init: Slot,
+        delta: Slot,
+    },
+    /// table.fill: fill `len` elements of table `table_index` starting at `dst_idx` with `value`.
+    /// Traps if the range is out of bounds.
+    table_fill: struct {
+        table_index: u32,
+        dst_idx: Slot,
+        value: Slot,
+        len: Slot,
+    },
+    /// table.copy: copy `len` elements from table `src_table` starting at `src_idx`
+    /// into table `dst_table` starting at `dst_idx`.
+    /// Traps if either range is out of bounds.
+    table_copy: struct {
+        dst_table: u32,
+        src_table: u32,
+        dst_idx: Slot,
+        src_idx: Slot,
+        len: Slot,
+    },
+    /// table.init: copy `len` elements from passive element segment `segment_idx`
+    /// (starting at offset `src_offset`) into table `table_index` at position `dst_idx`.
+    /// Traps if either range is out of bounds or the segment has been dropped.
+    table_init: struct {
+        table_index: u32,
+        segment_idx: u32,
+        dst_idx: Slot,
+        src_offset: Slot,
+        len: Slot,
+    },
+    /// elem.drop: mark element segment `segment_idx` as dropped (no longer usable by table.init).
+    elem_drop: struct {
+        segment_idx: u32,
+    },
 };
 
 pub const CompiledFunction = struct {

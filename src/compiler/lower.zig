@@ -297,6 +297,24 @@ pub const WasmOp = union(enum) {
     ref_func: u32,
     /// ref.eq: compare two references — i32 result (1 = equal, 0 = not equal).
     ref_eq,
+
+    // ── Table instructions ─────────────────────────────────────────────────────────
+    /// table.get: pop index (i32), push funcref from table[table_index][index].
+    table_get: u32,  // table_index
+    /// table.set: pop value (funcref), pop index (i32), write to table[table_index][index].
+    table_set: u32,  // table_index
+    /// table.size: push i32 size of table[table_index].
+    table_size: u32,  // table_index
+    /// table.grow: pop delta (i32), pop init (funcref), grow table[table_index]. Push old size or -1.
+    table_grow: u32,  // table_index
+    /// table.fill: pop len (i32), pop value (funcref), pop dst (i32). Fill table[table_index][dst..dst+len] = value.
+    table_fill: u32,  // table_index
+    /// table.copy: pop len (i32), pop src_idx (i32), pop dst_idx (i32). Copy table[src][src_idx..] to table[dst][dst_idx..].
+    table_copy: struct { dst_table: u32, src_table: u32 },
+    /// table.init: pop len (i32), pop src_offset (i32), pop dst_idx (i32). Copy elem_seg[segment_idx][src_offset..] to table[table_index][dst_idx..].
+    table_init: struct { table_index: u32, segment_idx: u32 },
+    /// elem.drop: mark element segment as dropped.
+    elem_drop: u32,  // segment_idx
 };
 
 /// Block/loop/if result type. null means void (no result).
@@ -1258,6 +1276,67 @@ pub const Lower = struct {
                 const dst = self.alloc_slot();
                 try self.emit(.{ .ref_eq = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
                 try self.stack.push(self.allocator, dst);
+            },
+
+            // ── Table instructions ─────────────────────────────────────────────────
+            // table.get: pop index, push funcref from table[table_index][index].
+            .table_get => |table_index| {
+                const index = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .table_get = .{ .dst = dst, .table_index = table_index, .index = index } });
+                try self.stack.push(self.allocator, dst);
+            },
+
+            // table.set: pop value (funcref), pop index (i32).
+            .table_set => |table_index| {
+                const value = try self.pop_slot();
+                const index = try self.pop_slot();
+                try self.emit(.{ .table_set = .{ .table_index = table_index, .index = index, .value = value } });
+            },
+
+            // table.size: push i32 size of table.
+            .table_size => |table_index| {
+                const dst = self.alloc_slot();
+                try self.emit(.{ .table_size = .{ .dst = dst, .table_index = table_index } });
+                try self.stack.push(self.allocator, dst);
+            },
+
+            // table.grow: [init, delta] -> [old_size].  Stack: init pushed first, then delta (TOS).
+            .table_grow => |table_index| {
+                const delta = try self.pop_slot();
+                const init_slot = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .table_grow = .{ .dst = dst, .table_index = table_index, .init = init_slot, .delta = delta } });
+                try self.stack.push(self.allocator, dst);
+            },
+
+            // table.fill: [dst_idx, value, len] -> [].  Stack: dst_idx pushed first, then value, then len (TOS).
+            .table_fill => |table_index| {
+                const len = try self.pop_slot();
+                const value = try self.pop_slot();
+                const dst_idx = try self.pop_slot();
+                try self.emit(.{ .table_fill = .{ .table_index = table_index, .dst_idx = dst_idx, .value = value, .len = len } });
+            },
+
+            // table.copy: [dst_idx, src_idx, len] -> [].  Stack: dst_idx pushed first, then src_idx, then len (TOS).
+            .table_copy => |inst| {
+                const len = try self.pop_slot();
+                const src_idx = try self.pop_slot();
+                const dst_idx = try self.pop_slot();
+                try self.emit(.{ .table_copy = .{ .dst_table = inst.dst_table, .src_table = inst.src_table, .dst_idx = dst_idx, .src_idx = src_idx, .len = len } });
+            },
+
+            // table.init: [dst_idx, src_offset, len] -> [].  Stack: dst_idx pushed first, then src_offset, then len (TOS).
+            .table_init => |inst| {
+                const len = try self.pop_slot();
+                const src_offset = try self.pop_slot();
+                const dst_idx = try self.pop_slot();
+                try self.emit(.{ .table_init = .{ .table_index = inst.table_index, .segment_idx = inst.segment_idx, .dst_idx = dst_idx, .src_offset = src_offset, .len = len } });
+            },
+
+            // elem.drop: no stack operands.
+            .elem_drop => |segment_idx| {
+                try self.emit(.{ .elem_drop = .{ .segment_idx = segment_idx } });
             },
         }
     }

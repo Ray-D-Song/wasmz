@@ -8,6 +8,7 @@ const store_mod = @import("../wasmz/store.zig");
 const helper = core.helper;
 const CompiledFunction = ir.CompiledFunction;
 const CompiledDataSegment = module_mod.CompiledDataSegment;
+const CompiledElemSegment = module_mod.CompiledElemSegment;
 const FuncType = core.func_type.FuncType;
 const Allocator = std.mem.Allocator;
 const Store = store_mod.Store;
@@ -133,10 +134,12 @@ pub const VM = struct {
         functions: []const CompiledFunction,
         func_types: []const FuncType,
         host_funcs: []const HostFunc,
-        tables: []const []const u32,
+        tables: [][]u32,
         func_type_indices: []const u32,
         data_segments: []const CompiledDataSegment,
         data_segments_dropped: []bool,
+        elem_segments: []const CompiledElemSegment,
+        elem_segments_dropped: []bool,
     ) Allocator.Error!ExecResult {
         // ── Initialize entry frame ─────────────────────────────────────────────
         const entry_slots_len: usize = @max(
@@ -843,7 +846,107 @@ pub const VM = struct {
                     @memset(memory[dst_addr .. dst_addr + len], @truncate(value));
                 },
 
-                // ── return ────────────────────────────────────────────────────────
+                // ── Table instructions ───────────────────────────────────────────────
+                .table_get => |inst| {
+                    if (inst.table_index >= tables.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+                    const table = tables[inst.table_index];
+                    const idx = slots[inst.index].readAs(u32);
+                    if (idx >= table.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+                    const func_idx = table[idx];
+                    // Convert u32 table entry to u64 funcref: null sentinel maps to maxInt(u64)
+                    const ref: u64 = if (func_idx == std.math.maxInt(u32)) std.math.maxInt(u64) else @as(u64, func_idx);
+                    slots[inst.dst] = RawVal.fromBits64(ref);
+                },
+                .table_set => |inst| {
+                    if (inst.table_index >= tables.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+                    const table = tables[inst.table_index];
+                    const idx = slots[inst.index].readAs(u32);
+                    if (idx >= table.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+                    const ref = slots[inst.value].readAs(u64);
+                    // Convert funcref RawVal to u32 table entry: null sentinel maps to maxInt(u32)
+                    tables[inst.table_index][idx] = if (ref == std.math.maxInt(u64)) std.math.maxInt(u32) else @as(u32, @truncate(ref));
+                },
+                .table_size => |inst| {
+                    if (inst.table_index >= tables.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+                    const size: i32 = @intCast(tables[inst.table_index].len);
+                    slots[inst.dst] = RawVal.from(size);
+                },
+                .table_grow => |inst| {
+                    const result: i32 = blk_table_grow: {
+                        if (inst.table_index >= tables.len) break :blk_table_grow -1;
+                        const old_len = tables[inst.table_index].len;
+                        const delta = slots[inst.delta].readAs(u32);
+                        const new_len = std.math.add(usize, old_len, @as(usize, delta)) catch break :blk_table_grow -1;
+                        const init_ref = slots[inst.init].readAs(u64);
+                        const init_val: u32 = if (init_ref == std.math.maxInt(u64)) std.math.maxInt(u32) else @as(u32, @truncate(init_ref));
+                        const new_slice = self.allocator.realloc(tables[inst.table_index], new_len) catch break :blk_table_grow -1;
+                        tables[inst.table_index] = new_slice;
+                        @memset(tables[inst.table_index][old_len..], init_val);
+                        break :blk_table_grow @intCast(old_len);
+                    };
+                    slots[inst.dst] = RawVal.from(result);
+                },
+                .table_fill => |inst| {
+                    if (inst.table_index >= tables.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+                    const table = tables[inst.table_index];
+                    const dst_idx = slots[inst.dst_idx].readAs(u32);
+                    const len = slots[inst.len].readAs(u32);
+                    const end = dst_idx +% len;
+                    if (end > table.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+                    const ref = slots[inst.value].readAs(u64);
+                    const val: u32 = if (ref == std.math.maxInt(u64)) std.math.maxInt(u32) else @as(u32, @truncate(ref));
+                    @memset(tables[inst.table_index][dst_idx..][0..len], val);
+                },
+                .table_copy => |inst| {
+                    if (inst.dst_table >= tables.len or inst.src_table >= tables.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+                    const dst_tbl = tables[inst.dst_table];
+                    const src_tbl = tables[inst.src_table];
+                    const dst_idx = slots[inst.dst_idx].readAs(u32);
+                    const src_idx = slots[inst.src_idx].readAs(u32);
+                    const len = slots[inst.len].readAs(u32);
+                    const src_end = src_idx +% len;
+                    const dst_end = dst_idx +% len;
+                    if (src_end > src_tbl.len or dst_end > dst_tbl.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+                    if (len > 0) {
+                        if (inst.dst_table == inst.src_table) {
+                            // Same table: use memmove semantics (handle overlaps)
+                            if (dst_idx < src_idx) {
+                                @memcpy(tables[inst.dst_table][dst_idx..][0..len], tables[inst.src_table][src_idx..][0..len]);
+                            } else if (dst_idx > src_idx) {
+                                var i: usize = len;
+                                while (i > 0) {
+                                    i -= 1;
+                                    tables[inst.dst_table][dst_idx + i] = tables[inst.src_table][src_idx + i];
+                                }
+                            }
+                        } else {
+                            @memcpy(tables[inst.dst_table][dst_idx..][0..len], tables[inst.src_table][src_idx..][0..len]);
+                        }
+                    }
+                },
+                .table_init => |inst| {
+                    if (inst.table_index >= tables.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+                    if (inst.segment_idx >= elem_segments.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+                    if (elem_segments_dropped[inst.segment_idx]) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+                    const seg = elem_segments[inst.segment_idx];
+                    const dst_idx = slots[inst.dst_idx].readAs(u32);
+                    const src_offset = slots[inst.src_offset].readAs(u32);
+                    const len = slots[inst.len].readAs(u32);
+                    const src_end = src_offset +% len;
+                    const dst_end = dst_idx +% len;
+                    if (src_end > seg.func_indices.len or dst_end > tables[inst.table_index].len) {
+                        return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+                    }
+                    for (0..len) |i| {
+                        tables[inst.table_index][dst_idx + i] = seg.func_indices[src_offset + i];
+                    }
+                },
+                .elem_drop => |inst| {
+                    if (inst.segment_idx >= elem_segments.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+                    elem_segments_dropped[inst.segment_idx] = true;
+                },
+
+                                // ── return ────────────────────────────────────────────────────────
                 .ret => |inst| {
                     const ret_val: ?RawVal = if (inst.value) |slot|
                         slots[slot]

@@ -78,6 +78,14 @@ pub const CompiledDataSegment = struct {
     data: []const u8,
 };
 
+/// Compiled element segment, holding the function indices and metadata for runtime table initialization.
+/// Passive segments are stored here; active segments are applied during instantiation.
+pub const CompiledElemSegment = struct {
+    mode: payload_mod.ElementMode,
+    table_index: u32,
+    func_indices: []const u32,
+};
+
 /// All possible errors that can occur during module compilation.
 pub const ModuleCompileError = Allocator.Error ||
     parser_mod.ParseAllError ||
@@ -138,6 +146,9 @@ pub const Module = struct {
     /// Data segments: each entry holds data bytes and initialization metadata.
     /// Active segments are applied during instantiation; passive segments are used by memory.init.
     data_segments: []CompiledDataSegment,
+    /// Element segments: each entry holds function indices and mode metadata.
+    /// Passive segments are used by table.init; active segments are applied during instantiation.
+    elem_segments: []CompiledElemSegment,
 
     /// Compile WebAssembly bytecode into a Module.
     ///
@@ -202,6 +213,13 @@ pub const Module = struct {
             data_segments_list.deinit(allocator);
         }
 
+        // Element section: track all element segments (both active and passive) for table.init/elem.drop.
+        var elem_segments_list: std.ArrayListUnmanaged(CompiledElemSegment) = .empty;
+        errdefer {
+            for (elem_segments_list.items) |*seg| allocator.free(seg.func_indices);
+            elem_segments_list.deinit(allocator);
+        }
+
         for (payloads) |payload| {
             switch (payload) {
                 .type_entry => |entry| {
@@ -257,22 +275,50 @@ pub const Module = struct {
                 .start_entry => |entry| {
                     start_function = entry.index;
                 },
+                // Wasm Table Section: create a pre-sized table entry for each declared table.
+                // Each slot is initialized to maxInt(u32) (null funcref sentinel).
+                .table_type => |tbl| {
+                    const tbl_idx = tables_lists.items.len;
+                    try tables_lists.append(allocator, .empty);
+                    const initial_size = tbl.limits.initial;
+                    try tables_lists.items[tbl_idx].resize(allocator, initial_size);
+                    @memset(tables_lists.items[tbl_idx].items, std.math.maxInt(u32));
+                },
                 .element_segment => |seg| {
                     // Record metadata for the upcoming element_segment_body.
                     pending_element_mode = seg.mode;
                     pending_element_table_index = seg.table_index;
                 },
                 .element_segment_body => |body| {
-                    // Only handle active externval segments (they have direct func indices).
+                    // Store all element segments (active + passive) for table.init / elem.drop.
+                    const func_indices_copy = try allocator.dupe(u32, body.func_indices);
+                    errdefer allocator.free(func_indices_copy);
+                    try elem_segments_list.append(allocator, .{
+                        .mode = pending_element_mode,
+                        .table_index = pending_element_table_index orelse 0,
+                        .func_indices = func_indices_copy,
+                    });
+
+                    // For active segments, also populate the runtime table at offset 0.
+                    // The table was pre-sized by the table section (or will be created here if absent).
+                    // We write func_indices starting at slot 0 (offset 0 is the most common case;
+                    // non-zero offsets are not supported because the parser does not expose the offset).
                     if (pending_element_mode == .active) {
                         const tbl_idx = pending_element_table_index orelse 0;
-                        // Grow tables_lists to accommodate tbl_idx.
+                        // Ensure the table list exists.
                         while (tables_lists.items.len <= tbl_idx) {
                             try tables_lists.append(allocator, .empty);
                         }
-                        // Append all func indices from this segment to the table.
-                        for (body.func_indices) |fi| {
-                            try tables_lists.items[tbl_idx].append(allocator, fi);
+                        const tbl = &tables_lists.items[tbl_idx];
+                        if (tbl.items.len < body.func_indices.len) {
+                            // Table smaller than segment: extend with nulls then overwrite.
+                            const old_len = tbl.items.len;
+                            try tbl.resize(allocator, body.func_indices.len);
+                            @memset(tbl.items[old_len..], std.math.maxInt(u32));
+                        }
+                        // Write func indices at offset 0 (overwriting null-initialized slots).
+                        for (body.func_indices, 0..) |fi, i| {
+                            tbl.items[i] = fi;
                         }
                     }
                 },
@@ -387,6 +433,13 @@ pub const Module = struct {
         // ── Build data_segments slice ────────────────────────────────────────
         const data_segments = try data_segments_list.toOwnedSlice(allocator);
 
+        // ── Build elem_segments slice ────────────────────────────────────────
+        const elem_segments = try elem_segments_list.toOwnedSlice(allocator);
+        errdefer {
+            for (elem_segments) |*seg| allocator.free(seg.func_indices);
+            allocator.free(elem_segments);
+        }
+
         // ── Build func_type_indices: imports first, then locals ───────────────
         // Total entries = imported_function_count + function_type_indices.items.len
         const func_type_indices = try allocator.alloc(u32, function_count);
@@ -410,6 +463,7 @@ pub const Module = struct {
             .tables = tables,
             .func_type_indices = func_type_indices,
             .data_segments = data_segments,
+            .elem_segments = elem_segments,
         };
     }
 
@@ -442,6 +496,11 @@ pub const Module = struct {
             self.allocator.free(seg.data);
         }
         self.allocator.free(self.data_segments);
+
+        for (self.elem_segments) |*seg| {
+            self.allocator.free(seg.func_indices);
+        }
+        self.allocator.free(self.elem_segments);
 
         self.* = undefined;
     }
@@ -735,13 +794,15 @@ test "module.compile builds exported function bodies" {
     defer store.deinit();
     var globals = [_]Global{};
     var memory: [0]u8 = .{};
-    const tables = [_][]const u32{};
+    var tables = [_][]u32{};
     var host_instance = HostInstance{
         .module = &module,
         .globals = globals[0..],
         .memory = memory[0..],
         .tables = tables[0..],
     };
+    var data_segments_dropped = [_]bool{};
+    var elem_segments_dropped = [_]bool{};
     const result = (try vm.execute(
         module.functions[@intCast(export_entry.function_index)],
         &.{},
@@ -754,8 +815,10 @@ test "module.compile builds exported function bodies" {
         &.{},
         tables[0..],
         &.{},
-        &.{},
-        &.{},
+        module.data_segments,
+        data_segments_dropped[0..],
+        module.elem_segments,
+        elem_segments_dropped[0..],
     )).ok orelse {
         return error.MissingReturnValue;
     };

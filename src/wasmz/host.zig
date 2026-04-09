@@ -21,7 +21,7 @@ pub const HostInstance = struct {
     module: *const Module,
     globals: []Global,
     memory: []u8,
-    tables: []const []const u32,
+    tables: [][]u32,
 };
 
 /// Runtime context exposed to host functions.
@@ -62,7 +62,7 @@ pub const HostContext = struct {
         return self.host_instance.globals;
     }
 
-    pub fn tables(self: *HostContext) []const []const u32 {
+    pub fn tables(self: *HostContext) [][]u32 {
         return self.host_instance.tables;
     }
 
@@ -258,7 +258,7 @@ test "HostContext userData and hostData cast opaque pointers" {
     var host_value: i32 = 42;
     var globals = [_]Global{};
     var memory = [_]u8{ 1, 2, 3 };
-    const tables = [_][]const u32{};
+    var tables = [_][]u32{};
     var dummy_module = try module_mod.Module.compile(engine, &[_]u8{
         0x00, 0x61, 0x73, 0x6d,
         0x01, 0x00, 0x00, 0x00,
@@ -294,7 +294,7 @@ test "HostContext readBytes traps on out of bounds" {
 
     var globals = [_]Global{};
     var memory = [_]u8{ 1, 2, 3 };
-    const tables = [_][]const u32{};
+    var tables = [_][]u32{};
     var dummy_module = try module_mod.Module.compile(engine, &[_]u8{
         0x00, 0x61, 0x73, 0x6d,
         0x01, 0x00, 0x00, 0x00,

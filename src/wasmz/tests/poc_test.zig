@@ -257,7 +257,7 @@ fn executeWithEmptyRuntime(
 
     var globals = [_]Global{};
     var memory: [0]u8 = .{};
-    const tables = [_][]const u32{};
+    var tables = [_][]u32{};
     var host_instance = HostInstance{
         .module = &module,
         .globals = globals[0..],
@@ -276,6 +276,8 @@ fn executeWithEmptyRuntime(
         &.{},
         &.{},
         tables[0..],
+        &.{},
+        &.{},
         &.{},
         &.{},
         &.{},
