@@ -1197,4 +1197,13 @@ pub const VM = struct {
 
         return .{ .ok = null };
     }
+
+    // TODO: GC
+    // GC introduces heap memory blocks managed by the VM
+    // and specific data structures that need to be stored on the heap
+    // struct、array、anyref etc..
+
+    // For GC, we can use a simple mark-and-sweep algorithm
+    // markAll(self* VM) - just call mark fn
+    // mark(self* VM, Object)
 };
