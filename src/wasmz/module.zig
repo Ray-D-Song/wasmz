@@ -83,6 +83,9 @@ pub const CompiledDataSegment = struct {
 pub const CompiledElemSegment = struct {
     mode: payload_mod.ElementMode,
     table_index: u32,
+    /// For active segments, the offset in the table where elements should be written.
+    /// For passive segments, this is unused.
+    offset: u32,
     func_indices: []const u32,
 };
 
@@ -293,16 +296,22 @@ pub const Module = struct {
                     // Store all element segments (active + passive) for table.init / elem.drop.
                     const func_indices_copy = try allocator.dupe(u32, body.func_indices);
                     errdefer allocator.free(func_indices_copy);
+
+                    // Calculate offset for active segments by evaluating the constant expression.
+                    const offset: u32 = if (pending_element_mode == .active)
+                        (try evaluate_const_expr(arena.allocator(), body.offset_expr, .I32)).readAs(u32)
+                    else
+                        0;
+
                     try elem_segments_list.append(allocator, .{
                         .mode = pending_element_mode,
                         .table_index = pending_element_table_index orelse 0,
+                        .offset = offset,
                         .func_indices = func_indices_copy,
                     });
 
-                    // For active segments, also populate the runtime table at offset 0.
+                    // For active segments, also populate the runtime table at the calculated offset.
                     // The table was pre-sized by the table section (or will be created here if absent).
-                    // We write func_indices starting at slot 0 (offset 0 is the most common case;
-                    // non-zero offsets are not supported because the parser does not expose the offset).
                     if (pending_element_mode == .active) {
                         const tbl_idx = pending_element_table_index orelse 0;
                         // Ensure the table list exists.
@@ -310,15 +319,16 @@ pub const Module = struct {
                             try tables_lists.append(allocator, .empty);
                         }
                         const tbl = &tables_lists.items[tbl_idx];
-                        if (tbl.items.len < body.func_indices.len) {
-                            // Table smaller than segment: extend with nulls then overwrite.
+                        const required_len = offset + body.func_indices.len;
+                        if (tbl.items.len < required_len) {
+                            // Table smaller than segment+offset: extend with nulls then overwrite.
                             const old_len = tbl.items.len;
-                            try tbl.resize(allocator, body.func_indices.len);
+                            try tbl.resize(allocator, required_len);
                             @memset(tbl.items[old_len..], std.math.maxInt(u32));
                         }
-                        // Write func indices at offset 0 (overwriting null-initialized slots).
+                        // Write func indices at the calculated offset (overwriting null-initialized slots).
                         for (body.func_indices, 0..) |fi, i| {
-                            tbl.items[i] = fi;
+                            tbl.items[offset + i] = fi;
                         }
                     }
                 },
@@ -847,4 +857,75 @@ test "module.compile captures global initializers" {
     try std.testing.expectEqual(ValType.I32, module.globals[0].value.valType());
     try std.testing.expectEqual(@as(i32, 42), module.globals[0].value.into(i32));
     try std.testing.expectEqual(@as(usize, 0), module.functions.len);
+}
+
+test "module.compile handles active element segment with non-zero offset" {
+    // WAT:
+    //   (module
+    //     (type (func (result i32)))
+    //     (func (result i32) i32.const 42)   ;; func 0
+    //     (func (result i32) i32.const 88)   ;; func 1
+    //     (table 8 funcref)
+    //     (elem (i32.const 3) func 0 1)      ;; active elem at offset 3
+    //   )
+    // This test verifies that the parser captures the offset expression and
+    // the module compiler evaluates it to place elements at the correct table slots.
+    const testing = std.testing;
+    const config_mod = @import("../engine/config.zig");
+
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    // Manually construct the wasm bytes:
+    // - Type section: one function type (result i32)
+    // - Function section: two function type indices
+    // - Table section: one table of 8 funcref
+    // - Element section: active segment with offset 3
+    // - Code section: two function bodies returning constants
+    const wasm = [_]u8{
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic + version
+        // Type section (id=1)
+        0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f,
+        // Function section (id=3)
+        0x03,
+        0x03, 0x02, 0x00, 0x00,
+        // Table section (id=4)
+        0x04, 0x04, 0x01, 0x70,
+        0x00,
+        0x08,
+        // Element section (id=9)
+        0x09, 0x08, 0x01, 0x00, // section id, size, count, segment type (legacy_active_funcref_externval)
+        0x41, 0x03, 0x0b, // offset expression: i32.const 3, end
+        0x02, 0x00, 0x01, // 2 function indices: 0, 1
+        // Code section (id=10)
+        0x0a, 0x0a, 0x02, 0x04, 0x00, 0x41, 0x2a, 0x0b, // func 0: i32.const 42, end
+        0x04, 0x00, 0x41, 0x58, 0x0b, // func 1: i32.const 88, end
+    };
+
+    var module = try Module.compile(engine, &wasm);
+    defer module.deinit();
+
+    // Verify the element segment has the correct offset
+    try testing.expectEqual(@as(usize, 1), module.elem_segments.len);
+    try testing.expectEqual(payload_mod.ElementMode.active, module.elem_segments[0].mode);
+    try testing.expectEqual(@as(u32, 3), module.elem_segments[0].offset);
+    try testing.expectEqualSlices(u32, &[_]u32{ 0, 1 }, module.elem_segments[0].func_indices);
+
+    // Verify the table was populated at the correct slots
+    try testing.expectEqual(@as(usize, 1), module.tables.len);
+    try testing.expectEqual(@as(usize, 8), module.tables[0].len);
+
+    // Slots 0-2 should be null (maxInt(u32))
+    try testing.expectEqual(std.math.maxInt(u32), module.tables[0][0]);
+    try testing.expectEqual(std.math.maxInt(u32), module.tables[0][1]);
+    try testing.expectEqual(std.math.maxInt(u32), module.tables[0][2]);
+
+    // Slots 3-4 should contain the function indices from the element segment
+    try testing.expectEqual(@as(u32, 0), module.tables[0][3]);
+    try testing.expectEqual(@as(u32, 1), module.tables[0][4]);
+
+    // Slots 5-7 should be null
+    try testing.expectEqual(std.math.maxInt(u32), module.tables[0][5]);
+    try testing.expectEqual(std.math.maxInt(u32), module.tables[0][6]);
+    try testing.expectEqual(std.math.maxInt(u32), module.tables[0][7]);
 }

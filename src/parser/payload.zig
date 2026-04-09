@@ -852,6 +852,9 @@ pub const ElementSegmentBody = struct {
     /// Function indices for externval-style elements (e.g. legacy_active_funcref_externval).
     /// Empty for elemexpr-style segments.
     func_indices: []const u32 = &.{},
+    /// For active segments, contains the init expression bytes for the offset.
+    /// For passive segments, this is empty.
+    offset_expr: []const u8 = &.{},
 };
 
 pub const DataSegment = struct {

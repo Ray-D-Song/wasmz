@@ -1148,7 +1148,9 @@ pub const Parser = struct {
             return .need_more_data;
         }
 
+        var offset_expr: []const u8 = &.{};
         if (is_active_element_segment_type(segment_type)) {
+            const offset_expr_start = self.cur_pos;
             self.readCodeOperator(.expression) catch |err| switch (err) {
                 error.NeedMoreData => return .need_more_data,
                 error.UnknownOperator => return self.fail_with_state(ParserError.UnknownOperator),
@@ -1157,6 +1159,7 @@ pub const Parser = struct {
                 },
                 error.UnsupportedState => return self.fail_with_state(ParserError.UnsupportedState),
             };
+            offset_expr = self.cur_data[offset_expr_start..self.cur_pos];
         }
 
         var element_type: Type = .{ .kind = .funcref };
@@ -1198,6 +1201,7 @@ pub const Parser = struct {
             .payload = .{ .element_segment_body = ElementSegmentBody{
                 .element_type = element_type,
                 .func_indices = func_indices,
+                .offset_expr = offset_expr,
             } },
         } };
     }
