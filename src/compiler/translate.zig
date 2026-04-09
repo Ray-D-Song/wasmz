@@ -140,6 +140,14 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         .i64_trunc_f32_u,
         .i64_trunc_f64_s,
         .i64_trunc_f64_u,
+        .i32_trunc_sat_f32_s,
+        .i32_trunc_sat_f32_u,
+        .i32_trunc_sat_f64_s,
+        .i32_trunc_sat_f64_u,
+        .i64_trunc_sat_f32_s,
+        .i64_trunc_sat_f32_u,
+        .i64_trunc_sat_f64_s,
+        .i64_trunc_sat_f64_u,
         .f32_convert_i32_s,
         .f32_convert_i32_u,
         .f32_convert_i64_s,
@@ -303,7 +311,6 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         .ref_is_null => WasmOp.ref_is_null,
         .ref_func => WasmOp{ .ref_func = info.func_index orelse return error.UnsupportedOperator },
         .ref_eq => WasmOp.ref_eq,
-
 
         // ── Table instructions ──────────────────────────────────────────────────
         .table_get => WasmOp{ .table_get = info.table_index orelse return error.UnsupportedOperator },

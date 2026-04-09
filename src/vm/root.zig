@@ -453,6 +453,20 @@ pub const VM = struct {
                     slots[inst.dst] = RawVal.from(reinterpretUnsignedAsSigned(DstT, result));
                 },
 
+                // ── Numeric conversion: float -> int (saturating, non-trapping) ───
+                inline .i32_trunc_sat_f32_s, .i32_trunc_sat_f64_s, .i64_trunc_sat_f32_s, .i64_trunc_sat_f64_s => |inst| {
+                    const SrcT = @TypeOf(inst).SrcType;
+                    const DstT = @TypeOf(inst).DstType;
+                    slots[inst.dst] = RawVal.from(helper.truncateSaturateInto(DstT, slots[inst.src].readAs(SrcT)));
+                },
+                inline .i32_trunc_sat_f32_u, .i32_trunc_sat_f64_u, .i64_trunc_sat_f32_u, .i64_trunc_sat_f64_u => |inst| {
+                    const SrcT = @TypeOf(inst).SrcType;
+                    const DstT = @TypeOf(inst).DstType;
+                    const U = UnsignedOf(DstT);
+                    const result = helper.truncateSaturateInto(U, slots[inst.src].readAs(SrcT));
+                    slots[inst.dst] = RawVal.from(reinterpretUnsignedAsSigned(DstT, result));
+                },
+
                 // ── Numeric conversion: int -> float ────────────────────────
                 inline .f32_convert_i32_s, .f32_convert_i64_s, .f64_convert_i32_s, .f64_convert_i64_s => |inst| {
                     const SrcT = @TypeOf(inst).SrcType;
@@ -946,7 +960,7 @@ pub const VM = struct {
                     elem_segments_dropped[inst.segment_idx] = true;
                 },
 
-                                // ── return ────────────────────────────────────────────────────────
+                // ── return ────────────────────────────────────────────────────────
                 .ret => |inst| {
                     const ret_val: ?RawVal = if (inst.value) |slot|
                         slots[slot]

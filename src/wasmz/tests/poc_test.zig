@@ -472,6 +472,36 @@ test "truncation instructions map NaN and range failures to wasm trap codes" {
     try expectUnaryTrap(.i32_trunc_f32_s, RawVal.from(@as(f32, 2147483648.0)), .IntegerOverflow);
 }
 
+test "trunc_sat instructions saturate instead of trapping" {
+    // NaN → 0
+    try expectUnaryResult(i32, .i32_trunc_sat_f32_s, RawVal.from(std.math.nan(f32)), 0);
+    try expectUnaryResult(i32, .i32_trunc_sat_f32_u, RawVal.from(std.math.nan(f32)), 0);
+    try expectUnaryResult(i64, .i64_trunc_sat_f32_s, RawVal.from(std.math.nan(f32)), 0);
+    try expectUnaryResult(i64, .i64_trunc_sat_f32_u, RawVal.from(std.math.nan(f32)), 0);
+
+    // Positive overflow → INT_MAX
+    try expectUnaryResult(i32, .i32_trunc_sat_f32_s, RawVal.from(@as(f32, 1e20)), std.math.maxInt(i32));
+    try expectUnaryResult(i32, .i32_trunc_sat_f64_s, RawVal.from(@as(f64, 1e50)), std.math.maxInt(i32));
+    try expectUnaryResult(i64, .i64_trunc_sat_f32_s, RawVal.from(@as(f32, 1e30)), std.math.maxInt(i64));
+    try expectUnaryResult(i64, .i64_trunc_sat_f64_s, RawVal.from(@as(f64, 1e50)), std.math.maxInt(i64));
+
+    // Negative overflow → INT_MIN (signed)
+    try expectUnaryResult(i32, .i32_trunc_sat_f32_s, RawVal.from(@as(f32, -1e20)), std.math.minInt(i32));
+    try expectUnaryResult(i64, .i64_trunc_sat_f32_s, RawVal.from(@as(f32, -1e30)), std.math.minInt(i64));
+
+    // Negative overflow → 0 (unsigned)
+    try expectUnaryBitsResult(u32, .i32_trunc_sat_f32_u, RawVal.from(@as(f32, -1.0)), 0);
+    try expectUnaryBitsResult(u64, .i64_trunc_sat_f32_u, RawVal.from(@as(f32, -1.0)), 0);
+
+    // Positive overflow → UINT_MAX (unsigned)
+    try expectUnaryBitsResult(u32, .i32_trunc_sat_f32_u, RawVal.from(@as(f32, 1e20)), std.math.maxInt(u32));
+    try expectUnaryBitsResult(u64, .i64_trunc_sat_f64_u, RawVal.from(@as(f64, 1e50)), std.math.maxInt(u64));
+
+    // Normal values work correctly
+    try expectUnaryResult(i32, .i32_trunc_sat_f32_s, RawVal.from(@as(f32, 42.9)), 42);
+    try expectUnaryResult(i32, .i32_trunc_sat_f64_s, RawVal.from(@as(f64, -3.7)), -3);
+}
+
 test "real wasm conversion opcode runs through parser lower and vm" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

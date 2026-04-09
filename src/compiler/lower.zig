@@ -207,6 +207,14 @@ pub const WasmOp = union(enum) {
     i64_trunc_f32_u,
     i64_trunc_f64_s,
     i64_trunc_f64_u,
+    i32_trunc_sat_f32_s,
+    i32_trunc_sat_f32_u,
+    i32_trunc_sat_f64_s,
+    i32_trunc_sat_f64_u,
+    i64_trunc_sat_f32_s,
+    i64_trunc_sat_f32_u,
+    i64_trunc_sat_f64_s,
+    i64_trunc_sat_f64_u,
     f32_convert_i32_s,
     f32_convert_i32_u,
     f32_convert_i64_s,
@@ -300,21 +308,21 @@ pub const WasmOp = union(enum) {
 
     // ── Table instructions ─────────────────────────────────────────────────────────
     /// table.get: pop index (i32), push funcref from table[table_index][index].
-    table_get: u32,  // table_index
+    table_get: u32, // table_index
     /// table.set: pop value (funcref), pop index (i32), write to table[table_index][index].
-    table_set: u32,  // table_index
+    table_set: u32, // table_index
     /// table.size: push i32 size of table[table_index].
-    table_size: u32,  // table_index
+    table_size: u32, // table_index
     /// table.grow: pop delta (i32), pop init (funcref), grow table[table_index]. Push old size or -1.
-    table_grow: u32,  // table_index
+    table_grow: u32, // table_index
     /// table.fill: pop len (i32), pop value (funcref), pop dst (i32). Fill table[table_index][dst..dst+len] = value.
-    table_fill: u32,  // table_index
+    table_fill: u32, // table_index
     /// table.copy: pop len (i32), pop src_idx (i32), pop dst_idx (i32). Copy table[src][src_idx..] to table[dst][dst_idx..].
     table_copy: struct { dst_table: u32, src_table: u32 },
     /// table.init: pop len (i32), pop src_offset (i32), pop dst_idx (i32). Copy elem_seg[segment_idx][src_offset..] to table[table_index][dst_idx..].
     table_init: struct { table_index: u32, segment_idx: u32 },
     /// elem.drop: mark element segment as dropped.
-    elem_drop: u32,  // segment_idx
+    elem_drop: u32, // segment_idx
 };
 
 /// Block/loop/if result type. null means void (no result).
@@ -969,6 +977,14 @@ pub const Lower = struct {
             .i64_trunc_f32_u => try self.lower_convert_op("i64_trunc_f32_u"),
             .i64_trunc_f64_s => try self.lower_convert_op("i64_trunc_f64_s"),
             .i64_trunc_f64_u => try self.lower_convert_op("i64_trunc_f64_u"),
+            .i32_trunc_sat_f32_s => try self.lower_convert_op("i32_trunc_sat_f32_s"),
+            .i32_trunc_sat_f32_u => try self.lower_convert_op("i32_trunc_sat_f32_u"),
+            .i32_trunc_sat_f64_s => try self.lower_convert_op("i32_trunc_sat_f64_s"),
+            .i32_trunc_sat_f64_u => try self.lower_convert_op("i32_trunc_sat_f64_u"),
+            .i64_trunc_sat_f32_s => try self.lower_convert_op("i64_trunc_sat_f32_s"),
+            .i64_trunc_sat_f32_u => try self.lower_convert_op("i64_trunc_sat_f32_u"),
+            .i64_trunc_sat_f64_s => try self.lower_convert_op("i64_trunc_sat_f64_s"),
+            .i64_trunc_sat_f64_u => try self.lower_convert_op("i64_trunc_sat_f64_u"),
             .f32_convert_i32_s => try self.lower_convert_op("f32_convert_i32_s"),
             .f32_convert_i32_u => try self.lower_convert_op("f32_convert_i32_u"),
             .f32_convert_i64_s => try self.lower_convert_op("f32_convert_i64_s"),
