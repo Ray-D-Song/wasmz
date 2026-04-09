@@ -76,6 +76,32 @@ pub const Op = union(enum) {
         value: f64,
     },
 
+    // ── Reference type constants ─────────────────────────────────────────────────
+    /// ref.null: push a null reference (encoded as maxInt(u64) in low64).
+    /// The null sentinel is 0xFFFF_FFFF_FFFF_FFFF, which can never be a valid function index.
+    const_ref_null: struct {
+        dst: Slot,
+    },
+    /// ref.is_null: test whether the reference in `src` is null.
+    /// Writes i32 1 to `dst` if null (low64 == maxInt(u64)), else i32 0.
+    ref_is_null: struct {
+        dst: Slot,
+        src: Slot,
+    },
+    /// ref.func: push a reference to function `func_idx`.
+    /// The function index is stored as u64 in low64.
+    ref_func: struct {
+        dst: Slot,
+        func_idx: u32,
+    },
+    /// ref.eq: compare two references for equality.
+    /// Writes i32 1 to `dst` if lhs and rhs have the same low64 bits, else i32 0.
+    ref_eq: struct {
+        dst: Slot,
+        lhs: Slot,
+        rhs: Slot,
+    },
+
     // ── Variable access ─────────────────────────────────────────────────────────
     local_get: struct {
         dst: Slot,

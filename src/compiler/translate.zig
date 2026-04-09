@@ -298,6 +298,12 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         .select => WasmOp.select,
         .select_with_type => WasmOp.select_with_type,
 
+        // ── Reference type instructions ─────────────────────────────────────────
+        .ref_null => WasmOp.ref_null,
+        .ref_is_null => WasmOp.ref_is_null,
+        .ref_func => WasmOp{ .ref_func = info.func_index orelse return error.UnsupportedOperator },
+        .ref_eq => WasmOp.ref_eq,
+
         else => |op| {
             std.debug.print("UnsupportedOperator: {s}\n", .{@tagName(op)});
             return error.UnsupportedOperator;

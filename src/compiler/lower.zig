@@ -287,6 +287,16 @@ pub const WasmOp = union(enum) {
     select,
     /// select with explicit type annotation (same semantics, type annotation ignored at runtime",)
     select_with_type,
+
+    // ── Reference type instructions ───────────────────────────────────────────
+    /// ref.null: push a null reference value.
+    ref_null,
+    /// ref.is_null: test if TOS reference is null → i32 result (1 = null, 0 = non-null).
+    ref_is_null,
+    /// ref.func: push a reference to function func_idx.
+    ref_func: u32,
+    /// ref.eq: compare two references — i32 result (1 = equal, 0 = not equal).
+    ref_eq,
 };
 
 /// Block/loop/if result type. null means void (no result).
@@ -1215,6 +1225,38 @@ pub const Lower = struct {
                 const val1 = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .select = .{ .dst = dst, .val1 = val1, .val2 = val2, .cond = cond } });
+                try self.stack.push(self.allocator, dst);
+            },
+
+            // ── Reference type instructions ──────────────────────────────────────
+            // ref.null: push null reference (encoded as maxInt(u64) in low64).
+            .ref_null => {
+                const dst = self.alloc_slot();
+                try self.emit(.{ .const_ref_null = .{ .dst = dst } });
+                try self.stack.push(self.allocator, dst);
+            },
+
+            // ref.is_null: pop reference, push i32 result (1 if null, 0 otherwise).
+            .ref_is_null => {
+                const src = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .ref_is_null = .{ .dst = dst, .src = src } });
+                try self.stack.push(self.allocator, dst);
+            },
+
+            // ref.func: push funcref for func_idx.
+            .ref_func => |func_idx| {
+                const dst = self.alloc_slot();
+                try self.emit(.{ .ref_func = .{ .dst = dst, .func_idx = func_idx } });
+                try self.stack.push(self.allocator, dst);
+            },
+
+            // ref.eq: pop two references, push i32 result (1 if equal, 0 otherwise).
+            .ref_eq => {
+                const rhs = try self.pop_slot();
+                const lhs = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .ref_eq = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
                 try self.stack.push(self.allocator, dst);
             },
         }

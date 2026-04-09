@@ -582,7 +582,8 @@ pub const Module = struct {
                 else => return error.UnsupportedConstExpr,
             },
             .FuncRef, .ExternRef => switch (init.info.code) {
-                .ref_null => RawVal.fromBits64(0),
+                // null reference: encoded as maxInt(u64) sentinel (matches ref.null instruction encoding)
+                .ref_null => RawVal.fromBits64(std.math.maxInt(u64)),
                 else => return error.UnsupportedConstExpr,
             },
             else => return error.UnsupportedGlobalType,

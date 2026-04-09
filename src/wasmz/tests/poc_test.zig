@@ -497,3 +497,141 @@ test "real wasm sign-extension opcode runs through parser lower and vm" {
     const result = (try executeWithEmptyRuntime(&vm, compiled, &params)).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, -128), result.readAs(i32));
 }
+
+test "ref.null pushes null reference sentinel" {
+    // ref.null produces the null sentinel value (maxInt(u64) in low64).
+    var lower = Lower.initWithReservedSlots(testing.allocator, 0);
+    defer lower.deinit();
+
+    const ops = [_]WasmOp{
+        .ref_null,
+        .ret,
+    };
+    for (ops) |o| try lower.lowerOp(o);
+
+    var vm = VM.init(testing.allocator);
+    const result = (try executeWithEmptyRuntime(&vm, lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
+    try testing.expectEqual(std.math.maxInt(u64), result.readAs(u64));
+}
+
+test "ref.is_null returns 1 for null reference" {
+    // Push a null reference and immediately test it — should produce i32(1).
+    var lower = Lower.initWithReservedSlots(testing.allocator, 0);
+    defer lower.deinit();
+
+    const ops = [_]WasmOp{
+        .ref_null,
+        .ref_is_null,
+        .ret,
+    };
+    for (ops) |o| try lower.lowerOp(o);
+
+    var vm = VM.init(testing.allocator);
+    const result = (try executeWithEmptyRuntime(&vm, lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
+    try testing.expectEqual(@as(i32, 1), result.readAs(i32));
+}
+
+test "ref.is_null returns 0 for non-null funcref" {
+    // ref.func 0 produces a non-null funcref (func_idx stored in low64 != maxInt(u64)).
+    var lower = Lower.initWithReservedSlots(testing.allocator, 0);
+    defer lower.deinit();
+
+    const ops = [_]WasmOp{
+        .{ .ref_func = 0 },
+        .ref_is_null,
+        .ret,
+    };
+    for (ops) |o| try lower.lowerOp(o);
+
+    var vm = VM.init(testing.allocator);
+    const result = (try executeWithEmptyRuntime(&vm, lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
+    try testing.expectEqual(@as(i32, 0), result.readAs(i32));
+}
+
+test "ref.func pushes function index as funcref" {
+    // ref.func 42 stores 42 in low64 of the result slot.
+    var lower = Lower.initWithReservedSlots(testing.allocator, 0);
+    defer lower.deinit();
+
+    const ops = [_]WasmOp{
+        .{ .ref_func = 42 },
+        .ret,
+    };
+    for (ops) |o| try lower.lowerOp(o);
+
+    var vm = VM.init(testing.allocator);
+    const result = (try executeWithEmptyRuntime(&vm, lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
+    try testing.expectEqual(@as(u64, 42), result.readAs(u64));
+}
+
+test "ref.eq: null == null → 1" {
+    // Two null references must compare equal.
+    var lower = Lower.initWithReservedSlots(testing.allocator, 0);
+    defer lower.deinit();
+
+    const ops = [_]WasmOp{
+        .ref_null,
+        .ref_null,
+        .ref_eq,
+        .ret,
+    };
+    for (ops) |o| try lower.lowerOp(o);
+
+    var vm = VM.init(testing.allocator);
+    const result = (try executeWithEmptyRuntime(&vm, lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
+    try testing.expectEqual(@as(i32, 1), result.readAs(i32));
+}
+
+test "ref.eq: null != funcref → 0" {
+    // A null reference must not equal a non-null funcref.
+    var lower = Lower.initWithReservedSlots(testing.allocator, 0);
+    defer lower.deinit();
+
+    const ops = [_]WasmOp{
+        .ref_null,
+        .{ .ref_func = 0 },
+        .ref_eq,
+        .ret,
+    };
+    for (ops) |o| try lower.lowerOp(o);
+
+    var vm = VM.init(testing.allocator);
+    const result = (try executeWithEmptyRuntime(&vm, lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
+    try testing.expectEqual(@as(i32, 0), result.readAs(i32));
+}
+
+test "ref.eq: same funcref == same funcref → 1" {
+    // Two refs to the same function index must compare equal.
+    var lower = Lower.initWithReservedSlots(testing.allocator, 0);
+    defer lower.deinit();
+
+    const ops = [_]WasmOp{
+        .{ .ref_func = 7 },
+        .{ .ref_func = 7 },
+        .ref_eq,
+        .ret,
+    };
+    for (ops) |o| try lower.lowerOp(o);
+
+    var vm = VM.init(testing.allocator);
+    const result = (try executeWithEmptyRuntime(&vm, lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
+    try testing.expectEqual(@as(i32, 1), result.readAs(i32));
+}
+
+test "ref.eq: different funcrefs → 0" {
+    // Two refs to different function indices must not compare equal.
+    var lower = Lower.initWithReservedSlots(testing.allocator, 0);
+    defer lower.deinit();
+
+    const ops = [_]WasmOp{
+        .{ .ref_func = 3 },
+        .{ .ref_func = 5 },
+        .ref_eq,
+        .ret,
+    };
+    for (ops) |o| try lower.lowerOp(o);
+
+    var vm = VM.init(testing.allocator);
+    const result = (try executeWithEmptyRuntime(&vm, lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
+    try testing.expectEqual(@as(i32, 0), result.readAs(i32));
+}

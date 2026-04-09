@@ -202,6 +202,26 @@ pub const VM = struct {
                     slots[inst.dst] = RawVal.from(inst.value);
                 },
 
+                // ── Reference type constants ──────────────────────────────────
+                // ref.null: push the null reference sentinel (maxInt(u64) in low64).
+                .const_ref_null => |inst| {
+                    slots[inst.dst] = RawVal.fromBits64(std.math.maxInt(u64));
+                },
+                // ref.is_null: 1 if the reference is the null sentinel, else 0.
+                .ref_is_null => |inst| {
+                    const is_null: i32 = if (slots[inst.src].readAs(u64) == std.math.maxInt(u64)) 1 else 0;
+                    slots[inst.dst] = RawVal.from(is_null);
+                },
+                // ref.func: push the function index as a funcref value (stored in low64).
+                .ref_func => |inst| {
+                    slots[inst.dst] = RawVal.fromBits64(@as(u64, inst.func_idx));
+                },
+                // ref.eq: 1 if lhs and rhs have the same raw bits, else 0.
+                .ref_eq => |inst| {
+                    const eq: i32 = if (slots[inst.lhs].readAs(u64) == slots[inst.rhs].readAs(u64)) 1 else 0;
+                    slots[inst.dst] = RawVal.from(eq);
+                },
+
                 // ── Variable access ───────────────────────────────────────────
                 .local_get => |inst| {
                     slots[inst.dst] = slots[inst.local];
