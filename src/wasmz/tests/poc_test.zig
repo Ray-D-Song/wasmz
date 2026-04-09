@@ -5,11 +5,11 @@ const parser_mod = @import("parser");
 const payload_mod = @import("payload");
 const lower_mod = @import("../../compiler/lower.zig");
 const ir_mod = @import("../../compiler/ir.zig");
-const vm_mod = @import("../../vm/mod.zig");
+const vm_mod = @import("../../vm/root.zig");
 const module_mod = @import("../../wasmz/module.zig");
 const store_mod = @import("../../wasmz/store.zig");
 const host_mod = @import("../../wasmz/host.zig");
-const engine_mod = @import("../../engine/mod.zig");
+const engine_mod = @import("../../engine/root.zig");
 const config_mod = @import("../../engine/config.zig");
 const core = @import("core");
 

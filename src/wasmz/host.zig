@@ -244,7 +244,7 @@ pub const Linker = struct {
 
 test "HostContext userData and hostData cast opaque pointers" {
     const testing = std.testing;
-    const engine_mod = @import("../engine/mod.zig");
+    const engine_mod = @import("../engine/root.zig");
     const config_mod = @import("../engine/config.zig");
 
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
@@ -283,7 +283,7 @@ test "HostContext userData and hostData cast opaque pointers" {
 
 test "HostContext readBytes traps on out of bounds" {
     const testing = std.testing;
-    const engine_mod = @import("../engine/mod.zig");
+    const engine_mod = @import("../engine/root.zig");
     const config_mod = @import("../engine/config.zig");
 
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});

@@ -11,8 +11,8 @@
 ///   - HostFunc         : A single host-provided callable function
 ///   - ExecResult       : VM execution result (ok with optional return value, or trap)
 ///   - Trap / TrapCode  : Wasm runtime trap type and trap code enumeration
-pub const Engine = @import("engine/mod.zig").Engine;
-pub const ExecResult = @import("vm/mod.zig").ExecResult;
+pub const Engine = @import("engine/root.zig").Engine;
+pub const ExecResult = @import("vm/root.zig").ExecResult;
 pub const Config = @import("engine/config.zig").Config;
 pub const Module = @import("wasmz/module.zig").Module;
 pub const Store = @import("wasmz/store.zig").Store;

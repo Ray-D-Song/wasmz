@@ -12,7 +12,7 @@ const core = @import("core");
 const store_mod = @import("./store.zig");
 const module_mod = @import("./module.zig");
 const host_mod = @import("./host.zig");
-const vm_mod = @import("../vm/mod.zig");
+const vm_mod = @import("../vm/root.zig");
 
 const Allocator = std.mem.Allocator;
 const Store = store_mod.Store;
@@ -182,7 +182,7 @@ pub const Instance = struct {
 
 test "Instance.call executes exported function end-to-end" {
     const testing = std.testing;
-    const engine_mod = @import("../engine/mod.zig");
+    const engine_mod = @import("../engine/root.zig");
     const config_mod = @import("../engine/config.zig");
 
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
@@ -218,7 +218,7 @@ test "Instance.call executes exported function end-to-end" {
 
 test "Instance.init allocates globals and memory" {
     const testing = std.testing;
-    const engine_mod = @import("../engine/mod.zig");
+    const engine_mod = @import("../engine/root.zig");
     const config_mod = @import("../engine/config.zig");
 
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
@@ -269,7 +269,7 @@ test "Instance.init allocates globals and memory" {
 
 test "Instance.init with no memory section" {
     const testing = std.testing;
-    const engine_mod = @import("../engine/mod.zig");
+    const engine_mod = @import("../engine/root.zig");
     const config_mod = @import("../engine/config.zig");
 
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
@@ -314,7 +314,7 @@ test "Instance.call supports inter-function calls (double via add)" {
     //   )
     //
     const testing = std.testing;
-    const engine_mod = @import("../engine/mod.zig");
+    const engine_mod = @import("../engine/root.zig");
     const config_mod = @import("../engine/config.zig");
 
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
@@ -383,7 +383,7 @@ test "Instance.call: i32.store and i32.load round-trip" {
     // i32.store encoding: 0x36 <align_leb> <offset_leb>  (align=2, offset=0)
     // i32.load  encoding: 0x28 <align_leb> <offset_leb>  (align=2, offset=0)
     const testing = std.testing;
-    const engine_mod = @import("../engine/mod.zig");
+    const engine_mod = @import("../engine/root.zig");
     const config_mod = @import("../engine/config.zig");
 
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
@@ -443,7 +443,7 @@ test "Instance.call: i32.store8, i32.load8_u, i32.load8_s" {
     // i32.load8_u = 0x2d align=0 offset=0
     // i32.load8_s = 0x2c align=0 offset=0
     const testing = std.testing;
-    const engine_mod = @import("../engine/mod.zig");
+    const engine_mod = @import("../engine/root.zig");
     const config_mod = @import("../engine/config.zig");
 
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
@@ -494,7 +494,7 @@ test "Instance.call: memory out-of-bounds returns trap" {
     //       i32.load)          ;; load 4 bytes at param
     //   )
     const testing = std.testing;
-    const engine_mod = @import("../engine/mod.zig");
+    const engine_mod = @import("../engine/root.zig");
     const config_mod = @import("../engine/config.zig");
 
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
@@ -546,7 +546,7 @@ test "Instance: host function import (env.add_one) is called correctly" {
     //     (export "run" (func 1))
     //   )
     const testing_mod = std.testing;
-    const engine_mod = @import("../engine/mod.zig");
+    const engine_mod = @import("../engine/root.zig");
     const config_mod = @import("../engine/config.zig");
 
     var engine = try engine_mod.Engine.init(testing_mod.allocator, config_mod.Config{});
@@ -631,7 +631,7 @@ test "Instance: host function import (env.add_one) is called correctly" {
 test "Instance: host function trap propagates to caller" {
     // Same Wasm module as the previous test.
     const testing_mod = std.testing;
-    const engine_mod = @import("../engine/mod.zig");
+    const engine_mod = @import("../engine/root.zig");
     const config_mod = @import("../engine/config.zig");
 
     var engine = try engine_mod.Engine.init(testing_mod.allocator, config_mod.Config{});
@@ -693,7 +693,7 @@ test "Instance.call: unreachable instruction returns UnreachableCodeReached trap
     //       unreachable)
     //   )
     const testing = std.testing;
-    const engine_mod = @import("../engine/mod.zig");
+    const engine_mod = @import("../engine/root.zig");
     const config_mod = @import("../engine/config.zig");
 
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
@@ -730,7 +730,7 @@ test "Instance.call: unreachable instruction returns UnreachableCodeReached trap
 test "Instance.init returns ImportNotSatisfied when import is missing" {
     // Same Wasm module that requires env.add_one, but we pass Imports.empty.
     const testing_mod = std.testing;
-    const engine_mod = @import("../engine/mod.zig");
+    const engine_mod = @import("../engine/root.zig");
     const config_mod = @import("../engine/config.zig");
 
     var engine = try engine_mod.Engine.init(testing_mod.allocator, config_mod.Config{});
@@ -758,7 +758,7 @@ test "Instance.init returns ImportNotSatisfied when import is missing" {
 
 test "Instance.init returns ImportSignatureMismatch when host signature differs" {
     const testing_mod = std.testing;
-    const engine_mod = @import("../engine/mod.zig");
+    const engine_mod = @import("../engine/root.zig");
     const config_mod = @import("../engine/config.zig");
 
     var engine = try engine_mod.Engine.init(testing_mod.allocator, config_mod.Config{});

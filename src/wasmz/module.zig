@@ -10,7 +10,7 @@
 const std = @import("std");
 const parser_mod = @import("parser");
 const payload_mod = @import("payload");
-const engine_mod = @import("../engine/mod.zig");
+const engine_mod = @import("../engine/root.zig");
 const lower_mod = @import("../compiler/lower.zig");
 const translate_mod = @import("../compiler/translate.zig");
 const ir = @import("../compiler/ir.zig");
@@ -700,7 +700,7 @@ pub fn compileFunctionBody(
 }
 
 test "module.compile builds exported function bodies" {
-    const VM = @import("../vm/mod.zig").VM;
+    const VM = @import("../vm/root.zig").VM;
     const Config = @import("../engine/config.zig").Config;
     const Store = @import("./store.zig").Store;
     const HostInstance = @import("./host.zig").HostInstance;

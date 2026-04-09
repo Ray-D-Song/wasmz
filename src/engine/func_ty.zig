@@ -4,8 +4,8 @@ const Allocator = std.mem.Allocator;
 const core = @import("core");
 const FuncType = core.func_type.FuncType;
 const DedupArenaWithContext = @import("../utils/arena/dedup.zig").DedupArenaWithContext;
-const EngineId = @import("./mod.zig").EngineId;
-const EngineOwned = @import("./mod.zig").EngineOwned;
+const EngineId = @import("./root.zig").EngineId;
+const EngineOwned = @import("./root.zig").EngineOwned;
 
 pub const DedupFuncType = struct {
     owned: EngineOwned(u32),

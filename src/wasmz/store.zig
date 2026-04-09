@@ -3,7 +3,7 @@
 /// Store is the runtime context that owns all the mutable state during execution, such as instances and their associated resources
 /// (memory/table, etc.). Its responsibilities are lighter: it holds references to the allocator and engine.
 const std = @import("std");
-const engine_mod = @import("../engine/mod.zig");
+const engine_mod = @import("../engine/root.zig");
 
 const Allocator = std.mem.Allocator;
 const Engine = engine_mod.Engine;
