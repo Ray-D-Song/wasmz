@@ -1,4 +1,9 @@
 const std = @import("std");
+const core = @import("core");
+
+const simd = core.simd;
+const SimdOpcode = simd.SimdOpcode;
+const V128 = simd.V128;
 
 pub const Slot = u32;
 
@@ -52,6 +57,34 @@ pub fn CompareOp(comptime InputT: type) type {
     };
 }
 
+pub const SimdUnaryOp = struct {
+    dst: Slot,
+    opcode: SimdOpcode,
+    src: Slot,
+};
+
+pub const SimdBinaryOp = struct {
+    dst: Slot,
+    opcode: SimdOpcode,
+    lhs: Slot,
+    rhs: Slot,
+};
+
+pub const SimdTernaryOp = struct {
+    dst: Slot,
+    opcode: SimdOpcode,
+    first: Slot,
+    second: Slot,
+    third: Slot,
+};
+
+pub const SimdShiftScalarOp = struct {
+    dst: Slot,
+    opcode: SimdOpcode,
+    lhs: Slot,
+    rhs: Slot,
+};
+
 // ── Main Op Union ──────────────────────────────────────────────────────────────
 
 pub const Op = union(enum) {
@@ -74,6 +107,10 @@ pub const Op = union(enum) {
     const_f64: struct {
         dst: Slot,
         value: f64,
+    },
+    const_v128: struct {
+        dst: Slot,
+        value: V128,
     },
 
     // ── Reference type constants ─────────────────────────────────────────────────
@@ -279,6 +316,47 @@ pub const Op = union(enum) {
     i64_extend8_s: ConvertOp(i64, i64),
     i64_extend16_s: ConvertOp(i64, i64),
     i64_extend32_s: ConvertOp(i64, i64),
+
+    // ── SIMD operations ───────────────────────────────────────────────────────
+    simd_unary: SimdUnaryOp,
+    simd_binary: SimdBinaryOp,
+    simd_ternary: SimdTernaryOp,
+    simd_compare: SimdBinaryOp,
+    simd_shift_scalar: SimdShiftScalarOp,
+    simd_extract_lane: struct {
+        dst: Slot,
+        opcode: SimdOpcode,
+        src: Slot,
+        lane: u8,
+    },
+    simd_replace_lane: struct {
+        dst: Slot,
+        opcode: SimdOpcode,
+        src_vec: Slot,
+        src_lane: Slot,
+        lane: u8,
+    },
+    simd_shuffle: struct {
+        dst: Slot,
+        lhs: Slot,
+        rhs: Slot,
+        lanes: [16]u8,
+    },
+    simd_load: struct {
+        dst: Slot,
+        opcode: SimdOpcode,
+        addr: Slot,
+        offset: u32,
+        lane: ?u8,
+        src_vec: ?Slot,
+    },
+    simd_store: struct {
+        opcode: SimdOpcode,
+        addr: Slot,
+        src: Slot,
+        offset: u32,
+        lane: ?u8,
+    },
     /// Unconditional jump. `target` is an index into CompiledFunction.ops.
     jump: struct {
         target: u32,

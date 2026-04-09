@@ -14,6 +14,8 @@ const Type = payload_mod.Type;
 const WasmOp = lower_mod.WasmOp;
 const BlockType = lower_mod.BlockType;
 const ValType = core.ValType;
+const simd = core.simd;
+const V128 = simd.V128;
 
 pub const TranslateError = error{
     UnsupportedFunctionType,
@@ -197,6 +199,10 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         }
     }
 
+    if (simd.isSimdOpcode(info.code)) {
+        return try simdWasmOpFromOperatorInfo(info);
+    }
+
     // ── Manual mapping for operations with special payloads ───────────────────
 
     return switch (info.code) {
@@ -335,6 +341,37 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
     };
 }
 
+fn simdWasmOpFromOperatorInfo(info: OperatorInformation) TranslateError!WasmOp {
+    const class = simd.classifyOpcode(info.code) orelse return error.UnsupportedOperator;
+    return switch (class) {
+        .const_ => WasmOp{ .v128_const = try literalAsV128(info) },
+        .shuffle => WasmOp{ .simd_shuffle = try literalAsShuffleLanes(info) },
+        .extract_lane => WasmOp{ .simd_extract_lane = .{
+            .opcode = info.code,
+            .lane = try laneIndexAsU8(info),
+        } },
+        .replace_lane => WasmOp{ .simd_replace_lane = .{
+            .opcode = info.code,
+            .lane = try laneIndexAsU8(info),
+        } },
+        .load => WasmOp{ .simd_load = .{
+            .opcode = info.code,
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+            .lane = if (simd.isLaneLoadOpcode(info.code)) try laneIndexAsU8(info) else null,
+        } },
+        .store => WasmOp{ .simd_store = .{
+            .opcode = info.code,
+            .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
+            .lane = if (simd.isLaneStoreOpcode(info.code)) try laneIndexAsU8(info) else null,
+        } },
+        .unary => WasmOp{ .simd_unary = info.code },
+        .binary => WasmOp{ .simd_binary = info.code },
+        .ternary => WasmOp{ .simd_ternary = info.code },
+        .compare => WasmOp{ .simd_compare = info.code },
+        .shift => WasmOp{ .simd_shift_scalar = info.code },
+    };
+}
+
 /// Extracts an i32 literal from OperatorInformation.
 /// Returns InvalidI32Literal if the literal field is missing or the type does not match.
 pub fn literalAsI32(info: OperatorInformation) TranslateError!i32 {
@@ -381,4 +418,29 @@ pub fn literalAsF64(info: OperatorInformation) TranslateError!f64 {
         },
         else => error.UnsupportedConstExpr,
     };
+}
+
+pub fn literalAsV128(info: OperatorInformation) TranslateError!V128 {
+    const literal = info.literal orelse return error.UnsupportedConstExpr;
+    return switch (literal) {
+        .bytes => |bytes| {
+            if (bytes.len != 16) return error.UnsupportedConstExpr;
+            var out: [16]u8 = undefined;
+            @memcpy(out[0..], bytes[0..16]);
+            return simd.v128FromBytes(out);
+        },
+        else => error.UnsupportedConstExpr,
+    };
+}
+
+fn literalAsShuffleLanes(info: OperatorInformation) TranslateError![16]u8 {
+    const bytes = info.lines orelse return error.UnsupportedOperator;
+    if (bytes.len != 16) return error.UnsupportedOperator;
+    var out: [16]u8 = undefined;
+    @memcpy(out[0..], bytes[0..16]);
+    return out;
+}
+
+fn laneIndexAsU8(info: OperatorInformation) TranslateError!u8 {
+    return @as(u8, @intCast(info.line_index orelse return error.UnsupportedOperator));
 }

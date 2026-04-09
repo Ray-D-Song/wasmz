@@ -6,6 +6,7 @@ const module_mod = @import("../wasmz/module.zig");
 const store_mod = @import("../wasmz/store.zig");
 
 const helper = core.helper;
+const simd = core.simd;
 const CompiledFunction = ir.CompiledFunction;
 const CompiledDataSegment = module_mod.CompiledDataSegment;
 const CompiledElemSegment = module_mod.CompiledElemSegment;
@@ -202,6 +203,9 @@ pub const VM = struct {
 
                 // ── Constants ─────────────────────────────────────────────────
                 inline .const_i32, .const_i64, .const_f32, .const_f64 => |inst| {
+                    slots[inst.dst] = RawVal.from(inst.value);
+                },
+                .const_v128 => |inst| {
                     slots[inst.dst] = RawVal.from(inst.value);
                 },
 
@@ -559,6 +563,69 @@ pub const VM = struct {
                     const T = @TypeOf(inst).InputType;
                     const U = std.meta.Int(.unsigned, @bitSizeOf(T));
                     slots[inst.dst] = RawVal.from(@as(i32, if (slots[inst.lhs].readAs(U) >= slots[inst.rhs].readAs(U)) 1 else 0));
+                },
+
+                .simd_unary => |inst| {
+                    slots[inst.dst] = simd.executeUnary(inst.opcode, slots[inst.src]);
+                },
+                .simd_binary => |inst| {
+                    slots[inst.dst] = simd.executeBinary(inst.opcode, slots[inst.lhs], slots[inst.rhs]);
+                },
+                .simd_ternary => |inst| {
+                    slots[inst.dst] = simd.executeTernary(inst.opcode, slots[inst.first], slots[inst.second], slots[inst.third]);
+                },
+                .simd_compare => |inst| {
+                    slots[inst.dst] = simd.executeCompare(inst.opcode, slots[inst.lhs], slots[inst.rhs]);
+                },
+                .simd_shift_scalar => |inst| {
+                    slots[inst.dst] = simd.executeShift(inst.opcode, slots[inst.lhs], slots[inst.rhs]);
+                },
+                .simd_extract_lane => |inst| {
+                    slots[inst.dst] = simd.extractLane(inst.opcode, slots[inst.src], inst.lane);
+                },
+                .simd_replace_lane => |inst| {
+                    slots[inst.dst] = simd.replaceLane(inst.opcode, slots[inst.src_vec], slots[inst.src_lane], inst.lane);
+                },
+                .simd_shuffle => |inst| {
+                    slots[inst.dst] = simd.shuffleVectors(slots[inst.lhs], slots[inst.rhs], inst.lanes);
+                },
+                .simd_load => |inst| {
+                    const access_size: usize = if (simd.isLaneLoadOpcode(inst.opcode))
+                        simd.laneImmediateFromOpcode(inst.opcode)
+                    else switch (inst.opcode) {
+                        .v128_load => 16,
+                        .i16x8_load8x8_s, .i16x8_load8x8_u => 8,
+                        .i32x4_load16x4_s, .i32x4_load16x4_u => 8,
+                        .i64x2_load32x2_s, .i64x2_load32x2_u => 8,
+                        .v8x16_load_splat => 1,
+                        .v16x8_load_splat => 2,
+                        .v32x4_load_splat, .v128_load32_zero => 4,
+                        .v64x2_load_splat, .v128_load64_zero => 8,
+                        else => unreachable,
+                    };
+                    _ = effectiveAddr(slots, inst.addr, inst.offset, access_size, memory) orelse {
+                        return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    };
+                    slots[inst.dst] = RawVal.from(simd.load(
+                        inst.opcode,
+                        memory,
+                        slots[inst.addr].readAs(u32),
+                        inst.offset,
+                        inst.lane,
+                        if (inst.src_vec) |slot_idx| slots[slot_idx] else null,
+                    ));
+                },
+                .simd_store => |inst| {
+                    const access_size: usize = if (simd.isLaneStoreOpcode(inst.opcode))
+                        simd.laneImmediateFromOpcode(inst.opcode)
+                    else switch (inst.opcode) {
+                        .v128_store => 16,
+                        else => unreachable,
+                    };
+                    _ = effectiveAddr(slots, inst.addr, inst.offset, access_size, memory) orelse {
+                        return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    };
+                    simd.store(inst.opcode, memory, slots[inst.addr].readAs(u32), inst.offset, inst.lane, slots[inst.src]);
                 },
 
                 // ── fn call ────────────────────────────────────────────────────

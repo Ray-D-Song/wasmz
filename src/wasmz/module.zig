@@ -11,6 +11,7 @@ const std = @import("std");
 const parser_mod = @import("parser");
 const payload_mod = @import("payload");
 const engine_mod = @import("../engine/root.zig");
+const engine_config_mod = @import("../engine/config.zig");
 const lower_mod = @import("../compiler/lower.zig");
 const translate_mod = @import("../compiler/translate.zig");
 const ir = @import("../compiler/ir.zig");
@@ -18,6 +19,7 @@ const core = @import("core");
 const func_type_mod = core.func_type;
 const global_mod = core.global;
 const raw_mod = core.raw;
+const simd = core.simd;
 const typed_mod = core.typed;
 const value_type_mod = core.value_type;
 
@@ -37,6 +39,7 @@ const TypedRawVal = typed_mod.TypedRawVal;
 const ValType = value_type_mod.ValType;
 const Engine = engine_mod.Engine;
 const Lower = lower_mod.Lower;
+const EngineConfig = engine_config_mod.Config;
 
 // TODO: Currently only supports function exports; other export kinds (memory, global, table) are ignored.
 pub const ExportEntry = struct {
@@ -110,6 +113,8 @@ pub const ModuleCompileError = Allocator.Error ||
         UnsupportedFunctionType,
         UnsupportedGlobalType,
         UnsupportedOperator,
+        DisabledSimd,
+        DisabledRelaxedSimd,
     };
 
 /// Compiled WebAssembly module, holding all data required for runtime execution.
@@ -404,6 +409,7 @@ pub const Module = struct {
                         allocator,
                         reserved_slots,
                         info.body,
+                        engine.config().*,
                         resolver,
                     );
                     local_function_index += 1;
@@ -718,6 +724,7 @@ pub fn compileFunctionBody(
     allocator: Allocator,
     reserved_slots: u32,
     body: []const u8,
+    config: EngineConfig,
     resolver: FuncTypeResolver,
 ) ModuleCompileError!CompiledFunction {
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -730,6 +737,13 @@ pub fn compileFunctionBody(
     while (cursor < body.len) {
         const parsed = try parser_mod.readNextOperator(arena.allocator(), body[cursor..]);
         cursor += parsed.consumed;
+
+        if (simd.isSimdOpcode(parsed.info.code)) {
+            if (!config.simd) return error.DisabledSimd;
+            if (simd.isRelaxedSimdOpcode(parsed.info.code) and !config.relaxed_simd) {
+                return error.DisabledRelaxedSimd;
+            }
+        }
 
         const wasm_op: lower_mod.WasmOp = if (parsed.info.code == .call) blk: {
             const func_idx = parsed.info.func_index orelse return error.UnsupportedOperator;
@@ -948,4 +962,44 @@ test "module.compile handles active element segment with non-zero offset" {
     try testing.expectEqual(std.math.maxInt(u32), module.tables[0][5]);
     try testing.expectEqual(std.math.maxInt(u32), module.tables[0][6]);
     try testing.expectEqual(std.math.maxInt(u32), module.tables[0][7]);
+}
+
+test "compileFunctionBody rejects simd when disabled" {
+    const body = [_]u8{
+        0xfd, 0x0c,
+    } ++ ([_]u8{0} ** 16) ++ [_]u8{0x0b};
+
+    try std.testing.expectError(error.DisabledSimd, compileFunctionBody(
+        std.testing.allocator,
+        0,
+        body[0..],
+        .{ .simd = false },
+        .{
+            .func_types = &.{},
+            .type_indices = &.{},
+            .import_type_indices = &.{},
+            .import_count = 0,
+        },
+    ));
+}
+
+test "compileFunctionBody rejects relaxed simd when disabled" {
+    const zero_vec = [_]u8{ 0xfd, 0x0c } ++ ([_]u8{0} ** 16);
+    const body = zero_vec ++ zero_vec ++ [_]u8{
+        0xfd, 0x80, 0x02, // i8x16.relaxed_swizzle
+        0x0b,
+    };
+
+    try std.testing.expectError(error.DisabledRelaxedSimd, compileFunctionBody(
+        std.testing.allocator,
+        0,
+        body[0..],
+        .{ .relaxed_simd = false },
+        .{
+            .func_types = &.{},
+            .type_indices = &.{},
+            .import_type_indices = &.{},
+            .import_count = 0,
+        },
+    ));
 }

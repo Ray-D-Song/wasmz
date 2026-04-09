@@ -52,6 +52,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/core/root.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "payload", .module = payload_mod_dep },
+        },
     });
 
     const mod = b.addModule("wasmz", .{
@@ -209,6 +212,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "core", .module = core_mod },
+                .{ .name = "payload", .module = payload_mod_dep },
             },
         }),
     });

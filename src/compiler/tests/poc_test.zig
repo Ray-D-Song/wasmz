@@ -1,13 +1,17 @@
 const std = @import("std");
 const testing = std.testing;
+const payload = @import("payload");
+const core = @import("core");
 
 const lower_mod = @import("../lower.zig");
 const ir = @import("../ir.zig");
+const translate_mod = @import("../translate.zig");
 
 const Lower = lower_mod.Lower;
 const LowerError = lower_mod.LowerError;
 const WasmOp = lower_mod.WasmOp;
 const Op = ir.Op;
+const Simd = core.simd;
 
 fn expect_binary_cmp_lowered(op: WasmOp, comptime tag: std.meta.Tag(Op)) !void {
     var lower = Lower.initWithReservedSlots(testing.allocator, 2);
@@ -82,6 +86,56 @@ test "lower simple add function into slot IR" {
         .ret => |got| {
             try testing.expectEqual(@as(?u32, 2), got.value);
         },
+        else => return error.UnexpectedOpTag,
+    }
+}
+
+test "translate folds simd ops into generic wasm ops" {
+    const v = try translate_mod.operatorToWasmOp(.{
+        .code = .v128_const,
+        .literal = .{ .bytes = &[_]u8{0} ** 16 },
+    });
+    switch (v) {
+        .v128_const => {},
+        else => return error.UnexpectedOpTag,
+    }
+
+    const add = try translate_mod.operatorToWasmOp(.{ .code = .i8x16_add });
+    switch (add) {
+        .simd_binary => |opcode| try testing.expectEqual(payload.OperatorCode.i8x16_add, opcode),
+        else => return error.UnexpectedOpTag,
+    }
+
+    const load_lane = try translate_mod.operatorToWasmOp(.{
+        .code = .v128_load8_lane,
+        .memory_address = .{ .flags = 0, .offset = 4 },
+        .line_index = 3,
+    });
+    switch (load_lane) {
+        .simd_load => |info| {
+            try testing.expectEqual(payload.OperatorCode.v128_load8_lane, info.opcode);
+            try testing.expectEqual(@as(u32, 4), info.offset);
+            try testing.expectEqual(@as(?u8, 3), info.lane);
+        },
+        else => return error.UnexpectedOpTag,
+    }
+}
+
+test "lower uses generic ir nodes for simd ops" {
+    var lower = Lower.initWithReservedSlots(testing.allocator, 2);
+    defer lower.deinit();
+
+    const ops = [_]WasmOp{
+        .{ .local_get = 0 },
+        .{ .local_get = 1 },
+        .{ .simd_binary = .i8x16_add },
+        .ret,
+    };
+
+    for (ops) |op| try lower.lowerOp(op);
+
+    switch (lower.compiled.ops.items[0]) {
+        .simd_binary => |inst| try testing.expectEqual(Simd.SimdOpcode.i8x16_add, inst.opcode),
         else => return error.UnexpectedOpTag,
     }
 }

@@ -15,6 +15,9 @@ const Slot = ir.Slot;
 const Op = ir.Op;
 const CompiledFunction = ir.CompiledFunction;
 const ValType = core.ValType;
+const simd = core.simd;
+const SimdOpcode = simd.SimdOpcode;
+const V128 = simd.V128;
 
 pub const LowerError = error{
     StackUnderflow,
@@ -72,6 +75,7 @@ pub const WasmOp = union(enum) {
     i64_const: i64,
     f32_const: f32,
     f64_const: f64,
+    v128_const: V128,
 
     // ── i32 arithmetic (binary) ───────────────────────────────────────────────
     i32_add,
@@ -236,6 +240,24 @@ pub const WasmOp = union(enum) {
     i64_extend8_s,
     i64_extend16_s,
     i64_extend32_s,
+
+    // ── SIMD operations ───────────────────────────────────────────────────────
+    simd_unary: SimdOpcode,
+    simd_binary: SimdOpcode,
+    simd_ternary: SimdOpcode,
+    simd_compare: SimdOpcode,
+    simd_shift_scalar: SimdOpcode,
+    simd_extract_lane: struct {
+        opcode: SimdOpcode,
+        lane: u8,
+    },
+    simd_replace_lane: struct {
+        opcode: SimdOpcode,
+        lane: u8,
+    },
+    simd_shuffle: [16]u8,
+    simd_load: simd.SimdLoadInfo,
+    simd_store: simd.SimdStoreInfo,
 
     ret,
     /// direct fn call with known func_idx, param count and result presence.
@@ -555,6 +577,36 @@ pub const Lower = struct {
         try self.stack.push(self.allocator, dst);
     }
 
+    fn lower_simd_unary(self: *Lower, opcode: SimdOpcode) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .simd_unary = .{ .dst = dst, .opcode = opcode, .src = src } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn lower_simd_binary(self: *Lower, opcode: SimdOpcode) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .simd_binary = .{ .dst = dst, .opcode = opcode, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn lower_simd_ternary(self: *Lower, opcode: SimdOpcode) !void {
+        const third = try self.pop_slot();
+        const second = try self.pop_slot();
+        const first = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .simd_ternary = .{
+            .dst = dst,
+            .opcode = opcode,
+            .first = first,
+            .second = second,
+            .third = third,
+        } });
+        try self.stack.push(self.allocator, dst);
+    }
+
     // ── Main dispatch ─────────────────────────────────────────────────────────
 
     pub fn lowerOp(self: *Lower, op: WasmOp) !void {
@@ -840,6 +892,11 @@ pub const Lower = struct {
                 try self.emit(.{ .const_f64 = .{ .dst = dst, .value = value } });
                 try self.stack.push(self.allocator, dst);
             },
+            .v128_const => |value| {
+                const dst = self.alloc_slot();
+                try self.emit(.{ .const_v128 = .{ .dst = dst, .value = value } });
+                try self.stack.push(self.allocator, dst);
+            },
 
             // ── i32 arithmetic operations (binary) ──────────────────────────────
             // Using helper function to reduce boilerplate
@@ -1017,6 +1074,80 @@ pub const Lower = struct {
             .i64_extend8_s => try self.lower_convert_op("i64_extend8_s"),
             .i64_extend16_s => try self.lower_convert_op("i64_extend16_s"),
             .i64_extend32_s => try self.lower_convert_op("i64_extend32_s"),
+
+            .simd_unary => |opcode| try self.lower_simd_unary(opcode),
+            .simd_binary => |opcode| try self.lower_simd_binary(opcode),
+            .simd_ternary => |opcode| try self.lower_simd_ternary(opcode),
+            .simd_compare => |opcode| {
+                const rhs = try self.pop_slot();
+                const lhs = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .simd_compare = .{ .dst = dst, .opcode = opcode, .lhs = lhs, .rhs = rhs } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .simd_shift_scalar => |opcode| {
+                const rhs = try self.pop_slot();
+                const lhs = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .simd_shift_scalar = .{ .dst = dst, .opcode = opcode, .lhs = lhs, .rhs = rhs } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .simd_extract_lane => |inst| {
+                const src = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .simd_extract_lane = .{
+                    .dst = dst,
+                    .opcode = inst.opcode,
+                    .src = src,
+                    .lane = inst.lane,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .simd_replace_lane => |inst| {
+                const src_lane = try self.pop_slot();
+                const src_vec = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .simd_replace_lane = .{
+                    .dst = dst,
+                    .opcode = inst.opcode,
+                    .src_vec = src_vec,
+                    .src_lane = src_lane,
+                    .lane = inst.lane,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .simd_shuffle => |lanes| {
+                const rhs = try self.pop_slot();
+                const lhs = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .simd_shuffle = .{ .dst = dst, .lhs = lhs, .rhs = rhs, .lanes = lanes } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .simd_load => |inst| {
+                const src_vec: ?Slot = if (simd.isLaneLoadOpcode(inst.opcode)) try self.pop_slot() else null;
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .simd_load = .{
+                    .dst = dst,
+                    .opcode = inst.opcode,
+                    .addr = addr,
+                    .offset = inst.offset,
+                    .lane = inst.lane,
+                    .src_vec = src_vec,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .simd_store => |inst| {
+                const src = try self.pop_slot();
+                const addr = try self.pop_slot();
+                try self.emit(.{ .simd_store = .{
+                    .opcode = inst.opcode,
+                    .addr = addr,
+                    .src = src,
+                    .offset = inst.offset,
+                    .lane = inst.lane,
+                } });
+            },
 
             .ret => {
                 const value = self.stack.pop();
