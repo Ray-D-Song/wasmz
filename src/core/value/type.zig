@@ -1,6 +1,7 @@
 const std = @import("std");
 const trap = @import("../trap.zig");
 const table_type = @import("../table/type.zig");
+const heap_type = @import("../heap_type.zig");
 
 pub const ValType = enum {
     I32,
@@ -8,11 +9,17 @@ pub const ValType = enum {
     F32,
     F64,
     V128,
-    // A nullable function reference.
     FuncRef,
-    // A nullable external reference.
-    // external ref is a reference to an opaque object owned by the host environment.
     ExternRef,
+    // GC reference types
+    AnyRef,
+    EqRef,
+    I31Ref,
+    StructRef,
+    ArrayRef,
+    NullRef,
+    NullFuncRef,
+    NullExternRef,
 
     pub fn isNum(self: ValType) bool {
         return switch (self) {
@@ -23,13 +30,18 @@ pub const ValType = enum {
 
     pub fn isRef(self: ValType) bool {
         return switch (self) {
-            .FuncRef, .ExternRef => true,
+            .FuncRef, .ExternRef, .AnyRef, .EqRef, .I31Ref, .StructRef, .ArrayRef, .NullRef, .NullFuncRef, .NullExternRef => true,
             else => false,
         };
     }
 
-    // Transforms the Ref Value Type into RefType
-    // If the ValType is not a reference type, returns null
+    pub fn isGcRef(self: ValType) bool {
+        return switch (self) {
+            .AnyRef, .EqRef, .I31Ref, .StructRef, .ArrayRef, .NullRef, .NullFuncRef, .NullExternRef => true,
+            else => false,
+        };
+    }
+
     pub fn asRefType(self: ValType) ?table_type.RefType {
         return switch (self) {
             .FuncRef => table_type.RefType.Func,
@@ -42,6 +54,23 @@ pub const ValType = enum {
         return switch (refType) {
             .Func => .FuncRef,
             .Extern => .ExternRef,
+        };
+    }
+
+    // Converts GC reference types to their corresponding HeapType, returning null for non-GC reference types.
+    pub fn asHeapType(self: ValType) ?heap_type.HeapType {
+        return switch (self) {
+            .FuncRef => .Func,
+            .ExternRef => .Extern,
+            .AnyRef => .Any,
+            .EqRef => .Eq,
+            .I31Ref => .I31,
+            .StructRef => .Struct,
+            .ArrayRef => .Array,
+            .NullRef => .None,
+            .NullFuncRef => .NoFunc,
+            .NullExternRef => .NoExtern,
+            else => null,
         };
     }
 };
