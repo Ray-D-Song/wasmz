@@ -8,6 +8,7 @@ pub const trap = @import("./trap.zig");
 pub const helper = @import("./value/helper.zig");
 pub const heap_type = @import("./heap_type.zig");
 pub const ref_type = @import("./ref_type.zig");
+pub const composite_type = @import("./composite_type.zig");
 
 pub const ValType = value_type.ValType;
 pub const Global = global.Global;
@@ -20,3 +21,9 @@ pub const TrapCode = trap.TrapCode;
 pub const HeapType = heap_type.HeapType;
 pub const GcRefKind = heap_type.GcRefKind;
 pub const RefType = ref_type.RefType;
+pub const PackedType = composite_type.PackedType;
+pub const StorageType = composite_type.StorageType;
+pub const FieldType = composite_type.FieldType;
+pub const StructType = composite_type.StructType;
+pub const ArrayType = composite_type.ArrayType;
+pub const CompositeType = composite_type.CompositeType;
