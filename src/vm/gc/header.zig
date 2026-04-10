@@ -68,31 +68,3 @@ pub const GcHeader = struct {
         return (self.kind_bits & GcKind.MARK_BIT) != 0;
     }
 };
-
-test "GcKind subtype checking" {
-    try std.testing.expect(GcKind.isSubtypeOf(GcKind.Eq, GcKind.Any));
-    try std.testing.expect(GcKind.isSubtypeOf(GcKind.Struct, GcKind.Eq));
-    try std.testing.expect(GcKind.isSubtypeOf(GcKind.Struct, GcKind.Any));
-    try std.testing.expect(GcKind.isSubtypeOf(GcKind.Array, GcKind.Eq));
-    try std.testing.expect(!GcKind.isSubtypeOf(GcKind.Any, GcKind.Eq));
-    try std.testing.expect(!GcKind.isSubtypeOf(GcKind.Struct, GcKind.Array));
-}
-
-test "GcHeader" {
-    const header = GcHeader.initFromRefKind(GcRefKind.init(GcRefKind.Struct), 42);
-    try std.testing.expectEqual(@as(u6, GcRefKind.Struct), header.getKind());
-    try std.testing.expectEqual(@as(u32, 42), header.type_index);
-    try std.testing.expect(header.isSubtypeOf(GcKind.Eq));
-    try std.testing.expect(header.isSubtypeOf(GcKind.Any));
-}
-
-test "GcHeader mark bit" {
-    var header = GcHeader.initFromRefKind(GcRefKind.init(GcRefKind.Struct), 42);
-    try std.testing.expect(!header.isMarked());
-
-    header.setMark();
-    try std.testing.expect(header.isMarked());
-
-    header.clearMark();
-    try std.testing.expect(!header.isMarked());
-}

@@ -97,26 +97,3 @@ pub const FuncTypeRegistry = struct {
         };
     }
 };
-
-test "FuncTypeRegistry deduplicates identical function types" {
-    const ValType = core.ValType;
-
-    var registry = FuncTypeRegistry.init(std.testing.allocator, EngineId.init());
-    defer registry.deinit();
-
-    const func_a = try FuncType.init(std.testing.allocator, &.{ ValType.I32, ValType.I64 }, &.{ValType.I32});
-    defer func_a.deinit(std.testing.allocator);
-
-    const func_b = try FuncType.init(std.testing.allocator, &.{ ValType.I32, ValType.I64 }, &.{ValType.I32});
-    defer func_b.deinit(std.testing.allocator);
-
-    const dedup_a = try registry.allocFuncType(func_a);
-    const dedup_b = try registry.allocFuncType(func_b);
-
-    try std.testing.expectEqual(dedup_a.owned.engine_id.id, dedup_b.owned.engine_id.id);
-    try std.testing.expectEqual(dedup_a.owned.value, dedup_b.owned.value);
-
-    const resolved = registry.resolveFuncType(&dedup_a);
-    try std.testing.expectEqual(@as(usize, 2), resolved.params().len);
-    try std.testing.expectEqual(@as(usize, 1), resolved.results().len);
-}

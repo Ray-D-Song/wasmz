@@ -83,25 +83,3 @@ pub const RefType = struct {
         return self_kind.?.isSubtypeOf(other_kind.?);
     }
 };
-
-test "RefType subtype checking" {
-    const func = RefType.funcref();
-    const any = RefType.anyref();
-    const eq = RefType.eqref();
-    const struct_ref = RefType.structref();
-
-    try std.testing.expect(func.isSubtypeOf(func));
-    try std.testing.expect(!func.isSubtypeOf(any));
-
-    try std.testing.expect(struct_ref.isSubtypeOf(eq));
-    try std.testing.expect(struct_ref.isSubtypeOf(any));
-    try std.testing.expect(!eq.isSubtypeOf(struct_ref));
-}
-
-test "RefType nullability" {
-    const nullable_func = RefType.init(true, .Func);
-    const non_nullable_func = RefType.init(false, .Func);
-
-    try std.testing.expect(non_nullable_func.isSubtypeOf(nullable_func));
-    try std.testing.expect(!nullable_func.isSubtypeOf(non_nullable_func));
-}

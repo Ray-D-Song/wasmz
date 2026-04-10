@@ -4,3 +4,7 @@ pub const preview1 = struct {
 };
 
 pub const preview2 = struct {};
+
+test {
+    _ = @import("preview1/tests/host_test.zig");
+}
