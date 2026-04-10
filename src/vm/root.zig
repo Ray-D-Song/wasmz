@@ -1212,7 +1212,8 @@ pub const VM = struct {
                     const layout = struct_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
 
                     const total_size = @sizeOf(GcHeader) + layout.size;
-                    const gc_ref = store.gc_heap.alloc(total_size) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    const gc_ref = try self.gcAlloc(&store.gc_heap, total_size, call_stack.items, globals, composite_types, struct_layouts, array_layouts) orelse
+                        return .{ .trap = Trap.fromTrapCode(.OutOfMemory) };
 
                     const header_ptr = store.gc_heap.getHeader(gc_ref);
                     header_ptr.* = GcHeader.initFromRefKind(GcRefKind.init(GcRefKind.Struct), inst.type_idx);
@@ -1230,7 +1231,8 @@ pub const VM = struct {
                     const layout = struct_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
 
                     const total_size = @sizeOf(GcHeader) + layout.size;
-                    const gc_ref = store.gc_heap.alloc(total_size) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    const gc_ref = try self.gcAlloc(&store.gc_heap, total_size, call_stack.items, globals, composite_types, struct_layouts, array_layouts) orelse
+                        return .{ .trap = Trap.fromTrapCode(.OutOfMemory) };
 
                     const header_ptr = store.gc_heap.getHeader(gc_ref);
                     header_ptr.* = GcHeader.initFromRefKind(GcRefKind.init(GcRefKind.Struct), inst.type_idx);
@@ -1287,7 +1289,8 @@ pub const VM = struct {
 
                     const len = slots[inst.len].readAs(u32);
                     const total_size = layout.base_size + len * layout.elem_size;
-                    const gc_ref = store.gc_heap.alloc(total_size) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    const gc_ref = try self.gcAlloc(&store.gc_heap, total_size, call_stack.items, globals, composite_types, struct_layouts, array_layouts) orelse
+                        return .{ .trap = Trap.fromTrapCode(.OutOfMemory) };
 
                     const header_ptr = store.gc_heap.getHeader(gc_ref);
                     header_ptr.* = GcHeader.initFromRefKind(GcRefKind.init(GcRefKind.Array), inst.type_idx);
@@ -1306,7 +1309,8 @@ pub const VM = struct {
 
                     const len = slots[inst.len].readAs(u32);
                     const total_size = layout.base_size + len * layout.elem_size;
-                    const gc_ref = store.gc_heap.alloc(total_size) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    const gc_ref = try self.gcAlloc(&store.gc_heap, total_size, call_stack.items, globals, composite_types, struct_layouts, array_layouts) orelse
+                        return .{ .trap = Trap.fromTrapCode(.OutOfMemory) };
 
                     const header_ptr = store.gc_heap.getHeader(gc_ref);
                     header_ptr.* = GcHeader.initFromRefKind(GcRefKind.init(GcRefKind.Array), inst.type_idx);
@@ -1324,7 +1328,8 @@ pub const VM = struct {
 
                     const len = inst.args_len;
                     const total_size = layout.base_size + len * layout.elem_size;
-                    const gc_ref = store.gc_heap.alloc(total_size) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    const gc_ref = try self.gcAlloc(&store.gc_heap, total_size, call_stack.items, globals, composite_types, struct_layouts, array_layouts) orelse
+                        return .{ .trap = Trap.fromTrapCode(.OutOfMemory) };
 
                     const header_ptr = store.gc_heap.getHeader(gc_ref);
                     header_ptr.* = GcHeader.initFromRefKind(GcRefKind.init(GcRefKind.Array), inst.type_idx);
@@ -1810,9 +1815,71 @@ pub const VM = struct {
         return .{ .ok = null };
     }
 
-    // TODO: GC
-    // GC introduces heap memory blocks managed by the VM
-    // and specific data structures that need to be stored on the heap
-    // struct、array、anyref etc..
+    /// Collect all GC roots reachable from the current execution state.
+    ///
+    /// Roots are drawn from:
+    ///   1. Every slot in every live call frame (call_stack).
+    ///   2. Every global variable value.
+    ///
+    /// A slot is treated as a GC root only when its low 32 bits decode to a
+    /// heap reference (bit 0 = 0, value ≠ 0).  i31 values and funcref values
+    /// stored in slots are skipped since they either carry no heap pointer
+    /// (i31) or use the high bits to encode a function index (funcref).
+    ///
+    /// The caller is responsible for freeing the returned slice.
+    fn collectGcRoots(
+        self: *VM,
+        call_stack: []const CallFrame,
+        globals: []const Global,
+    ) Allocator.Error![]GcRef {
+        var roots = std.ArrayListUnmanaged(GcRef){};
+        errdefer roots.deinit(self.allocator);
 
+        // ── 1. Call-frame slots ──────────────────────────────────────────────
+        for (call_stack) |frame| {
+            for (frame.slots) |slot| {
+                const ref = slot.readAsGcRef();
+                if (ref.isHeapRef()) {
+                    try roots.append(self.allocator, ref);
+                }
+            }
+        }
+
+        // ── 2. Globals ───────────────────────────────────────────────────────
+        for (globals) |g| {
+            const ref = g.getRawValue().readAsGcRef();
+            if (ref.isHeapRef()) {
+                try roots.append(self.allocator, ref);
+            }
+        }
+
+        return roots.toOwnedSlice(self.allocator);
+    }
+
+    /// Allocate `size` bytes from the GC heap, triggering a collection cycle
+    /// and retrying once if the first attempt fails.
+    ///
+    /// Returns `null` only when allocation fails even after GC — the caller
+    /// should treat this as an `OutOfMemory` trap.  Returns
+    /// `Allocator.Error!?GcRef` so that root-collection failures (which are
+    /// true OOM conditions) can propagate via `try`.
+    fn gcAlloc(
+        self: *VM,
+        gc_heap: *GcHeap,
+        size: u32,
+        call_stack: []const CallFrame,
+        globals: []const Global,
+        composite_types: []const @import("core").CompositeType,
+        struct_layouts: []const ?StructLayout,
+        array_layouts: []const ?ArrayLayout,
+    ) Allocator.Error!?GcRef {
+        if (gc_heap.alloc(size)) |ref| return ref;
+
+        // First attempt failed — run a collection cycle and retry.
+        const roots = try self.collectGcRoots(call_stack, globals);
+        defer self.allocator.free(roots);
+        gc_heap.collect(roots, composite_types, struct_layouts, array_layouts);
+
+        return gc_heap.alloc(size); // null means heap is truly exhausted
+    }
 };

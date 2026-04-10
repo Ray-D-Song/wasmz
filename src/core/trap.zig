@@ -70,9 +70,12 @@ pub const TrapCode = enum(u8) {
     // Array access out of bounds.
     ArrayOutOfBounds = 15,
 
+    // GC heap exhausted: allocation failed even after a collection cycle.
+    OutOfMemory = 16,
+
     pub fn fromInt(value: u8) InvalidTrapCode!TrapCode {
         return switch (value) {
-            inline 1...15 => @enumFromInt(value),
+            inline 1...16 => @enumFromInt(value),
             else => InvalidTrapCode.InvalidTrapCode,
         };
     }
@@ -94,6 +97,7 @@ pub const TrapCode = enum(u8) {
             .NullReference => "null reference dereference",
             .CastFailure => "cast failure",
             .ArrayOutOfBounds => "out of bounds array access",
+            .OutOfMemory => "GC heap out of memory",
         };
     }
 };
