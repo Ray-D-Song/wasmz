@@ -60,9 +60,19 @@ pub const TrapCode = enum(u8) {
 
     OutOfSystemMemory = 12,
 
+    // ── GC-specific trap codes ────────────────────────────────────────────────────
+    // Attempt to dereference a null GC reference.
+    NullReference = 13,
+
+    // Attempt to cast a GC reference to an incompatible type.
+    CastFailure = 14,
+
+    // Array access out of bounds.
+    ArrayOutOfBounds = 15,
+
     pub fn fromInt(value: u8) InvalidTrapCode!TrapCode {
         return switch (value) {
-            inline 1...12 => @enumFromInt(value),
+            inline 1...15 => @enumFromInt(value),
             else => InvalidTrapCode.InvalidTrapCode,
         };
     }
@@ -81,6 +91,9 @@ pub const TrapCode = enum(u8) {
             .OutOfFuel => "all fuel consumed by WebAssembly",
             .GrowthOperationLimited => "growth operation limited",
             .OutOfSystemMemory => "out of system memory",
+            .NullReference => "null reference dereference",
+            .CastFailure => "cast failure",
+            .ArrayOutOfBounds => "out of bounds array access",
         };
     }
 };
@@ -211,6 +224,9 @@ test "trap code conversion" {
         .OutOfFuel,
         .GrowthOperationLimited,
         .OutOfSystemMemory,
+        .NullReference,
+        .CastFailure,
+        .ArrayOutOfBounds,
     };
 
     for (cases) |code| {

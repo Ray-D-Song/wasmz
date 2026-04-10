@@ -13,6 +13,7 @@ const OperatorCode = payload_mod.OperatorCode;
 const Type = payload_mod.Type;
 const TypeKind = payload_mod.TypeKind;
 const TypeEntry = payload_mod.TypeEntry;
+const PayloadHeapType = payload_mod.HeapType;
 const WasmOp = lower_mod.WasmOp;
 const BlockType = lower_mod.BlockType;
 const ValType = core.ValType;
@@ -35,6 +36,7 @@ pub const TranslateError = error{
     OutOfMemory,
     TooManyFunctionParams,
     TooManyFunctionResults,
+    InvalidTypeIndex,
 };
 
 /// Translates a Wasm type (payload Type) into a runtime value type (ValType).
@@ -95,6 +97,16 @@ pub fn wasmBlockTypeFromType(block_type: ?Type) TranslateError!?BlockType {
             else => try wasmValTypeFromType(typ),
         },
         else => error.UnsupportedBlockType,
+    };
+}
+
+/// Extracts a concrete type index from a HeapType.
+/// Returns InvalidTypeIndex error if the HeapType is null or represents an abstract type.
+fn typeIndexFromHeapType(heap_type: ?PayloadHeapType) TranslateError!u32 {
+    const ht = heap_type orelse return error.InvalidTypeIndex;
+    return switch (ht) {
+        .index => |idx| idx,
+        .kind => return error.InvalidTypeIndex, // Abstract heap types not supported here
     };
 }
 
@@ -364,6 +376,110 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
             .segment_idx = info.segment_index orelse return error.UnsupportedOperator,
         } },
         .elem_drop => WasmOp{ .elem_drop = info.segment_index orelse return error.UnsupportedOperator },
+
+        // ── GC Struct instructions ─────────────────────────────────────────────────
+        // Note: n_fields will be filled by module.zig after looking up the type definition
+        .struct_new => WasmOp{
+            .struct_new = .{
+                .type_idx = try typeIndexFromHeapType(info.type_index),
+                .n_fields = info.len orelse 0, // placeholder, filled by module.zig
+            },
+        },
+        .struct_new_default => WasmOp{ .struct_new_default = try typeIndexFromHeapType(info.type_index) },
+        .struct_get => WasmOp{ .struct_get = .{
+            .type_idx = try typeIndexFromHeapType(info.type_index),
+            .field_idx = info.field_index orelse return error.UnsupportedOperator,
+        } },
+        .struct_get_s => WasmOp{ .struct_get_s = .{
+            .type_idx = try typeIndexFromHeapType(info.type_index),
+            .field_idx = info.field_index orelse return error.UnsupportedOperator,
+        } },
+        .struct_get_u => WasmOp{ .struct_get_u = .{
+            .type_idx = try typeIndexFromHeapType(info.type_index),
+            .field_idx = info.field_index orelse return error.UnsupportedOperator,
+        } },
+        .struct_set => WasmOp{ .struct_set = .{
+            .type_idx = try typeIndexFromHeapType(info.type_index),
+            .field_idx = info.field_index orelse return error.UnsupportedOperator,
+        } },
+
+        // ── GC Array instructions ──────────────────────────────────────────────────
+        .array_new => WasmOp{ .array_new = try typeIndexFromHeapType(info.type_index) },
+        .array_new_default => WasmOp{ .array_new_default = try typeIndexFromHeapType(info.type_index) },
+        .array_new_fixed => WasmOp{ .array_new_fixed = .{
+            .type_idx = try typeIndexFromHeapType(info.type_index),
+            .n = info.len orelse return error.UnsupportedOperator,
+        } },
+        .array_new_data => WasmOp{ .array_new_data = .{
+            .type_idx = try typeIndexFromHeapType(info.type_index),
+            .data_idx = info.segment_index orelse return error.UnsupportedOperator,
+        } },
+        .array_new_elem => WasmOp{ .array_new_elem = .{
+            .type_idx = try typeIndexFromHeapType(info.type_index),
+            .elem_idx = info.segment_index orelse return error.UnsupportedOperator,
+        } },
+        .array_get => WasmOp{ .array_get = try typeIndexFromHeapType(info.type_index) },
+        .array_get_s => WasmOp{ .array_get_s = try typeIndexFromHeapType(info.type_index) },
+        .array_get_u => WasmOp{ .array_get_u = try typeIndexFromHeapType(info.type_index) },
+        .array_set => WasmOp{ .array_set = try typeIndexFromHeapType(info.type_index) },
+        .array_len => WasmOp.array_len,
+        .array_fill => WasmOp{ .array_fill = try typeIndexFromHeapType(info.type_index) },
+        .array_copy => WasmOp{ .array_copy = .{
+            .dst_type_idx = try typeIndexFromHeapType(info.type_index),
+            .src_type_idx = try typeIndexFromHeapType(info.src_type),
+        } },
+        .array_init_data => WasmOp{ .array_init_data = .{
+            .type_idx = try typeIndexFromHeapType(info.type_index),
+            .data_idx = info.segment_index orelse return error.UnsupportedOperator,
+        } },
+        .array_init_elem => WasmOp{ .array_init_elem = .{
+            .type_idx = try typeIndexFromHeapType(info.type_index),
+            .elem_idx = info.segment_index orelse return error.UnsupportedOperator,
+        } },
+
+        // ── GC i31 instructions ────────────────────────────────────────────────────
+        .ref_i31 => WasmOp.ref_i31,
+        .i31_get_s => WasmOp.i31_get_s,
+        .i31_get_u => WasmOp.i31_get_u,
+
+        // ── GC Type Test/Cast instructions ─────────────────────────────────────────
+        .ref_test, .ref_test_null => WasmOp{ .ref_test = try typeIndexFromHeapType(info.type_index) },
+        .ref_cast, .ref_cast_null => WasmOp{ .ref_cast = try typeIndexFromHeapType(info.type_index) },
+        .ref_as_non_null => WasmOp.ref_as_non_null,
+
+        // ── GC Control Flow instructions ───────────────────────────────────────────
+        .br_on_null => WasmOp{ .br_on_null = info.br_depth orelse return error.UnsupportedOperator },
+        .br_on_non_null => WasmOp{ .br_on_non_null = info.br_depth orelse return error.UnsupportedOperator },
+        .br_on_cast => WasmOp{ .br_on_cast = .{
+            .br_depth = info.br_depth orelse return error.UnsupportedOperator,
+            .from_type_idx = try typeIndexFromHeapType(info.src_type),
+            .to_type_idx = try typeIndexFromHeapType(info.type_index),
+        } },
+        .br_on_cast_fail => WasmOp{ .br_on_cast_fail = .{
+            .br_depth = info.br_depth orelse return error.UnsupportedOperator,
+            .from_type_idx = try typeIndexFromHeapType(info.src_type),
+            .to_type_idx = try typeIndexFromHeapType(info.type_index),
+        } },
+
+        // ── GC Call instructions ───────────────────────────────────────────────────
+        // Note: n_params and has_result will be filled by the caller (module.zig)
+        .call_ref => WasmOp{
+            .call_ref = .{
+                .type_idx = try typeIndexFromHeapType(info.type_index),
+                .n_params = 0, // placeholder, filled by caller
+                .has_result = false, // placeholder, filled by caller
+            },
+        },
+        .return_call_ref => WasmOp{
+            .return_call_ref = .{
+                .type_idx = try typeIndexFromHeapType(info.type_index),
+                .n_params = 0, // placeholder, filled by caller
+            },
+        },
+
+        // ── GC Extern/Any conversion instructions ──────────────────────────────────
+        .any_convert_extern => WasmOp.any_convert_extern,
+        .extern_convert_any => WasmOp.extern_convert_any,
 
         else => |op| {
             std.debug.print("UnsupportedOperator: {s}\n", .{@tagName(op)});

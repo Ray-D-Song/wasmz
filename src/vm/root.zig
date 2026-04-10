@@ -4,15 +4,27 @@ const core = @import("core");
 const host_mod = @import("../wasmz/host.zig");
 const module_mod = @import("../wasmz/module.zig");
 const store_mod = @import("../wasmz/store.zig");
+const gc_mod = @import("./gc/root.zig");
 
 const helper = core.helper;
 const simd = core.simd;
+const heap_type = core.heap_type;
 const CompiledFunction = ir.CompiledFunction;
 const CompiledDataSegment = module_mod.CompiledDataSegment;
 const CompiledElemSegment = module_mod.CompiledElemSegment;
 const FuncType = core.func_type.FuncType;
+const CompositeType = core.CompositeType;
+const StructType = core.StructType;
+const ArrayType = core.ArrayType;
 const Allocator = std.mem.Allocator;
 const Store = store_mod.Store;
+const GcHeap = gc_mod.GcHeap;
+const GcHeader = gc_mod.GcHeader;
+const GcRef = core.GcRef;
+const GcRefKind = core.GcRefKind;
+const StructLayout = gc_mod.StructLayout;
+const ArrayLayout = gc_mod.ArrayLayout;
+const gcRefKindFromHeapType = heap_type.gcRefKindFromHeapType;
 pub const RawVal = core.raw.RawVal;
 pub const Global = core.Global;
 pub const Trap = core.Trap;
@@ -119,6 +131,9 @@ pub const VM = struct {
     ///                      Used by call_indirect for runtime type checking.
     ///   data_segments    — Module data segments (needed for memory.init).
     ///   data_segments_dropped — Tracks which data segments have been dropped via data.drop.
+    ///   composite_types  — GC composite types (struct/array) from Type Section.
+    ///   struct_layouts   — Precomputed memory layouts for struct types (index matches composite_types).
+    ///   array_layouts    — Precomputed memory layouts for array types (index matches composite_types).
     ///
     /// Returns:
     ///   Allocator.Error  — Host memory allocation failure (not a Wasm trap)
@@ -141,6 +156,9 @@ pub const VM = struct {
         data_segments_dropped: []bool,
         elem_segments: []const CompiledElemSegment,
         elem_segments_dropped: []bool,
+        composite_types: []const CompositeType,
+        struct_layouts: []const ?StructLayout,
+        array_layouts: []const ?ArrayLayout,
     ) Allocator.Error!ExecResult {
         // ── Initialize entry frame ─────────────────────────────────────────────
         const entry_slots_len: usize = @max(
@@ -1169,6 +1187,518 @@ pub const VM = struct {
                 .elem_drop => |inst| {
                     if (inst.segment_idx >= elem_segments.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
                     elem_segments_dropped[inst.segment_idx] = true;
+                },
+
+                // ── GC instructions ─────────────────────────────────────────────────
+                // Struct operations
+                .struct_new => |inst| {
+                    const struct_type = composite_types[inst.type_idx].struct_type;
+                    const layout = struct_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    const total_size = @sizeOf(GcHeader) + layout.size;
+                    const gc_ref = store.gc_heap.alloc(total_size) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+
+                    const header_ptr = store.gc_heap.getHeader(gc_ref);
+                    header_ptr.* = GcHeader.initFromRefKind(GcRefKind.init(GcRefKind.Struct), inst.type_idx);
+
+                    const caller_func = call_stack.items[frame_idx].func;
+                    const arg_slots = caller_func.call_args.items[inst.args_start .. inst.args_start + inst.args_len];
+
+                    for (arg_slots, 0..) |arg_slot, i| {
+                        store.gc_heap.writeField(gc_ref, struct_type, layout, @intCast(i), slots[arg_slot]);
+                    }
+
+                    slots[inst.dst] = RawVal.fromGcRef(gc_ref);
+                },
+                .struct_new_default => |inst| {
+                    const layout = struct_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    const total_size = @sizeOf(GcHeader) + layout.size;
+                    const gc_ref = store.gc_heap.alloc(total_size) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+
+                    const header_ptr = store.gc_heap.getHeader(gc_ref);
+                    header_ptr.* = GcHeader.initFromRefKind(GcRefKind.init(GcRefKind.Struct), inst.type_idx);
+
+                    const data = store.gc_heap.getBytesAt(gc_ref, @sizeOf(GcHeader));
+                    @memset(data[0..layout.size], 0);
+
+                    slots[inst.dst] = RawVal.fromGcRef(gc_ref);
+                },
+                .struct_get => |inst| {
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
+
+                    const struct_type = composite_types[inst.type_idx].struct_type;
+                    const layout = struct_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    slots[inst.dst] = store.gc_heap.readField(gc_ref, struct_type, layout, inst.field_idx);
+                },
+                .struct_get_s, .struct_get_u => |inst| {
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
+
+                    const struct_type = composite_types[inst.type_idx].struct_type;
+                    const layout = struct_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    const value = store.gc_heap.readField(gc_ref, struct_type, layout, inst.field_idx);
+                    slots[inst.dst] = value;
+                },
+                .struct_set => |inst| {
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
+
+                    const struct_type = composite_types[inst.type_idx].struct_type;
+                    const layout = struct_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    store.gc_heap.writeField(gc_ref, struct_type, layout, inst.field_idx, slots[inst.value]);
+                },
+
+                // Array operations
+                .array_new => |inst| {
+                    const array_type = composite_types[inst.type_idx].array_type;
+                    const layout = array_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    const len = slots[inst.len].readAs(u32);
+                    const total_size = layout.base_size + 4 + len * layout.elem_size;
+                    const gc_ref = store.gc_heap.alloc(total_size) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+
+                    const header_ptr = store.gc_heap.getHeader(gc_ref);
+                    header_ptr.* = GcHeader.initFromRefKind(GcRefKind.init(GcRefKind.Array), inst.type_idx);
+
+                    store.gc_heap.setLength(gc_ref, len);
+
+                    const init_val = slots[inst.init];
+                    for (0..len) |i| {
+                        store.gc_heap.writeElem(gc_ref, array_type, layout, @intCast(i), init_val);
+                    }
+
+                    slots[inst.dst] = RawVal.fromGcRef(gc_ref);
+                },
+                .array_new_default => |inst| {
+                    const layout = array_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    const len = slots[inst.len].readAs(u32);
+                    const total_size = layout.base_size + 4 + len * layout.elem_size;
+                    const gc_ref = store.gc_heap.alloc(total_size) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+
+                    const header_ptr = store.gc_heap.getHeader(gc_ref);
+                    header_ptr.* = GcHeader.initFromRefKind(GcRefKind.init(GcRefKind.Array), inst.type_idx);
+
+                    store.gc_heap.setLength(gc_ref, len);
+
+                    const data = store.gc_heap.getBytesAt(gc_ref, layout.base_size + 4);
+                    @memset(data[0 .. len * layout.elem_size], 0);
+
+                    slots[inst.dst] = RawVal.fromGcRef(gc_ref);
+                },
+                .array_new_fixed => |inst| {
+                    const array_type = composite_types[inst.type_idx].array_type;
+                    const layout = array_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    const len = inst.args_len;
+                    const total_size = layout.base_size + 4 + len * layout.elem_size;
+                    const gc_ref = store.gc_heap.alloc(total_size) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+
+                    const header_ptr = store.gc_heap.getHeader(gc_ref);
+                    header_ptr.* = GcHeader.initFromRefKind(GcRefKind.init(GcRefKind.Array), inst.type_idx);
+
+                    store.gc_heap.setLength(gc_ref, @intCast(len));
+
+                    const caller_func = call_stack.items[frame_idx].func;
+                    const arg_slots = caller_func.call_args.items[inst.args_start .. inst.args_start + inst.args_len];
+
+                    for (arg_slots, 0..) |arg_slot, i| {
+                        store.gc_heap.writeElem(gc_ref, array_type, layout, @intCast(i), slots[arg_slot]);
+                    }
+
+                    slots[inst.dst] = RawVal.fromGcRef(gc_ref);
+                },
+                .array_new_data => |_| @panic("array_new_data not implemented"),
+                .array_new_elem => |_| @panic("array_new_elem not implemented"),
+                .array_get => |inst| {
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
+
+                    const index = slots[inst.index].readAs(u32);
+                    const length = store.gc_heap.getLength(gc_ref);
+                    if (index >= length) return .{ .trap = Trap.fromTrapCode(.ArrayOutOfBounds) };
+
+                    const array_type = composite_types[inst.type_idx].array_type;
+                    const layout = array_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    slots[inst.dst] = store.gc_heap.readElem(gc_ref, array_type, layout, index);
+                },
+                .array_get_s, .array_get_u => |inst| {
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
+
+                    const index = slots[inst.index].readAs(u32);
+                    const length = store.gc_heap.getLength(gc_ref);
+                    if (index >= length) return .{ .trap = Trap.fromTrapCode(.ArrayOutOfBounds) };
+
+                    const array_type = composite_types[inst.type_idx].array_type;
+                    const layout = array_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    slots[inst.dst] = store.gc_heap.readElem(gc_ref, array_type, layout, index);
+                },
+                .array_set => |inst| {
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
+
+                    const index = slots[inst.index].readAs(u32);
+                    const length = store.gc_heap.getLength(gc_ref);
+                    if (index >= length) return .{ .trap = Trap.fromTrapCode(.ArrayOutOfBounds) };
+
+                    const array_type = composite_types[inst.type_idx].array_type;
+                    const layout = array_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    store.gc_heap.writeElem(gc_ref, array_type, layout, index, slots[inst.value]);
+                },
+                .array_len => |inst| {
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
+
+                    const len = store.gc_heap.getLength(gc_ref);
+                    slots[inst.dst] = RawVal.from(@as(i32, @intCast(len)));
+                },
+                .array_fill => |inst| {
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
+
+                    const offset = slots[inst.offset].readAs(u32);
+                    const n = slots[inst.n].readAs(u32);
+                    const length = store.gc_heap.getLength(gc_ref);
+                    const end = offset +% n;
+                    if (end > length) return .{ .trap = Trap.fromTrapCode(.ArrayOutOfBounds) };
+
+                    const array_type = composite_types[inst.type_idx].array_type;
+                    const layout = array_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    const value = slots[inst.value];
+                    for (offset..end) |i| {
+                        store.gc_heap.writeElem(gc_ref, array_type, layout, @intCast(i), value);
+                    }
+                },
+                .array_copy => |inst| {
+                    const dst_ref = slots[inst.dst_ref].readAsGcRef();
+                    if (dst_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
+                    const src_ref = slots[inst.src_ref].readAsGcRef();
+                    if (src_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
+
+                    const dst_offset = slots[inst.dst_offset].readAs(u32);
+                    const src_offset = slots[inst.src_offset].readAs(u32);
+                    const n = slots[inst.n].readAs(u32);
+
+                    const dst_length = store.gc_heap.getLength(dst_ref);
+                    const src_length = store.gc_heap.getLength(src_ref);
+
+                    const dst_end = dst_offset +% n;
+                    const src_end = src_offset +% n;
+                    if (dst_end > dst_length or src_end > src_length) return .{ .trap = Trap.fromTrapCode(.ArrayOutOfBounds) };
+
+                    const dst_array_type = composite_types[inst.dst_type_idx].array_type;
+                    const dst_layout = array_layouts[inst.dst_type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+                    const src_array_type = composite_types[inst.src_type_idx].array_type;
+                    const src_layout = array_layouts[inst.src_type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    if (dst_offset < src_offset) {
+                        for (0..n) |i| {
+                            const val = store.gc_heap.readElem(src_ref, src_array_type, src_layout, src_offset + @as(u32, @intCast(i)));
+                            store.gc_heap.writeElem(dst_ref, dst_array_type, dst_layout, dst_offset + @as(u32, @intCast(i)), val);
+                        }
+                    } else {
+                        var i: u32 = n;
+                        while (i > 0) {
+                            i -= 1;
+                            const val = store.gc_heap.readElem(src_ref, src_array_type, src_layout, src_offset + i);
+                            store.gc_heap.writeElem(dst_ref, dst_array_type, dst_layout, dst_offset + i, val);
+                        }
+                    }
+                },
+                .array_init_data => |_| @panic("array_init_data not implemented"),
+                .array_init_elem => |_| @panic("array_init_elem not implemented"),
+
+                // i31 operations
+                .ref_i31 => |inst| {
+                    const value = slots[inst.value].readAs(i32);
+                    const truncated: i31 = @truncate(value);
+                    slots[inst.dst] = RawVal.fromGcRef(GcRef.fromI31(truncated));
+                },
+                .i31_get_s => |inst| {
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
+                    if (!gc_ref.isI31()) return .{ .trap = Trap.fromTrapCode(.CastFailure) };
+
+                    const value = gc_ref.asI31() orelse return .{ .trap = Trap.fromTrapCode(.CastFailure) };
+                    slots[inst.dst] = RawVal.from(@as(i32, value));
+                },
+                .i31_get_u => |inst| {
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
+                    if (!gc_ref.isI31()) return .{ .trap = Trap.fromTrapCode(.CastFailure) };
+
+                    const value = gc_ref.asI31() orelse return .{ .trap = Trap.fromTrapCode(.CastFailure) };
+                    const extended: i32 = value;
+                    slots[inst.dst] = RawVal.from(@as(i32, @bitCast(@as(u32, @bitCast(extended)) & @as(u32, 0x7FFFFFFF))));
+                },
+
+                // Type test/cast operations
+                .ref_test => |inst| {
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    if (gc_ref.isNull()) {
+                        slots[inst.dst] = RawVal.from(@as(i32, 0));
+                    } else if (gc_ref.isI31()) {
+                        const target_kind = gcRefKindFromHeapType(core.HeapType.fromConcreteType(inst.type_idx));
+                        if (target_kind) |kind| {
+                            const is_match = GcRefKind.init(GcRefKind.I31).isSubtypeOf(kind);
+                            slots[inst.dst] = RawVal.from(@as(i32, if (is_match) 1 else 0));
+                        } else {
+                            slots[inst.dst] = RawVal.from(@as(i32, 0));
+                        }
+                    } else {
+                        const obj_header = store.gc_heap.getHeader(gc_ref);
+                        const target_kind = gcRefKindFromHeapType(core.HeapType.fromConcreteType(inst.type_idx));
+                        if (target_kind) |kind| {
+                            const kind_bits: u32 = @as(u32, kind.bits) << 26;
+                            const is_match = obj_header.isSubtypeOf(kind_bits);
+                            slots[inst.dst] = RawVal.from(@as(i32, if (is_match) 1 else 0));
+                        } else {
+                            if (obj_header.type_index == inst.type_idx) {
+                                slots[inst.dst] = RawVal.from(@as(i32, 1));
+                            } else {
+                                slots[inst.dst] = RawVal.from(@as(i32, 0));
+                            }
+                        }
+                    }
+                },
+                .ref_cast => |inst| {
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.CastFailure) };
+
+                    if (gc_ref.isI31()) {
+                        const target_kind = gcRefKindFromHeapType(core.HeapType.fromConcreteType(inst.type_idx));
+                        if (target_kind) |kind| {
+                            const is_match = GcRefKind.init(GcRefKind.I31).isSubtypeOf(kind);
+                            if (!is_match) return .{ .trap = Trap.fromTrapCode(.CastFailure) };
+                        } else {
+                            return .{ .trap = Trap.fromTrapCode(.CastFailure) };
+                        }
+                        slots[inst.dst] = RawVal.fromGcRef(gc_ref);
+                        return;
+                    }
+
+                    const obj_header = store.gc_heap.getHeader(gc_ref);
+                    const target_kind = gcRefKindFromHeapType(core.HeapType.fromConcreteType(inst.type_idx));
+                    if (target_kind) |kind| {
+                        const kind_bits: u32 = @as(u32, kind.bits) << 26;
+                        if (!obj_header.isSubtypeOf(kind_bits)) return .{ .trap = Trap.fromTrapCode(.CastFailure) };
+                    } else {
+                        if (obj_header.type_index != inst.type_idx) return .{ .trap = Trap.fromTrapCode(.CastFailure) };
+                    }
+                    slots[inst.dst] = RawVal.fromGcRef(gc_ref);
+                },
+                .ref_as_non_null => |inst| {
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
+                    slots[inst.dst] = RawVal.fromGcRef(gc_ref);
+                },
+
+                // Control flow operations
+                .br_on_null => |inst| {
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    if (gc_ref.isNull()) {
+                        call_stack.items[frame_idx].pc = inst.target;
+                    }
+                },
+                .br_on_non_null => |inst| {
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    if (!gc_ref.isNull()) {
+                        call_stack.items[frame_idx].pc = inst.target;
+                    }
+                },
+                .br_on_cast => |inst| {
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    var should_branch = false;
+
+                    if (gc_ref.isNull()) {
+                        should_branch = false;
+                    } else if (gc_ref.isI31()) {
+                        const target_kind = gcRefKindFromHeapType(core.HeapType.fromConcreteType(inst.to_type_idx));
+                        if (target_kind) |kind| {
+                            should_branch = GcRefKind.init(GcRefKind.I31).isSubtypeOf(kind);
+                        }
+                    } else {
+                        const obj_header = store.gc_heap.getHeader(gc_ref);
+                        const target_kind = gcRefKindFromHeapType(core.HeapType.fromConcreteType(inst.to_type_idx));
+                        if (target_kind) |kind| {
+                            const kind_bits: u32 = @as(u32, kind.bits) << 26;
+                            should_branch = obj_header.isSubtypeOf(kind_bits);
+                        } else {
+                            should_branch = obj_header.type_index == inst.to_type_idx;
+                        }
+                    }
+
+                    if (should_branch) {
+                        call_stack.items[frame_idx].pc = inst.target;
+                    }
+                },
+                .br_on_cast_fail => |inst| {
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    var should_branch = false;
+
+                    if (gc_ref.isNull()) {
+                        should_branch = true;
+                    } else if (gc_ref.isI31()) {
+                        const target_kind = gcRefKindFromHeapType(core.HeapType.fromConcreteType(inst.to_type_idx));
+                        if (target_kind) |kind| {
+                            should_branch = !GcRefKind.init(GcRefKind.I31).isSubtypeOf(kind);
+                        } else {
+                            should_branch = true;
+                        }
+                    } else {
+                        const obj_header = store.gc_heap.getHeader(gc_ref);
+                        const target_kind = gcRefKindFromHeapType(core.HeapType.fromConcreteType(inst.to_type_idx));
+                        if (target_kind) |kind| {
+                            const kind_bits: u32 = @as(u32, kind.bits) << 26;
+                            should_branch = !obj_header.isSubtypeOf(kind_bits);
+                        } else {
+                            should_branch = obj_header.type_index != inst.to_type_idx;
+                        }
+                    }
+
+                    if (should_branch) {
+                        call_stack.items[frame_idx].pc = inst.target;
+                    }
+                },
+
+                // Call operations
+                .call_ref => |inst| {
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
+
+                    const raw_bits = gc_ref.decode();
+                    const callee_func_idx: u32 = raw_bits;
+                    const caller_func = call_stack.items[frame_idx].func;
+                    const arg_slots = caller_func.call_args.items[inst.args_start .. inst.args_start + inst.args_len];
+
+                    if (callee_func_idx >= func_type_indices.len) return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+                    if (func_type_indices[callee_func_idx] != inst.type_idx) return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    if (callee_func_idx < host_funcs.len) {
+                        const host_result = try invokeHostCall(
+                            self,
+                            store,
+                            host_instance,
+                            host_funcs[callee_func_idx],
+                            arg_slots,
+                            slots,
+                            func_types[func_type_indices[callee_func_idx]].results().len,
+                        );
+                        switch (host_result) {
+                            .trap => |t| return .{ .trap = t },
+                            .ok => |ret_val| {
+                                if (inst.dst) |dst_slot| {
+                                    if (ret_val) |rv| {
+                                        slots[dst_slot] = rv;
+                                    }
+                                }
+                            },
+                        }
+                    } else {
+                        const callee = functions[callee_func_idx];
+                        const callee_slots_len: usize = @max(
+                            @as(usize, @intCast(callee.slots_len)),
+                            arg_slots.len,
+                        );
+                        const callee_slots = try self.allocator.alloc(RawVal, callee_slots_len);
+                        @memset(callee_slots, std.mem.zeroes(RawVal));
+
+                        for (arg_slots, 0..) |arg_slot, i| {
+                            callee_slots[i] = slots[arg_slot];
+                        }
+
+                        const callee_dst = inst.dst;
+                        call_stack.append(self.allocator, .{
+                            .func = callee,
+                            .slots = callee_slots,
+                            .pc = 0,
+                            .dst = callee_dst,
+                        }) catch |err| {
+                            self.allocator.free(callee_slots);
+                            return err;
+                        };
+                    }
+                },
+                .return_call_ref => |inst| {
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
+
+                    const raw_bits = gc_ref.decode();
+                    const callee_func_idx: u32 = raw_bits;
+                    const caller_func = call_stack.items[frame_idx].func;
+                    const arg_slots = caller_func.call_args.items[inst.args_start .. inst.args_start + inst.args_len];
+
+                    if (callee_func_idx >= func_type_indices.len) return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+                    if (func_type_indices[callee_func_idx] != inst.type_idx) return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    if (callee_func_idx < host_funcs.len) {
+                        const host_result = try invokeHostCall(
+                            self,
+                            store,
+                            host_instance,
+                            host_funcs[callee_func_idx],
+                            arg_slots,
+                            slots,
+                            func_types[func_type_indices[callee_func_idx]].results().len,
+                        );
+                        switch (host_result) {
+                            .trap => |t| return .{ .trap = t },
+                            .ok => |ret_val| {
+                                const popped_frame = call_stack.pop().?;
+                                self.allocator.free(popped_frame.slots);
+                                if (call_stack.items.len == 0) {
+                                    return .{ .ok = ret_val };
+                                }
+                                const caller_idx = call_stack.items.len - 1;
+                                if (popped_frame.dst) |dst_slot| {
+                                    if (ret_val) |rv| {
+                                        call_stack.items[caller_idx].slots[dst_slot] = rv;
+                                    }
+                                }
+                            },
+                        }
+                    } else {
+                        const callee = functions[callee_func_idx];
+                        const callee_slots_len: usize = @max(
+                            @as(usize, @intCast(callee.slots_len)),
+                            arg_slots.len,
+                        );
+                        const callee_slots = try self.allocator.alloc(RawVal, callee_slots_len);
+                        @memset(callee_slots, std.mem.zeroes(RawVal));
+
+                        for (arg_slots, 0..) |arg_slot, i| {
+                            callee_slots[i] = slots[arg_slot];
+                        }
+
+                        const tail_dst = call_stack.items[frame_idx].dst;
+
+                        self.allocator.free(call_stack.items[frame_idx].slots);
+
+                        call_stack.items[frame_idx] = .{
+                            .func = callee,
+                            .slots = callee_slots,
+                            .pc = 0,
+                            .dst = tail_dst,
+                        };
+                    }
+                },
+
+                // Conversion operations
+                .any_convert_extern => |inst| {
+                    slots[inst.dst] = slots[inst.ref];
+                },
+                .extern_convert_any => |inst| {
+                    slots[inst.dst] = slots[inst.ref];
                 },
 
                 // ── return ────────────────────────────────────────────────────────
