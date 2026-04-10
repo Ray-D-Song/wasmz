@@ -4,6 +4,7 @@ const core = @import("core");
 const simd = core.simd;
 const SimdOpcode = simd.SimdOpcode;
 const V128 = simd.V128;
+const HeapType = core.HeapType;
 
 pub const Slot = u32;
 
@@ -590,6 +591,249 @@ pub const Op = union(enum) {
     /// elem.drop: mark element segment `segment_idx` as dropped (no longer usable by table.init).
     elem_drop: struct {
         segment_idx: u32,
+    },
+
+    // ── GC Struct instructions ─────────────────────────────────────────────────────
+    /// struct.new: allocate struct and initialize with N field values from slots.
+    /// Fields are popped from stack in reverse order (last field = TOS).
+    /// args_start/args_len index into CompiledFunction.call_args.
+    struct_new: struct {
+        dst: Slot,
+        type_idx: u32,
+        args_start: u32,
+        args_len: u32,
+    },
+    /// struct.new_default: allocate struct with default field values (0/null).
+    struct_new_default: struct {
+        dst: Slot,
+        type_idx: u32,
+    },
+    /// struct.get: read field value from struct reference.
+    struct_get: struct {
+        dst: Slot,
+        ref: Slot,
+        type_idx: u32,
+        field_idx: u32,
+    },
+    /// struct.get_s: read signed field value (for packed types i8/i16, sign-extended).
+    struct_get_s: struct {
+        dst: Slot,
+        ref: Slot,
+        type_idx: u32,
+        field_idx: u32,
+    },
+    /// struct.get_u: read unsigned field value (for packed types i8/i16, zero-extended).
+    struct_get_u: struct {
+        dst: Slot,
+        ref: Slot,
+        type_idx: u32,
+        field_idx: u32,
+    },
+    /// struct.set: write value to struct field.
+    struct_set: struct {
+        ref: Slot,
+        value: Slot,
+        type_idx: u32,
+        field_idx: u32,
+    },
+
+    // ── GC Array instructions ──────────────────────────────────────────────────────
+    /// array.new: allocate array with `len` copies of `init` value.
+    array_new: struct {
+        dst: Slot,
+        init: Slot,
+        len: Slot,
+        type_idx: u32,
+    },
+    /// array.new_default: allocate array with default element values.
+    array_new_default: struct {
+        dst: Slot,
+        len: Slot,
+        type_idx: u32,
+    },
+    /// array.new_fixed: allocate fixed-size array from N elements on stack.
+    /// Elements are popped in reverse order (last element = TOS).
+    array_new_fixed: struct {
+        dst: Slot,
+        type_idx: u32,
+        args_start: u32,
+        args_len: u32,
+    },
+    /// array.new_data: allocate array from data segment.
+    array_new_data: struct {
+        dst: Slot,
+        offset: Slot,
+        len: Slot,
+        type_idx: u32,
+        data_idx: u32,
+    },
+    /// array.new_elem: allocate array from element segment.
+    array_new_elem: struct {
+        dst: Slot,
+        offset: Slot,
+        len: Slot,
+        type_idx: u32,
+        elem_idx: u32,
+    },
+    /// array.get: read element at index from array reference.
+    array_get: struct {
+        dst: Slot,
+        ref: Slot,
+        index: Slot,
+        type_idx: u32,
+    },
+    /// array.get_s: read signed element (for packed types, sign-extended).
+    array_get_s: struct {
+        dst: Slot,
+        ref: Slot,
+        index: Slot,
+        type_idx: u32,
+    },
+    /// array.get_u: read unsigned element (for packed types, zero-extended).
+    array_get_u: struct {
+        dst: Slot,
+        ref: Slot,
+        index: Slot,
+        type_idx: u32,
+    },
+    /// array.set: write value to array element at index.
+    array_set: struct {
+        ref: Slot,
+        index: Slot,
+        value: Slot,
+        type_idx: u32,
+    },
+    /// array.len: read array length (i32).
+    array_len: struct {
+        dst: Slot,
+        ref: Slot,
+    },
+    /// array.fill: fill array region with value.
+    array_fill: struct {
+        ref: Slot,
+        offset: Slot,
+        value: Slot,
+        n: Slot,
+        type_idx: u32,
+    },
+    /// array.copy: copy elements from src array to dst array.
+    array_copy: struct {
+        dst_ref: Slot,
+        dst_offset: Slot,
+        src_ref: Slot,
+        src_offset: Slot,
+        n: Slot,
+        dst_type_idx: u32,
+        src_type_idx: u32,
+    },
+    /// array.init_data: initialize array from data segment.
+    array_init_data: struct {
+        ref: Slot,
+        d: Slot,
+        s: Slot,
+        n: Slot,
+        type_idx: u32,
+        data_idx: u32,
+    },
+    /// array.init_elem: initialize array from element segment.
+    array_init_elem: struct {
+        ref: Slot,
+        d: Slot,
+        s: Slot,
+        n: Slot,
+        type_idx: u32,
+        elem_idx: u32,
+    },
+
+    // ── GC i31 instructions ────────────────────────────────────────────────────────
+    /// ref.i31: pack i32 value into i31ref.
+    ref_i31: struct {
+        dst: Slot,
+        value: Slot,
+    },
+    /// i31.get_s: extract signed i31 value (sign-extended to i32).
+    i31_get_s: struct {
+        dst: Slot,
+        ref: Slot,
+    },
+    /// i31.get_u: extract unsigned i31 value (zero-extended to i32).
+    i31_get_u: struct {
+        dst: Slot,
+        ref: Slot,
+    },
+
+    // ── GC Type Test/Cast instructions ─────────────────────────────────────────────
+    /// ref.test: test if reference matches type (returns i32 0/1).
+    ref_test: struct {
+        dst: Slot,
+        ref: Slot,
+        type_idx: u32,
+    },
+    /// ref.cast: cast reference to type (traps on failure).
+    ref_cast: struct {
+        dst: Slot,
+        ref: Slot,
+        type_idx: u32,
+    },
+    /// ref.as_non_null: cast nullable ref to non-null (traps if null).
+    ref_as_non_null: struct {
+        dst: Slot,
+        ref: Slot,
+    },
+
+    // ── GC Control Flow instructions ────────────────────────────────────────────────
+    /// br_on_null: branch if ref is null (ref consumed), else continue with ref.
+    br_on_null: struct {
+        ref: Slot,
+        target: u32,
+    },
+    /// br_on_non_null: branch if ref is non-null (ref pushed back), else continue.
+    br_on_non_null: struct {
+        ref: Slot,
+        target: u32,
+    },
+    /// br_on_cast: branch if ref can be cast to target type.
+    br_on_cast: struct {
+        ref: Slot,
+        target: u32,
+        from_type_idx: u32,
+        to_type_idx: u32,
+    },
+    /// br_on_cast_fail: branch if ref CANNOT be cast to target type.
+    br_on_cast_fail: struct {
+        ref: Slot,
+        target: u32,
+        from_type_idx: u32,
+        to_type_idx: u32,
+    },
+
+    // ── GC Call instructions ───────────────────────────────────────────────────────
+    /// call_ref: indirect call via funcref.
+    call_ref: struct {
+        dst: ?Slot,
+        ref: Slot,
+        type_idx: u32,
+        args_start: u32,
+        args_len: u32,
+    },
+    /// return_call_ref: tail call via funcref.
+    return_call_ref: struct {
+        ref: Slot,
+        type_idx: u32,
+        args_start: u32,
+        args_len: u32,
+    },
+
+    // ── GC Extern/Any conversion instructions ──────────────────────────────────────
+    /// any.convert_extern: convert externref to anyref.
+    any_convert_extern: struct {
+        dst: Slot,
+        ref: Slot,
+    },
+    /// extern.convert_any: convert anyref to externref.
+    extern_convert_any: struct {
+        dst: Slot,
+        ref: Slot,
     },
 };
 

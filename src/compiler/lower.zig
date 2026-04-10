@@ -356,6 +356,105 @@ pub const WasmOp = union(enum) {
     table_init: struct { table_index: u32, segment_idx: u32 },
     /// elem.drop: mark element segment as dropped.
     elem_drop: u32, // segment_idx
+
+    // ── GC Struct instructions ─────────────────────────────────────────────────────
+    /// struct.new: pop N field values, push new struct instance.
+    /// type_idx is the type section index of the struct type.
+    /// n_fields is the number of fields to pop from the stack.
+    struct_new: struct { type_idx: u32, n_fields: u32 },
+    /// struct.new_default: push new struct with default field values (0 for numeric, null for ref).
+    struct_new_default: u32, // type_idx
+    /// struct.get: pop struct ref, push field value at field_idx.
+    struct_get: struct { type_idx: u32, field_idx: u32 },
+    /// struct.get_s: pop struct ref, push signed field value (for packed types i8/i16).
+    struct_get_s: struct { type_idx: u32, field_idx: u32 },
+    /// struct.get_u: pop struct ref, push unsigned field value (for packed types i8/i16).
+    struct_get_u: struct { type_idx: u32, field_idx: u32 },
+    /// struct.set: pop value, pop struct ref, write value to field_idx.
+    struct_set: struct { type_idx: u32, field_idx: u32 },
+
+    // ── GC Array instructions ──────────────────────────────────────────────────────
+    /// array.new: pop init value and len (i32), push new array with len copies of init.
+    array_new: u32, // type_idx
+    /// array.new_default: pop len (i32), push new array with default element values.
+    array_new_default: u32, // type_idx
+    /// array.new_fixed: pop N elements, push new fixed-size array.
+    array_new_fixed: struct { type_idx: u32, n: u32 },
+    /// array.new_data: pop len and offset (i32), push new array from data segment.
+    array_new_data: struct { type_idx: u32, data_idx: u32 },
+    /// array.new_elem: pop len and offset (i32), push new array from element segment.
+    array_new_elem: struct { type_idx: u32, elem_idx: u32 },
+    /// array.get: pop index (i32) and array ref, push element value.
+    array_get: u32, // type_idx
+    /// array.get_s: pop index (i32) and array ref, push signed element value (packed).
+    array_get_s: u32, // type_idx
+    /// array.get_u: pop index (i32) and array ref, push unsigned element value (packed).
+    array_get_u: u32, // type_idx
+    /// array.set: pop value, pop index (i32), pop array ref, write value to index.
+    array_set: u32, // type_idx
+    /// array.len: pop array ref, push i32 length.
+    array_len,
+    /// array.fill: pop n (i32), pop value, pop offset (i32), pop array ref. Fill array[offset..offset+n] with value.
+    array_fill: u32, // type_idx
+    /// array.copy: pop n (i32), pop src_offset (i32), pop src_ref, pop dst_offset (i32), pop dst_ref. Copy elements.
+    array_copy: struct { dst_type_idx: u32, src_type_idx: u32 },
+    /// array.init_data: pop n (i32), pop s (i32), pop d (i32), pop array ref. Copy from data segment.
+    array_init_data: struct { type_idx: u32, data_idx: u32 },
+    /// array.init_elem: pop n (i32), pop s (i32), pop d (i32), pop array ref. Copy from element segment.
+    array_init_elem: struct { type_idx: u32, elem_idx: u32 },
+
+    // ── GC i31 instructions ────────────────────────────────────────────────────────
+    /// ref.i31: pop i32, push i31ref (small integer packed into reference).
+    ref_i31,
+    /// i31.get_s: pop i31ref, push signed i31 value (sign-extended to i32).
+    i31_get_s,
+    /// i31.get_u: pop i31ref, push unsigned i31 value (zero-extended to i32).
+    i31_get_u,
+
+    // ── GC Type Test/Cast instructions ─────────────────────────────────────────────
+    /// ref.test: pop ref, push i32 (1 if ref matches type_idx, 0 otherwise).
+    ref_test: u32, // type_idx
+    /// ref.cast: pop ref, trap if ref doesn't match type_idx, else push ref.
+    ref_cast: u32, // type_idx
+    /// ref.as_non_null: pop ref, trap if null, else push ref.
+    ref_as_non_null,
+
+    // ── GC Control Flow instructions ────────────────────────────────────────────────
+    /// br_on_null: pop ref, branch if ref is null (ref is consumed), else push ref back and continue.
+    br_on_null: u32, // br_depth
+    /// br_on_non_null: pop ref, branch if ref is non-null (push ref back then branch), else continue.
+    br_on_non_null: u32, // br_depth
+    /// br_on_cast: pop ref, branch if ref matches target type (push downcast ref and branch), else continue.
+    br_on_cast: struct {
+        br_depth: u32,
+        from_type_idx: u32,
+        to_type_idx: u32,
+    },
+    /// br_on_cast_fail: pop ref, branch if ref does NOT match target type, else continue with downcast ref.
+    br_on_cast_fail: struct {
+        br_depth: u32,
+        from_type_idx: u32,
+        to_type_idx: u32,
+    },
+
+    // ── GC Call instructions ───────────────────────────────────────────────────────
+    /// call_ref: pop funcref and N args, call function via reference.
+    call_ref: struct {
+        type_idx: u32,
+        n_params: u32,
+        has_result: bool,
+    },
+    /// return_call_ref: tail call via funcref.
+    return_call_ref: struct {
+        type_idx: u32,
+        n_params: u32,
+    },
+
+    // ── GC Extern/Any conversion instructions ──────────────────────────────────────
+    /// any.convert_extern: pop externref, push anyref (type conversion).
+    any_convert_extern,
+    /// extern.convert_any: pop anyref, push externref (type conversion).
+    extern_convert_any,
 };
 
 /// Block/loop/if result type. null means void (no result).
@@ -463,7 +562,7 @@ pub const Lower = struct {
 
     /// Fill in all forward-jump targets in `frame` to point to `target_pc`.
     /// Patch sites with bit 31 set encode br_table_targets indices (bit 31 cleared gives the index).
-    /// All other sites are op indices for jump / jump_if_z ops.
+    /// All other sites are op indices for jump / jump_if_z / br_on_* ops.
     fn patch_forward_jumps(self: *Lower, frame: *ControlFrame, target_pc: u32) void {
         for (frame.patch_sites.items) |site| {
             if (site & 0x8000_0000 != 0) {
@@ -474,6 +573,10 @@ pub const Lower = struct {
                 switch (self.compiled.ops.items[site]) {
                     .jump => |*j| j.target = target_pc,
                     .jump_if_z => |*j| j.target = target_pc,
+                    .br_on_null => |*j| j.target = target_pc,
+                    .br_on_non_null => |*j| j.target = target_pc,
+                    .br_on_cast => |*j| j.target = target_pc,
+                    .br_on_cast_fail => |*j| j.target = target_pc,
                     else => unreachable,
                 }
             }
@@ -1548,6 +1651,511 @@ pub const Lower = struct {
             // elem.drop: no stack operands.
             .elem_drop => |segment_idx| {
                 try self.emit(.{ .elem_drop = .{ .segment_idx = segment_idx } });
+            },
+
+            // ── GC Struct instructions ────────────────────────────────────────────────
+            .struct_new => |inst| {
+                // Pop n_fields values from stack (reverse order: last field = TOS)
+                const args_start: u32 = @intCast(self.compiled.call_args.items.len);
+                var i: u32 = 0;
+                while (i < inst.n_fields) : (i += 1) {
+                    const slot = try self.pop_slot();
+                    try self.compiled.call_args.append(self.allocator, slot);
+                }
+                // Reverse to match Wasm field order
+                const args = self.compiled.call_args.items[args_start..];
+                std.mem.reverse(Slot, args);
+
+                const dst = self.alloc_slot();
+                try self.emit(.{ .struct_new = .{
+                    .dst = dst,
+                    .type_idx = inst.type_idx,
+                    .args_start = args_start,
+                    .args_len = inst.n_fields,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .struct_new_default => |type_idx| {
+                const dst = self.alloc_slot();
+                try self.emit(.{ .struct_new_default = .{
+                    .dst = dst,
+                    .type_idx = type_idx,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .struct_get => |inst| {
+                const ref = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .struct_get = .{
+                    .dst = dst,
+                    .ref = ref,
+                    .type_idx = inst.type_idx,
+                    .field_idx = inst.field_idx,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .struct_get_s => |inst| {
+                const ref = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .struct_get_s = .{
+                    .dst = dst,
+                    .ref = ref,
+                    .type_idx = inst.type_idx,
+                    .field_idx = inst.field_idx,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .struct_get_u => |inst| {
+                const ref = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .struct_get_u = .{
+                    .dst = dst,
+                    .ref = ref,
+                    .type_idx = inst.type_idx,
+                    .field_idx = inst.field_idx,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .struct_set => |inst| {
+                const value = try self.pop_slot();
+                const ref = try self.pop_slot();
+                try self.emit(.{ .struct_set = .{
+                    .ref = ref,
+                    .value = value,
+                    .type_idx = inst.type_idx,
+                    .field_idx = inst.field_idx,
+                } });
+            },
+
+            // ── GC Array instructions ──────────────────────────────────────────────────
+            .array_new => |type_idx| {
+                // Stack: [..., init_val, len] (len = TOS)
+                const len = try self.pop_slot();
+                const init_val = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .array_new = .{
+                    .dst = dst,
+                    .init = init_val,
+                    .len = len,
+                    .type_idx = type_idx,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .array_new_default => |type_idx| {
+                const len = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .array_new_default = .{
+                    .dst = dst,
+                    .len = len,
+                    .type_idx = type_idx,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .array_new_fixed => |inst| {
+                // Pop n elements from stack (reverse order)
+                const args_start: u32 = @intCast(self.compiled.call_args.items.len);
+                var i: u32 = 0;
+                while (i < inst.n) : (i += 1) {
+                    const slot = try self.pop_slot();
+                    try self.compiled.call_args.append(self.allocator, slot);
+                }
+                const args = self.compiled.call_args.items[args_start..];
+                std.mem.reverse(Slot, args);
+
+                const dst = self.alloc_slot();
+                try self.emit(.{ .array_new_fixed = .{
+                    .dst = dst,
+                    .type_idx = inst.type_idx,
+                    .args_start = args_start,
+                    .args_len = inst.n,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .array_new_data => |inst| {
+                // Stack: [..., offset, len] (len = TOS)
+                const len = try self.pop_slot();
+                const offset = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .array_new_data = .{
+                    .dst = dst,
+                    .offset = offset,
+                    .len = len,
+                    .type_idx = inst.type_idx,
+                    .data_idx = inst.data_idx,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .array_new_elem => |inst| {
+                // Stack: [..., offset, len] (len = TOS)
+                const len = try self.pop_slot();
+                const offset = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .array_new_elem = .{
+                    .dst = dst,
+                    .offset = offset,
+                    .len = len,
+                    .type_idx = inst.type_idx,
+                    .elem_idx = inst.elem_idx,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .array_get => |type_idx| {
+                // Stack: [..., ref, index] (index = TOS)
+                const index = try self.pop_slot();
+                const ref = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .array_get = .{
+                    .dst = dst,
+                    .ref = ref,
+                    .index = index,
+                    .type_idx = type_idx,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .array_get_s => |type_idx| {
+                const index = try self.pop_slot();
+                const ref = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .array_get_s = .{
+                    .dst = dst,
+                    .ref = ref,
+                    .index = index,
+                    .type_idx = type_idx,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .array_get_u => |type_idx| {
+                const index = try self.pop_slot();
+                const ref = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .array_get_u = .{
+                    .dst = dst,
+                    .ref = ref,
+                    .index = index,
+                    .type_idx = type_idx,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .array_set => |type_idx| {
+                // Stack: [..., ref, index, value] (value = TOS)
+                const value = try self.pop_slot();
+                const index = try self.pop_slot();
+                const ref = try self.pop_slot();
+                try self.emit(.{ .array_set = .{
+                    .ref = ref,
+                    .index = index,
+                    .value = value,
+                    .type_idx = type_idx,
+                } });
+            },
+            .array_len => {
+                const ref = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .array_len = .{
+                    .dst = dst,
+                    .ref = ref,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .array_fill => |type_idx| {
+                // Stack: [..., ref, offset, value, n] (n = TOS)
+                const n = try self.pop_slot();
+                const value = try self.pop_slot();
+                const offset = try self.pop_slot();
+                const ref = try self.pop_slot();
+                try self.emit(.{ .array_fill = .{
+                    .ref = ref,
+                    .offset = offset,
+                    .value = value,
+                    .n = n,
+                    .type_idx = type_idx,
+                } });
+            },
+            .array_copy => |inst| {
+                // Stack: [..., dst_ref, dst_offset, src_ref, src_offset, n] (n = TOS)
+                const n = try self.pop_slot();
+                const src_offset = try self.pop_slot();
+                const src_ref = try self.pop_slot();
+                const dst_offset = try self.pop_slot();
+                const dst_ref = try self.pop_slot();
+                try self.emit(.{ .array_copy = .{
+                    .dst_ref = dst_ref,
+                    .dst_offset = dst_offset,
+                    .src_ref = src_ref,
+                    .src_offset = src_offset,
+                    .n = n,
+                    .dst_type_idx = inst.dst_type_idx,
+                    .src_type_idx = inst.src_type_idx,
+                } });
+            },
+            .array_init_data => |inst| {
+                // Stack: [..., ref, d, s, n] (n = TOS)
+                const n = try self.pop_slot();
+                const s = try self.pop_slot();
+                const d = try self.pop_slot();
+                const ref = try self.pop_slot();
+                try self.emit(.{ .array_init_data = .{
+                    .ref = ref,
+                    .d = d,
+                    .s = s,
+                    .n = n,
+                    .type_idx = inst.type_idx,
+                    .data_idx = inst.data_idx,
+                } });
+            },
+            .array_init_elem => |inst| {
+                const n = try self.pop_slot();
+                const s = try self.pop_slot();
+                const d = try self.pop_slot();
+                const ref = try self.pop_slot();
+                try self.emit(.{ .array_init_elem = .{
+                    .ref = ref,
+                    .d = d,
+                    .s = s,
+                    .n = n,
+                    .type_idx = inst.type_idx,
+                    .elem_idx = inst.elem_idx,
+                } });
+            },
+
+            // ── GC i31 instructions ────────────────────────────────────────────────────
+            .ref_i31 => {
+                const value = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .ref_i31 = .{
+                    .dst = dst,
+                    .value = value,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i31_get_s => {
+                const ref = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i31_get_s = .{
+                    .dst = dst,
+                    .ref = ref,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i31_get_u => {
+                const ref = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i31_get_u = .{
+                    .dst = dst,
+                    .ref = ref,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+
+            // ── GC Type Test/Cast instructions ─────────────────────────────────────────
+            .ref_test => |type_idx| {
+                const ref = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .ref_test = .{
+                    .dst = dst,
+                    .ref = ref,
+                    .type_idx = type_idx,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .ref_cast => |type_idx| {
+                const ref = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .ref_cast = .{
+                    .dst = dst,
+                    .ref = ref,
+                    .type_idx = type_idx,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .ref_as_non_null => {
+                const ref = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .ref_as_non_null = .{
+                    .dst = dst,
+                    .ref = ref,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+
+            // ── GC Control Flow instructions ────────────────────────────────────────────
+            .br_on_null => |br_depth| {
+                // br_on_null: if ref is null, branch; else continue with ref on stack
+                const frame = try self.frame_at_depth(br_depth);
+                const ref = try self.pop_slot();
+
+                // Emit br_on_null op with placeholder target (will be patched)
+                const op_pc = self.current_pc();
+                try self.emit(.{
+                    .br_on_null = .{
+                        .ref = ref,
+                        .target = 0, // placeholder
+                    },
+                });
+
+                // Patch logic depends on frame type
+                if (frame.kind == .loop) {
+                    // Backward jump: target is known
+                    switch (self.compiled.ops.items[op_pc]) {
+                        .br_on_null => |*j| j.target = frame.target_pc,
+                        else => unreachable,
+                    }
+                } else {
+                    // Forward jump: need to patch at end
+                    try self.add_patch_site(frame, op_pc);
+                }
+
+                // For non-null case, push ref back (stack manipulation for continuation)
+                // But wait - the ref was already popped. We need to push it back.
+                // Actually, br_on_null semantics: ref is consumed only if branch taken.
+                // If not taken, ref remains on stack.
+                // So we push it back here for the continuation path.
+                try self.stack.push(self.allocator, ref);
+            },
+            .br_on_non_null => |br_depth| {
+                // br_on_non_null: if ref is non-null, branch (with ref on stack); else continue
+                const frame = try self.frame_at_depth(br_depth);
+                const ref = try self.pop_slot();
+
+                const op_pc = self.current_pc();
+                try self.emit(.{
+                    .br_on_non_null = .{
+                        .ref = ref,
+                        .target = 0, // placeholder
+                    },
+                });
+
+                if (frame.kind == .loop) {
+                    switch (self.compiled.ops.items[op_pc]) {
+                        .br_on_non_null => |*j| j.target = frame.target_pc,
+                        else => unreachable,
+                    }
+                } else {
+                    try self.add_patch_site(frame, op_pc);
+                }
+
+                // For null case, push ref back (actually null refs don't continue)
+                // Wait: br_on_non_null: if null, continue without ref
+                // if non-null, branch with ref on stack
+                // So for the null case (continuation), we don't push ref back
+            },
+            .br_on_cast => |inst| {
+                const frame = try self.frame_at_depth(inst.br_depth);
+                const ref = try self.pop_slot();
+
+                const op_pc = self.current_pc();
+                try self.emit(.{ .br_on_cast = .{
+                    .ref = ref,
+                    .target = 0,
+                    .from_type_idx = inst.from_type_idx,
+                    .to_type_idx = inst.to_type_idx,
+                } });
+
+                if (frame.kind == .loop) {
+                    switch (self.compiled.ops.items[op_pc]) {
+                        .br_on_cast => |*j| j.target = frame.target_pc,
+                        else => unreachable,
+                    }
+                } else {
+                    try self.add_patch_site(frame, op_pc);
+                }
+
+                // Push ref back for non-taken path
+                try self.stack.push(self.allocator, ref);
+            },
+            .br_on_cast_fail => |inst| {
+                const frame = try self.frame_at_depth(inst.br_depth);
+                const ref = try self.pop_slot();
+
+                const op_pc = self.current_pc();
+                try self.emit(.{ .br_on_cast_fail = .{
+                    .ref = ref,
+                    .target = 0,
+                    .from_type_idx = inst.from_type_idx,
+                    .to_type_idx = inst.to_type_idx,
+                } });
+
+                if (frame.kind == .loop) {
+                    switch (self.compiled.ops.items[op_pc]) {
+                        .br_on_cast_fail => |*j| j.target = frame.target_pc,
+                        else => unreachable,
+                    }
+                } else {
+                    try self.add_patch_site(frame, op_pc);
+                }
+
+                // Push ref back for taken path (cast succeeded)
+                try self.stack.push(self.allocator, ref);
+            },
+
+            // ── GC Call instructions ───────────────────────────────────────────────────
+            // Note: n_params and has_result will be filled by module.zig
+            .call_ref => |inst| {
+                // Stack: [..., arg0, arg1, ..., argN-1, funcref] (funcref = TOS)
+                const ref = try self.pop_slot();
+
+                const args_start: u32 = @intCast(self.compiled.call_args.items.len);
+                var i: u32 = 0;
+                while (i < inst.n_params) : (i += 1) {
+                    const slot = try self.pop_slot();
+                    try self.compiled.call_args.append(self.allocator, slot);
+                }
+                const args = self.compiled.call_args.items[args_start..];
+                std.mem.reverse(Slot, args);
+
+                const dst: ?Slot = if (inst.has_result) self.alloc_slot() else null;
+
+                try self.emit(.{ .call_ref = .{
+                    .dst = dst,
+                    .ref = ref,
+                    .type_idx = inst.type_idx,
+                    .args_start = args_start,
+                    .args_len = inst.n_params,
+                } });
+
+                if (dst) |s| try self.stack.push(self.allocator, s);
+            },
+            .return_call_ref => |inst| {
+                const ref = try self.pop_slot();
+
+                const args_start: u32 = @intCast(self.compiled.call_args.items.len);
+                var i: u32 = 0;
+                while (i < inst.n_params) : (i += 1) {
+                    const slot = try self.pop_slot();
+                    try self.compiled.call_args.append(self.allocator, slot);
+                }
+                const args = self.compiled.call_args.items[args_start..];
+                std.mem.reverse(Slot, args);
+
+                try self.emit(.{ .return_call_ref = .{
+                    .ref = ref,
+                    .type_idx = inst.type_idx,
+                    .args_start = args_start,
+                    .args_len = inst.n_params,
+                } });
+
+                // Tail call never returns; clear the stack.
+                self.stack.slots.shrinkRetainingCapacity(0);
+            },
+
+            // ── GC Extern/Any conversion (TODO: implement in Phase A3) ────────────────
+            .any_convert_extern => {
+                const ref = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .any_convert_extern = .{
+                    .dst = dst,
+                    .ref = ref,
+                } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .extern_convert_any => {
+                const ref = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .extern_convert_any = .{
+                    .dst = dst,
+                    .ref = ref,
+                } });
+                try self.stack.push(self.allocator, dst);
             },
         }
     }
