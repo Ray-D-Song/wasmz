@@ -1261,7 +1261,8 @@ pub const VM = struct {
                     const struct_type = composite_types[inst.type_idx].struct_type;
                     const layout = struct_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
 
-                    const value = store.gc_heap.readField(gc_ref, struct_type, layout, inst.field_idx);
+                    // Use unsigned (zero-extending) read for packed types.
+                    const value = store.gc_heap.readFieldUnsigned(gc_ref, struct_type, layout, inst.field_idx);
                     slots[inst.dst] = value;
                 },
                 .struct_set => |inst| {
@@ -1280,7 +1281,7 @@ pub const VM = struct {
                     const layout = array_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
 
                     const len = slots[inst.len].readAs(u32);
-                    const total_size = layout.base_size + 4 + len * layout.elem_size;
+                    const total_size = layout.base_size + len * layout.elem_size;
                     const gc_ref = store.gc_heap.alloc(total_size) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
 
                     const header_ptr = store.gc_heap.getHeader(gc_ref);
@@ -1299,7 +1300,7 @@ pub const VM = struct {
                     const layout = array_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
 
                     const len = slots[inst.len].readAs(u32);
-                    const total_size = layout.base_size + 4 + len * layout.elem_size;
+                    const total_size = layout.base_size + len * layout.elem_size;
                     const gc_ref = store.gc_heap.alloc(total_size) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
 
                     const header_ptr = store.gc_heap.getHeader(gc_ref);
@@ -1307,7 +1308,7 @@ pub const VM = struct {
 
                     store.gc_heap.setLength(gc_ref, len);
 
-                    const data = store.gc_heap.getBytesAt(gc_ref, layout.base_size + 4);
+                    const data = store.gc_heap.getBytesAt(gc_ref, layout.base_size);
                     @memset(data[0 .. len * layout.elem_size], 0);
 
                     slots[inst.dst] = RawVal.fromGcRef(gc_ref);
@@ -1317,7 +1318,7 @@ pub const VM = struct {
                     const layout = array_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
 
                     const len = inst.args_len;
-                    const total_size = layout.base_size + 4 + len * layout.elem_size;
+                    const total_size = layout.base_size + len * layout.elem_size;
                     const gc_ref = store.gc_heap.alloc(total_size) orelse return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
 
                     const header_ptr = store.gc_heap.getHeader(gc_ref);
@@ -1373,7 +1374,8 @@ pub const VM = struct {
                     const array_type = composite_types[inst.type_idx].array_type;
                     const layout = array_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
 
-                    slots[inst.dst] = store.gc_heap.readElem(gc_ref, array_type, layout, index);
+                    // Use unsigned (zero-extending) read for packed types.
+                    slots[inst.dst] = store.gc_heap.readElemUnsigned(gc_ref, array_type, layout, index);
                 },
                 .array_set => |inst| {
                     const gc_ref = slots[inst.ref].readAsGcRef();
@@ -1480,7 +1482,9 @@ pub const VM = struct {
                 .ref_test => |inst| {
                     const gc_ref = slots[inst.ref].readAsGcRef();
                     if (gc_ref.isNull()) {
-                        slots[inst.dst] = RawVal.from(@as(i32, 0));
+                        // ref.test_null (nullable=true): null always matches the nullable type.
+                        // ref.test (nullable=false): null never matches.
+                        slots[inst.dst] = RawVal.from(@as(i32, if (inst.nullable) 1 else 0));
                     } else if (gc_ref.isI31()) {
                         const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @enumFromInt(inst.type_idx)));
                         if (target_kind) |kind| {
@@ -1507,7 +1511,14 @@ pub const VM = struct {
                 },
                 .ref_cast => |inst| {
                     const gc_ref = slots[inst.ref].readAsGcRef();
-                    if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.CastFailure) };
+                    if (gc_ref.isNull()) {
+                        if (inst.nullable) {
+                            // ref.cast_null: null passes through — cast to nullable type succeeds.
+                            slots[inst.dst] = RawVal.fromGcRef(gc_ref);
+                            continue;
+                        }
+                        return .{ .trap = Trap.fromTrapCode(.CastFailure) };
+                    }
 
                     if (gc_ref.isI31()) {
                         const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @enumFromInt(inst.type_idx)));
@@ -1554,7 +1565,8 @@ pub const VM = struct {
                     var should_branch = false;
 
                     if (gc_ref.isNull()) {
-                        should_branch = false;
+                        // If the target type is nullable, null satisfies the cast => branch.
+                        should_branch = inst.to_nullable;
                     } else if (gc_ref.isI31()) {
                         const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @enumFromInt(inst.to_type_idx)));
                         if (target_kind) |kind| {
@@ -1580,7 +1592,8 @@ pub const VM = struct {
                     var should_branch = false;
 
                     if (gc_ref.isNull()) {
-                        should_branch = true;
+                        // If the target type is nullable, null satisfies the cast => do NOT branch.
+                        should_branch = !inst.to_nullable;
                     } else if (gc_ref.isI31()) {
                         const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @enumFromInt(inst.to_type_idx)));
                         if (target_kind) |kind| {
@@ -1606,12 +1619,11 @@ pub const VM = struct {
 
                 // Call operations
                 .call_ref => |inst| {
-                    const gc_ref = slots[inst.ref].readAsGcRef();
-                    if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
-
-                    const raw_bits = gc_ref.decode();
-                    // funcref is encoded as func_idx+1; decode back to func_idx.
-                    const callee_func_idx: u32 = @intCast(raw_bits - 1);
+                    // funcref is stored as u64 with encoding func_idx+1 (null=0).
+                    // Read as u64 directly — do NOT use readAsGcRef (that truncates to u32).
+                    const ref_bits = slots[inst.ref].readAs(u64);
+                    if (ref_bits == 0) return .{ .trap = Trap.fromTrapCode(.NullReference) };
+                    const callee_func_idx: u32 = @intCast(ref_bits - 1);
                     const caller_func = call_stack.items[frame_idx].func;
                     const arg_slots = caller_func.call_args.items[inst.args_start .. inst.args_start + inst.args_len];
 
@@ -1664,12 +1676,11 @@ pub const VM = struct {
                     }
                 },
                 .return_call_ref => |inst| {
-                    const gc_ref = slots[inst.ref].readAsGcRef();
-                    if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
-
-                    const raw_bits = gc_ref.decode();
-                    // funcref is encoded as func_idx+1; decode back to func_idx.
-                    const callee_func_idx: u32 = @intCast(raw_bits - 1);
+                    // funcref is stored as u64 with encoding func_idx+1 (null=0).
+                    // Read as u64 directly — do NOT use readAsGcRef (that truncates to u32).
+                    const ref_bits = slots[inst.ref].readAs(u64);
+                    if (ref_bits == 0) return .{ .trap = Trap.fromTrapCode(.NullReference) };
+                    const callee_func_idx: u32 = @intCast(ref_bits - 1);
                     const caller_func = call_stack.items[frame_idx].func;
                     const arg_slots = caller_func.call_args.items[inst.args_start .. inst.args_start + inst.args_len];
 

@@ -768,17 +768,21 @@ pub const Op = union(enum) {
     },
 
     // ── GC Type Test/Cast instructions ─────────────────────────────────────────────
-    /// ref.test: test if reference matches type (returns i32 0/1).
+    /// ref.test / ref.test_null: test if reference matches type (returns i32 0/1).
+    /// nullable=true means the target is (ref null ht): a null ref counts as a match.
     ref_test: struct {
         dst: Slot,
         ref: Slot,
         type_idx: u32,
+        nullable: bool,
     },
-    /// ref.cast: cast reference to type (traps on failure).
+    /// ref.cast / ref.cast_null: cast reference to type (traps on failure for non-nullable).
+    /// nullable=true means the target is (ref null ht): a null ref passes without trapping.
     ref_cast: struct {
         dst: Slot,
         ref: Slot,
         type_idx: u32,
+        nullable: bool,
     },
     /// ref.as_non_null: cast nullable ref to non-null (traps if null).
     ref_as_non_null: struct {
@@ -798,18 +802,22 @@ pub const Op = union(enum) {
         target: u32,
     },
     /// br_on_cast: branch if ref can be cast to target type.
+    /// to_nullable=true: a null ref also satisfies the cast (target is ref null ht).
     br_on_cast: struct {
         ref: Slot,
         target: u32,
         from_type_idx: u32,
         to_type_idx: u32,
+        to_nullable: bool,
     },
     /// br_on_cast_fail: branch if ref CANNOT be cast to target type.
+    /// to_nullable=true: a null ref satisfies the cast and does NOT branch.
     br_on_cast_fail: struct {
         ref: Slot,
         target: u32,
         from_type_idx: u32,
         to_type_idx: u32,
+        to_nullable: bool,
     },
 
     // ── GC Call instructions ───────────────────────────────────────────────────────
