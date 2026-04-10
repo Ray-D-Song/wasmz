@@ -322,6 +322,48 @@ pub const GcHeap = struct {
         };
     }
 
+
+    /// Reads a value from heap based on storage type, zero-extending packed types.
+    /// Used by struct.get_u and array.get_u instructions.
+    fn readStorageTypeUnsigned(self: Self, base: GcRef, offset: u32, storage_type: StorageType) RawVal {
+        const bytes = self.getBytesAt(base, offset);
+        return switch (storage_type) {
+            // Non-packed types: same as signed read (zero-extension doesn't apply).
+            .valtype => self.readStorageType(base, offset, storage_type),
+            // Packed types: zero-extend (treat as unsigned u8/u16).
+            .packed_type => |p| switch (p) {
+                .I8 => RawVal.from(@as(i32, @as(u8, bytes[0]))),
+                .I16 => RawVal.from(@as(i32, @as(u16, std.mem.readInt(u16, bytes[0..2], .little)))),
+            },
+        };
+    }
+
+    /// Reads a struct field value from the heap, zero-extending packed types.
+    pub fn readFieldUnsigned(
+        self: Self,
+        base: GcRef,
+        struct_type: StructType,
+        layout: StructLayout,
+        field_idx: u32,
+    ) RawVal {
+        const offset = layout.field_offsets[field_idx];
+        const storage_type = struct_type.fields[field_idx].storage_type;
+        return self.readStorageTypeUnsigned(base, offset, storage_type);
+    }
+
+    /// Reads an array element from the heap, zero-extending packed types.
+    pub fn readElemUnsigned(
+        self: Self,
+        base: GcRef,
+        array_type: ArrayType,
+        layout: ArrayLayout,
+        index: u32,
+    ) RawVal {
+        const elem_offset = layout.base_size + index * layout.elem_size;
+        const storage_type = array_type.field.storage_type;
+        return self.readStorageTypeUnsigned(base, elem_offset, storage_type);
+    }
+
     /// Writes a value to heap based on storage type.
     fn writeStorageType(self: Self, base: GcRef, offset: u32, storage_type: StorageType, value: RawVal) void {
         const bytes = self.getBytesAt(base, offset);

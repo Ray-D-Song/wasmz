@@ -26,7 +26,8 @@ pub const StructLayout = struct {
 
 /// ArrayLayout contains the memory layout for an array type.
 pub const ArrayLayout = struct {
-    /// Base size including header (in bytes).
+    /// Base size including header and length field (in bytes).
+    /// Layout: [GcHeader (8 bytes)][length: u32 (4 bytes)][elements...]
     base_size: u32,
     /// Size of each element (in bytes).
     elem_size: u32,
@@ -118,8 +119,10 @@ pub fn computeArrayLayout(array_type: ArrayType) ArrayLayout {
     const is_ref = isGcRef(array_type.field.storage_type);
     const header_size: u32 = @sizeOf(GcHeader);
 
+    // base_size includes GcHeader (8 bytes) plus the 4-byte array length field.
+    // Element data starts immediately after: offset = base_size + index * elem_size.
     return .{
-        .base_size = header_size,
+        .base_size = header_size + 4,
         .elem_size = elem_size,
         .elem_is_gc_ref = is_ref,
     };
@@ -194,7 +197,7 @@ test "computeArrayLayout" {
     };
     const layout = computeArrayLayout(array_type);
 
-    try std.testing.expectEqual(@as(u32, @sizeOf(GcHeader)), layout.base_size);
+    try std.testing.expectEqual(@as(u32, @sizeOf(GcHeader) + 4), layout.base_size);
     try std.testing.expectEqual(@as(u32, 4), layout.elem_size);
     try std.testing.expect(!layout.elem_is_gc_ref);
 }

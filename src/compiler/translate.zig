@@ -477,23 +477,36 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         // Parser stores the target HeapType in info.ref_type (not info.type_index).
         // Use heapTypeToRaw so that abstract heap types (anyref, eqref, …) are also
         // encoded correctly as their core.HeapType ordinal (0–9).
-        .ref_test, .ref_test_null => WasmOp{ .ref_test = try heapTypeToRaw(info.ref_type) },
-        .ref_cast, .ref_cast_null => WasmOp{ .ref_cast = try heapTypeToRaw(info.ref_type) },
+        // ref_test_null / ref_cast_null: target type is (ref null ht) — null counts as a match.
+        .ref_test => WasmOp{ .ref_test = .{ .type_idx = try heapTypeToRaw(info.ref_type), .nullable = false } },
+        .ref_test_null => WasmOp{ .ref_test = .{ .type_idx = try heapTypeToRaw(info.ref_type), .nullable = true } },
+        .ref_cast => WasmOp{ .ref_cast = .{ .type_idx = try heapTypeToRaw(info.ref_type), .nullable = false } },
+        .ref_cast_null => WasmOp{ .ref_cast = .{ .type_idx = try heapTypeToRaw(info.ref_type), .nullable = true } },
         .ref_as_non_null => WasmOp.ref_as_non_null,
 
         // ── GC Control Flow instructions ───────────────────────────────────────────
         .br_on_null => WasmOp{ .br_on_null = info.br_depth orelse return error.UnsupportedOperator },
         .br_on_non_null => WasmOp{ .br_on_non_null = info.br_depth orelse return error.UnsupportedOperator },
-        .br_on_cast => WasmOp{ .br_on_cast = .{
-            .br_depth = info.br_depth orelse return error.UnsupportedOperator,
-            .from_type_idx = try heapTypeToRaw(info.src_type),
-            .to_type_idx = try heapTypeToRaw(info.ref_type),
-        } },
-        .br_on_cast_fail => WasmOp{ .br_on_cast_fail = .{
-            .br_depth = info.br_depth orelse return error.UnsupportedOperator,
-            .from_type_idx = try heapTypeToRaw(info.src_type),
-            .to_type_idx = try heapTypeToRaw(info.ref_type),
-        } },
+        .br_on_cast => blk: {
+            // castflags byte: bit0 = from_nullable, bit1 = to_nullable
+            const flags: u8 = if (info.literal) |lit| @intCast(lit.number & 0xFF) else 0;
+            break :blk WasmOp{ .br_on_cast = .{
+                .br_depth = info.br_depth orelse return error.UnsupportedOperator,
+                .from_type_idx = try heapTypeToRaw(info.src_type),
+                .to_type_idx = try heapTypeToRaw(info.ref_type),
+                .to_nullable = (flags & 0x02) != 0,
+            } };
+        },
+        .br_on_cast_fail => blk: {
+            // castflags byte: bit0 = from_nullable, bit1 = to_nullable
+            const flags: u8 = if (info.literal) |lit| @intCast(lit.number & 0xFF) else 0;
+            break :blk WasmOp{ .br_on_cast_fail = .{
+                .br_depth = info.br_depth orelse return error.UnsupportedOperator,
+                .from_type_idx = try heapTypeToRaw(info.src_type),
+                .to_type_idx = try heapTypeToRaw(info.ref_type),
+                .to_nullable = (flags & 0x02) != 0,
+            } };
+        },
 
         // ── GC Call instructions ───────────────────────────────────────────────────
         // Note: n_params and has_result will be filled by the caller (module.zig)

@@ -415,10 +415,12 @@ pub const WasmOp = union(enum) {
     i31_get_u,
 
     // ── GC Type Test/Cast instructions ─────────────────────────────────────────────
-    /// ref.test: pop ref, push i32 (1 if ref matches type_idx, 0 otherwise).
-    ref_test: u32, // type_idx
-    /// ref.cast: pop ref, trap if ref doesn't match type_idx, else push ref.
-    ref_cast: u32, // type_idx
+    /// ref.test / ref.test_null: pop ref, push i32 (1 if ref matches type_idx, 0 otherwise).
+    /// nullable=true: a null ref also returns 1.
+    ref_test: struct { type_idx: u32, nullable: bool },
+    /// ref.cast / ref.cast_null: pop ref, trap if ref doesn't match type_idx (unless nullable+null), else push ref.
+    /// nullable=true: a null ref passes through without trapping.
+    ref_cast: struct { type_idx: u32, nullable: bool },
     /// ref.as_non_null: pop ref, trap if null, else push ref.
     ref_as_non_null,
 
@@ -428,16 +430,20 @@ pub const WasmOp = union(enum) {
     /// br_on_non_null: pop ref, branch if ref is non-null (push ref back then branch), else continue.
     br_on_non_null: u32, // br_depth
     /// br_on_cast: pop ref, branch if ref matches target type (push downcast ref and branch), else continue.
+    /// to_nullable=true: a null ref also satisfies the cast.
     br_on_cast: struct {
         br_depth: u32,
         from_type_idx: u32,
         to_type_idx: u32,
+        to_nullable: bool,
     },
     /// br_on_cast_fail: pop ref, branch if ref does NOT match target type, else continue with downcast ref.
+    /// to_nullable=true: a null ref satisfies the cast (does NOT branch).
     br_on_cast_fail: struct {
         br_depth: u32,
         from_type_idx: u32,
         to_type_idx: u32,
+        to_nullable: bool,
     },
 
     // ── GC Call instructions ───────────────────────────────────────────────────────
@@ -1951,23 +1957,25 @@ pub const Lower = struct {
             },
 
             // ── GC Type Test/Cast instructions ─────────────────────────────────────────
-            .ref_test => |type_idx| {
+            .ref_test => |ref_test_op| {
                 const ref = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .ref_test = .{
                     .dst = dst,
                     .ref = ref,
-                    .type_idx = type_idx,
+                    .type_idx = ref_test_op.type_idx,
+                    .nullable = ref_test_op.nullable,
                 } });
                 try self.stack.push(self.allocator, dst);
             },
-            .ref_cast => |type_idx| {
+            .ref_cast => |ref_cast_op| {
                 const ref = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .ref_cast = .{
                     .dst = dst,
                     .ref = ref,
-                    .type_idx = type_idx,
+                    .type_idx = ref_cast_op.type_idx,
+                    .nullable = ref_cast_op.nullable,
                 } });
                 try self.stack.push(self.allocator, dst);
             },
@@ -2052,6 +2060,7 @@ pub const Lower = struct {
                     .target = 0,
                     .from_type_idx = inst.from_type_idx,
                     .to_type_idx = inst.to_type_idx,
+                    .to_nullable = inst.to_nullable,
                 } });
 
                 if (frame.kind == .loop) {
@@ -2076,6 +2085,7 @@ pub const Lower = struct {
                     .target = 0,
                     .from_type_idx = inst.from_type_idx,
                     .to_type_idx = inst.to_type_idx,
+                    .to_nullable = inst.to_nullable,
                 } });
 
                 if (frame.kind == .loop) {
