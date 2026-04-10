@@ -24,6 +24,7 @@ const GcRef = core.GcRef;
 const GcRefKind = core.GcRefKind;
 const StructLayout = gc_mod.StructLayout;
 const ArrayLayout = gc_mod.ArrayLayout;
+const storageTypeSize = gc_mod.storageTypeSize;
 const gcRefKindFromHeapType = heap_type.gcRefKindFromHeapType;
 pub const RawVal = core.raw.RawVal;
 pub const Global = core.Global;
@@ -1345,8 +1346,89 @@ pub const VM = struct {
 
                     slots[inst.dst] = RawVal.fromGcRef(gc_ref);
                 },
-                .array_new_data => |_| @panic("array_new_data not implemented"),
-                .array_new_elem => |_| @panic("array_new_elem not implemented"),
+                .array_new_data => |inst| {
+                    if (inst.data_idx >= data_segments.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    if (data_segments_dropped[inst.data_idx]) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    const seg = data_segments[inst.data_idx];
+
+                    const array_type = composite_types[inst.type_idx].array_type;
+                    const layout = array_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    const src_offset = slots[inst.offset].readAs(u32);
+                    const len = slots[inst.len].readAs(u32);
+                    const elem_byte_size = storageTypeSize(array_type.field.storage_type);
+
+                    // Trap if segment bytes are out of range.
+                    const byte_count = @as(u64, len) * @as(u64, elem_byte_size);
+                    const src_end = @as(u64, src_offset) + byte_count;
+                    if (src_end > seg.data.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+
+                    const total_size = layout.base_size + len * layout.elem_size;
+                    const gc_ref = try self.gcAlloc(&store.gc_heap, total_size, call_stack.items, globals, composite_types, struct_layouts, array_layouts) orelse
+                        return .{ .trap = Trap.fromTrapCode(.OutOfMemory) };
+
+                    const header_ptr = store.gc_heap.getHeader(gc_ref);
+                    header_ptr.* = GcHeader.initFromRefKind(GcRefKind.init(GcRefKind.Array), inst.type_idx);
+                    store.gc_heap.setLength(gc_ref, len);
+
+                    // Read each element from the data segment using the element storage type.
+                    for (0..len) |i| {
+                        const byte_offset = src_offset + @as(u32, @intCast(i)) * elem_byte_size;
+                        const raw_val = switch (array_type.field.storage_type) {
+                            .packed_type => |p| switch (p) {
+                                .I8 => RawVal.from(@as(i32, @as(i8, @bitCast(seg.data[byte_offset])))),
+                                .I16 => RawVal.from(@as(i32, @as(i16, @bitCast(std.mem.readInt(u16, seg.data[byte_offset..][0..2], .little))))),
+                            },
+                            .valtype => |v| switch (v) {
+                                .I32 => RawVal.from(std.mem.readInt(i32, seg.data[byte_offset..][0..4], .little)),
+                                .I64 => RawVal.from(std.mem.readInt(i64, seg.data[byte_offset..][0..8], .little)),
+                                .F32 => RawVal.from(std.mem.readInt(u32, seg.data[byte_offset..][0..4], .little)),
+                                .F64 => RawVal.from(std.mem.readInt(u64, seg.data[byte_offset..][0..8], .little)),
+                                .V128 => blk: {
+                                    const low = std.mem.readInt(u64, seg.data[byte_offset..][0..8], .little);
+                                    const high = std.mem.readInt(u64, seg.data[byte_offset + 8 ..][0..8], .little);
+                                    break :blk RawVal{ .low64 = low, .high64 = high };
+                                },
+                                .Ref => RawVal.fromGcRef(GcRef.encode(std.mem.readInt(u32, seg.data[byte_offset..][0..4], .little))),
+                            },
+                        };
+                        store.gc_heap.writeElem(gc_ref, array_type, layout, @intCast(i), raw_val);
+                    }
+
+                    slots[inst.dst] = RawVal.fromGcRef(gc_ref);
+                },
+                .array_new_elem => |inst| {
+                    if (inst.elem_idx >= elem_segments.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+                    if (elem_segments_dropped[inst.elem_idx]) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+                    const seg = elem_segments[inst.elem_idx];
+
+                    const array_type = composite_types[inst.type_idx].array_type;
+                    const layout = array_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    const src_offset = slots[inst.offset].readAs(u32);
+                    const len = slots[inst.len].readAs(u32);
+
+                    const src_end, const src_overflow = @addWithOverflow(src_offset, len);
+                    if (src_overflow != 0 or src_end > seg.func_indices.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+
+                    const total_size = layout.base_size + len * layout.elem_size;
+                    const gc_ref = try self.gcAlloc(&store.gc_heap, total_size, call_stack.items, globals, composite_types, struct_layouts, array_layouts) orelse
+                        return .{ .trap = Trap.fromTrapCode(.OutOfMemory) };
+
+                    const header_ptr = store.gc_heap.getHeader(gc_ref);
+                    header_ptr.* = GcHeader.initFromRefKind(GcRefKind.init(GcRefKind.Array), inst.type_idx);
+                    store.gc_heap.setLength(gc_ref, len);
+
+                    // Elem segments store func_idx (maxInt(u32) = null).
+                    // Encode as funcref slot value: null → 0, func_idx → func_idx+1.
+                    for (0..len) |i| {
+                        const func_idx = seg.func_indices[src_offset + i];
+                        const ref_val: u64 = if (func_idx == std.math.maxInt(u32)) 0 else @as(u64, func_idx) + 1;
+                        store.gc_heap.writeElem(gc_ref, array_type, layout, @intCast(i), RawVal.fromBits64(ref_val));
+                    }
+
+                    slots[inst.dst] = RawVal.fromGcRef(gc_ref);
+                },
                 .array_get => |inst| {
                     const gc_ref = slots[inst.ref].readAsGcRef();
                     if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
@@ -1414,8 +1496,8 @@ pub const VM = struct {
                     const offset = slots[inst.offset].readAs(u32);
                     const n = slots[inst.n].readAs(u32);
                     const length = store.gc_heap.getLength(gc_ref);
-                    const end = offset +% n;
-                    if (end > length) return .{ .trap = Trap.fromTrapCode(.ArrayOutOfBounds) };
+                    const end, const end_overflow = @addWithOverflow(offset, n);
+                    if (end_overflow != 0 or end > length) return .{ .trap = Trap.fromTrapCode(.ArrayOutOfBounds) };
 
                     const array_type = composite_types[inst.type_idx].array_type;
                     const layout = array_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
@@ -1438,9 +1520,9 @@ pub const VM = struct {
                     const dst_length = store.gc_heap.getLength(dst_ref);
                     const src_length = store.gc_heap.getLength(src_ref);
 
-                    const dst_end = dst_offset +% n;
-                    const src_end = src_offset +% n;
-                    if (dst_end > dst_length or src_end > src_length) return .{ .trap = Trap.fromTrapCode(.ArrayOutOfBounds) };
+                    const dst_end, const dst_end_overflow = @addWithOverflow(dst_offset, n);
+                    const src_end, const src_end_overflow = @addWithOverflow(src_offset, n);
+                    if (dst_end_overflow != 0 or src_end_overflow != 0 or dst_end > dst_length or src_end > src_length) return .{ .trap = Trap.fromTrapCode(.ArrayOutOfBounds) };
 
                     const dst_array_type = composite_types[inst.dst_type_idx].array_type;
                     const dst_layout = array_layouts[inst.dst_type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
@@ -1461,8 +1543,85 @@ pub const VM = struct {
                         }
                     }
                 },
-                .array_init_data => |_| @panic("array_init_data not implemented"),
-                .array_init_elem => |_| @panic("array_init_elem not implemented"),
+                .array_init_data => |inst| {
+                    if (inst.data_idx >= data_segments.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    if (data_segments_dropped[inst.data_idx]) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    const seg = data_segments[inst.data_idx];
+
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
+
+                    const array_type = composite_types[inst.type_idx].array_type;
+                    const layout = array_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    const dst_offset = slots[inst.d].readAs(u32);
+                    const src_offset = slots[inst.s].readAs(u32);
+                    const n = slots[inst.n].readAs(u32);
+                    const arr_len = store.gc_heap.getLength(gc_ref);
+                    const elem_byte_size = storageTypeSize(array_type.field.storage_type);
+
+                    // Bounds check on destination array.
+                    const dst_end, const dst_overflow = @addWithOverflow(dst_offset, n);
+                    if (dst_overflow != 0 or dst_end > arr_len) return .{ .trap = Trap.fromTrapCode(.ArrayOutOfBounds) };
+
+                    // Bounds check on source data segment.
+                    const byte_count = @as(u64, n) * @as(u64, elem_byte_size);
+                    const src_end = @as(u64, src_offset) + byte_count;
+                    if (src_end > seg.data.len) return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+
+                    for (0..n) |i| {
+                        const byte_offset = src_offset + @as(u32, @intCast(i)) * elem_byte_size;
+                        const raw_val = switch (array_type.field.storage_type) {
+                            .packed_type => |p| switch (p) {
+                                .I8 => RawVal.from(@as(i32, @as(i8, @bitCast(seg.data[byte_offset])))),
+                                .I16 => RawVal.from(@as(i32, @as(i16, @bitCast(std.mem.readInt(u16, seg.data[byte_offset..][0..2], .little))))),
+                            },
+                            .valtype => |v| switch (v) {
+                                .I32 => RawVal.from(std.mem.readInt(i32, seg.data[byte_offset..][0..4], .little)),
+                                .I64 => RawVal.from(std.mem.readInt(i64, seg.data[byte_offset..][0..8], .little)),
+                                .F32 => RawVal.from(std.mem.readInt(u32, seg.data[byte_offset..][0..4], .little)),
+                                .F64 => RawVal.from(std.mem.readInt(u64, seg.data[byte_offset..][0..8], .little)),
+                                .V128 => blk: {
+                                    const low = std.mem.readInt(u64, seg.data[byte_offset..][0..8], .little);
+                                    const high = std.mem.readInt(u64, seg.data[byte_offset + 8 ..][0..8], .little);
+                                    break :blk RawVal{ .low64 = low, .high64 = high };
+                                },
+                                .Ref => RawVal.fromGcRef(GcRef.encode(std.mem.readInt(u32, seg.data[byte_offset..][0..4], .little))),
+                            },
+                        };
+                        store.gc_heap.writeElem(gc_ref, array_type, layout, dst_offset + @as(u32, @intCast(i)), raw_val);
+                    }
+                },
+                .array_init_elem => |inst| {
+                    if (inst.elem_idx >= elem_segments.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+                    if (elem_segments_dropped[inst.elem_idx]) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+                    const seg = elem_segments[inst.elem_idx];
+
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
+
+                    const array_type = composite_types[inst.type_idx].array_type;
+                    const layout = array_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    const dst_offset = slots[inst.d].readAs(u32);
+                    const src_offset = slots[inst.s].readAs(u32);
+                    const n = slots[inst.n].readAs(u32);
+                    const arr_len = store.gc_heap.getLength(gc_ref);
+
+                    // Bounds check on destination array.
+                    const dst_end, const dst_overflow = @addWithOverflow(dst_offset, n);
+                    if (dst_overflow != 0 or dst_end > arr_len) return .{ .trap = Trap.fromTrapCode(.ArrayOutOfBounds) };
+
+                    // Bounds check on source elem segment.
+                    const src_end, const src_overflow = @addWithOverflow(src_offset, n);
+                    if (src_overflow != 0 or src_end > seg.func_indices.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
+
+                    for (0..n) |i| {
+                        const func_idx = seg.func_indices[src_offset + i];
+                        const ref_val: u64 = if (func_idx == std.math.maxInt(u32)) 0 else @as(u64, func_idx) + 1;
+                        store.gc_heap.writeElem(gc_ref, array_type, layout, dst_offset + @as(u32, @intCast(i)), RawVal.fromBits64(ref_val));
+                    }
+                },
 
                 // i31 operations
                 .ref_i31 => |inst| {
