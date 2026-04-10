@@ -1,6 +1,5 @@
 const std = @import("std");
 const trap = @import("../trap.zig");
-const table_type = @import("../table/type.zig");
 const heap_type = @import("../heap_type.zig");
 const ref_type = @import("../ref_type.zig");
 
@@ -73,24 +72,6 @@ pub const ValType = union(enum) {
                 else => false,
             },
             else => false,
-        };
-    }
-
-    pub fn asRefType(self: ValType) ?table_type.RefType {
-        return switch (self) {
-            .Ref => |r| switch (r.heap_type) {
-                .Func => table_type.RefType.Func,
-                .Extern => table_type.RefType.Extern,
-                else => null,
-            },
-            else => null,
-        };
-    }
-
-    pub fn fromRefType(refType: table_type.RefType) ValType {
-        return switch (refType) {
-            .Func => funcref(),
-            .Extern => externref(),
         };
     }
 
