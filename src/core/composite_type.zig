@@ -1,6 +1,5 @@
 const std = @import("std");
 const ValType = @import("./value/type.zig").ValType;
-const FuncType = @import("./func_type.zig").FuncType;
 
 pub const PackedType = enum {
     I8,
@@ -30,13 +29,11 @@ pub const ArrayType = struct {
 };
 
 pub const CompositeType = union(enum) {
-    func: FuncType,
     struct_type: StructType,
     array_type: ArrayType,
 
     pub fn deinit(self: CompositeType, allocator: std.mem.Allocator) void {
         switch (self) {
-            .func => |f| f.deinit(allocator),
             .struct_type => |s| s.deinit(allocator),
             .array_type => {},
         }
