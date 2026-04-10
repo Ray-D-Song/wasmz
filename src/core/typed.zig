@@ -2,7 +2,6 @@ const std = @import("std");
 const raw_mod = @import("./raw.zig");
 const value_type = @import("./value/type.zig");
 const vec = @import("./value/vec.zig");
-const float = @import("./float.zig");
 
 const RawVal = raw_mod.RawVal;
 const ValType = value_type.ValType;
@@ -22,12 +21,6 @@ pub fn wasmTypeOf(comptime T: type) ValType {
     }
     if (T == vec.V128) {
         return .V128;
-    }
-    if (T == f32 or T == float.F32) {
-        return .F32;
-    }
-    if (T == f64 or T == float.F64) {
-        return .F64;
     }
     @compileError("unsupported wasm typed value");
 }
