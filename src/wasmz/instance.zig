@@ -20,6 +20,7 @@ const Module = module_mod.Module;
 const Global = core.Global;
 const GlobalType = core.GlobalType;
 const VM = vm_mod.VM;
+const ExecEnv = vm_mod.ExecEnv;
 const HostInstance = host_mod.HostInstance;
 pub const RawVal = vm_mod.RawVal;
 /// Wasm runtime trap, carrying TrapCode and optional description
@@ -157,6 +158,27 @@ pub const Instance = struct {
         self.* = undefined;
     }
 
+    fn execEnv(self: *Instance) ExecEnv {
+        return .{
+            .store = self.store,
+            .host_instance = &self.host_view,
+            .globals = self.globals,
+            .memory = self.memory,
+            .functions = self.module.functions,
+            .func_types = self.module.func_types,
+            .host_funcs = self.host_funcs,
+            .tables = self.module.tables,
+            .func_type_indices = self.module.func_type_indices,
+            .data_segments = self.module.data_segments,
+            .data_segments_dropped = self.data_segments_dropped,
+            .elem_segments = self.module.elem_segments,
+            .elem_segments_dropped = self.elem_segments_dropped,
+            .composite_types = self.module.composite_types,
+            .struct_layouts = self.module.struct_layouts,
+            .array_layouts = self.module.array_layouts,
+        };
+    }
+
     /// Call an exported function by name.
     ///
     /// Parameters:
@@ -172,23 +194,7 @@ pub const Instance = struct {
         const export_entry = self.module.exports.get(name) orelse return error.ExportNotFound;
         const func = self.module.functions[export_entry.function_index];
         var vm = VM.init(self.store.allocator);
-        return vm.execute(
-            func,
-            args,
-            self.store,
-            &self.host_view,
-            self.globals,
-            self.memory,
-            self.module.functions,
-            self.module.func_types,
-            self.host_funcs,
-            self.module.tables,
-            self.module.func_type_indices,
-            self.module.data_segments,
-            self.data_segments_dropped,
-            self.module.elem_segments,
-            self.elem_segments_dropped,
-        );
+        return vm.execute(func, args, self.execEnv());
     }
 };
 

@@ -887,6 +887,7 @@ pub fn compileFunctionBody(
 
 test "module.compile builds exported function bodies" {
     const VM = @import("../vm/root.zig").VM;
+    const ExecEnv = @import("../vm/root.zig").ExecEnv;
     const Config = @import("../engine/config.zig").Config;
     const Store = @import("./store.zig").Store;
     const HostInstance = @import("./host.zig").HostInstance;
@@ -930,22 +931,28 @@ test "module.compile builds exported function bodies" {
     };
     var data_segments_dropped = [_]bool{};
     var elem_segments_dropped = [_]bool{};
+    const exec_env = ExecEnv{
+        .store = &store,
+        .host_instance = &host_instance,
+        .globals = globals[0..],
+        .memory = memory[0..],
+        .functions = &.{},
+        .func_types = module.func_types,
+        .host_funcs = &.{},
+        .tables = tables[0..],
+        .func_type_indices = &.{},
+        .data_segments = module.data_segments,
+        .data_segments_dropped = data_segments_dropped[0..],
+        .elem_segments = module.elem_segments,
+        .elem_segments_dropped = elem_segments_dropped[0..],
+        .composite_types = module.composite_types,
+        .struct_layouts = module.struct_layouts,
+        .array_layouts = module.array_layouts,
+    };
     const result = (try vm.execute(
         module.functions[@intCast(export_entry.function_index)],
         &.{},
-        &store,
-        &host_instance,
-        globals[0..],
-        memory[0..],
-        &.{},
-        module.func_types,
-        &.{},
-        tables[0..],
-        &.{},
-        module.data_segments,
-        data_segments_dropped[0..],
-        module.elem_segments,
-        elem_segments_dropped[0..],
+        exec_env,
     )).ok orelse {
         return error.MissingReturnValue;
     };
