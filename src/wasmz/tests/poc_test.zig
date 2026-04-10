@@ -19,6 +19,7 @@ const Lower = lower_mod.Lower;
 const WasmOp = lower_mod.WasmOp;
 const CompiledFunction = ir_mod.CompiledFunction;
 const VM = vm_mod.VM;
+const ExecEnv = vm_mod.ExecEnv;
 const RawVal = vm_mod.RawVal;
 const ValType = core.ValType;
 const Global = core.Global;
@@ -264,24 +265,26 @@ fn executeWithEmptyRuntime(
         .memory = memory[0..],
         .tables = tables[0..],
     };
+    const exec_env = ExecEnv{
+        .store = &store,
+        .host_instance = &host_instance,
+        .globals = globals[0..],
+        .memory = memory[0..],
+        .functions = &.{},
+        .func_types = &.{},
+        .host_funcs = &.{},
+        .tables = tables[0..],
+        .func_type_indices = &.{},
+        .data_segments = &.{},
+        .data_segments_dropped = &.{},
+        .elem_segments = &.{},
+        .elem_segments_dropped = &.{},
+        .composite_types = &.{},
+        .struct_layouts = &.{},
+        .array_layouts = &.{},
+    };
 
-    return try vm.execute(
-        compiled,
-        params,
-        &store,
-        &host_instance,
-        globals[0..],
-        memory[0..],
-        &.{},
-        &.{},
-        &.{},
-        tables[0..],
-        &.{},
-        &.{},
-        &.{},
-        &.{},
-        &.{},
-    );
+    return try vm.execute(compiled, params, exec_env);
 }
 
 fn expectUnaryResult(comptime T: type, op: WasmOp, param: RawVal, expected: T) !void {
@@ -758,24 +761,26 @@ test "return_call: tail call replaces current frame" {
 
     const func_type_indices = [_]u32{ 0, 1 };
     const functions = [_]CompiledFunction{ compiled0, compiled1 };
+    const exec_env = ExecEnv{
+        .store = &store,
+        .host_instance = &host_instance,
+        .globals = globals[0..],
+        .memory = memory[0..],
+        .functions = &functions,
+        .func_types = &func_types,
+        .host_funcs = &.{},
+        .tables = tables[0..],
+        .func_type_indices = &func_type_indices,
+        .data_segments = &.{},
+        .data_segments_dropped = &.{},
+        .elem_segments = &.{},
+        .elem_segments_dropped = &.{},
+        .composite_types = &.{},
+        .struct_layouts = &.{},
+        .array_layouts = &.{},
+    };
 
-    const result = try vm.execute(
-        compiled0,
-        &.{},
-        &store,
-        &host_instance,
-        globals[0..],
-        memory[0..],
-        &functions,
-        &func_types,
-        &.{},
-        tables[0..],
-        &func_type_indices,
-        &.{},
-        &.{},
-        &.{},
-        &.{},
-    );
+    const result = try vm.execute(compiled0, &.{}, exec_env);
 
     const ret_val = result.ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 0), ret_val.readAs(i32));

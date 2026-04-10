@@ -42,6 +42,25 @@ pub const ExecResult = union(enum) {
     trap: Trap,
 };
 
+pub const ExecEnv = struct {
+    store: *Store,
+    host_instance: *HostInstance,
+    globals: []Global,
+    memory: []u8,
+    functions: []const CompiledFunction,
+    func_types: []const FuncType,
+    host_funcs: []const HostFunc,
+    tables: [][]u32,
+    func_type_indices: []const u32,
+    data_segments: []const CompiledDataSegment,
+    data_segments_dropped: []bool,
+    elem_segments: []const CompiledElemSegment,
+    elem_segments_dropped: []bool,
+    composite_types: []const CompositeType,
+    struct_layouts: []const ?StructLayout,
+    array_layouts: []const ?ArrayLayout,
+};
+
 /// One call frame is one function call
 ///
 /// - func:  be called fn（owned ops and call_args reference, does not own their lifetime）
@@ -115,51 +134,30 @@ pub const VM = struct {
         return .{ .allocator = allocator };
     }
 
-    /// Execute a compiled function.
-    ///
-    /// Parameters:
-    ///   func             — The entry-point compiled function body (IR instruction list)
-    ///   params           — Function parameters (filled into slots 0..params.len-1)
-    ///   globals          — Slice of module instance globals (needed for global_get/global_set)
-    ///   memory           — Linear memory slice (byte array; null means the module has no memory)
-    ///   functions        — All compiled functions in the module (needed to resolve call targets)
-    ///   host_funcs       — Host-provided functions for imported function slots (index matches Wasm func_idx;
-    ///                      length == number of imported functions, same as Module.imported_funcs.len)
-    ///   tables           — Module tables: tables[t][i] is the func_idx at position i in table t.
-    ///                      Used by call_indirect to resolve the callee at runtime.
-    ///   func_type_indices — Maps func_idx → type section index for every function (imports + locals).
-    ///                      Used by call_indirect for runtime type checking.
-    ///   data_segments    — Module data segments (needed for memory.init).
-    ///   data_segments_dropped — Tracks which data segments have been dropped via data.drop.
-    ///   composite_types  — GC composite types (struct/array) from Type Section.
-    ///   struct_layouts   — Precomputed memory layouts for struct types (index matches composite_types).
-    ///   array_layouts    — Precomputed memory layouts for array types (index matches composite_types).
-    ///
-    /// Returns:
-    ///   Allocator.Error  — Host memory allocation failure (not a Wasm trap)
-    ///   ExecResult.ok    — Normal execution completed, with optional return value
-    ///   ExecResult.trap  — Wasm runtime trap, with TrapCode and description
+    /// Execute a compiled function inside a concrete runtime environment.
     pub fn execute(
         self: *VM,
         func: CompiledFunction,
         params: []const RawVal,
-        store: *Store,
-        host_instance: *HostInstance,
-        globals: []Global,
-        memory: []u8,
-        functions: []const CompiledFunction,
-        func_types: []const FuncType,
-        host_funcs: []const HostFunc,
-        tables: [][]u32,
-        func_type_indices: []const u32,
-        data_segments: []const CompiledDataSegment,
-        data_segments_dropped: []bool,
-        elem_segments: []const CompiledElemSegment,
-        elem_segments_dropped: []bool,
-        composite_types: []const CompositeType,
-        struct_layouts: []const ?StructLayout,
-        array_layouts: []const ?ArrayLayout,
+        env: ExecEnv,
     ) Allocator.Error!ExecResult {
+        const store = env.store;
+        const host_instance = env.host_instance;
+        const globals = env.globals;
+        const memory = env.memory;
+        const functions = env.functions;
+        const func_types = env.func_types;
+        const host_funcs = env.host_funcs;
+        const tables = env.tables;
+        const func_type_indices = env.func_type_indices;
+        const data_segments = env.data_segments;
+        const data_segments_dropped = env.data_segments_dropped;
+        const elem_segments = env.elem_segments;
+        const elem_segments_dropped = env.elem_segments_dropped;
+        const composite_types = env.composite_types;
+        const struct_layouts = env.struct_layouts;
+        const array_layouts = env.array_layouts;
+
         // ── Initialize entry frame ─────────────────────────────────────────────
         const entry_slots_len: usize = @max(
             @as(usize, @intCast(func.slots_len)),
@@ -1233,7 +1231,17 @@ pub const VM = struct {
 
                     slots[inst.dst] = store.gc_heap.readField(gc_ref, struct_type, layout, inst.field_idx);
                 },
-                .struct_get_s, .struct_get_u => |inst| {
+                .struct_get_s => |inst| {
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
+
+                    const struct_type = composite_types[inst.type_idx].struct_type;
+                    const layout = struct_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    const value = store.gc_heap.readField(gc_ref, struct_type, layout, inst.field_idx);
+                    slots[inst.dst] = value;
+                },
+                .struct_get_u => |inst| {
                     const gc_ref = slots[inst.ref].readAsGcRef();
                     if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
 
@@ -1328,7 +1336,20 @@ pub const VM = struct {
 
                     slots[inst.dst] = store.gc_heap.readElem(gc_ref, array_type, layout, index);
                 },
-                .array_get_s, .array_get_u => |inst| {
+                .array_get_s => |inst| {
+                    const gc_ref = slots[inst.ref].readAsGcRef();
+                    if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
+
+                    const index = slots[inst.index].readAs(u32);
+                    const length = store.gc_heap.getLength(gc_ref);
+                    if (index >= length) return .{ .trap = Trap.fromTrapCode(.ArrayOutOfBounds) };
+
+                    const array_type = composite_types[inst.type_idx].array_type;
+                    const layout = array_layouts[inst.type_idx] orelse return .{ .trap = Trap.fromTrapCode(.BadSignature) };
+
+                    slots[inst.dst] = store.gc_heap.readElem(gc_ref, array_type, layout, index);
+                },
+                .array_get_u => |inst| {
                     const gc_ref = slots[inst.ref].readAsGcRef();
                     if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
 
@@ -1484,18 +1505,17 @@ pub const VM = struct {
                             return .{ .trap = Trap.fromTrapCode(.CastFailure) };
                         }
                         slots[inst.dst] = RawVal.fromGcRef(gc_ref);
-                        return;
-                    }
-
-                    const obj_header = store.gc_heap.getHeader(gc_ref);
-                    const target_kind = gcRefKindFromHeapType(core.HeapType.fromConcreteType(inst.type_idx));
-                    if (target_kind) |kind| {
-                        const kind_bits: u32 = @as(u32, kind.bits) << 26;
-                        if (!obj_header.isSubtypeOf(kind_bits)) return .{ .trap = Trap.fromTrapCode(.CastFailure) };
                     } else {
-                        if (obj_header.type_index != inst.type_idx) return .{ .trap = Trap.fromTrapCode(.CastFailure) };
+                        const obj_header = store.gc_heap.getHeader(gc_ref);
+                        const target_kind = gcRefKindFromHeapType(core.HeapType.fromConcreteType(inst.type_idx));
+                        if (target_kind) |kind| {
+                            const kind_bits: u32 = @as(u32, kind.bits) << 26;
+                            if (!obj_header.isSubtypeOf(kind_bits)) return .{ .trap = Trap.fromTrapCode(.CastFailure) };
+                        } else {
+                            if (obj_header.type_index != inst.type_idx) return .{ .trap = Trap.fromTrapCode(.CastFailure) };
+                        }
+                        slots[inst.dst] = RawVal.fromGcRef(gc_ref);
                     }
-                    slots[inst.dst] = RawVal.fromGcRef(gc_ref);
                 },
                 .ref_as_non_null => |inst| {
                     const gc_ref = slots[inst.ref].readAsGcRef();
