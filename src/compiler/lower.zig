@@ -331,6 +331,9 @@ pub const WasmOp = union(enum) {
 
     // ── Reference type instructions ───────────────────────────────────────────
     /// ref.null: push a null reference value.
+    /// All reference types (funcref, externref, anyref, eqref, …) share the
+    /// same null sentinel: low64 == 0.  funcref values are encoded as
+    /// func_idx+1 so that func_idx=0 is never confused with null.
     ref_null,
     /// ref.is_null: test if TOS reference is null → i32 result (1 = null, 0 = non-null).
     ref_is_null,
@@ -1561,7 +1564,7 @@ pub const Lower = struct {
             },
 
             // ── Reference type instructions ──────────────────────────────────────
-            // ref.null: push null reference (encoded as maxInt(u64) in low64).
+            // ref.null: push null reference (low64 = 0, unified for all ref types).
             .ref_null => {
                 const dst = self.alloc_slot();
                 try self.emit(.{ .const_ref_null = .{ .dst = dst } });

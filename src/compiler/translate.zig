@@ -100,13 +100,43 @@ pub fn wasmBlockTypeFromType(block_type: ?Type) TranslateError!?BlockType {
     };
 }
 
-/// Extracts a concrete type index from a HeapType.
-/// Returns InvalidTypeIndex error if the HeapType is null or represents an abstract type.
+/// Converts a PayloadHeapType into a raw u32 suitable for IR storage.
+///
+/// Encoding convention (shared with core.HeapType):
+///   - Abstract types (.kind variant): @intFromEnum(kind) — values 0–9 after translation
+///     We map parser TypeKind to the core HeapType enum ordinals (0=Func … 9=None).
+///   - Concrete types (.index variant): 0x80000000 | type_index
+///
+/// This raw value can later be recovered with:
+///   @as(core.HeapType, @enumFromInt(raw))
+fn heapTypeToRaw(heap_type: ?PayloadHeapType) TranslateError!u32 {
+    const ht = heap_type orelse return error.InvalidTypeIndex;
+    return switch (ht) {
+        .index => |idx| @intFromEnum(HeapType.fromConcreteType(idx)),
+        .kind => |kind| switch (kind) {
+            .funcref => @intFromEnum(HeapType.Func),
+            .null_funcref => @intFromEnum(HeapType.NoFunc),
+            .externref => @intFromEnum(HeapType.Extern),
+            .null_externref => @intFromEnum(HeapType.NoExtern),
+            .anyref => @intFromEnum(HeapType.Any),
+            .null_ref => @intFromEnum(HeapType.None),
+            .eqref => @intFromEnum(HeapType.Eq),
+            .i31ref => @intFromEnum(HeapType.I31),
+            .structref => @intFromEnum(HeapType.Struct),
+            .arrayref => @intFromEnum(HeapType.Array),
+            else => return error.InvalidTypeIndex,
+        },
+    };
+}
+
+/// Legacy alias — kept for callers that only pass concrete .index HeapTypes
+/// (struct/array/call_ref etc.). Those paths always produce a concrete index so the
+/// old behaviour is preserved; the function now delegates to heapTypeToRaw.
 fn typeIndexFromHeapType(heap_type: ?PayloadHeapType) TranslateError!u32 {
     const ht = heap_type orelse return error.InvalidTypeIndex;
     return switch (ht) {
         .index => |idx| idx,
-        .kind => return error.InvalidTypeIndex, // Abstract heap types not supported here
+        .kind => return error.InvalidTypeIndex,
     };
 }
 
@@ -356,6 +386,7 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         .select_with_type => WasmOp.select_with_type,
 
         // ── Reference type instructions ─────────────────────────────────────────
+        // ref.null: produces null for any heap type. All ref types share null=0.
         .ref_null => WasmOp.ref_null,
         .ref_is_null => WasmOp.ref_is_null,
         .ref_func => WasmOp{ .ref_func = info.func_index orelse return error.UnsupportedOperator },
@@ -443,8 +474,11 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         .i31_get_u => WasmOp.i31_get_u,
 
         // ── GC Type Test/Cast instructions ─────────────────────────────────────────
-        .ref_test, .ref_test_null => WasmOp{ .ref_test = try typeIndexFromHeapType(info.type_index) },
-        .ref_cast, .ref_cast_null => WasmOp{ .ref_cast = try typeIndexFromHeapType(info.type_index) },
+        // Parser stores the target HeapType in info.ref_type (not info.type_index).
+        // Use heapTypeToRaw so that abstract heap types (anyref, eqref, …) are also
+        // encoded correctly as their core.HeapType ordinal (0–9).
+        .ref_test, .ref_test_null => WasmOp{ .ref_test = try heapTypeToRaw(info.ref_type) },
+        .ref_cast, .ref_cast_null => WasmOp{ .ref_cast = try heapTypeToRaw(info.ref_type) },
         .ref_as_non_null => WasmOp.ref_as_non_null,
 
         // ── GC Control Flow instructions ───────────────────────────────────────────
@@ -452,13 +486,13 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         .br_on_non_null => WasmOp{ .br_on_non_null = info.br_depth orelse return error.UnsupportedOperator },
         .br_on_cast => WasmOp{ .br_on_cast = .{
             .br_depth = info.br_depth orelse return error.UnsupportedOperator,
-            .from_type_idx = try typeIndexFromHeapType(info.src_type),
-            .to_type_idx = try typeIndexFromHeapType(info.type_index),
+            .from_type_idx = try heapTypeToRaw(info.src_type),
+            .to_type_idx = try heapTypeToRaw(info.ref_type),
         } },
         .br_on_cast_fail => WasmOp{ .br_on_cast_fail = .{
             .br_depth = info.br_depth orelse return error.UnsupportedOperator,
-            .from_type_idx = try typeIndexFromHeapType(info.src_type),
-            .to_type_idx = try typeIndexFromHeapType(info.type_index),
+            .from_type_idx = try heapTypeToRaw(info.src_type),
+            .to_type_idx = try heapTypeToRaw(info.ref_type),
         } },
 
         // ── GC Call instructions ───────────────────────────────────────────────────

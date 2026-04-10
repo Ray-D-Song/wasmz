@@ -226,18 +226,23 @@ pub const VM = struct {
                 },
 
                 // ── Reference type constants ──────────────────────────────────
-                // ref.null: push the null reference sentinel (maxInt(u64) in low64).
+                // ref.null: push the unified null reference sentinel (low64 = 0).
+                // All reference types — funcref, externref, anyref, eqref, etc. —
+                // share the same null encoding.  funcref non-null values are
+                // stored as func_idx+1 so that func_idx=0 is never confused with null.
                 .const_ref_null => |inst| {
-                    slots[inst.dst] = RawVal.fromBits64(std.math.maxInt(u64));
+                    slots[inst.dst] = RawVal.fromBits64(0);
                 },
-                // ref.is_null: 1 if the reference is the null sentinel, else 0.
+                // ref.is_null: 1 if the reference is null (low64 == 0), else 0.
                 .ref_is_null => |inst| {
-                    const is_null: i32 = if (slots[inst.src].readAs(u64) == std.math.maxInt(u64)) 1 else 0;
+                    const is_null: i32 = if (slots[inst.src].readAs(u64) == 0) 1 else 0;
                     slots[inst.dst] = RawVal.from(is_null);
                 },
-                // ref.func: push the function index as a funcref value (stored in low64).
+                // ref.func: push the function index as a funcref value.
+                // Encoding: store func_idx+1 so that null (0) is never aliased
+                // with a legitimate func_idx=0 reference.
                 .ref_func => |inst| {
-                    slots[inst.dst] = RawVal.fromBits64(@as(u64, inst.func_idx));
+                    slots[inst.dst] = RawVal.fromBits64(@as(u64, inst.func_idx) + 1);
                 },
                 // ref.eq: 1 if lhs and rhs have the same raw bits, else 0.
                 .ref_eq => |inst| {
@@ -1094,8 +1099,10 @@ pub const VM = struct {
                     const idx = slots[inst.index].readAs(u32);
                     if (idx >= table.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
                     const func_idx = table[idx];
-                    // Convert u32 table entry to u64 funcref: null sentinel maps to maxInt(u64)
-                    const ref: u64 = if (func_idx == std.math.maxInt(u32)) std.math.maxInt(u64) else @as(u64, func_idx);
+                    // Convert u32 table entry to funcref slot value.
+                    // Table null sentinel (maxInt(u32)) → slot null (0).
+                    // Non-null: func_idx → func_idx+1 (unified encoding).
+                    const ref: u64 = if (func_idx == std.math.maxInt(u32)) 0 else @as(u64, func_idx) + 1;
                     slots[inst.dst] = RawVal.fromBits64(ref);
                 },
                 .table_set => |inst| {
@@ -1104,8 +1111,10 @@ pub const VM = struct {
                     const idx = slots[inst.index].readAs(u32);
                     if (idx >= table.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
                     const ref = slots[inst.value].readAs(u64);
-                    // Convert funcref RawVal to u32 table entry: null sentinel maps to maxInt(u32)
-                    tables[inst.table_index][idx] = if (ref == std.math.maxInt(u64)) std.math.maxInt(u32) else @as(u32, @truncate(ref));
+                    // Convert funcref slot value to u32 table entry.
+                    // Slot null (0) → table null sentinel (maxInt(u32)).
+                    // Non-null: slot value is func_idx+1 → table stores func_idx.
+                    tables[inst.table_index][idx] = if (ref == 0) std.math.maxInt(u32) else @as(u32, @intCast(ref - 1));
                 },
                 .table_size => |inst| {
                     if (inst.table_index >= tables.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
@@ -1119,7 +1128,9 @@ pub const VM = struct {
                         const delta = slots[inst.delta].readAs(u32);
                         const new_len = std.math.add(usize, old_len, @as(usize, delta)) catch break :blk_table_grow -1;
                         const init_ref = slots[inst.init].readAs(u64);
-                        const init_val: u32 = if (init_ref == std.math.maxInt(u64)) std.math.maxInt(u32) else @as(u32, @truncate(init_ref));
+                        // Slot null (0) → table null sentinel (maxInt(u32)).
+                        // Non-null: slot value is func_idx+1 → table stores func_idx.
+                        const init_val: u32 = if (init_ref == 0) std.math.maxInt(u32) else @as(u32, @intCast(init_ref - 1));
                         const new_slice = self.allocator.realloc(tables[inst.table_index], new_len) catch break :blk_table_grow -1;
                         tables[inst.table_index] = new_slice;
                         @memset(tables[inst.table_index][old_len..], init_val);
@@ -1135,7 +1146,9 @@ pub const VM = struct {
                     const end = dst_idx +% len;
                     if (end > table.len) return .{ .trap = Trap.fromTrapCode(.TableOutOfBounds) };
                     const ref = slots[inst.value].readAs(u64);
-                    const val: u32 = if (ref == std.math.maxInt(u64)) std.math.maxInt(u32) else @as(u32, @truncate(ref));
+                    // Slot null (0) → table null sentinel (maxInt(u32)).
+                    // Non-null: slot value is func_idx+1 → table stores func_idx.
+                    const val: u32 = if (ref == 0) std.math.maxInt(u32) else @as(u32, @intCast(ref - 1));
                     @memset(tables[inst.table_index][dst_idx..][0..len], val);
                 },
                 .table_copy => |inst| {
@@ -1469,7 +1482,7 @@ pub const VM = struct {
                     if (gc_ref.isNull()) {
                         slots[inst.dst] = RawVal.from(@as(i32, 0));
                     } else if (gc_ref.isI31()) {
-                        const target_kind = gcRefKindFromHeapType(core.HeapType.fromConcreteType(inst.type_idx));
+                        const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @enumFromInt(inst.type_idx)));
                         if (target_kind) |kind| {
                             const is_match = GcRefKind.init(GcRefKind.I31).isSubtypeOf(kind);
                             slots[inst.dst] = RawVal.from(@as(i32, if (is_match) 1 else 0));
@@ -1478,7 +1491,7 @@ pub const VM = struct {
                         }
                     } else {
                         const obj_header = store.gc_heap.getHeader(gc_ref);
-                        const target_kind = gcRefKindFromHeapType(core.HeapType.fromConcreteType(inst.type_idx));
+                        const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @enumFromInt(inst.type_idx)));
                         if (target_kind) |kind| {
                             const kind_bits: u32 = @as(u32, kind.bits) << 26;
                             const is_match = obj_header.isSubtypeOf(kind_bits);
@@ -1497,7 +1510,7 @@ pub const VM = struct {
                     if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.CastFailure) };
 
                     if (gc_ref.isI31()) {
-                        const target_kind = gcRefKindFromHeapType(core.HeapType.fromConcreteType(inst.type_idx));
+                        const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @enumFromInt(inst.type_idx)));
                         if (target_kind) |kind| {
                             const is_match = GcRefKind.init(GcRefKind.I31).isSubtypeOf(kind);
                             if (!is_match) return .{ .trap = Trap.fromTrapCode(.CastFailure) };
@@ -1507,7 +1520,7 @@ pub const VM = struct {
                         slots[inst.dst] = RawVal.fromGcRef(gc_ref);
                     } else {
                         const obj_header = store.gc_heap.getHeader(gc_ref);
-                        const target_kind = gcRefKindFromHeapType(core.HeapType.fromConcreteType(inst.type_idx));
+                        const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @enumFromInt(inst.type_idx)));
                         if (target_kind) |kind| {
                             const kind_bits: u32 = @as(u32, kind.bits) << 26;
                             if (!obj_header.isSubtypeOf(kind_bits)) return .{ .trap = Trap.fromTrapCode(.CastFailure) };
@@ -1543,13 +1556,13 @@ pub const VM = struct {
                     if (gc_ref.isNull()) {
                         should_branch = false;
                     } else if (gc_ref.isI31()) {
-                        const target_kind = gcRefKindFromHeapType(core.HeapType.fromConcreteType(inst.to_type_idx));
+                        const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @enumFromInt(inst.to_type_idx)));
                         if (target_kind) |kind| {
                             should_branch = GcRefKind.init(GcRefKind.I31).isSubtypeOf(kind);
                         }
                     } else {
                         const obj_header = store.gc_heap.getHeader(gc_ref);
-                        const target_kind = gcRefKindFromHeapType(core.HeapType.fromConcreteType(inst.to_type_idx));
+                        const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @enumFromInt(inst.to_type_idx)));
                         if (target_kind) |kind| {
                             const kind_bits: u32 = @as(u32, kind.bits) << 26;
                             should_branch = obj_header.isSubtypeOf(kind_bits);
@@ -1569,7 +1582,7 @@ pub const VM = struct {
                     if (gc_ref.isNull()) {
                         should_branch = true;
                     } else if (gc_ref.isI31()) {
-                        const target_kind = gcRefKindFromHeapType(core.HeapType.fromConcreteType(inst.to_type_idx));
+                        const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @enumFromInt(inst.to_type_idx)));
                         if (target_kind) |kind| {
                             should_branch = !GcRefKind.init(GcRefKind.I31).isSubtypeOf(kind);
                         } else {
@@ -1577,7 +1590,7 @@ pub const VM = struct {
                         }
                     } else {
                         const obj_header = store.gc_heap.getHeader(gc_ref);
-                        const target_kind = gcRefKindFromHeapType(core.HeapType.fromConcreteType(inst.to_type_idx));
+                        const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @enumFromInt(inst.to_type_idx)));
                         if (target_kind) |kind| {
                             const kind_bits: u32 = @as(u32, kind.bits) << 26;
                             should_branch = !obj_header.isSubtypeOf(kind_bits);
@@ -1597,7 +1610,8 @@ pub const VM = struct {
                     if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
 
                     const raw_bits = gc_ref.decode();
-                    const callee_func_idx: u32 = raw_bits;
+                    // funcref is encoded as func_idx+1; decode back to func_idx.
+                    const callee_func_idx: u32 = @intCast(raw_bits - 1);
                     const caller_func = call_stack.items[frame_idx].func;
                     const arg_slots = caller_func.call_args.items[inst.args_start .. inst.args_start + inst.args_len];
 
@@ -1654,7 +1668,8 @@ pub const VM = struct {
                     if (gc_ref.isNull()) return .{ .trap = Trap.fromTrapCode(.NullReference) };
 
                     const raw_bits = gc_ref.decode();
-                    const callee_func_idx: u32 = raw_bits;
+                    // funcref is encoded as func_idx+1; decode back to func_idx.
+                    const callee_func_idx: u32 = @intCast(raw_bits - 1);
                     const caller_func = call_stack.items[frame_idx].func;
                     const arg_slots = caller_func.call_args.items[inst.args_start .. inst.args_start + inst.args_len];
 
