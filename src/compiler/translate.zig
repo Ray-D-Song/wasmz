@@ -38,7 +38,7 @@ pub const TranslateError = error{
 };
 
 /// Translates a Wasm type (payload Type) into a runtime value type (ValType).
-/// Only supports i32/i64/f32/f64/v128/funcref/externref; other types return UnsupportedFunctionType.
+/// Supports i32/i64/f32/f64/v128 and all GC reference types.
 pub fn wasmValTypeFromType(typ: Type) TranslateError!ValType {
     return switch (typ) {
         .kind => |kind| switch (kind) {
@@ -47,17 +47,37 @@ pub fn wasmValTypeFromType(typ: Type) TranslateError!ValType {
             .f32 => .F32,
             .f64 => .F64,
             .v128 => .V128,
-            .funcref, .null_funcref => ValType.funcref(),
-            .externref, .null_externref => ValType.externref(),
+            .funcref => ValType.funcref(),
+            .null_funcref => ValType.nullfuncref(),
+            .externref => ValType.externref(),
+            .null_externref => ValType.nullexternref(),
+            .anyref => ValType.anyref(),
+            .null_ref => ValType.nullref(),
+            .eqref => ValType.eqref(),
+            .i31ref => ValType.i31ref(),
+            .structref => ValType.structref(),
+            .arrayref => ValType.arrayref(),
             else => error.UnsupportedFunctionType,
         },
-        .ref_type => |ref_type| switch (ref_type.ref_index) {
-            .kind => |kind| switch (kind) {
-                .funcref, .null_funcref => ValType.funcref(),
-                .externref, .null_externref => ValType.externref(),
-                else => error.UnsupportedFunctionType,
-            },
-            else => error.UnsupportedFunctionType,
+        .ref_type => |ref_type| blk: {
+            const heap_type = switch (ref_type.ref_index) {
+                .kind => |kind| switch (kind) {
+                    .funcref => HeapType.Func,
+                    .null_funcref => HeapType.NoFunc,
+                    .externref => HeapType.Extern,
+                    .null_externref => HeapType.NoExtern,
+                    .anyref => HeapType.Any,
+                    .null_ref => HeapType.None,
+                    .eqref => HeapType.Eq,
+                    .i31ref => HeapType.I31,
+                    .structref => HeapType.Struct,
+                    .arrayref => HeapType.Array,
+                    else => return error.UnsupportedFunctionType,
+                },
+                .index => |idx| HeapType.fromConcreteType(idx),
+            };
+            const ref_ty = RefType.init(ref_type.nullable, heap_type);
+            break :blk .{ .Ref = ref_ty };
         },
         else => error.UnsupportedFunctionType,
     };
@@ -527,4 +547,47 @@ pub fn wasmCompositeTypeFromTypeEntry(
         },
         else => error.UnsupportedFunctionType,
     };
+}
+
+test "wasmValTypeFromType handles GC reference types" {
+    const testing = std.testing;
+    const payload = @import("payload");
+
+    // Test abstract heap types
+    const anyref_type = Type{ .kind = .anyref };
+    try testing.expectEqual(ValType.anyref(), try wasmValTypeFromType(anyref_type));
+
+    const eqref_type = Type{ .kind = .eqref };
+    try testing.expectEqual(ValType.eqref(), try wasmValTypeFromType(eqref_type));
+
+    const i31ref_type = Type{ .kind = .i31ref };
+    try testing.expectEqual(ValType.i31ref(), try wasmValTypeFromType(i31ref_type));
+
+    const structref_type = Type{ .kind = .structref };
+    try testing.expectEqual(ValType.structref(), try wasmValTypeFromType(structref_type));
+
+    const arrayref_type = Type{ .kind = .arrayref };
+    try testing.expectEqual(ValType.arrayref(), try wasmValTypeFromType(arrayref_type));
+
+    // Test nullable ref types
+    const null_funcref = Type{ .kind = .null_funcref };
+    try testing.expectEqual(ValType.nullfuncref(), try wasmValTypeFromType(null_funcref));
+
+    const null_externref = Type{ .kind = .null_externref };
+    try testing.expectEqual(ValType.nullexternref(), try wasmValTypeFromType(null_externref));
+
+    const null_ref = Type{ .kind = .null_ref };
+    try testing.expectEqual(ValType.nullref(), try wasmValTypeFromType(null_ref));
+
+    // Test ref.type with heap type index
+    const ref_type_payload = payload.RefType{
+        .nullable = true,
+        .ref_index = .{ .index = 5 },
+    };
+    const concrete_ref_type = Type{ .ref_type = ref_type_payload };
+    const result = try wasmValTypeFromType(concrete_ref_type);
+    try testing.expect(result == .Ref);
+    try testing.expect(result.Ref.nullable);
+    try testing.expect(result.Ref.heap_type.isConcrete());
+    try testing.expectEqual(@as(u32, 5), result.Ref.heap_type.concreteType().?);
 }
