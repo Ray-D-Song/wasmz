@@ -107,7 +107,7 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
 
     // ── Instantiate ───────────────────────────────────────────────────────────────
 
-    var store = Store.init(allocator, engine);
+    var store = try Store.init(allocator, engine);
     defer store.deinit();
 
     var wasi_host = wasi_preview1.Host.init(allocator);

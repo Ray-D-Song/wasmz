@@ -917,7 +917,7 @@ test "module.compile builds exported function bodies" {
     try std.testing.expectEqual(@as(u32, 0), export_entry.function_index);
 
     var vm = VM.init(std.testing.allocator);
-    var store = Store.init(std.testing.allocator, engine);
+    var store = try Store.init(std.testing.allocator, engine);
     defer store.deinit();
     var globals = [_]Global{};
     var memory: [0]u8 = .{};

@@ -208,7 +208,7 @@ test "preview1 args and env write guest memory correctly" {
     var engine = try wasmz.Engine.init(testing.allocator, wasmz.Config{});
     defer engine.deinit();
 
-    var store = wasmz.Store.init(testing.allocator, engine);
+    var store = try wasmz.Store.init(testing.allocator, engine);
     defer store.deinit();
 
     var host = Host.init(testing.allocator);
@@ -273,7 +273,7 @@ test "preview1 clock and fd_write use host implementations" {
     var engine = try wasmz.Engine.init(testing.allocator, wasmz.Config{});
     defer engine.deinit();
 
-    var store = wasmz.Store.init(testing.allocator, engine);
+    var store = try wasmz.Store.init(testing.allocator, engine);
     defer store.deinit();
 
     var sink = std.ArrayList(u8){};
@@ -346,7 +346,7 @@ test "preview1 linker only registers implemented imports" {
     var engine = try wasmz.Engine.init(testing.allocator, wasmz.Config{});
     defer engine.deinit();
 
-    var store = wasmz.Store.init(testing.allocator, engine);
+    var store = try wasmz.Store.init(testing.allocator, engine);
     defer store.deinit();
 
     var host = Host.init(testing.allocator);
@@ -382,7 +382,7 @@ test "preview1 file operations" {
     var engine = try wasmz.Engine.init(testing.allocator, wasmz.Config{});
     defer engine.deinit();
 
-    var store = wasmz.Store.init(testing.allocator, engine);
+    var store = try wasmz.Store.init(testing.allocator, engine);
     defer store.deinit();
 
     var host = Host.init(testing.allocator);

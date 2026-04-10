@@ -200,7 +200,7 @@ test "Instance.call executes exported function end-to-end" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
     // (i32, i32) -> i32  add function, exported as "add"
@@ -236,7 +236,7 @@ test "Instance.init allocates globals and memory" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
     // Use a minimal wasm module with a memory section and a global variable for end-to-end testing.
@@ -287,7 +287,7 @@ test "Instance.init with no memory section" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
     // Minimal wasm: only an empty function, no memory/global section
@@ -332,7 +332,7 @@ test "Instance.call supports inter-function calls (double via add)" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
     //   type[0]: (i32,i32)->i32   type[1]: (i32)->i32
@@ -401,7 +401,7 @@ test "Instance.call: i32.store and i32.load round-trip" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
     const wasm = [_]u8{
@@ -461,7 +461,7 @@ test "Instance.call: i32.store8, i32.load8_u, i32.load8_s" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
     const wasm = [_]u8{
@@ -512,7 +512,7 @@ test "Instance.call: memory out-of-bounds returns trap" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
     const wasm = [_]u8{
@@ -564,7 +564,7 @@ test "Instance: host function import (env.add_one) is called correctly" {
     var engine = try engine_mod.Engine.init(testing_mod.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing_mod.allocator, engine);
+    var store = try Store.init(testing_mod.allocator, engine);
     defer store.deinit();
 
     // Wasm binary for the module described above.
@@ -649,7 +649,7 @@ test "Instance: host function trap propagates to caller" {
     var engine = try engine_mod.Engine.init(testing_mod.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing_mod.allocator, engine);
+    var store = try Store.init(testing_mod.allocator, engine);
     defer store.deinit();
 
     const wasm = [_]u8{
@@ -711,7 +711,7 @@ test "Instance.call: unreachable instruction returns UnreachableCodeReached trap
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
     const wasm = [_]u8{
@@ -748,7 +748,7 @@ test "Instance.init returns ImportNotSatisfied when import is missing" {
     var engine = try engine_mod.Engine.init(testing_mod.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing_mod.allocator, engine);
+    var store = try Store.init(testing_mod.allocator, engine);
     defer store.deinit();
 
     const wasm = [_]u8{
@@ -776,7 +776,7 @@ test "Instance.init returns ImportSignatureMismatch when host signature differs"
     var engine = try engine_mod.Engine.init(testing_mod.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing_mod.allocator, engine);
+    var store = try Store.init(testing_mod.allocator, engine);
     defer store.deinit();
 
     const wasm = [_]u8{
@@ -833,7 +833,7 @@ test "Instance.call: table.size returns initial table element count" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
     const wasm = [_]u8{
@@ -870,7 +870,7 @@ test "Instance.call: table.grow returns old size on success" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
     const wasm = [_]u8{
@@ -911,7 +911,7 @@ test "Instance.call: table.get returns non-null for populated element" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
     const wasm = [_]u8{
@@ -966,7 +966,7 @@ test "Instance.call: table.set then table.get roundtrip" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
     const wasm = [_]u8{
@@ -1010,7 +1010,7 @@ test "Instance.call: table.fill sets elements and table.get reads non-null" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
     const wasm = [_]u8{
@@ -1054,7 +1054,7 @@ test "Instance.call: table.copy copies elements within same table" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
     const wasm = [_]u8{
@@ -1099,7 +1099,7 @@ test "Instance.call: table.init copies from passive element segment" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
     const wasm = [_]u8{
@@ -1144,7 +1144,7 @@ test "Instance.call: elem.drop makes table.init trap" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
     const wasm = [_]u8{

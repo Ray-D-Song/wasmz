@@ -249,7 +249,7 @@ fn executeWithEmptyRuntime(
     var engine = try Engine.init(testing.allocator, Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
     var module = try module_mod.Module.compile(engine, &empty_runtime_module_wasm);
@@ -740,7 +740,7 @@ test "return_call: tail call replaces current frame" {
     var engine = try Engine.init(testing.allocator, Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
     var module = try module_mod.Module.compile(engine, &empty_runtime_module_wasm);

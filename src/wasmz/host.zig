@@ -251,7 +251,7 @@ test "HostContext userData and hostData cast opaque pointers" {
     defer engine.deinit();
 
     var user_value: i32 = 7;
-    var store = Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
     store.setUserData(&user_value);
 
@@ -289,7 +289,7 @@ test "HostContext readBytes traps on out of bounds" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
     var globals = [_]Global{};
