@@ -102,10 +102,7 @@ pub const Instance = struct {
         errdefer allocator.free(host_funcs);
 
         for (module.imported_funcs, 0..) |def, i| {
-            const hf = imports.get(def.module_name, def.func_name) orelse {
-                std.debug.print("ImportNotSatisfied: module='{s}' func='{s}'\n", .{ def.module_name, def.func_name });
-                return error.ImportNotSatisfied;
-            };
+            const hf = imports.get(def.module_name, def.func_name) orelse return error.ImportNotSatisfied;
             if (!hf.matches(module.func_types[def.type_index])) {
                 return error.ImportSignatureMismatch;
             }
