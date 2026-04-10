@@ -282,6 +282,7 @@ fn executeWithEmptyRuntime(
         .composite_types = &.{},
         .struct_layouts = &.{},
         .array_layouts = &.{},
+        .type_ancestors = &.{},
     };
 
     return try vm.execute(compiled, params, exec_env);
@@ -778,6 +779,7 @@ test "return_call: tail call replaces current frame" {
         .composite_types = &.{},
         .struct_layouts = &.{},
         .array_layouts = &.{},
+        .type_ancestors = &.{},
     };
 
     const result = try vm.execute(compiled0, &.{}, exec_env);

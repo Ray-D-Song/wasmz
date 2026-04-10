@@ -59,6 +59,10 @@ pub const ExecEnv = struct {
     composite_types: []const CompositeType,
     struct_layouts: []const ?StructLayout,
     array_layouts: []const ?ArrayLayout,
+    /// Transitive ancestor lists for user-defined composite types.
+    /// type_ancestors[i] lists all strict ancestor composite type indices of type i.
+    /// Empty for types with no declared supertypes.
+    type_ancestors: []const []const u32,
 };
 
 /// One call frame is one function call
@@ -157,6 +161,7 @@ pub const VM = struct {
         const composite_types = env.composite_types;
         const struct_layouts = env.struct_layouts;
         const array_layouts = env.array_layouts;
+        const type_ancestors = env.type_ancestors;
 
         // ── Initialize entry frame ─────────────────────────────────────────────
         const entry_slots_len: usize = @max(
@@ -1501,11 +1506,16 @@ pub const VM = struct {
                             const is_match = obj_header.isSubtypeOf(kind_bits);
                             slots[inst.dst] = RawVal.from(@as(i32, if (is_match) 1 else 0));
                         } else {
-                            if (obj_header.type_index == inst.type_idx) {
-                                slots[inst.dst] = RawVal.from(@as(i32, 1));
-                            } else {
-                                slots[inst.dst] = RawVal.from(@as(i32, 0));
-                            }
+                            const obj_idx = obj_header.type_index;
+                            const is_match = obj_idx == inst.type_idx or blk: {
+                                if (obj_idx < type_ancestors.len) {
+                                    for (type_ancestors[obj_idx]) |anc| {
+                                        if (anc == inst.type_idx) break :blk true;
+                                    }
+                                }
+                                break :blk false;
+                            };
+                            slots[inst.dst] = RawVal.from(@as(i32, if (is_match) 1 else 0));
                         }
                     }
                 },
@@ -1536,7 +1546,16 @@ pub const VM = struct {
                             const kind_bits: u32 = @as(u32, kind.bits) << 26;
                             if (!obj_header.isSubtypeOf(kind_bits)) return .{ .trap = Trap.fromTrapCode(.CastFailure) };
                         } else {
-                            if (obj_header.type_index != inst.type_idx) return .{ .trap = Trap.fromTrapCode(.CastFailure) };
+                            const obj_idx = obj_header.type_index;
+                            const is_match = obj_idx == inst.type_idx or blk: {
+                                if (obj_idx < type_ancestors.len) {
+                                    for (type_ancestors[obj_idx]) |anc| {
+                                        if (anc == inst.type_idx) break :blk true;
+                                    }
+                                }
+                                break :blk false;
+                            };
+                            if (!is_match) return .{ .trap = Trap.fromTrapCode(.CastFailure) };
                         }
                         slots[inst.dst] = RawVal.fromGcRef(gc_ref);
                     }
@@ -1579,7 +1598,15 @@ pub const VM = struct {
                             const kind_bits: u32 = @as(u32, kind.bits) << 26;
                             should_branch = obj_header.isSubtypeOf(kind_bits);
                         } else {
-                            should_branch = obj_header.type_index == inst.to_type_idx;
+                            const obj_idx = obj_header.type_index;
+                            should_branch = obj_idx == inst.to_type_idx or blk: {
+                                if (obj_idx < type_ancestors.len) {
+                                    for (type_ancestors[obj_idx]) |anc| {
+                                        if (anc == inst.to_type_idx) break :blk true;
+                                    }
+                                }
+                                break :blk false;
+                            };
                         }
                     }
 
@@ -1608,7 +1635,16 @@ pub const VM = struct {
                             const kind_bits: u32 = @as(u32, kind.bits) << 26;
                             should_branch = !obj_header.isSubtypeOf(kind_bits);
                         } else {
-                            should_branch = obj_header.type_index != inst.to_type_idx;
+                            const obj_idx = obj_header.type_index;
+                            const is_match = obj_idx == inst.to_type_idx or blk: {
+                                if (obj_idx < type_ancestors.len) {
+                                    for (type_ancestors[obj_idx]) |anc| {
+                                        if (anc == inst.to_type_idx) break :blk true;
+                                    }
+                                }
+                                break :blk false;
+                            };
+                            should_branch = !is_match;
                         }
                     }
 
