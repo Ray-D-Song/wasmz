@@ -2,24 +2,33 @@
 ///
 /// Store is the runtime context that owns all the mutable state during execution, such as instances and their associated resources
 /// (memory/table, etc.). Its responsibilities are lighter: it holds references to the allocator and engine.
+///
+/// For WASM GC: Store owns the GC heap, which is shared across all instances created from this store.
 const std = @import("std");
 const engine_mod = @import("../engine/root.zig");
+const gc_mod = @import("../vm/gc/root.zig");
 
 const Allocator = std.mem.Allocator;
 const Engine = engine_mod.Engine;
+const GcHeap = gc_mod.GcHeap;
 
 pub const Store = struct {
     allocator: Allocator,
     /// Arc reference, ensures the engine is not released during the store's lifetime.
     engine: Engine,
+    /// GC heap for WASM GC objects (structs, arrays, i31).
+    /// Shared across all instances created from this store.
+    gc_heap: GcHeap,
     user_data: ?*anyopaque = null,
     runtime_instance_count: usize = 0,
 
-    pub fn init(allocator: Allocator, engine: Engine) Store {
+    pub fn init(allocator: Allocator, engine: Engine) std.mem.Allocator.Error!Store {
         return .{
             .allocator = allocator,
             // clone increments the Arc reference count, ensuring the Store holds an independent reference.
             .engine = engine.clone(),
+            // Initialize GC heap with default size (4KB, grows on demand)
+            .gc_heap = try GcHeap.initDefault(allocator),
         };
     }
 
@@ -42,7 +51,28 @@ pub const Store = struct {
     }
 
     pub fn deinit(self: *Store) void {
+        self.gc_heap.deinit();
         self.engine.deinit();
         self.* = undefined;
     }
 };
+
+test "Store initializes GC heap" {
+    const testing = std.testing;
+    const engine_pkg = @import("../engine/root.zig");
+    const config_pkg = @import("../engine/config.zig");
+
+    var engine = try engine_pkg.Engine.init(testing.allocator, config_pkg.Config{});
+    defer engine.deinit();
+
+    var store = try Store.init(testing.allocator, engine);
+    defer store.deinit();
+
+    // Verify GC heap is initialized with default size
+    try testing.expect(store.gc_heap.totalSize() >= gc_mod.INITIAL_HEAP_SIZE);
+
+    // Test allocation from Store's GC heap
+    const ref = store.gc_heap.alloc(32) orelse return error.AllocationFailed;
+    try testing.expect(ref.isHeapRef());
+    try testing.expect(ref.asHeapIndex().? >= 8); // First allocation at index 8+
+}

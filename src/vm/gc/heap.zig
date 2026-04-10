@@ -79,23 +79,17 @@ pub const GcHeap = struct {
     }
 
     /// Initializes a new GC heap with the given initial capacity.
-    /// The entire initial buffer is added to the free list.
+    /// The initial buffer starts empty and will be allocated via bump allocation.
     pub fn init(allocator: std.mem.Allocator, initial_size: u32) std.mem.Allocator.Error!Self {
         const aligned_size = alignUp(initial_size);
         const bytes = try allocator.alloc(u8, aligned_size);
 
-        var self = Self{
+        return .{
             .bytes = bytes,
             .free_list = .{},
             .allocator = allocator,
             .used = 0,
         };
-
-        if (aligned_size >= @sizeOf(FreeBlock)) {
-            self.addFreeBlock(0, aligned_size);
-        }
-
-        return self;
     }
 
     pub fn deinit(self: *Self) void {
@@ -332,19 +326,29 @@ pub const GcHeap = struct {
         }
     }
 
-    /// Bump allocation: extends the buffer and returns the new region.
-    /// Grows the heap by 2x (or at least enough to satisfy the request).
+    /// Bump allocation: allocates from the current buffer by incrementing the used pointer.
+    /// Grows the heap by 2x (or at least enough to satisfy the request) when full.
     /// Used as fallback when no suitable free block exists.
+    ///
+    /// Note: GcRef reserves index 0 for null, so we skip the first 8 bytes.
     fn bumpAlloc(self: *Self, size: u32) ?GcRef {
-        const offset = @as(u32, @intCast(self.bytes.len));
-        const current_size = offset;
+        // Ensure we don't allocate at index 0 (reserved for null in GcRef)
+        if (self.used == 0) {
+            self.used = MIN_ALIGNMENT;
+        }
 
-        // Growth strategy: double the heap size, or at least satisfy the request
-        const min_needed = offset + size;
-        const double_size = current_size * 2;
-        const new_len = alignUp(@max(min_needed, double_size));
+        const offset = self.used;
 
-        self.bytes = self.allocator.realloc(self.bytes, new_len) catch return null;
+        // Check if we have enough space in the current buffer
+        if (offset + size > self.bytes.len) {
+            // Need to grow the buffer
+            const current_size = @as(u32, @intCast(self.bytes.len));
+            const min_needed = offset + size;
+            const double_size = current_size * 2;
+            const new_len = alignUp(@max(min_needed, double_size));
+
+            self.bytes = self.allocator.realloc(self.bytes, new_len) catch return null;
+        }
 
         self.used += size;
         return GcRef.fromHeapIndex(offset);
@@ -388,11 +392,12 @@ test "GcHeap basic allocation" {
 
     const ref1 = heap.alloc(16).?;
     try std.testing.expect(ref1.isHeapRef());
-    try std.testing.expectEqual(@as(u32, 0), ref1.asHeapIndex().?);
+    // First allocation starts at index 8 (index 0 is reserved for null)
+    try std.testing.expectEqual(@as(u32, 8), ref1.asHeapIndex().?);
 
     const ref2 = heap.alloc(32).?;
     try std.testing.expect(ref2.isHeapRef());
-    try std.testing.expectEqual(@as(u32, 16), ref2.asHeapIndex().?);
+    try std.testing.expectEqual(@as(u32, 24), ref2.asHeapIndex().?);
 }
 
 test "GcHeap free and reuse" {
@@ -417,11 +422,12 @@ test "GcHeap alignment" {
     const ref1 = heap.alloc(5).?;
     const idx1 = ref1.asHeapIndex().?;
     try std.testing.expect(idx1 % 8 == 0);
+    try std.testing.expectEqual(@as(u32, 8), idx1);
 
     const ref2 = heap.alloc(3).?;
     const idx2 = ref2.asHeapIndex().?;
     try std.testing.expect(idx2 % 8 == 0);
-    try std.testing.expectEqual(@as(u32, 8), idx2);
+    try std.testing.expectEqual(@as(u32, 16), idx2);
 }
 
 test "GcHeap header access" {
@@ -455,22 +461,23 @@ test "GcHeap objectData access" {
 
 test "GcHeap exponential growth" {
     const allocator = std.testing.allocator;
-    var heap = try GcHeap.init(allocator, 256);
+    var heap = try GcHeap.init(allocator, 128);
     defer heap.deinit();
 
-    // Initial size: 256
-    try std.testing.expectEqual(@as(u32, 256), heap.totalSize());
+    // Initial size: 128
+    try std.testing.expectEqual(@as(u32, 128), heap.totalSize());
 
-    // Exhaust initial space
-    var offset: u32 = 0;
-    while (offset + 64 <= 256) {
-        _ = heap.alloc(64).?;
-        offset += 64;
-    }
+    // First allocation at index 8 (skip 0 for null)
+    _ = heap.alloc(32).?;
+    try std.testing.expectEqual(@as(u32, 128), heap.totalSize());
 
-    // Next allocation should trigger 2x growth (256 -> 512)
+    // Second allocation should trigger growth (8 + 32 + 64 = 104, still < 128)
     _ = heap.alloc(64).?;
-    try std.testing.expectEqual(@as(u32, 512), heap.totalSize());
+    try std.testing.expectEqual(@as(u32, 128), heap.totalSize());
+
+    // Third allocation: 8 + 32 + 64 + 64 = 168 > 128, triggers 2x growth (128 -> 256)
+    _ = heap.alloc(64).?;
+    try std.testing.expectEqual(@as(u32, 256), heap.totalSize());
 }
 
 test "GcHeap read/write packed types" {
