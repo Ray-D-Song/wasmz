@@ -452,9 +452,115 @@ pub const GcHeap = struct {
     }
 
     /// GC entry point - performs mark-and-sweep collection.
-    pub fn collect(self: *Self, roots: []const GcRef) void {
-        _ = self;
-        _ = roots;
-        @panic("GcHeap.collect not yet implemented");
+    ///
+    /// Parameters:
+    ///   roots:           slice of GcRef values that are directly reachable (call frame slots, globals).
+    ///   composite_types: type descriptors indexed by type_index stored in each object's GcHeader.
+    ///   struct_layouts:  per-type struct layout (null if the type is not a struct).
+    ///   array_layouts:   per-type array layout  (null if the type is not an array).
+    ///
+    /// Algorithm: tri-color mark-and-sweep with an explicit worklist to avoid stack overflow.
+    pub fn collect(
+        self: *Self,
+        roots: []const GcRef,
+        composite_types: []const @import("core").CompositeType,
+        struct_layouts: []const ?StructLayout,
+        array_layouts: []const ?ArrayLayout,
+    ) void {
+        // ── Phase 1: Mark ───────────────────────────────────────────────────
+        // Use an explicit ArrayListUnmanaged as the worklist so we never overflow
+        // the native call stack regardless of object graph depth.
+        var worklist = std.ArrayListUnmanaged(u32){};
+        defer worklist.deinit(self.allocator);
+
+        // Seed the worklist with all heap references found in the root set.
+        for (roots) |ref| {
+            if (ref.isHeapRef()) {
+                const idx = ref.asHeapIndex().?;
+                const hdr = self.header(idx);
+                if (!hdr.isMarked()) {
+                    hdr.setMark();
+                    worklist.append(self.allocator, idx) catch {};
+                }
+            }
+        }
+
+        // BFS/iterative DFS: process each reachable object and enqueue its referents.
+        while (worklist.items.len > 0) {
+            const obj_idx = worklist.pop().?;
+            const hdr = self.header(obj_idx);
+            const type_index = hdr.type_index;
+
+            // Only user-defined composite types carry child references we need to trace.
+            // Abstract heap types (i31, extern, func, …) have no children.
+            if (type_index >= composite_types.len) continue;
+
+            switch (composite_types[type_index]) {
+                .struct_type => |st| {
+                    // Walk only the fields that contain GC references.
+                    if (type_index < struct_layouts.len) {
+                        if (struct_layouts[type_index]) |layout| {
+                            for (layout.gc_ref_fields) |field_idx| {
+                                const field_offset = layout.field_offsets[field_idx];
+                                _ = st; // struct_type used for type info above
+                                const bytes = self.getBytesAt(GcRef.fromHeapIndex(obj_idx), field_offset);
+                                const raw_bits = std.mem.readInt(u32, bytes[0..4], .little);
+                                const child_ref = GcRef.encode(raw_bits);
+                                if (child_ref.isHeapRef()) {
+                                    const child_idx = child_ref.asHeapIndex().?;
+                                    const child_hdr = self.header(child_idx);
+                                    if (!child_hdr.isMarked()) {
+                                        child_hdr.setMark();
+                                        worklist.append(self.allocator, child_idx) catch {};
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                .array_type => {
+                    // Walk element refs only when the element type is a GC reference.
+                    if (type_index < array_layouts.len) {
+                        if (array_layouts[type_index]) |layout| {
+                            if (layout.elem_is_gc_ref) {
+                                const base_ref = GcRef.fromHeapIndex(obj_idx);
+                                const length = self.getLength(base_ref);
+                                for (0..length) |i| {
+                                    const elem_offset = layout.base_size + @as(u32, @intCast(i)) * layout.elem_size;
+                                    const bytes = self.getBytesAt(base_ref, elem_offset);
+                                    const raw_bits = std.mem.readInt(u32, bytes[0..4], .little);
+                                    const child_ref = GcRef.encode(raw_bits);
+                                    if (child_ref.isHeapRef()) {
+                                        const child_idx = child_ref.asHeapIndex().?;
+                                        const child_hdr = self.header(child_idx);
+                                        if (!child_hdr.isMarked()) {
+                                            child_hdr.setMark();
+                                            worklist.append(self.allocator, child_idx) catch {};
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+            }
+        }
+
+        // ── Phase 2: Sweep ──────────────────────────────────────────────────
+        // Iterate live_objects in reverse so swap-remove doesn't skip entries.
+        var i: usize = self.live_objects.items.len;
+        while (i > 0) {
+            i -= 1;
+            const info = self.live_objects.items[i];
+            const hdr = self.header(info.index);
+            if (hdr.isMarked()) {
+                // Still live — clear mark bit for next GC cycle.
+                hdr.clearMark();
+            } else {
+                // Unreachable — free the block and remove from live list.
+                self.free(info.index, info.size);
+                _ = self.live_objects.swapRemove(i);
+            }
+        }
     }
 };
