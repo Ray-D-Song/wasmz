@@ -7,6 +7,7 @@ const StructType = core.StructType;
 const ArrayType = core.ArrayType;
 const ValType = core.ValType;
 const FieldType = core.FieldType;
+const GcHeader = @import("./header.zig").GcHeader;
 
 /// StructLayout contains the memory layout for a struct type.
 pub const StructLayout = struct {
@@ -112,7 +113,7 @@ pub fn computeStructLayout(struct_type: StructType, allocator: std.mem.Allocator
 pub fn computeArrayLayout(array_type: ArrayType) ArrayLayout {
     const elem_size = storageTypeSize(array_type.field.storage_type);
     const is_ref = isGcRef(array_type.field.storage_type);
-    const header_size: u32 = 8;
+    const header_size: u32 = @sizeOf(GcHeader);
 
     return .{
         .base_size = header_size,
@@ -181,7 +182,7 @@ test "computeStructLayout" {
     try std.testing.expectEqual(@as(u32, 0), layout.field_offsets[0]);
     try std.testing.expectEqual(@as(u32, 8), layout.field_offsets[1]);
     try std.testing.expectEqual(@as(u32, 16), layout.field_offsets[2]);
-    try std.testing.expectEqual(@as(u32, 20), layout.size);
+    try std.testing.expectEqual(@as(u32, 24), layout.size);
 }
 
 test "computeArrayLayout" {
@@ -190,7 +191,7 @@ test "computeArrayLayout" {
     };
     const layout = computeArrayLayout(array_type);
 
-    try std.testing.expectEqual(@as(u32, 8), layout.base_size);
+    try std.testing.expectEqual(@as(u32, @sizeOf(GcHeader)), layout.base_size);
     try std.testing.expectEqual(@as(u32, 4), layout.elem_size);
     try std.testing.expect(!layout.elem_is_gc_ref);
 }
