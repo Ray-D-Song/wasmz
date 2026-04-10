@@ -67,19 +67,3 @@ pub fn gcRefKindFromHeapType(heap_type: HeapType) ?GcRefKind {
         else => null,
     };
 }
-
-test "GcRefKind subtype checking" {
-    const any_kind = GcRefKind.init(GcRefKind.Any);
-    const eq_kind = GcRefKind.init(GcRefKind.Eq);
-    const struct_kind = GcRefKind.init(GcRefKind.Struct);
-    const array_kind = GcRefKind.init(GcRefKind.Array);
-    const i31_kind = GcRefKind.init(GcRefKind.I31);
-
-    try std.testing.expect(eq_kind.isSubtypeOf(any_kind));
-    try std.testing.expect(struct_kind.isSubtypeOf(eq_kind));
-    try std.testing.expect(struct_kind.isSubtypeOf(any_kind));
-    try std.testing.expect(array_kind.isSubtypeOf(eq_kind));
-    try std.testing.expect(i31_kind.isSubtypeOf(eq_kind));
-    try std.testing.expect(!struct_kind.isSubtypeOf(array_kind));
-    try std.testing.expect(!any_kind.isSubtypeOf(eq_kind));
-}

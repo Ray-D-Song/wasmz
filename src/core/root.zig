@@ -14,6 +14,7 @@ pub const gc_ref = @import("./gc_ref.zig");
 pub const ValType = value_type.ValType;
 pub const Global = global.Global;
 pub const GlobalType = global.GlobalType;
+pub const Mutability = global.Mutability;
 pub const RawVal = raw.RawVal;
 pub const Simd = simd;
 pub const TypedRawVal = typed.TypedRawVal;

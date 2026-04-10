@@ -35,4 +35,8 @@ test {
     _ = @import("wasmz/store.zig");
     _ = @import("wasmz/instance.zig");
     _ = @import("wasmz/tests/poc_test.zig");
+    _ = @import("wasmz/tests/module_test.zig");
+    _ = @import("wasmz/tests/instance_test.zig");
+    _ = @import("wasmz/tests/store_test.zig");
+    _ = @import("wasmz/tests/host_test.zig");
 }

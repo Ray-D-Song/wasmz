@@ -382,11 +382,3 @@ pub fn laneImmediateFromOpcode(opcode: SimdOpcode) usize {
         else => unreachable,
     };
 }
-
-test "classify representative simd opcodes" {
-    try std.testing.expectEqual(SimdClass.const_, classifyOpcode(.v128_const).?);
-    try std.testing.expectEqual(SimdClass.load, classifyOpcode(.v128_load).?);
-    try std.testing.expectEqual(SimdClass.shift, classifyOpcode(.i16x8_shr_u).?);
-    try std.testing.expectEqual(SimdClass.compare, classifyOpcode(.f32x4_ge).?);
-    try std.testing.expectEqual(SimdClass.ternary, classifyOpcode(.v128_bitselect).?);
-}

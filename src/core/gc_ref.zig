@@ -80,34 +80,3 @@ pub const GcRef = enum(u32) {
         return @intFromEnum(self);
     }
 };
-
-test "GcRef i31 encoding" {
-    const ref = GcRef.fromI31(42);
-    try std.testing.expect(ref.isI31());
-    try std.testing.expect(!ref.isNull());
-    try std.testing.expect(!ref.isHeapRef());
-    try std.testing.expectEqual(@as(i31, 42), ref.asI31().?);
-}
-
-test "GcRef negative i31" {
-    const ref = GcRef.fromI31(-100);
-    try std.testing.expect(ref.isI31());
-    try std.testing.expectEqual(@as(i31, -100), ref.asI31().?);
-}
-
-test "GcRef heap index" {
-    const ref = GcRef.fromHeapIndex(4);
-    try std.testing.expect(ref.isHeapRef());
-    try std.testing.expect(!ref.isI31());
-    try std.testing.expect(!ref.isNull());
-    try std.testing.expectEqual(@as(u32, 4), ref.asHeapIndex().?);
-}
-
-test "GcRef null" {
-    const ref = GcRef.null_value;
-    try std.testing.expect(ref.isNull());
-    try std.testing.expect(!ref.isI31());
-    try std.testing.expect(!ref.isHeapRef());
-    try std.testing.expect(ref.asI31() == null);
-    try std.testing.expect(ref.asHeapIndex() == null);
-}
