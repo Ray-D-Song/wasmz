@@ -20,10 +20,7 @@ const HeapType = core.HeapType;
 const RefType = core.RefType;
 const StorageType = core.StorageType;
 const FieldType = core.FieldType;
-const StructType = core.StructType;
-const ArrayType = core.ArrayType;
 const CompositeType = core.CompositeType;
-const FuncType = core.func_type.FuncType;
 const simd = core.simd;
 const V128 = simd.V128;
 
@@ -501,26 +498,13 @@ pub fn wasmStorageTypeFromType(typ: Type) TranslateError!StorageType {
     };
 }
 
-/// Compiles a TypeEntry into a CompositeType.
-/// Supports func, struct, and array types.
+/// Compiles a GC composite type into a CompositeType.
+/// Function types are handled separately from GC runtime metadata.
 pub fn wasmCompositeTypeFromTypeEntry(
     allocator: std.mem.Allocator,
     entry: TypeEntry,
 ) (TranslateError || std.mem.Allocator.Error)!CompositeType {
     return switch (entry.type) {
-        .func => blk: {
-            const param_types = try allocator.alloc(ValType, entry.params.len);
-            defer allocator.free(param_types);
-            for (entry.params, 0..) |param, i| {
-                param_types[i] = try wasmValTypeFromType(param);
-            }
-            const result_types = try allocator.alloc(ValType, entry.returns.len);
-            defer allocator.free(result_types);
-            for (entry.returns, 0..) |result, i| {
-                result_types[i] = try wasmValTypeFromType(result);
-            }
-            break :blk CompositeType{ .func = try FuncType.init(allocator, param_types, result_types) };
-        },
         .struct_type => blk: {
             const fields = try allocator.alloc(FieldType, entry.fields.len);
             for (entry.fields, entry.mutabilities, 0..) |field_type, mutable, i| {
