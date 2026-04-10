@@ -174,6 +174,12 @@ pub const Module = struct {
     /// Precomputed memory layouts for array types.
     /// Index matches composite_types; null for non-array types.
     array_layouts: []?ArrayLayout,
+    /// Transitive ancestor type indices for each composite type.
+    /// type_ancestors[i] is a slice of all composite type indices that are strict ancestors of
+    /// composite type i (i.e. the full inheritance chain, excluding i itself).
+    /// Empty slice for types with no declared supertypes.
+    /// Indexed by composite type index (same index space as composite_types).
+    type_ancestors: []const []const u32,
 
     /// Compile WebAssembly bytecode into a Module.
     ///
@@ -215,6 +221,12 @@ pub const Module = struct {
 
         var array_layouts_list: std.ArrayListUnmanaged(?ArrayLayout) = .empty;
         errdefer array_layouts_list.deinit(allocator);
+
+        // For each composite type (indexed by composite type index), store its direct parent
+        // composite type index, or null if it has no concrete supertype.
+        // Used after the first pass to compute the transitive ancestor closure.
+        var direct_parents_list: std.ArrayListUnmanaged(?u32) = .empty;
+        defer direct_parents_list.deinit(allocator);
 
         var function_type_indices: std.ArrayListUnmanaged(u32) = .empty;
         defer function_type_indices.deinit(allocator);
@@ -280,6 +292,21 @@ pub const Module = struct {
                         .struct_type, .array_type => {
                             const composite_type = try translate_mod.wasmCompositeTypeFromTypeEntry(allocator, entry);
                             try composite_types_list.append(allocator, composite_type);
+
+                            // Record the direct parent composite type index (if any) for the
+                            // transitive ancestor computation done after the first pass.
+                            // Only concrete (index-typed) supertypes count; abstract heap type supertypes
+                            // (e.g. `any`, `eq`) are handled by the GcRefKind bitmask path.
+                            const direct_parent: ?u32 = blk: {
+                                for (entry.super_types) |st| {
+                                    switch (st) {
+                                        .index => |idx| break :blk idx,
+                                        else => {},
+                                    }
+                                }
+                                break :blk null;
+                            };
+                            try direct_parents_list.append(allocator, direct_parent);
 
                             switch (composite_type) {
                                 .struct_type => |s| {
@@ -532,6 +559,35 @@ pub const Module = struct {
         const struct_layouts = try struct_layouts_list.toOwnedSlice(allocator);
         const array_layouts = try array_layouts_list.toOwnedSlice(allocator);
 
+        // ── Build type_ancestors: transitive closure of supertype chains ──────
+        // For each composite type index i, type_ancestors[i] is the list of all
+        // strict ancestor composite type indices (parent, grandparent, …) in order
+        // from closest ancestor outward.
+        //
+        // Because Wasm GC sub-type declarations must reference a previously-defined
+        // type (the spec enforces a topological order), we can compute ancestors by
+        // a simple linear scan: for type i, its ancestors = [parent(i)] + ancestors[parent(i)].
+        const n_composite = direct_parents_list.items.len;
+        const type_ancestors_outer = try allocator.alloc([]const u32, n_composite);
+        errdefer {
+            for (type_ancestors_outer) |anc_slice| allocator.free(anc_slice);
+            allocator.free(type_ancestors_outer);
+        }
+        for (0..n_composite) |i| {
+            const direct_parent = direct_parents_list.items[i];
+            if (direct_parent) |p| {
+                // ancestors of i = [p] ++ ancestors[p]
+                // ancestors[p] is already computed since p < i (Wasm spec ordering).
+                const parent_ancestors = type_ancestors_outer[p];
+                const anc_slice = try allocator.alloc(u32, 1 + parent_ancestors.len);
+                anc_slice[0] = p;
+                @memcpy(anc_slice[1..], parent_ancestors);
+                type_ancestors_outer[i] = anc_slice;
+            } else {
+                type_ancestors_outer[i] = &.{};
+            }
+        }
+
         return .{
             .allocator = allocator,
             .functions = functions,
@@ -548,6 +604,7 @@ pub const Module = struct {
             .composite_types = composite_types,
             .struct_layouts = struct_layouts,
             .array_layouts = array_layouts,
+            .type_ancestors = type_ancestors_outer,
         };
     }
 
@@ -599,6 +656,11 @@ pub const Module = struct {
         self.allocator.free(self.struct_layouts);
 
         self.allocator.free(self.array_layouts);
+
+        for (self.type_ancestors) |anc_slice| {
+            self.allocator.free(anc_slice);
+        }
+        self.allocator.free(self.type_ancestors);
 
         self.* = undefined;
     }
@@ -961,6 +1023,7 @@ test "module.compile builds exported function bodies" {
         .composite_types = module.composite_types,
         .struct_layouts = module.struct_layouts,
         .array_layouts = module.array_layouts,
+        .type_ancestors = module.type_ancestors,
     };
     const result = (try vm.execute(
         module.functions[@intCast(export_entry.function_index)],

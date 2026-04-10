@@ -173,6 +173,7 @@ pub const Instance = struct {
             .composite_types = self.module.composite_types,
             .struct_layouts = self.module.struct_layouts,
             .array_layouts = self.module.array_layouts,
+            .type_ancestors = self.module.type_ancestors,
         };
     }
 
