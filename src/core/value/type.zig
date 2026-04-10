@@ -1,6 +1,4 @@
 const std = @import("std");
-const trap = @import("../trap.zig");
-const heap_type = @import("../heap_type.zig");
 const ref_type = @import("../ref_type.zig");
 
 pub const ValType = union(enum) {
@@ -49,58 +47,6 @@ pub const ValType = union(enum) {
 
     pub fn nullexternref() ValType {
         return .{ .Ref = ref_type.RefType.nullexternref() };
-    }
-
-    pub fn isNum(self: ValType) bool {
-        return switch (self) {
-            .I32, .I64, .F32, .F64 => true,
-            else => false,
-        };
-    }
-
-    pub fn isRef(self: ValType) bool {
-        return switch (self) {
-            .Ref => true,
-            else => false,
-        };
-    }
-
-    pub fn isGcRef(self: ValType) bool {
-        return switch (self) {
-            .Ref => |r| switch (r.heap_type) {
-                .Any, .Eq, .I31, .Struct, .Array, .None, .NoFunc, .NoExtern, _ => r.heap_type.isConcrete(),
-                else => false,
-            },
-            else => false,
-        };
-    }
-
-    pub fn asHeapType(self: ValType) ?heap_type.HeapType {
-        return switch (self) {
-            .Ref => |r| r.heap_type,
-            else => null,
-        };
-    }
-
-    pub fn isSubtypeOf(self: ValType, other: ValType) bool {
-        const self_heap = self.asHeapType();
-        const other_heap = other.asHeapType();
-
-        if (self_heap == null or other_heap == null) {
-            return self.eql(other);
-        }
-
-        switch (self) {
-            .Ref => |self_ref| {
-                switch (other) {
-                    .Ref => |other_ref| {
-                        return self_ref.isSubtypeOf(other_ref);
-                    },
-                    else => return false,
-                }
-            },
-            else => return self.eql(other),
-        }
     }
 
     pub fn eql(self: ValType, other: ValType) bool {

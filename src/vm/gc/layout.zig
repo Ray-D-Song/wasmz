@@ -60,7 +60,10 @@ pub fn valTypeSize(val_type: ValType) u32 {
 /// Returns true if the storage type is a GC reference.
 pub fn isGcRef(storage_type: StorageType) bool {
     return switch (storage_type) {
-        .valtype => |v| v.isRef(),
+        .valtype => |v| switch (v) {
+            .Ref => true,
+            else => false,
+        },
         .packed_type => false,
     };
 }
