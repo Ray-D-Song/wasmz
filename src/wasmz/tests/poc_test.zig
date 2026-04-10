@@ -534,19 +534,19 @@ test "real wasm sign-extension opcode runs through parser lower and vm" {
 }
 
 test "ref.null pushes null reference sentinel" {
-    // ref.null produces the null sentinel value (maxInt(u64) in low64).
+    // ref.null produces the unified null sentinel value (0) for all ref types.
     var lower = Lower.initWithReservedSlots(testing.allocator, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
-        .ref_null,
+        .ref_null, // null → 0 (unified sentinel for all ref types)
         .ret,
     };
     for (ops) |o| try lower.lowerOp(o);
 
     var vm = VM.init(testing.allocator);
     const result = (try executeWithEmptyRuntime(&vm, lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
-    try testing.expectEqual(std.math.maxInt(u64), result.readAs(u64));
+    try testing.expectEqual(@as(u64, 0), result.readAs(u64));
 }
 
 test "ref.is_null returns 1 for null reference" {
@@ -555,7 +555,7 @@ test "ref.is_null returns 1 for null reference" {
     defer lower.deinit();
 
     const ops = [_]WasmOp{
-        .ref_null,
+        .ref_null, // funcref null → 0 (unified sentinel)
         .ref_is_null,
         .ret,
     };
@@ -567,7 +567,7 @@ test "ref.is_null returns 1 for null reference" {
 }
 
 test "ref.is_null returns 0 for non-null funcref" {
-    // ref.func 0 produces a non-null funcref (func_idx stored in low64 != maxInt(u64)).
+    // ref.func 0 produces a non-null funcref (stored as func_idx+1 = 1 in low64, != 0).
     var lower = Lower.initWithReservedSlots(testing.allocator, 0);
     defer lower.deinit();
 
@@ -584,7 +584,7 @@ test "ref.is_null returns 0 for non-null funcref" {
 }
 
 test "ref.func pushes function index as funcref" {
-    // ref.func 42 stores 42 in low64 of the result slot.
+    // ref.func 42 stores 43 (42+1) in low64 of the result slot (func_idx+1 encoding).
     var lower = Lower.initWithReservedSlots(testing.allocator, 0);
     defer lower.deinit();
 
@@ -596,7 +596,7 @@ test "ref.func pushes function index as funcref" {
 
     var vm = VM.init(testing.allocator);
     const result = (try executeWithEmptyRuntime(&vm, lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
-    try testing.expectEqual(@as(u64, 42), result.readAs(u64));
+    try testing.expectEqual(@as(u64, 43), result.readAs(u64));
 }
 
 test "ref.eq: null == null → 1" {

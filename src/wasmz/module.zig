@@ -41,6 +41,7 @@ const ValType = value_type_mod.ValType;
 const CompositeType = core.CompositeType;
 const StructLayout = gc_mod.StructLayout;
 const ArrayLayout = gc_mod.ArrayLayout;
+const GcRef = core.GcRef;
 const Engine = engine_mod.Engine;
 const Lower = lower_mod.Lower;
 const EngineConfig = engine_config_mod.Config;
@@ -738,11 +739,23 @@ pub const Module = struct {
                 else => return error.UnsupportedConstExpr,
             },
             .Ref => |ref_ty| switch (ref_ty.heap_type) {
+                // All null references use the unified sentinel: low64 == 0.
+                // funcref non-null values are encoded as func_idx+1 so that
+                // func_idx=0 is never confused with null.
                 .Func, .Extern => switch (init.info.code) {
-                    .ref_null => RawVal.fromBits64(std.math.maxInt(u64)),
+                    .ref_null => RawVal.fromBits64(0),
                     else => return error.UnsupportedConstExpr,
                 },
-                else => return error.UnsupportedGlobalType,
+                // GC abstract heap types — same null encoding.
+                .Any, .Eq, .I31, .Struct, .Array, .None, .NoFunc, .NoExtern => switch (init.info.code) {
+                    .ref_null => RawVal.fromBits64(0),
+                    else => return error.UnsupportedConstExpr,
+                },
+                // Concrete (user-defined) GC types — same null encoding.
+                else => switch (init.info.code) {
+                    .ref_null => RawVal.fromBits64(0),
+                    else => return error.UnsupportedConstExpr,
+                },
             },
             else => return error.UnsupportedGlobalType,
         };

@@ -115,13 +115,18 @@ pub const Op = union(enum) {
     },
 
     // ── Reference type constants ─────────────────────────────────────────────────
-    /// ref.null: push a null reference (encoded as maxInt(u64) in low64).
-    /// The null sentinel is 0xFFFF_FFFF_FFFF_FFFF, which can never be a valid function index.
+    /// ref.null: push a null reference.
+    ///
+    /// All reference types (funcref, externref, anyref, eqref, structref, …) share
+    /// a single null sentinel: **low64 = 0**.
+    ///
+    /// funcref values are encoded as `func_idx + 1` by `ref_func` so that
+    /// func_idx=0 is never confused with null.
     const_ref_null: struct {
         dst: Slot,
     },
-    /// ref.is_null: test whether the reference in `src` is null.
-    /// Writes i32 1 to `dst` if null (low64 == maxInt(u64)), else i32 0.
+    /// ref.is_null: test whether the reference in `src` is null (low64 == 0).
+    /// Writes i32 1 to `dst` if null, else i32 0.
     ref_is_null: struct {
         dst: Slot,
         src: Slot,
