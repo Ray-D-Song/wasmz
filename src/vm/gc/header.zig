@@ -3,8 +3,10 @@ const GcRefKind = @import("core").GcRefKind;
 
 /// Kind bits layout:
 /// - High 6 bits (bits 31-26): GcKind for subtype checking
-/// - Low 26 bits (bits 25-0): Reserved for GC metadata (mark bits, etc.)
+/// - Low 26 bits (bits 25-0): Reserved for GC metadata
+///   - Bit 0: Mark bit for GC (set during mark phase, must be cleared after sweep)
 pub const GcKind = struct {
+    pub const MARK_BIT: u32 = 1 << 0;
     pub const Any: u32 = @as(u32, GcRefKind.Any) << 26;
     pub const Eq: u32 = @as(u32, GcRefKind.Eq) << 26;
     pub const I31: u32 = @as(u32, GcRefKind.I31) << 26;
@@ -53,6 +55,18 @@ pub const GcHeader = struct {
     pub fn isSubtypeOf(self: GcHeader, kind_bits: u32) bool {
         return GcKind.isSubtypeOf(self.kind_bits, kind_bits);
     }
+
+    pub fn setMark(self: *GcHeader) void {
+        self.kind_bits |= GcKind.MARK_BIT;
+    }
+
+    pub fn clearMark(self: *GcHeader) void {
+        self.kind_bits &= ~GcKind.MARK_BIT;
+    }
+
+    pub fn isMarked(self: GcHeader) bool {
+        return (self.kind_bits & GcKind.MARK_BIT) != 0;
+    }
 };
 
 test "GcKind subtype checking" {
@@ -70,4 +84,15 @@ test "GcHeader" {
     try std.testing.expectEqual(@as(u32, 42), header.type_index);
     try std.testing.expect(header.isSubtypeOf(GcKind.Eq));
     try std.testing.expect(header.isSubtypeOf(GcKind.Any));
+}
+
+test "GcHeader mark bit" {
+    var header = GcHeader.initFromRefKind(GcRefKind.init(GcRefKind.Struct), 42);
+    try std.testing.expect(!header.isMarked());
+
+    header.setMark();
+    try std.testing.expect(header.isMarked());
+
+    header.clearMark();
+    try std.testing.expect(!header.isMarked());
 }

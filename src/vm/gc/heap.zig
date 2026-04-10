@@ -29,6 +29,14 @@ pub const INITIAL_HEAP_SIZE: u32 = 4 * 1024;
 /// Sentinel value for null/invalid indices in the free list.
 pub const NULL_INDEX: u32 = 0;
 
+/// Tracks information about each allocated object for GC.
+pub const AllocationInfo = struct {
+    /// Heap index where the object starts.
+    index: u32,
+    /// Total allocated size including header and padding.
+    size: u32,
+};
+
 /// A node in the free list, stored inline within the heap buffer.
 /// Represents a contiguous block of free memory.
 pub const FreeBlock = struct {
@@ -70,6 +78,8 @@ pub const GcHeap = struct {
     allocator: std.mem.Allocator,
     /// Total bytes currently in use (for statistics).
     used: u32,
+    /// Tracks all live allocations for GC traversal.
+    live_objects: std.ArrayListUnmanaged(AllocationInfo),
 
     const Self = @This();
 
@@ -89,10 +99,12 @@ pub const GcHeap = struct {
             .free_list = .{},
             .allocator = allocator,
             .used = 0,
+            .live_objects = .{},
         };
     }
 
     pub fn deinit(self: *Self) void {
+        self.live_objects.deinit(self.allocator);
         self.allocator.free(self.bytes);
     }
 
@@ -109,7 +121,9 @@ pub const GcHeap = struct {
         const total_size = aligned_size;
 
         if (self.free_list.isEmpty()) {
-            return self.bumpAlloc(total_size);
+            const result = self.bumpAlloc(total_size) orelse return null;
+            self.trackAllocation(result, total_size);
+            return result;
         }
 
         var prev_idx: u32 = NULL_INDEX;
@@ -148,14 +162,18 @@ pub const GcHeap = struct {
                 }
 
                 self.used += total_size;
-                return GcRef.fromHeapIndex(curr_idx);
+                const result = GcRef.fromHeapIndex(curr_idx);
+                self.trackAllocation(result, total_size);
+                return result;
             }
 
             prev_idx = curr_idx;
             curr_idx = block.next;
         }
 
-        return self.bumpAlloc(total_size);
+        const result = self.bumpAlloc(total_size) orelse return null;
+        self.trackAllocation(result, total_size);
+        return result;
     }
 
     /// Frees a previously allocated block, returning it to the free list.
@@ -383,6 +401,21 @@ pub const GcHeap = struct {
     fn alignUp(size: u32) u32 {
         return (size + MIN_ALIGNMENT - 1) & ~(MIN_ALIGNMENT - 1);
     }
+
+    /// Tracks an allocation in the live_objects list.
+    fn trackAllocation(self: *Self, ref: GcRef, size: u32) void {
+        self.live_objects.append(self.allocator, .{
+            .index = ref.asHeapIndex() orelse return,
+            .size = size,
+        }) catch {};
+    }
+
+    /// GC entry point - performs mark-and-sweep collection.
+    pub fn collect(self: *Self, roots: []const GcRef) void {
+        _ = self;
+        _ = roots;
+        @panic("GcHeap.collect not yet implemented");
+    }
 };
 
 test "GcHeap basic allocation" {
@@ -518,4 +551,26 @@ test "GcHeap read/write i32" {
     heap.writeStorageType(ref, 0, .{ .valtype = .I32 }, RawVal.from(@as(i32, 12345)));
     const val = heap.readStorageType(ref, 0, .{ .valtype = .I32 });
     try std.testing.expectEqual(@as(i32, 12345), val.readAs(i32));
+}
+
+test "GcHeap live object tracking" {
+    const allocator = std.testing.allocator;
+    var heap = try GcHeap.initDefault(allocator);
+    defer heap.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), heap.live_objects.items.len);
+
+    _ = heap.alloc(16).?;
+    try std.testing.expectEqual(@as(usize, 1), heap.live_objects.items.len);
+
+    _ = heap.alloc(32).?;
+    try std.testing.expectEqual(@as(usize, 2), heap.live_objects.items.len);
+
+    const info0 = heap.live_objects.items[0];
+    try std.testing.expectEqual(@as(u32, 8), info0.index);
+    try std.testing.expectEqual(@as(u32, 16), info0.size);
+
+    const info1 = heap.live_objects.items[1];
+    try std.testing.expectEqual(@as(u32, 24), info1.index);
+    try std.testing.expectEqual(@as(u32, 32), info1.size);
 }
