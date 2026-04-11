@@ -23,6 +23,7 @@ const ExecEnv = vm_mod.ExecEnv;
 const RawVal = vm_mod.RawVal;
 const ValType = core.ValType;
 const Global = core.Global;
+const Memory = core.Memory;
 const TrapCode = core.TrapCode;
 const Store = store_mod.Store;
 const HostInstance = host_mod.HostInstance;
@@ -257,19 +258,20 @@ fn executeWithEmptyRuntime(
     defer module.deinit();
 
     var globals = [_]Global{};
-    var memory: [0]u8 = .{};
+    var raw_memory: [0]u8 = .{};
+    var mem = Memory.initBorrowed(raw_memory[0..]);
     var tables = [_][]u32{};
     var host_instance = HostInstance{
         .module = &module,
         .globals = globals[0..],
-        .memory = memory[0..],
+        .memory = &mem,
         .tables = tables[0..],
     };
     const exec_env = ExecEnv{
         .store = &store,
         .host_instance = &host_instance,
         .globals = globals[0..],
-        .memory = memory[0..],
+        .memory = &mem,
         .functions = &.{},
         .func_types = &.{},
         .host_funcs = &.{},
@@ -749,12 +751,13 @@ test "return_call: tail call replaces current frame" {
     defer module.deinit();
 
     var globals = [_]Global{};
-    var memory: [0]u8 = .{};
+    var raw_memory2: [0]u8 = .{};
+    var mem2 = Memory.initBorrowed(raw_memory2[0..]);
     var tables = [_][]u32{};
     var host_instance = HostInstance{
         .module = &module,
         .globals = globals[0..],
-        .memory = memory[0..],
+        .memory = &mem2,
         .tables = tables[0..],
     };
 
@@ -764,7 +767,7 @@ test "return_call: tail call replaces current frame" {
         .store = &store,
         .host_instance = &host_instance,
         .globals = globals[0..],
-        .memory = memory[0..],
+        .memory = &mem2,
         .functions = &functions,
         .func_types = &func_types,
         .host_funcs = &.{},

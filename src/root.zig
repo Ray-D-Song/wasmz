@@ -41,4 +41,6 @@ test {
     _ = @import("wasmz/tests/host_test.zig");
     _ = @import("wasmz/tests/eh_test.zig");
     _ = @import("wasmz/tests/multi_value_test.zig");
+    _ = @import("wasmz/tests/atomic_test.zig");
+    _ = @import("wasmz/tests/threads_test.zig");
 }

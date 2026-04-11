@@ -86,6 +86,37 @@ pub const SimdShiftScalarOp = struct {
     rhs: Slot,
 };
 
+// ── Atomic operation helper types ─────────────────────────────────────────────
+
+/// Natural access width for atomic load/store/rmw/cmpxchg operations.
+/// The value indicates the number of bytes accessed in memory; values narrower
+/// than the Wasm result type are zero-extended into the destination slot.
+pub const AtomicWidth = enum(u8) {
+    /// 1-byte access (i32_atomic_load8_u / i32_atomic_rmw8_* / …)
+    @"8" = 1,
+    /// 2-byte access
+    @"16" = 2,
+    /// 4-byte access (i32_atomic_load / i64_atomic_load32_* / …)
+    @"32" = 4,
+    /// 8-byte access (i64_atomic_load / …)
+    @"64" = 8,
+
+    pub fn byteSize(self: AtomicWidth) usize {
+        return switch (self) {
+            .@"8" => 1,
+            .@"16" => 2,
+            .@"32" => 4,
+            .@"64" => 8,
+        };
+    }
+};
+
+/// Whether the result slot is treated as i32 or i64 by the caller.
+pub const AtomicType = enum { i32, i64 };
+
+/// The read-modify-write operation applied by atomic.rmw.
+pub const AtomicRmwOp = enum { add, sub, @"and", @"or", xor, xchg };
+
 // ── Main Op Union ──────────────────────────────────────────────────────────────
 
 pub const Op = union(enum) {
@@ -534,6 +565,104 @@ pub const Op = union(enum) {
         dst_addr: Slot,
         value: Slot,
         len: Slot,
+    },
+
+    /// memory.size: push current memory size in pages (i32).
+    memory_size: struct {
+        dst: Slot,
+    },
+    /// memory.grow: attempt to grow memory by `delta` pages.
+    /// Pushes the old size on success, or -1 on failure.
+    memory_grow: struct {
+        dst: Slot,
+        delta: Slot,
+    },
+
+    // ── Atomic memory instructions (Wasm Threads proposal) ───────────────────────
+    //
+    // All atomic ops require natural alignment (ea % access_size == 0); misalignment
+    // traps with UnalignedAtomicAccess.
+    //
+    // Naming convention mirrors the Wasm opcode names exactly so that grep-based
+    // cross-references work.  Parametric IR types (AtomicWidth / AtomicRmwOp) keep
+    // the Op union compact.
+
+    /// Atomic load: dst = atomicLoad(mem[addr + offset], width/type)
+    /// Produces i32 for 32-bit-or-narrower results, i64 for 64-bit results.
+    atomic_load: struct {
+        dst: Slot,
+        addr: Slot,
+        offset: u32,
+        width: AtomicWidth,
+        /// true = result sign-extended or zero-extended to i64, false = i32
+        ty: AtomicType,
+    },
+
+    /// Atomic store: atomicStore(mem[addr + offset], src, width)
+    atomic_store: struct {
+        addr: Slot,
+        src: Slot,
+        offset: u32,
+        width: AtomicWidth,
+        ty: AtomicType,
+    },
+
+    /// Atomic RMW: dst = atomicRmw(op, mem[addr + offset], src, width)
+    /// Produces the *old* value before the operation.
+    atomic_rmw: struct {
+        dst: Slot,
+        addr: Slot,
+        src: Slot,
+        offset: u32,
+        op: AtomicRmwOp,
+        width: AtomicWidth,
+        ty: AtomicType,
+    },
+
+    /// Atomic compare-exchange: dst = atomicCmpxchg(mem[addr + offset], expected, replacement, width)
+    /// Produces the *old* value.
+    atomic_cmpxchg: struct {
+        dst: Slot,
+        addr: Slot,
+        expected: Slot,
+        replacement: Slot,
+        offset: u32,
+        width: AtomicWidth,
+        ty: AtomicType,
+    },
+
+    /// atomic.fence: sequentially-consistent full memory fence.
+    /// No operands; order = .seq_cst as required by the Threads spec.
+    atomic_fence,
+
+    /// memory.atomic.notify: wake waiters on the given address.
+    /// dst = notify(mem[addr + offset], count)
+    /// Returns number of waiters woken (i32).
+    atomic_notify: struct {
+        dst: Slot,
+        addr: Slot,
+        count: Slot,
+        offset: u32,
+    },
+
+    /// memory.atomic.wait32: block until mem[addr+offset] != expected or timeout expires.
+    /// dst = wait32(mem[addr + offset], expected_i32, timeout_i64)
+    /// Returns i32: 0 = woken, 1 = not-equal, 2 = timed out.
+    atomic_wait32: struct {
+        dst: Slot,
+        addr: Slot,
+        expected: Slot,
+        timeout: Slot,
+        offset: u32,
+    },
+
+    /// memory.atomic.wait64: same as wait32 but expected value is i64.
+    atomic_wait64: struct {
+        dst: Slot,
+        addr: Slot,
+        expected: Slot,
+        timeout: Slot,
+        offset: u32,
     },
 
     // ── Table instructions ────────────────────────────────────────────────────────

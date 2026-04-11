@@ -79,9 +79,9 @@ test "Instance.init allocates globals and memory" {
     try testing.expectEqual(@as(usize, 1), instance.globals.len);
     try testing.expectEqual(@as(i32, 42), instance.globals[0].getRawValue().readAs(i32));
 
-    try testing.expectEqual(@as(usize, 65536), instance.memory.len);
-    try testing.expectEqual(@as(u8, 0), instance.memory[0]);
-    try testing.expectEqual(@as(u8, 0), instance.memory[65535]);
+    try testing.expectEqual(@as(usize, 65536), instance.memory.byteLen());
+    try testing.expectEqual(@as(u8, 0), instance.memory.bytes()[0]);
+    try testing.expectEqual(@as(u8, 0), instance.memory.bytes()[65535]);
 }
 
 test "Instance.init with no memory section" {
@@ -104,7 +104,7 @@ test "Instance.init with no memory section" {
     defer instance.deinit();
 
     try testing.expectEqual(@as(usize, 0), instance.globals.len);
-    try testing.expectEqual(@as(usize, 0), instance.memory.len);
+    try testing.expectEqual(@as(usize, 0), instance.memory.byteLen());
 }
 
 test "Instance.call supports inter-function calls (double via add)" {

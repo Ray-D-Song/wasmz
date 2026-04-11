@@ -13,6 +13,7 @@ const RawVal = core.RawVal;
 const Trap = core.Trap;
 const TrapCode = core.TrapCode;
 const ValType = core.ValType;
+const Memory = core.Memory;
 
 pub const HostError = Allocator.Error || error{HostTrap};
 
@@ -20,7 +21,8 @@ pub const HostError = Allocator.Error || error{HostTrap};
 pub const HostInstance = struct {
     module: *const Module,
     globals: []Global,
-    memory: []u8,
+    /// Pointer into the Instance's Memory value (never null for modules with a memory section).
+    memory: *Memory,
     tables: [][]u32,
 };
 
@@ -46,7 +48,9 @@ pub const HostContext = struct {
     }
 
     pub fn memory(self: *HostContext) ?[]u8 {
-        return if (self.host_instance.memory.len == 0) null else self.host_instance.memory;
+        const mem = self.host_instance.memory;
+        const b = mem.bytes();
+        return if (b.len == 0) null else b;
     }
 
     pub fn user_data(self: *HostContext, comptime T: type) ?*T {

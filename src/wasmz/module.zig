@@ -99,9 +99,12 @@ pub const GlobalInit = struct {
 
 /// Linear memory definition, recording the minimum and maximum number of pages (each page is 64 KiB).
 /// max_pages being null indicates that there is no upper limit on the memory size.
+/// shared being true means the memory was declared `shared` (Wasm Threads proposal).
+/// Note: shared memories MUST have a max_pages (Wasm spec requirement).
 pub const MemoryDef = struct {
     min_pages: u32,
     max_pages: ?u32,
+    shared: bool = false,
 };
 
 /// Compiled data segment, holding the data bytes and metadata for runtime initialization.
@@ -419,6 +422,7 @@ pub const Module = struct {
                     memory = .{
                         .min_pages = entry.limits.initial,
                         .max_pages = entry.limits.maximum,
+                        .shared = entry.shared,
                     };
                 },
                 .export_entry => |entry| {

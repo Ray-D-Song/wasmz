@@ -3,10 +3,8 @@
 /// Instance is a runtime instantiation of a Module, containing the mutable state during execution.
 /// It is created from a compiled Module and holds:
 ///   - globals:    an array of global variables copied and initialized from module.globals
-///   - memory:     linear memory allocated based on module.memory.min_pages
+///   - memory:     linear memory, either exclusively-owned or a shared reference (Threads proposal)
 ///   - host_funcs: resolved host functions for each imported function slot
-///
-/// TODO: make Instance reference-counted (Arc) to allow sharing between multiple contexts (e.g. threads).
 const std = @import("std");
 const core = @import("core");
 const store_mod = @import("./store.zig");
@@ -19,6 +17,8 @@ const Store = store_mod.Store;
 const Module = module_mod.Module;
 const Global = core.Global;
 const GlobalType = core.GlobalType;
+const Memory = core.Memory;
+const SharedMemory = core.SharedMemory;
 const VM = vm_mod.VM;
 const ExecEnv = vm_mod.ExecEnv;
 const HostInstance = host_mod.HostInstance;
@@ -33,15 +33,18 @@ pub const HostFunc = host_mod.HostFunc;
 pub const Linker = host_mod.Linker;
 pub const Imports = Linker;
 
-/// The number of bytes in a single WebAssembly memory page (64 KiB).
-const WASM_PAGE_SIZE: usize = 65536;
-
 pub const InstanceError = Allocator.Error || error{
     ExportNotFound,
     /// A function import required by the module was not provided in the Imports map
     ImportNotSatisfied,
     /// A host-provided function's signature does not match the imported function type.
     ImportSignatureMismatch,
+    /// Shared memory requires a maximum page count (Wasm spec).
+    SharedMemoryMissingMax,
+    /// The module does not declare a shared memory but a SharedMemory was provided.
+    ModuleMemoryNotShared,
+    /// The provided SharedMemory's capacity is smaller than what the module requires.
+    SharedMemoryTooSmall,
 };
 
 pub const Instance = struct {
@@ -51,9 +54,8 @@ pub const Instance = struct {
     module: *const Module,
     /// Runtime globals, copied and initialized from module.globals.
     globals: []Global,
-    /// Linear memory, allocated based on module.memory.min_pages * WASM_PAGE_SIZE.
-    /// If the module has no memory section, this will be an empty slice.
-    memory: []u8,
+    /// Linear memory, either exclusively owned or shared across instances (Threads proposal).
+    memory: Memory,
     /// Resolved host functions for each imported function slot, in the same order as module.imported_funcs.
     /// Length == module.imported_funcs.len.
     host_funcs: []HostFunc,
@@ -87,13 +89,16 @@ pub const Instance = struct {
         }
 
         // ── 2. allocate memory ──────────────────────────────────────────────────
-        const memory: []u8 = if (module.memory) |mem_def| blk: {
-            const byte_count = @as(usize, mem_def.min_pages) * WASM_PAGE_SIZE;
-            const buf = try allocator.alloc(u8, byte_count);
-            @memset(buf, 0);
-            break :blk buf;
-        } else &[0]u8{};
-        errdefer if (memory.len > 0) allocator.free(memory);
+        var mem: Memory = if (module.memory) |mem_def| blk: {
+            if (mem_def.shared) {
+                const max = mem_def.max_pages orelse return error.SharedMemoryMissingMax;
+                const shared = try SharedMemory.init(allocator, mem_def.min_pages, max);
+                break :blk Memory.initShared(shared);
+            } else {
+                break :blk try Memory.initOwned(allocator, mem_def.min_pages);
+            }
+        } else Memory.initEmpty();
+        errdefer mem.deinit();
 
         // ── 3. resolve host functions ────────────────────────────────────────────
         // Build a flat slice parallel to module.imported_funcs, looking up each
@@ -112,7 +117,7 @@ pub const Instance = struct {
         const host_view = HostInstance{
             .module = module,
             .globals = globals,
-            .memory = memory,
+            .memory = &mem,
             .tables = module.tables,
         };
 
@@ -133,7 +138,99 @@ pub const Instance = struct {
             .store = store,
             .module = module,
             .globals = globals,
-            .memory = memory,
+            .memory = mem,
+            .host_funcs = host_funcs,
+            .host_view = host_view,
+            .data_segments_dropped = data_segments_dropped,
+            .elem_segments_dropped = elem_segments_dropped,
+        };
+    }
+
+    /// Instantiate a Module using an externally-created `SharedMemory`.
+    ///
+    /// This is the multi-threaded variant of `init`.  All Instance values created
+    /// from the same Module with the same `shared` handle will operate on the same
+    /// linear memory region, enabling cross-thread communication via atomic
+    /// operations (memory.atomic.store / load / rmw / cmpxchg / wait / notify).
+    ///
+    /// Constraints
+    /// -----------
+    /// - The module must declare `(memory ... shared)`.
+    /// - `shared.capacity()` must be >= `module.memory.max_pages * WASM_PAGE_SIZE`.
+    ///
+    /// Ownership
+    /// ---------
+    /// `initWithSharedMemory` clones the refcount on `shared`, so the caller may
+    /// freely `deinit` its own handle after instantiation.  Each Instance's
+    /// `deinit` decrements the refcount; the underlying bytes are freed when the
+    /// last reference is dropped.
+    pub fn initWithSharedMemory(
+        store: *Store,
+        module: *const Module,
+        imports: Linker,
+        shared: SharedMemory,
+    ) InstanceError!Instance {
+        const allocator = store.allocator;
+
+        // ── Validate that the module declares a shared memory ──────────────────
+        const mem_def = module.memory orelse return error.ModuleMemoryNotShared;
+        if (!mem_def.shared) return error.ModuleMemoryNotShared;
+
+        const max = mem_def.max_pages orelse return error.SharedMemoryMissingMax;
+        const required_capacity = @as(usize, max) * @import("core").WASM_PAGE_SIZE;
+        if (shared.capacity() < required_capacity) return error.SharedMemoryTooSmall;
+
+        // ── 1. copy globals ────────────────────────────────────────────────────
+        const globals = try allocator.alloc(Global, module.globals.len);
+        errdefer allocator.free(globals);
+
+        for (module.globals, 0..) |global_init, i| {
+            globals[i] = Global.init(
+                GlobalType.init(global_init.mutability, global_init.value.ty),
+                global_init.value.value,
+            );
+        }
+
+        // ── 2. wrap the provided shared memory (increments refcount) ───────────
+        var mem = Memory.initShared(shared);
+        errdefer mem.deinit();
+
+        // ── 3. resolve host functions ──────────────────────────────────────────
+        const host_funcs = try allocator.alloc(HostFunc, module.imported_funcs.len);
+        errdefer allocator.free(host_funcs);
+
+        for (module.imported_funcs, 0..) |def, i| {
+            const hf = imports.get(def.module_name, def.func_name) orelse return error.ImportNotSatisfied;
+            if (!hf.matches(module.func_types[def.type_index])) {
+                return error.ImportSignatureMismatch;
+            }
+            host_funcs[i] = hf;
+        }
+
+        const host_view = HostInstance{
+            .module = module,
+            .globals = globals,
+            .memory = &mem,
+            .tables = module.tables,
+        };
+
+        // ── 4. segment dropped flags ───────────────────────────────────────────
+        const data_segments_dropped = try allocator.alloc(bool, module.data_segments.len);
+        errdefer allocator.free(data_segments_dropped);
+        @memset(data_segments_dropped, false);
+
+        const elem_segments_dropped = try allocator.alloc(bool, module.elem_segments.len);
+        errdefer allocator.free(elem_segments_dropped);
+        @memset(elem_segments_dropped, false);
+
+        store.registerInstance();
+        errdefer store.unregisterInstance();
+
+        return .{
+            .store = store,
+            .module = module,
+            .globals = globals,
+            .memory = mem,
             .host_funcs = host_funcs,
             .host_view = host_view,
             .data_segments_dropped = data_segments_dropped,
@@ -144,10 +241,7 @@ pub const Instance = struct {
     pub fn deinit(self: *Instance) void {
         const allocator = self.store.allocator;
         allocator.free(self.globals);
-        // Only free memory if it exists (empty slice does not need free).
-        if (self.memory.len > 0) {
-            allocator.free(self.memory);
-        }
+        self.memory.deinit();
         allocator.free(self.host_funcs);
         allocator.free(self.data_segments_dropped);
         allocator.free(self.elem_segments_dropped);
@@ -160,7 +254,7 @@ pub const Instance = struct {
             .store = self.store,
             .host_instance = &self.host_view,
             .globals = self.globals,
-            .memory = self.memory,
+            .memory = &self.memory,
             .functions = self.module.functions,
             .func_types = self.module.func_types,
             .host_funcs = self.host_funcs,
