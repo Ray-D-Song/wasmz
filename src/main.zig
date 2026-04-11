@@ -6,16 +6,13 @@
 ///
 /// Flags:
 ///   --legacy-exceptions   Force the legacy exception-handling proposal (try/catch/rethrow/delegate)
-///
-/// Current limitations:
-///   - Function arguments only support i32 (parsed as decimal integers)
-///   - Return values are printed as i32 (void functions do not output)
 const std = @import("std");
+const builtin = @import("builtin");
 const wasmz = @import("wasmz");
 const wasi_preview1 = @import("wasi").preview1;
 
-/// Custom panic handler: simply print the message to stderr and abort, without unwinding with DWARF.
-/// This eliminates about 127 KB of DWARF parsing code from std.debug
+/// Release builds use a minimal panic handler to avoid pulling in DWARF stack-unwinding
+/// code (~127 KB).  Debug/ReleaseSafe builds use the default handler for readable backtraces.
 fn simplePanic(msg: []const u8, _: ?usize) noreturn {
     const stderr = std.fs.File.stderr();
     stderr.writeAll("panic: ") catch {};
@@ -23,7 +20,11 @@ fn simplePanic(msg: []const u8, _: ?usize) noreturn {
     stderr.writeAll("\n") catch {};
     std.process.abort();
 }
-pub const panic = std.debug.FullPanic(simplePanic);
+
+pub const panic = switch (builtin.mode) {
+    .Debug, .ReleaseSafe => std.debug.FullPanic(std.debug.defaultPanic),
+    .ReleaseFast, .ReleaseSmall => std.debug.FullPanic(simplePanic),
+};
 
 const Engine = wasmz.Engine;
 const Config = wasmz.Config;
@@ -42,14 +43,11 @@ const CliArgs = struct {
     i32_args: []const []const u8,
     legacy_exceptions: bool,
     positional: []const []const u8,
-    /// The raw args allocation from std.process.argsAlloc; kept alive so that
-    /// the string slices in `file_path`, `func_name`, etc. remain valid.
+    /// Kept alive so that string slices in the fields above remain valid.
     _args_alloc: [][:0]u8,
     _args_allocator: std.mem.Allocator,
 
     fn parse(allocator: std.mem.Allocator) !CliArgs {
-        // NOTE: do NOT defer-free args here — the returned CliArgs holds slices
-        // that point directly into this allocation.  deinit() frees it instead.
         const args = try std.process.argsAlloc(allocator);
 
         var legacy_exceptions = false;
@@ -109,7 +107,6 @@ pub fn main() void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Initialize a buffered stdout writer (Zig 0.15 new I/O API)
     var out_buf: [8192]u8 = undefined;
     var bw = std.fs.File.stdout().writer(&out_buf);
     const stdout = &bw.interface;
@@ -125,7 +122,6 @@ pub fn main() void {
 fn host_print_i32(_: ?*anyopaque, _: *HostContext, params: []const RawVal, _: []RawVal) wasmz.HostError!void {
     const val = params[0].readAs(i32);
     std.debug.print("host_print_i32: {d}\n", .{val});
-    return;
 }
 
 fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
@@ -147,8 +143,6 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
 
     const file_path = cli_args.file_path;
 
-    // ── Read file (max 64 MiB) ──────────────────────────────────────────────
-
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
         std.debug.print("error: Unable to open {s}: {s}\n", .{ file_path, @errorName(err) });
         std.process.exit(1);
@@ -161,8 +155,6 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     };
     defer allocator.free(bytes);
 
-    // ── Compile module ──────────────────────────────────────────────────────────────
-
     var engine = Engine.init(allocator, Config{ .legacy_exceptions = cli_args.legacy_exceptions }) catch |err| {
         std.debug.print("error: Failed to initialize engine: {s}\n", .{@errorName(err)});
         std.process.exit(1);
@@ -174,8 +166,6 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
         std.process.exit(1);
     };
     defer module.deinit();
-
-    // ── Instantiate ───────────────────────────────────────────────────────────────
 
     var store = try Store.init(allocator, engine);
     defer store.deinit();
@@ -200,10 +190,21 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     };
     defer instance.deinit();
 
-    // ── No function name → List exports or run _start ─────────────────────────
+    if (instance.runStartFunction() catch |err| {
+        std.debug.print("error: Failed to run start function: {s}\n", .{@errorName(err)});
+        std.process.exit(1);
+    }) |result| {
+        switch (result) {
+            .ok => {},
+            .trap => |t| {
+                const msg = t.allocPrint(allocator) catch "?";
+                std.debug.print("error: start function trapped: {s}\n", .{msg});
+                std.process.exit(1);
+            },
+        }
+    }
 
     if (cli_args.func_name == null) {
-        // If the module exports a "_start" function, call it automatically (WASI command pattern)
         if (module.exports.get("_start")) |_| {
             const result = instance.call("_start", &.{}) catch |err| {
                 std.debug.print("error: Failed to call _start: {s}\n", .{@errorName(err)});
@@ -221,7 +222,6 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
             return;
         }
 
-        // No _start export → list all exported functions
         if (module.exports.count() == 0) {
             try stdout.writeAll("(module has no exported functions)\n");
             return;
@@ -233,8 +233,6 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
         }
         return;
     }
-
-    // ── Parse i32 arguments and call function ───────────────────────────────────────────────
 
     const func_name = cli_args.func_name.?;
 

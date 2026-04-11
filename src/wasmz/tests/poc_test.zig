@@ -33,7 +33,7 @@ const compileFunctionBody = module_mod.compileFunctionBody;
 const FuncTypeResolver = module_mod.FuncTypeResolver;
 
 const empty_resolver = FuncTypeResolver{
-    .func_types = &.{},
+    .composite_types = &.{},
     .type_indices = &.{},
     .import_type_indices = &.{},
     .import_count = 0,
@@ -273,7 +273,6 @@ fn executeWithEmptyRuntime(
         .globals = globals[0..],
         .memory = &mem,
         .functions = &.{},
-        .func_types = &.{},
         .host_funcs = &.{},
         .tables = tables[0..],
         .func_type_indices = &.{},
@@ -687,11 +686,16 @@ test "return_call: tail call replaces current frame" {
     // - Tail call:    [f0] -> [f0, f1] -> [f0, f1] -> ... (constant)
 
     const FuncType = core.func_type.FuncType;
+    const CompositeType = core.CompositeType;
     const func_types = [_]FuncType{
         try FuncType.init(testing.allocator, &.{}, &.{.I32}),
         try FuncType.init(testing.allocator, &.{.I32}, &.{.I32}),
     };
     defer for (func_types) |ft| ft.deinit(testing.allocator);
+    const composite_types_arr = [_]CompositeType{
+        .{ .func_type = func_types[0] },
+        .{ .func_type = func_types[1] },
+    };
 
     var lower0 = Lower.initWithReservedSlots(testing.allocator, 0);
     defer lower0.deinit();
@@ -769,7 +773,6 @@ test "return_call: tail call replaces current frame" {
         .globals = globals[0..],
         .memory = &mem2,
         .functions = &functions,
-        .func_types = &func_types,
         .host_funcs = &.{},
         .tables = tables[0..],
         .func_type_indices = &func_type_indices,
@@ -777,7 +780,7 @@ test "return_call: tail call replaces current frame" {
         .data_segments_dropped = &.{},
         .elem_segments = &.{},
         .elem_segments_dropped = &.{},
-        .composite_types = &.{},
+        .composite_types = &composite_types_arr,
         .struct_layouts = &.{},
         .array_layouts = &.{},
         .type_ancestors = &.{},

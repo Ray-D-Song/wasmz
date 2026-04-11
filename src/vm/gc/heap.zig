@@ -235,6 +235,8 @@ pub const GcHeap = struct {
     }
 
     /// Reads a struct field value from the heap.
+    /// Note: field_offsets are relative to the struct payload (after GcHeader),
+    /// so we add HEADER_SIZE to get the absolute offset from the object base.
     pub fn readField(
         self: Self,
         base: GcRef,
@@ -242,12 +244,14 @@ pub const GcHeap = struct {
         layout: StructLayout,
         field_idx: u32,
     ) RawVal {
-        const offset = layout.field_offsets[field_idx];
+        const offset = HEADER_SIZE + layout.field_offsets[field_idx];
         const storage_type = struct_type.fields[field_idx].storage_type;
         return self.readStorageType(base, offset, storage_type);
     }
 
     /// Writes a struct field value to the heap.
+    /// Note: field_offsets are relative to the struct payload (after GcHeader),
+    /// so we add HEADER_SIZE to get the absolute offset from the object base.
     pub fn writeField(
         self: Self,
         base: GcRef,
@@ -256,7 +260,7 @@ pub const GcHeap = struct {
         field_idx: u32,
         value: RawVal,
     ) void {
-        const offset = layout.field_offsets[field_idx];
+        const offset = HEADER_SIZE + layout.field_offsets[field_idx];
         const storage_type = struct_type.fields[field_idx].storage_type;
         self.writeStorageType(base, offset, storage_type, value);
     }
@@ -346,7 +350,7 @@ pub const GcHeap = struct {
         layout: StructLayout,
         field_idx: u32,
     ) RawVal {
-        const offset = layout.field_offsets[field_idx];
+        const offset = HEADER_SIZE + layout.field_offsets[field_idx];
         const storage_type = struct_type.fields[field_idx].storage_type;
         return self.readStorageTypeUnsigned(base, offset, storage_type);
     }
@@ -579,7 +583,8 @@ pub const GcHeap = struct {
                     if (type_index < struct_layouts.len) {
                         if (struct_layouts[type_index]) |layout| {
                             for (layout.gc_ref_fields) |field_idx| {
-                                const field_offset = layout.field_offsets[field_idx];
+                                // field_offsets are relative to payload; add HEADER_SIZE for absolute offset
+                                const field_offset = HEADER_SIZE + layout.field_offsets[field_idx];
                                 _ = st; // struct_type used for type info above
                                 const bytes = self.getBytesAt(GcRef.fromHeapIndex(obj_idx), field_offset);
                                 const raw_bits = std.mem.readInt(u32, bytes[0..4], .little);
@@ -620,6 +625,9 @@ pub const GcHeap = struct {
                             }
                         }
                     }
+                },
+                .func_type => {
+                    // Function types carry no GC child references — nothing to trace.
                 },
             }
         }

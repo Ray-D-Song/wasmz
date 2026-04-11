@@ -550,8 +550,13 @@ pub const Lower = struct {
     next_slot: Slot = 0,
     /// Control-flow nesting stack.
     control_stack: std.ArrayListUnmanaged(ControlFrame) = .empty,
-    /// Module-level function types (Type Section), used to resolve multi-value block types.
-    func_types: []const core.func_type.FuncType = &.{},
+    /// Unified type section (func, struct, array), used to resolve multi-value block types.
+    composite_types: []const core.CompositeType = &.{},
+    /// True when the current position is unreachable (after br, br_table, return, unreachable).
+    /// In this state, subsequent instructions until the next `end`/`else` are dead code.
+    is_unreachable: bool = false,
+    /// Nesting depth of blocks opened while in unreachable state.
+    unreachable_depth: u32 = 0,
 
     pub fn init(allocator: Allocator) Lower {
         return .{ .allocator = allocator };
@@ -610,8 +615,11 @@ pub const Lower = struct {
                 try results.append(self.allocator, self.alloc_slot());
             },
             .type_index => |idx| {
-                if (idx >= self.func_types.len) return error.InvalidFunctionType;
-                const ft = &self.func_types[idx];
+                if (idx >= self.composite_types.len) return error.InvalidFunctionType;
+                const ft = switch (self.composite_types[idx]) {
+                    .func_type => |*f| f,
+                    else => return error.InvalidFunctionType,
+                };
                 for (ft.params()) |_| {
                     try params.append(self.allocator, self.alloc_slot());
                 }
@@ -662,6 +670,9 @@ pub const Lower = struct {
     /// push the frame's result slots back (in order: first result at bottom).
     pub fn unwind_stack_to_frame(self: *Lower, frame: *const ControlFrame) !void {
         // Truncate the value stack to the frame's entry height.
+        if (frame.stack_height > self.stack.slots.items.len) {
+            return error.StackUnderflow;
+        }
         self.stack.slots.shrinkRetainingCapacity(frame.stack_height);
         // Push result slots so downstream ops can consume them.
         for (frame.result_slots.items) |rs| {
@@ -846,9 +857,47 @@ pub const Lower = struct {
     // ── Main dispatch ─────────────────────────────────────────────────────────
 
     pub fn lowerOp(self: *Lower, op: WasmOp) !void {
+        // Dead-code elimination: when in unreachable state, only track control-flow
+        // nesting depth. Real processing resumes at the matching `end` or `else`.
+        var was_unreachable = false;
+        if (self.is_unreachable) {
+            switch (op) {
+                .block, .loop, .if_, .try_table => {
+                    self.unreachable_depth += 1;
+                    return;
+                },
+                .end => {
+                    if (self.unreachable_depth > 0) {
+                        self.unreachable_depth -= 1;
+                        return;
+                    }
+                    // This end matches the block that contains the unreachable br/return.
+                    self.is_unreachable = false;
+                    was_unreachable = true;
+                    // Reset the stack to the frame's entry height before the normal
+                    // end handler tries to pop result values that don't exist.
+                    if (self.control_stack.items.len > 0) {
+                        const frame = &self.control_stack.items[self.control_stack.items.len - 1];
+                        self.stack.slots.shrinkRetainingCapacity(frame.stack_height);
+                    }
+                    // Fall through to normal end handling (but skip result copying).
+                },
+                .else_ => {
+                    if (self.unreachable_depth > 0) {
+                        return;
+                    }
+                    // The then-branch was unreachable but else may be reachable.
+                    self.is_unreachable = false;
+                    // Fall through to normal else handling.
+                },
+                else => return, // skip all other ops in unreachable code
+            }
+        }
+
         switch (op) {
             .unreachable_ => {
                 try self.emit(.unreachable_);
+                self.is_unreachable = true;
             },
 
             .nop => {
@@ -1005,8 +1054,10 @@ pub const Lower = struct {
             .end => {
                 if (self.control_stack.items.len == 0) {
                     // The final `end` of the function body — emit return.
-                    const value = self.stack.pop();
-                    try self.emit(.{ .ret = .{ .value = value } });
+                    if (!was_unreachable) {
+                        const value = self.stack.pop();
+                        try self.emit(.{ .ret = .{ .value = value } });
+                    }
                     return;
                 }
 
@@ -1016,8 +1067,10 @@ pub const Lower = struct {
                 defer frame.param_slots.deinit(self.allocator);
 
                 // Copy block results from the stack top into the result slots.
-                // Stack top = last result (result_slots[N-1]); bottom of N values = first result.
-                {
+                // Skip this when coming from unreachable code — the br/return already
+                // copied values into result_slots and the stack has been trimmed.
+                if (!was_unreachable) {
+                    // Stack top = last result (result_slots[N-1]); bottom of N values = first result.
                     const n = frame.result_slots.items.len;
                     var ri: usize = n;
                     while (ri > 0) {
@@ -1060,7 +1113,9 @@ pub const Lower = struct {
                 // After an unconditional br the rest of the block is unreachable;
                 // reset the stack to the frame's height so further ops (up to the
                 // matching end) do not see stale values.
-                self.stack.slots.shrinkRetainingCapacity(frame.stack_height);
+                const target = @min(frame.stack_height, self.stack.slots.items.len);
+                self.stack.slots.shrinkRetainingCapacity(target);
+                self.is_unreachable = true;
             },
 
             .br_if => |depth| {
@@ -1185,6 +1240,7 @@ pub const Lower = struct {
                 } else {
                     self.stack.slots.shrinkRetainingCapacity(0);
                 }
+                self.is_unreachable = true;
             },
 
             // ── Locals & constants ────────────────────────────────────────────
@@ -1493,6 +1549,7 @@ pub const Lower = struct {
             .ret => {
                 const value = self.stack.pop();
                 try self.emit(.{ .ret = .{ .value = value } });
+                self.is_unreachable = true;
             },
 
             // ── function call ──────────────────────────────────────────────────────────
@@ -1577,6 +1634,7 @@ pub const Lower = struct {
 
                 // Tail call never returns; clear the stack.
                 self.stack.slots.shrinkRetainingCapacity(0);
+                self.is_unreachable = true;
             },
 
             // ── tail call indirect ─────────────────────────────────────────────────
@@ -1606,6 +1664,7 @@ pub const Lower = struct {
 
                 // Tail call never returns; clear the stack.
                 self.stack.slots.shrinkRetainingCapacity(0);
+                self.is_unreachable = true;
             },
 
             // ── Memory load ──────────────────────────────────────────────────────────
@@ -2500,6 +2559,7 @@ pub const Lower = struct {
 
                 // Tail call never returns; clear the stack.
                 self.stack.slots.shrinkRetainingCapacity(0);
+                self.is_unreachable = true;
             },
 
             // ── GC Extern/Any conversion (TODO: implement in Phase A3) ────────────────
@@ -2546,6 +2606,7 @@ pub const Lower = struct {
 
                 // throw is a control-flow terminator; mark subsequent code unreachable.
                 self.stack.slots.shrinkRetainingCapacity(0);
+                self.is_unreachable = true;
             },
 
             // throw_ref: pop exnref slot, emit throw_ref.

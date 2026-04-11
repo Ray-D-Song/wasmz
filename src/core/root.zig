@@ -24,6 +24,7 @@ pub const TrapCode = trap.TrapCode;
 pub const HeapType = heap_type.HeapType;
 pub const GcRefKind = heap_type.GcRefKind;
 pub const RefType = ref_type.RefType;
+pub const FuncType = func_type.FuncType;
 pub const PackedType = composite_type.PackedType;
 pub const StorageType = composite_type.StorageType;
 pub const FieldType = composite_type.FieldType;

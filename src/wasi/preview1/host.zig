@@ -102,6 +102,7 @@ pub const Host = struct {
             .{ "fd_fdstat_get", fd_fdstat_get, &[_]ValType{ .I32, .I32 } },
             .{ "fd_prestat_get", fd_prestat_get, &[_]ValType{ .I32, .I32 } },
             .{ "fd_prestat_dir_name", fd_prestat_dir_name, &[_]ValType{ .I32, .I32, .I32 } },
+            .{ "random_get", random_get, &[_]ValType{ .I32, .I32 } },
         };
 
         const result_types = &[_]ValType{.I32};
@@ -200,4 +201,25 @@ fn fd_prestat_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const Raw
 fn fd_prestat_dir_name(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
     return host.fd_io.fdPrestatDirName(ctx, params, results);
+}
+
+fn random_get(_: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
+    const buf_ptr: u32 = @bitCast(params[0].readAs(i32));
+    const buf_len: u32 = @bitCast(params[1].readAs(i32));
+
+    const mem = ctx.memory() orelse {
+        // EFAULT — no memory available
+        results[0] = RawVal.from(@as(i32, 21));
+        return;
+    };
+
+    if (buf_ptr + buf_len > mem.len) {
+        // EFAULT — out of bounds
+        results[0] = RawVal.from(@as(i32, 21));
+        return;
+    }
+
+    const buf = mem[buf_ptr .. buf_ptr + buf_len];
+    std.crypto.random.bytes(buf);
+    results[0] = RawVal.from(@as(i32, 0)); // ESUCCESS
 }
