@@ -158,6 +158,7 @@ test "compileFunctionBody rejects simd when disabled" {
     try testing.expectError(error.DisabledSimd, module_mod.compileFunctionBody(
         testing.allocator,
         0,
+        0,
         body[0..],
         .{ .simd = false },
         .{
@@ -180,6 +181,7 @@ test "compileFunctionBody rejects relaxed simd when disabled" {
 
     try testing.expectError(error.DisabledRelaxedSimd, module_mod.compileFunctionBody(
         testing.allocator,
+        0,
         0,
         body[0..],
         .{ .relaxed_simd = false },

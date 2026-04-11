@@ -108,6 +108,16 @@ pub const LowerLegacy = struct {
         return self.inner.finish();
     }
 
+    /// Push the implicit function-level block frame, keeping `try_states` in
+    /// sync with `inner.control_stack` (the invariant is that both arrays have
+    /// the same length).
+    pub fn pushFunctionFrame(self: *LowerLegacy, n_results: usize) !void {
+        try self.inner.pushFunctionFrame(n_results);
+        // Add a null try-state entry for the implicit frame so that
+        // try_states.items[i] always corresponds to control_stack.items[i].
+        try self.try_states.append(self.allocator, null);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn current_pc(self: *LowerLegacy) u32 {
