@@ -13,6 +13,7 @@ const payload_mod = @import("payload");
 const engine_mod = @import("../engine/root.zig");
 const engine_config_mod = @import("../engine/config.zig");
 const lower_mod = @import("../compiler/lower.zig");
+const lower_legacy_mod = @import("../compiler/lower_legacy.zig");
 const translate_mod = @import("../compiler/translate.zig");
 const ir = @import("../compiler/ir.zig");
 const core = @import("core");
@@ -44,11 +45,35 @@ const ArrayLayout = gc_mod.ArrayLayout;
 const GcRef = core.GcRef;
 const Engine = engine_mod.Engine;
 const Lower = lower_mod.Lower;
+const LowerLegacy = lower_legacy_mod.LowerLegacy;
+const LegacyWasmOp = lower_legacy_mod.LegacyWasmOp;
 const EngineConfig = engine_config_mod.Config;
 
 // TODO: Currently only supports function exports; other export kinds (memory, global, table) are ignored.
 pub const ExportEntry = struct {
     function_index: u32,
+};
+
+/// Exception tag definition.
+/// The type_index refers to a FuncType whose params are the exception payload types
+/// and whose results are always empty.
+pub const TagDef = struct {
+    type_index: u32,
+};
+
+/// Whether the module uses the new (try_table) or legacy (try/catch/rethrow/delegate) EH proposal.
+pub const EHMode = enum {
+    /// No exception handling instructions detected.
+    none,
+    /// New proposal: try_table / throw / throw_ref.
+    new,
+    /// Legacy proposal: try / catch / catch_all / rethrow / delegate.
+    legacy,
+};
+
+/// Module-level configuration.
+pub const ModuleConfig = struct {
+    eh_mode: EHMode = .none,
 };
 
 /// Metadata for a single imported function, extracted from the Wasm Import Section.
@@ -102,6 +127,7 @@ pub const ModuleCompileError = Allocator.Error ||
     parser_mod.ParseAllError ||
     parser_mod.CodeReadError ||
     lower_mod.LowerError ||
+    lower_legacy_mod.LegacyLowerError ||
     func_type_mod.FuncTypeError ||
     translate_mod.TranslateError ||
     error{
@@ -121,6 +147,7 @@ pub const ModuleCompileError = Allocator.Error ||
         UnsupportedOperator,
         DisabledSimd,
         DisabledRelaxedSimd,
+        InvalidTagIndex,
     };
 
 /// Compiled WebAssembly module, holding all data required for runtime execution.
@@ -180,6 +207,11 @@ pub const Module = struct {
     /// Empty slice for types with no declared supertypes.
     /// Indexed by composite type index (same index space as composite_types).
     type_ancestors: []const []const u32,
+    /// Exception tags defined in the Tag Section (and imported tag entries).
+    /// tags[i].type_index is the FuncType index for tag i.
+    tags: []TagDef,
+    /// Module-level configuration.
+    config: ModuleConfig,
 
     /// Compile WebAssembly bytecode into a Module.
     ///
@@ -277,6 +309,28 @@ pub const Module = struct {
         errdefer {
             for (elem_segments_list.items) |*seg| allocator.free(seg.func_indices);
             elem_segments_list.deinit(allocator);
+        }
+
+        // Tag section: collect exception tag definitions.
+        var tags_list: std.ArrayListUnmanaged(TagDef) = .empty;
+        defer tags_list.deinit(allocator);
+
+        // EH mode detection: scan operator payloads for EH-specific opcodes.
+        // Precedence: legacy indicators (delegate, rethrow-with-depth) override new;
+        // new indicators (try_table, throw_ref, catch_ref, catch_all_ref) set new;
+        // If no EH opcodes are seen, mode stays .none.
+        var detected_eh_mode: EHMode = .none;
+
+        // Pre-scan: collect tag definitions from the Tag Section (section id=13).
+        // Tag section comes AFTER Code section in the binary, so we must gather tags
+        // before the main loop compiles function bodies.
+        for (payloads) |pre_payload| {
+            switch (pre_payload) {
+                .tag_type => |tt| {
+                    try tags_list.append(allocator, .{ .type_index = tt.type_index });
+                },
+                else => {},
+            }
         }
 
         for (payloads) |payload| {
@@ -441,8 +495,48 @@ pub const Module = struct {
                     };
                     try data_segments_list.append(allocator, compiled);
                 },
+                // Tag section: handled in pre-scan above; skip here to avoid duplicates.
+                .tag_type => {},
+                // EH mode detection: scan function bodies for EH-specific opcodes.
+                .function_info => |info| {
+                    if (detected_eh_mode != .legacy) {
+                        var cursor: usize = 0;
+                        while (cursor < info.body.len) {
+                            const parsed_op = parser_mod.readNextOperator(arena.allocator(), info.body[cursor..]) catch break;
+                            cursor += parsed_op.consumed;
+                            switch (parsed_op.info.code) {
+                                // Legacy-only opcodes → force legacy mode
+                                .delegate, .try_ => {
+                                    detected_eh_mode = .legacy;
+                                    break;
+                                },
+                                .rethrow => {
+                                    detected_eh_mode = .legacy;
+                                    break;
+                                },
+                                // New-proposal opcodes → set new (unless already legacy)
+                                .try_table, .throw_ref => {
+                                    if (detected_eh_mode == .none) {
+                                        detected_eh_mode = .new;
+                                    }
+                                },
+                                .throw => {
+                                    if (detected_eh_mode == .none) {
+                                        detected_eh_mode = .new;
+                                    }
+                                },
+                                else => {},
+                            }
+                        }
+                    }
+                },
                 else => {},
             }
+        }
+
+        // Allow CLI/config to force legacy mode, overriding auto-detection.
+        if (engine.config().legacy_exceptions) {
+            detected_eh_mode = .legacy;
         }
 
         const imported_function_count = imported_funcs_list.items.len;
@@ -457,6 +551,7 @@ pub const Module = struct {
             .ops = .empty,
             .call_args = .empty,
             .br_table_targets = .empty,
+            .catch_handler_tables = .empty,
         });
 
         // Build the import type index slice for FuncTypeResolver:
@@ -498,6 +593,8 @@ pub const Module = struct {
                         info.body,
                         engine.config().*,
                         resolver,
+                        tags_list.items,
+                        detected_eh_mode,
                     );
                     local_function_index += 1;
                 },
@@ -559,6 +656,9 @@ pub const Module = struct {
         const struct_layouts = try struct_layouts_list.toOwnedSlice(allocator);
         const array_layouts = try array_layouts_list.toOwnedSlice(allocator);
 
+        // ── Build tags slice ────────────────────────────────────────────────────
+        const tags = try tags_list.toOwnedSlice(allocator);
+
         // ── Build type_ancestors: transitive closure of supertype chains ──────
         // For each composite type index i, type_ancestors[i] is the list of all
         // strict ancestor composite type indices (parent, grandparent, …) in order
@@ -605,6 +705,8 @@ pub const Module = struct {
             .struct_layouts = struct_layouts,
             .array_layouts = array_layouts,
             .type_ancestors = type_ancestors_outer,
+            .tags = tags,
+            .config = .{ .eh_mode = detected_eh_mode },
         };
     }
 
@@ -662,6 +764,8 @@ pub const Module = struct {
         }
         self.allocator.free(self.type_ancestors);
 
+        self.allocator.free(self.tags);
+
         self.* = undefined;
     }
 
@@ -673,6 +777,7 @@ pub const Module = struct {
             function.call_args.deinit(allocator);
             function.ops.deinit(allocator);
             function.br_table_targets.deinit(allocator);
+            function.catch_handler_tables.deinit(allocator);
         }
     }
 
@@ -884,6 +989,23 @@ pub fn compileFunctionBody(
     body: []const u8,
     config: EngineConfig,
     resolver: FuncTypeResolver,
+    tags: []const TagDef,
+    eh_mode: EHMode,
+) ModuleCompileError!CompiledFunction {
+    if (eh_mode == .legacy) {
+        return compileFunctionBodyLegacy(allocator, reserved_slots, body, config, resolver, tags);
+    }
+    return compileFunctionBodyNew(allocator, reserved_slots, body, config, resolver, tags);
+}
+
+/// Compile a function body using the new EH proposal (try_table / throw / throw_ref).
+fn compileFunctionBodyNew(
+    allocator: Allocator,
+    reserved_slots: u32,
+    body: []const u8,
+    config: EngineConfig,
+    resolver: FuncTypeResolver,
+    tags: []const TagDef,
 ) ModuleCompileError!CompiledFunction {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -903,52 +1025,7 @@ pub fn compileFunctionBody(
             }
         }
 
-        const wasm_op: lower_mod.WasmOp = if (parsed.info.code == .call) blk: {
-            const func_idx = parsed.info.func_index orelse return error.UnsupportedOperator;
-            const func_type = try resolver.resolve(func_idx);
-            break :blk .{ .call = .{
-                .func_idx = func_idx,
-                .n_params = @intCast(func_type.params().len),
-                .has_result = func_type.results().len > 0,
-            } };
-        } else if (parsed.info.code == .call_indirect) blk: {
-            // type_index is encoded as a HeapType in parsed.info.type_index.
-            const heap_type = parsed.info.type_index orelse return error.UnsupportedOperator;
-            const type_index: u32 = switch (heap_type) {
-                .index => |idx| idx,
-                .kind => return error.UnsupportedOperator,
-            };
-            if (type_index >= resolver.func_types.len) return error.InvalidFunctionTypeIndex;
-            const func_type = &resolver.func_types[type_index];
-            // table_index: the parser discards it (reads as var_uint1), so always use 0.
-            break :blk .{ .call_indirect = .{
-                .type_index = type_index,
-                .table_index = 0,
-                .n_params = @intCast(func_type.params().len),
-                .has_result = func_type.results().len > 0,
-            } };
-        } else if (parsed.info.code == .return_call) blk: {
-            const func_idx = parsed.info.func_index orelse return error.UnsupportedOperator;
-            const func_type = try resolver.resolve(func_idx);
-            break :blk .{ .return_call = .{
-                .func_idx = func_idx,
-                .n_params = @intCast(func_type.params().len),
-            } };
-        } else if (parsed.info.code == .return_call_indirect) blk: {
-            const heap_type = parsed.info.type_index orelse return error.UnsupportedOperator;
-            const type_index: u32 = switch (heap_type) {
-                .index => |idx| idx,
-                .kind => return error.UnsupportedOperator,
-            };
-            if (type_index >= resolver.func_types.len) return error.InvalidFunctionTypeIndex;
-            const func_type = &resolver.func_types[type_index];
-            break :blk .{ .return_call_indirect = .{
-                .type_index = type_index,
-                .table_index = 0,
-                .n_params = @intCast(func_type.params().len),
-            } };
-        } else try translate_mod.operatorToWasmOp(parsed.info);
-
+        const wasm_op = try buildWasmOp(parsed.info, resolver, tags, arena.allocator());
         try lower.lowerOp(wasm_op);
     }
 
@@ -956,6 +1033,181 @@ pub fn compileFunctionBody(
     lower.compiled.ops = .empty;
     lower.compiled.call_args = .empty;
     lower.compiled.br_table_targets = .empty;
+    lower.compiled.catch_handler_tables = .empty;
     lower.deinit();
     return compiled;
+}
+
+/// Compile a function body using the legacy EH proposal (try / catch / rethrow / delegate).
+fn compileFunctionBodyLegacy(
+    allocator: Allocator,
+    reserved_slots: u32,
+    body: []const u8,
+    config: EngineConfig,
+    resolver: FuncTypeResolver,
+    tags: []const TagDef,
+) ModuleCompileError!CompiledFunction {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var lower_legacy = LowerLegacy.initWithReservedSlots(allocator, reserved_slots);
+    errdefer lower_legacy.deinit();
+
+    var cursor: usize = 0;
+    while (cursor < body.len) {
+        const parsed = try parser_mod.readNextOperator(arena.allocator(), body[cursor..]);
+        cursor += parsed.consumed;
+
+        if (simd.isSimdOpcode(parsed.info.code)) {
+            if (!config.simd) return error.DisabledSimd;
+            if (simd.isRelaxedSimdOpcode(parsed.info.code) and !config.relaxed_simd) {
+                return error.DisabledRelaxedSimd;
+            }
+        }
+
+        switch (parsed.info.code) {
+            .try_ => {
+                const block_type: ?lower_mod.BlockType = if (parsed.info.block_type) |bt|
+                    try translate_mod.wasmBlockTypeFromType(bt)
+                else
+                    null;
+                try lower_legacy.lowerLegacyOp(.{ .try_ = block_type });
+            },
+            .catch_ => {
+                const tag_idx = parsed.info.tag_index orelse return error.UnsupportedOperator;
+                if (tag_idx >= tags.len) return error.InvalidTagIndex;
+                const tag_type_idx = tags[tag_idx].type_index;
+                if (tag_type_idx >= resolver.func_types.len) return error.InvalidFunctionTypeIndex;
+                const tag_arity: u32 = @intCast(resolver.func_types[tag_type_idx].params().len);
+                try lower_legacy.lowerLegacyOp(.{ .catch_ = .{
+                    .tag_index = tag_idx,
+                    .tag_arity = tag_arity,
+                } });
+            },
+            .catch_all => {
+                try lower_legacy.lowerLegacyOp(.catch_all);
+            },
+            .rethrow => {
+                const depth = parsed.info.relative_depth orelse 0;
+                try lower_legacy.lowerLegacyOp(.{ .rethrow = depth });
+            },
+            .delegate => {
+                const depth = parsed.info.relative_depth orelse 0;
+                try lower_legacy.lowerLegacyOp(.{ .delegate = depth });
+            },
+            .end => {
+                // Use lowerLegacyEnd which handles closing legacy try/catch blocks.
+                try lower_legacy.lowerLegacyEnd();
+            },
+            else => {
+                const wasm_op = try buildWasmOp(parsed.info, resolver, tags, arena.allocator());
+                try lower_legacy.lowerLegacyOp(.{ .non_legacy = wasm_op });
+            },
+        }
+    }
+
+    const compiled = lower_legacy.finish();
+    lower_legacy.inner.compiled.ops = .empty;
+    lower_legacy.inner.compiled.call_args = .empty;
+    lower_legacy.inner.compiled.br_table_targets = .empty;
+    lower_legacy.inner.compiled.catch_handler_tables = .empty;
+    lower_legacy.deinit();
+    return compiled;
+}
+
+/// Build a WasmOp from an OperatorInformation, handling special cases that require
+/// resolver and tag lookups (call, call_indirect, throw, try_table, etc.).
+fn buildWasmOp(
+    info: payload_mod.OperatorInformation,
+    resolver: FuncTypeResolver,
+    tags: []const TagDef,
+    arena_allocator: Allocator,
+) ModuleCompileError!lower_mod.WasmOp {
+    return if (info.code == .call) blk: {
+        const func_idx = info.func_index orelse return error.UnsupportedOperator;
+        const func_type = try resolver.resolve(func_idx);
+        break :blk .{ .call = .{
+            .func_idx = func_idx,
+            .n_params = @intCast(func_type.params().len),
+            .has_result = func_type.results().len > 0,
+        } };
+    } else if (info.code == .call_indirect) blk: {
+        // type_index is encoded as a HeapType in info.type_index.
+        const heap_type = info.type_index orelse return error.UnsupportedOperator;
+        const type_index: u32 = switch (heap_type) {
+            .index => |idx| idx,
+            .kind => return error.UnsupportedOperator,
+        };
+        if (type_index >= resolver.func_types.len) return error.InvalidFunctionTypeIndex;
+        const func_type = &resolver.func_types[type_index];
+        // table_index: the parser discards it (reads as var_uint1), so always use 0.
+        break :blk .{ .call_indirect = .{
+            .type_index = type_index,
+            .table_index = 0,
+            .n_params = @intCast(func_type.params().len),
+            .has_result = func_type.results().len > 0,
+        } };
+    } else if (info.code == .return_call) blk: {
+        const func_idx = info.func_index orelse return error.UnsupportedOperator;
+        const func_type = try resolver.resolve(func_idx);
+        break :blk .{ .return_call = .{
+            .func_idx = func_idx,
+            .n_params = @intCast(func_type.params().len),
+        } };
+    } else if (info.code == .return_call_indirect) blk: {
+        const heap_type = info.type_index orelse return error.UnsupportedOperator;
+        const type_index: u32 = switch (heap_type) {
+            .index => |idx| idx,
+            .kind => return error.UnsupportedOperator,
+        };
+        if (type_index >= resolver.func_types.len) return error.InvalidFunctionTypeIndex;
+        const func_type = &resolver.func_types[type_index];
+        break :blk .{ .return_call_indirect = .{
+            .type_index = type_index,
+            .table_index = 0,
+            .n_params = @intCast(func_type.params().len),
+        } };
+    } else if (info.code == .throw) blk: {
+        // Look up the tag's FuncType to determine n_args.
+        const tag_idx = info.tag_index orelse return error.UnsupportedOperator;
+        if (tag_idx >= tags.len) return error.InvalidTagIndex;
+        const tag_type_idx = tags[tag_idx].type_index;
+        if (tag_type_idx >= resolver.func_types.len) return error.InvalidFunctionTypeIndex;
+        const tag_func_type = &resolver.func_types[tag_type_idx];
+        break :blk .{ .throw = .{
+            .tag_index = tag_idx,
+            .n_args = @intCast(tag_func_type.params().len),
+        } };
+    } else if (info.code == .try_table) blk: {
+        // Build CatchHandlerWasm slice with tag_arity filled in from tag FuncTypes.
+        const raw_handlers = info.try_table;
+        var handlers_list = try std.ArrayListUnmanaged(lower_mod.CatchHandlerWasm).initCapacity(
+            arena_allocator,
+            raw_handlers.len,
+        );
+        for (raw_handlers) |h| {
+            const tag_arity: u32 = if (h.tag_index) |ti| arity: {
+                if (ti >= tags.len) return error.InvalidTagIndex;
+                const ti_type = tags[ti].type_index;
+                if (ti_type >= resolver.func_types.len) return error.InvalidFunctionTypeIndex;
+                break :arity @intCast(resolver.func_types[ti_type].params().len);
+            } else 0;
+            try handlers_list.append(arena_allocator, .{
+                .kind = h.kind,
+                .tag_index = h.tag_index,
+                .depth = h.depth,
+                .tag_arity = tag_arity,
+            });
+        }
+        const block_type: ?lower_mod.BlockType = if (info.block_type) |bt|
+            // Use the same conversion as block/loop/if.
+            // empty_block_type → null (void), otherwise the concrete ValType.
+            try translate_mod.wasmBlockTypeFromType(bt)
+        else
+            null;
+        break :blk .{ .try_table = .{
+            .block_type = block_type,
+            .handlers = handlers_list.items,
+        } };
+    } else try translate_mod.operatorToWasmOp(info);
 }

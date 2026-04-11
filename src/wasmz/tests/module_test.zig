@@ -161,6 +161,8 @@ test "compileFunctionBody rejects simd when disabled" {
             .import_type_indices = &.{},
             .import_count = 0,
         },
+        &.{},
+        .none,
     ));
 }
 
@@ -182,5 +184,7 @@ test "compileFunctionBody rejects relaxed simd when disabled" {
             .import_type_indices = &.{},
             .import_count = 0,
         },
+        &.{},
+        .none,
     ));
 }

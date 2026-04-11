@@ -54,6 +54,14 @@ pub const RefType = struct {
         return init(true, .NoExtern);
     }
 
+    pub fn exnref() RefType {
+        return init(true, .Exn);
+    }
+
+    pub fn nullexnref() RefType {
+        return init(true, .NoExn);
+    }
+
     pub fn isSubtypeOf(self: RefType, other: RefType) bool {
         if (!self.isHeapSubtypeOf(other.heap_type)) {
             return false;

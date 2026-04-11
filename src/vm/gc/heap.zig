@@ -12,6 +12,7 @@ const StorageType = core.StorageType;
 const StructType = core.StructType;
 const ArrayType = core.ArrayType;
 const GcHeader = @import("./header.zig").GcHeader;
+const GcKind = @import("./header.zig").GcKind;
 const StructLayout = @import("./layout.zig").StructLayout;
 const ArrayLayout = @import("./layout.zig").ArrayLayout;
 
@@ -451,6 +452,64 @@ pub const GcHeap = struct {
         }) catch {};
     }
 
+    // ── Exception object helpers ────────────────────────────────────────────────
+    //
+    // Exception object layout on the heap (all fields little-endian):
+    //   Offset  0: GcHeader (8 bytes) — kind_bits=GcKind.Exception, type_index=tag_index
+    //   Offset  8: u32 arg_count
+    //   Offset 12: u32 _pad (reserved, must be 0)
+    //   Offset 16: RawVal[arg_count]  (each RawVal = 16 bytes)
+
+    pub const EXCEPTION_ARGS_OFFSET: u32 = 16;
+
+    /// Allocate an exception object for the given tag and argument values.
+    /// Returns a GcRef pointing to the new object, or null on OOM.
+    pub fn allocException(self: *Self, tag_index: u32, args: []const RawVal) ?GcRef {
+        const n: u32 = @intCast(args.len);
+        const total: u32 = EXCEPTION_ARGS_OFFSET + n * @sizeOf(RawVal);
+        const ref = self.alloc(total) orelse return null;
+
+        // Write header
+        const hdr = self.getHeader(ref);
+        hdr.kind_bits = GcKind.Exception;
+        hdr.type_index = tag_index;
+
+        // Write arg_count
+        const base = ref.asHeapIndex().?;
+        std.mem.writeInt(u32, self.bytes[base + 8 ..][0..4], n, .little);
+        // Padding
+        std.mem.writeInt(u32, self.bytes[base + 12 ..][0..4], 0, .little);
+
+        // Write arg values
+        for (args, 0..) |val, i| {
+            const off = EXCEPTION_ARGS_OFFSET + @as(u32, @intCast(i)) * @sizeOf(RawVal);
+            std.mem.writeInt(u64, self.bytes[base + off ..][0..8], val.low64, .little);
+            std.mem.writeInt(u64, self.bytes[base + off + 8 ..][0..8], val.high64, .little);
+        }
+
+        return ref;
+    }
+
+    /// Return the tag index of an exception object.
+    pub fn exceptionTagIndex(self: Self, ref: GcRef) u32 {
+        return self.getHeader(ref).type_index;
+    }
+
+    /// Return the number of arguments stored in an exception object.
+    pub fn exceptionArgCount(self: Self, ref: GcRef) u32 {
+        const base = ref.asHeapIndex().?;
+        return std.mem.readInt(u32, self.bytes[base + 8 ..][0..4], .little);
+    }
+
+    /// Return the i-th argument of an exception object.
+    pub fn exceptionArg(self: Self, ref: GcRef, i: u32) RawVal {
+        const base = ref.asHeapIndex().?;
+        const off = EXCEPTION_ARGS_OFFSET + i * @sizeOf(RawVal);
+        const low = std.mem.readInt(u64, self.bytes[base + off ..][0..8], .little);
+        const high = std.mem.readInt(u64, self.bytes[base + off + 8 ..][0..8], .little);
+        return .{ .low64 = low, .high64 = high };
+    }
+
     /// GC entry point - performs mark-and-sweep collection.
     ///
     /// Parameters:
@@ -490,6 +549,25 @@ pub const GcHeap = struct {
             const obj_idx = worklist.pop().?;
             const hdr = self.header(obj_idx);
             const type_index = hdr.type_index;
+
+            // Exception objects: trace all RawVal args that contain GC references.
+            if ((hdr.kind_bits & ~GcKind.MARK_BIT) == GcKind.Exception) {
+                const base_ref = GcRef.fromHeapIndex(obj_idx);
+                const arg_count = self.exceptionArgCount(base_ref);
+                for (0..arg_count) |ai| {
+                    const arg = self.exceptionArg(base_ref, @intCast(ai));
+                    const child_ref = GcRef.encode(@as(u32, @truncate(arg.low64)));
+                    if (child_ref.isHeapRef()) {
+                        const child_idx = child_ref.asHeapIndex().?;
+                        const child_hdr = self.header(child_idx);
+                        if (!child_hdr.isMarked()) {
+                            child_hdr.setMark();
+                            worklist.append(self.allocator, child_idx) catch {};
+                        }
+                    }
+                }
+                continue;
+            }
 
             // Only user-defined composite types carry child references we need to trace.
             // Abstract heap types (i31, extern, func, …) have no children.

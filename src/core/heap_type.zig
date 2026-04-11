@@ -11,6 +11,8 @@ pub const HeapType = enum(u32) {
     Struct = 7,
     Array = 8,
     None = 9,
+    Exn = 10,
+    NoExn = 11,
     _,
 
     // Check if it is a user-defined concrete type
