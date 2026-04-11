@@ -92,6 +92,19 @@ pub const ImportedFuncDef = struct {
     type_index: u32,
 };
 
+/// Metadata for a single imported global variable, extracted from the Wasm Import Section.
+/// The module_name / global_name slices are owned by the Module allocator.
+pub const ImportedGlobalDef = struct {
+    /// The module namespace string (e.g. "env").
+    module_name: []const u8,
+    /// The global name within that namespace.
+    global_name: []const u8,
+    /// Value type of the global.
+    val_type: ValType,
+    /// Whether the global is mutable.
+    mutability: Mutability,
+};
+
 /// Global variable compilation result, including mutability and the initial value evaluated from constant expressions.
 /// For simple const exprs (i32.const, ref.null, etc.) the value is pre-computed at compile time.
 /// For GC const exprs (struct.new, array.new_fixed, etc.) the value cannot be evaluated until
@@ -195,6 +208,9 @@ pub const Module = struct {
     /// Metadata for each imported function in the order they appear in the Import Section.
     /// Length == number of imported functions == offset of first local function in `functions`.
     imported_funcs: []ImportedFuncDef,
+    /// Metadata for each imported global in the order they appear in the Import Section.
+    /// global.get in constant expressions can only reference these imported globals.
+    imported_globals: []ImportedGlobalDef,
     /// Tables: each entry is an owned slice of function indices (func_idx) for that table.
     /// tables[t][i] gives the func_idx stored at position i in table t.
     /// Populated from active externval element segments.
@@ -286,6 +302,16 @@ pub const Module = struct {
                 allocator.free(def.func_name);
             }
             imported_funcs_list.deinit(allocator);
+        }
+
+        // Temporary list of imported global definitions collected during the first pass.
+        var imported_globals_list: std.ArrayListUnmanaged(ImportedGlobalDef) = .empty;
+        errdefer {
+            for (imported_globals_list.items) |def| {
+                allocator.free(def.module_name);
+                allocator.free(def.global_name);
+            }
+            imported_globals_list.deinit(allocator);
         }
 
         var globals_list: std.ArrayListUnmanaged(GlobalInit) = .empty;
@@ -415,6 +441,27 @@ pub const Module = struct {
                             .module_name = mod_name,
                             .func_name = fn_name,
                             .type_index = type_idx,
+                        });
+                    } else if (entry.kind == .global) {
+                        const global_typ = if (entry.typ) |t| switch (t) {
+                            .global => |g| g,
+                            else => return error.UnsupportedFunctionType,
+                        } else return error.UnsupportedFunctionType;
+                        const val_type = try translate_mod.wasmValTypeFromType(global_typ.content_type);
+                        const mutability: Mutability = switch (global_typ.mutability) {
+                            0 => .Const,
+                            1 => .Var,
+                            else => return error.InvalidMutability,
+                        };
+                        const mod_name = try allocator.dupe(u8, entry.module);
+                        errdefer allocator.free(mod_name);
+                        const global_name = try allocator.dupe(u8, entry.field);
+                        errdefer allocator.free(global_name);
+                        try imported_globals_list.append(allocator, .{
+                            .module_name = mod_name,
+                            .global_name = global_name,
+                            .val_type = val_type,
+                            .mutability = mutability,
                         });
                     }
                 },
@@ -654,6 +701,7 @@ pub const Module = struct {
         }
 
         const imported_funcs = try imported_funcs_list.toOwnedSlice(allocator);
+        const imported_globals = try imported_globals_list.toOwnedSlice(allocator);
 
         // ── Build tables slice from tables_lists ──────────────────────────────
         // Convert ArrayListUnmanaged(ArrayListUnmanaged(u32)) -> [][]u32.
@@ -733,6 +781,7 @@ pub const Module = struct {
             .memory = memory,
             .start_function = start_function,
             .imported_funcs = imported_funcs,
+            .imported_globals = imported_globals,
             .tables = tables,
             .func_type_indices = func_type_indices,
             .data_segments = data_segments,
@@ -761,6 +810,12 @@ pub const Module = struct {
             self.allocator.free(def.func_name);
         }
         self.allocator.free(self.imported_funcs);
+
+        for (self.imported_globals) |def| {
+            self.allocator.free(def.module_name);
+            self.allocator.free(def.global_name);
+        }
+        self.allocator.free(self.imported_globals);
 
         for (self.tables) |t| {
             self.allocator.free(t);
@@ -917,7 +972,7 @@ pub const Module = struct {
     /// Constant expressions are restricted instruction sequences in the Wasm specification, allowing only:
     ///   - i32.const / i64.const / f32.const / f64.const
     ///   - ref.null
-    ///   - TODO: (Post-MVP) global.get (only for imported globals)
+    ///   - global.get (only for imported globals; deferred to runtime via UnsupportedConstExpr)
     /// The expression must end with an end instruction.
     ///
     /// expected_type determines how to interpret the literal in the bytecode.
@@ -932,8 +987,11 @@ pub const Module = struct {
         cursor += init.consumed;
 
         const value = switch (expected_type) {
-            .I32, .I64, .F32, .F64 => utils_parse.parseConstLiteral(init.info) catch
-                return error.UnsupportedConstExpr,
+            .I32, .I64, .F32, .F64 => {
+                // global.get in a const expr defers to runtime (only imported globals are valid).
+                if (init.info.code == .global_get) return error.UnsupportedConstExpr;
+                return utils_parse.parseConstLiteral(init.info) catch error.UnsupportedConstExpr;
+            },
             .Ref => |ref_ty| switch (ref_ty.heap_type) {
                 // All null references use the unified sentinel: low64 == 0.
                 // funcref non-null values are encoded as func_idx+1 so that
