@@ -24,7 +24,7 @@ pub const Imports = Linker;
 pub const HostContext = @import("wasmz/host.zig").HostContext;
 pub const HostError = @import("wasmz/host.zig").HostError;
 pub const HostFunc = @import("wasmz/host.zig").HostFunc;
-pub const HostInstance = @import("wasmz/host.zig").HostInstance;
+pub const ArcModule = @import("wasmz/instance.zig").ArcModule;
 pub const Trap = @import("wasmz/instance.zig").Trap;
 pub const TrapCode = @import("wasmz/instance.zig").TrapCode;
 

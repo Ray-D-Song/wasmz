@@ -161,11 +161,14 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     };
     defer engine.deinit();
 
-    var module = Module.compile(engine, bytes) catch |err| {
+    var arc_module = Module.compileArc(engine, bytes) catch |err| {
         std.debug.print("error: Failed to compile {s}: {s}\n", .{ file_path, @errorName(err) });
         std.process.exit(1);
     };
-    defer module.deinit();
+    defer if (arc_module.releaseUnwrap()) |m| {
+        var mod = m;
+        mod.deinit();
+    };
 
     var store = try Store.init(allocator, engine);
     defer store.deinit();
@@ -184,10 +187,10 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     ));
     defer linker.deinit(allocator);
 
-    var instance = Instance.init(&store, &module, linker) catch |err| {
+    var instance = Instance.init(&store, arc_module.retain(), linker) catch |err| {
         if (err == error.ImportNotSatisfied) {
             std.debug.print("error: Failed to instantiate module: the following imports are not satisfied:\n", .{});
-            for (module.imported_funcs) |def| {
+            for (arc_module.value.imported_funcs) |def| {
                 if (linker.get(def.module_name, def.func_name) == null) {
                     std.debug.print("  - {s}::{s}\n", .{ def.module_name, def.func_name });
                 }
@@ -214,7 +217,7 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     }
 
     if (cli_args.func_name == null) {
-        if (module.exports.get("_start")) |_| {
+        if (arc_module.value.exports.get("_start")) |_| {
             const result = instance.call("_start", &.{}) catch |err| {
                 std.debug.print("error: Failed to call _start: {s}\n", .{@errorName(err)});
                 std.process.exit(1);
@@ -231,12 +234,12 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
             return;
         }
 
-        if (module.exports.count() == 0) {
+        if (arc_module.value.exports.count() == 0) {
             try stdout.writeAll("(module has no exported functions)\n");
             return;
         }
         try stdout.writeAll("Exported functions:\n");
-        var iter = module.exports.iterator();
+        var iter = arc_module.value.exports.iterator();
         while (iter.next()) |entry| {
             try stdout.print("  {s}\n", .{entry.key_ptr.*});
         }

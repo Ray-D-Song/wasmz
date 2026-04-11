@@ -19,6 +19,7 @@ const utils_parse = @import("../utils/parse.zig");
 const Allocator = std.mem.Allocator;
 const Store = store_mod.Store;
 const Module = module_mod.Module;
+pub const ArcModule = module_mod.ArcModule;
 const Global = core.Global;
 const GlobalType = core.GlobalType;
 const Memory = core.Memory;
@@ -55,9 +56,9 @@ pub const InstanceError = Allocator.Error || error{
 
 pub const Instance = struct {
     store: *Store,
-    /// Read-only module reference; the caller is responsible for ensuring the Module remains valid for the lifetime of the Instance.
-    /// TODO: Upgrade to Arc(Module) to support multiple Instances sharing the same Module.
-    module: *const Module,
+    /// Reference-counted module handle; the Instance owns one strong reference.
+    /// The underlying Module is freed when the last Instance (or ArcModule handle) is released.
+    module: ArcModule,
     /// Runtime globals, copied and initialized from module.globals.
     globals: []Global,
     /// Linear memory, either exclusively owned or shared across instances (Threads proposal).
@@ -80,7 +81,12 @@ pub const Instance = struct {
     ///   module  — A compiled read-only Module (the caller is responsible for its lifetime).
     ///   imports — Host-provided functions satisfying the module's imports.
     ///             Pass `Imports.empty` for modules with no imports.
-    pub fn init(store: *Store, module: *const Module, imports: Linker) InstanceError!Instance {
+    /// Instantiate a Module from an `ArcModule` handle.
+    ///
+    /// The Instance takes ownership of one strong reference (i.e., the caller should
+    /// pass `arc.retain()` or move the arc in).  The reference is released in `deinit`.
+    pub fn init(store: *Store, arc: ArcModule, imports: Linker) InstanceError!Instance {
+        const module = arc.value;
         const allocator = store.allocator;
 
         // ── 0. resolve imported global values ───────────────────────────────────
@@ -181,7 +187,7 @@ pub const Instance = struct {
 
         return .{
             .store = store,
-            .module = module,
+            .module = arc,
             .globals = globals,
             .memory = mem,
             .host_funcs = host_funcs,
@@ -211,10 +217,11 @@ pub const Instance = struct {
     /// last reference is dropped.
     pub fn initWithSharedMemory(
         store: *Store,
-        module: *const Module,
+        arc: ArcModule,
         imports: Linker,
         shared: SharedMemory,
     ) InstanceError!Instance {
+        const module = arc.value;
         const allocator = store.allocator;
 
         // ── Validate that the module declares a shared memory ──────────────────
@@ -303,7 +310,7 @@ pub const Instance = struct {
 
         return .{
             .store = store,
-            .module = module,
+            .module = arc,
             .globals = globals,
             .memory = mem,
             .host_funcs = host_funcs,
@@ -321,6 +328,11 @@ pub const Instance = struct {
         allocator.free(self.data_segments_dropped);
         allocator.free(self.elem_segments_dropped);
         self.store.unregisterInstance();
+        // Release our strong reference; call Module.deinit() if we were the last holder.
+        if (self.module.releaseUnwrap()) |m| {
+            var mod = m;
+            mod.deinit();
+        }
         self.* = undefined;
     }
 
@@ -328,23 +340,24 @@ pub const Instance = struct {
         // Ensure host_view.memory always points to the Instance's own memory
         // field (not a stale local from init).
         self.host_view.memory = &self.memory;
+        const m = self.module.value;
         return .{
             .store = self.store,
             .host_instance = &self.host_view,
             .globals = self.globals,
             .memory = &self.memory,
-            .functions = self.module.functions,
+            .functions = m.functions,
             .host_funcs = self.host_funcs,
-            .tables = self.module.tables,
-            .func_type_indices = self.module.func_type_indices,
-            .data_segments = self.module.data_segments,
+            .tables = m.tables,
+            .func_type_indices = m.func_type_indices,
+            .data_segments = m.data_segments,
             .data_segments_dropped = self.data_segments_dropped,
-            .elem_segments = self.module.elem_segments,
+            .elem_segments = m.elem_segments,
             .elem_segments_dropped = self.elem_segments_dropped,
-            .composite_types = self.module.composite_types,
-            .struct_layouts = self.module.struct_layouts,
-            .array_layouts = self.module.array_layouts,
-            .type_ancestors = self.module.type_ancestors,
+            .composite_types = m.composite_types,
+            .struct_layouts = m.struct_layouts,
+            .array_layouts = m.array_layouts,
+            .type_ancestors = m.type_ancestors,
         };
     }
 
@@ -360,12 +373,13 @@ pub const Instance = struct {
     ///   ExecResult.ok(val)       — Normal execution completed, val is the return value (null for void functions)
     ///   ExecResult.trap(trap)    — Wasm runtime trap (e.g., out-of-bounds memory access)
     pub fn call(self: *Instance, name: []const u8, args: []const RawVal) (Allocator.Error || error{ ExportNotFound, ExportNotCallable })!ExecResult {
-        const export_entry = self.module.exports.get(name) orelse return error.ExportNotFound;
+        const m = self.module.value;
+        const export_entry = m.exports.get(name) orelse return error.ExportNotFound;
         const func_index = switch (export_entry) {
             .function_index => |idx| idx,
             else => return error.ExportNotCallable,
         };
-        const func = self.module.functions[func_index];
+        const func = m.functions[func_index];
         var vm = VM.init(self.store.allocator);
         return vm.execute(func, args, self.execEnv());
     }
@@ -376,8 +390,9 @@ pub const Instance = struct {
     /// module-level initialization (e.g. Kotlin's _initializeModule which sets up
     /// string pools and field data).  Returns null if there is no start function.
     pub fn runStartFunction(self: *Instance) Allocator.Error!?ExecResult {
-        const start_idx = self.module.start_function orelse return null;
-        const func = self.module.functions[start_idx];
+        const m = self.module.value;
+        const start_idx = m.start_function orelse return null;
+        const func = m.functions[start_idx];
         var vm = VM.init(self.store.allocator);
         return try vm.execute(func, &.{}, self.execEnv());
     }

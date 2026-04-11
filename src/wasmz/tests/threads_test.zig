@@ -47,6 +47,7 @@ const core = @import("core");
 
 const Store = store_mod.Store;
 const Module = module_mod.Module;
+const ArcModule = module_mod.ArcModule;
 const Instance = instance_mod.Instance;
 const Linker = instance_mod.Linker;
 const RawVal = instance_mod.RawVal;
@@ -104,8 +105,11 @@ test "multi-thread: shared memory wait/notify round-trip via Wasm instance" {
     defer engine.deinit();
 
     // Compile the threaded module once; both instances share a Module reference.
-    var module = try Module.compile(engine, &THREADED_WASM);
-    defer module.deinit();
+    var arc = try Module.compileArc(engine, &THREADED_WASM);
+    defer if (arc.releaseUnwrap()) |m| {
+        var mm = m;
+        mm.deinit();
+    };
 
     // Create a single SharedMemory to be shared by both instances.
     // The module declares min=1 max=2 shared, so capacity must be >= 2 pages.
@@ -115,13 +119,13 @@ test "multi-thread: shared memory wait/notify round-trip via Wasm instance" {
     // ── Store A (waiter thread) ───────────────────────────────────────────────
     var store_a = try Store.init(allocator, engine);
     defer store_a.deinit();
-    var instance_a = try Instance.initWithSharedMemory(&store_a, &module, Linker.empty, shared);
+    var instance_a = try Instance.initWithSharedMemory(&store_a, arc.retain(), Linker.empty, shared);
     defer instance_a.deinit();
 
     // ── Store B (main thread notifier) ────────────────────────────────────────
     var store_b = try Store.init(allocator, engine);
     defer store_b.deinit();
-    var instance_b = try Instance.initWithSharedMemory(&store_b, &module, Linker.empty, shared);
+    var instance_b = try Instance.initWithSharedMemory(&store_b, arc.retain(), Linker.empty, shared);
     defer instance_b.deinit();
 
     // ── Spawn waiter thread ───────────────────────────────────────────────────
@@ -173,8 +177,11 @@ test "memory.size returns current page count" {
     var engine = try engine_mod.Engine.init(allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var module = try Module.compile(engine, &THREADED_WASM);
-    defer module.deinit();
+    var arc = try Module.compileArc(engine, &THREADED_WASM);
+    defer if (arc.releaseUnwrap()) |m| {
+        var mm = m;
+        mm.deinit();
+    };
 
     var shared = try SharedMemory.init(allocator, 1, 2);
     defer shared.deinit();
@@ -182,7 +189,7 @@ test "memory.size returns current page count" {
     var store = try Store.init(allocator, engine);
     defer store.deinit();
 
-    var instance = try Instance.initWithSharedMemory(&store, &module, Linker.empty, shared);
+    var instance = try Instance.initWithSharedMemory(&store, arc.retain(), Linker.empty, shared);
     defer instance.deinit();
 
     // Verify we started with 1 page.
