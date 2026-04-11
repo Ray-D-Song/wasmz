@@ -1367,7 +1367,10 @@ pub const Parser = struct {
         const super_count = self.read_var_uint32();
         const super_types = try self.allocator.alloc(HeapType, @intCast(super_count));
         for (super_types) |*super_type| {
-            super_type.* = self.readHeapTypeInternal();
+            // Supertype entries are typeidx (u32), not general heap types.
+            // Using readHeapTypeInternal would interpret a type index like 69 (0x45)
+            // as an s7 signed value (-59) and panic in parse_type_kind.
+            super_type.* = .{ .index = self.read_var_uint32() };
         }
         var result = try self.read_base_type();
         result.final = is_final;
@@ -2180,7 +2183,13 @@ pub const Parser = struct {
                 if (!self.has_var_int_bytes()) return error.NeedMoreData;
                 info.table_index = self.read_var_uint32();
             },
-            .call_ref, .return_call_ref => info.type_index = try self.read_heap_type_checked(),
+            .call_ref, .return_call_ref => {
+                // Operand is typeidx (u32), not a general heap type.
+                // Using read_heap_type_checked here would interpret a multi-byte typeidx
+                // (e.g. 0xc4 0x...) as a signed s7/s33 value and panic in parse_type_kind.
+                if (!self.has_var_int_bytes()) return error.NeedMoreData;
+                info.type_index = .{ .index = self.read_var_uint32() };
+            },
             .i32_load,
             .i64_load,
             .f32_load,
@@ -2424,7 +2433,11 @@ pub const Parser = struct {
         if (!self.has_var_int_bytes()) return false;
         const super_count = self.read_var_uint32();
         for (0..super_count) |_| {
-            if (self.skip_heap_type() == null) return false;
+            // Supertype entries are typeidx (u32), not heap types.
+            // Using skip_heap_type here would interpret a valid type index
+            // like 69 (0x45) as an s7 value (-59) and panic in parse_type_kind.
+            if (!self.has_var_int_bytes()) return false;
+            _ = self.read_var_uint32();
         }
         return self.skip_base_type();
     }
@@ -2698,41 +2711,10 @@ pub const Parser = struct {
     }
 
     fn skip_init_expr(self: *Parser) bool {
-        while (true) {
-            if (!self.has_bytes(1)) return false;
-            const opcode = self.read_u8();
-            switch (opcode) {
-                0x0b => return true, // end
-                0x23 => { // global.get
-                    if (!self.has_var_int_bytes()) return false;
-                    _ = self.read_var_uint32();
-                },
-                0x41 => { // i32.const
-                    if (!self.has_var_int_bytes()) return false;
-                    _ = self.read_var_int32();
-                },
-                0x42 => { // i64.const
-                    if (!self.has_var_int_bytes()) return false;
-                    _ = self.read_var_int64();
-                },
-                0x43 => { // f32.const
-                    if (!self.has_bytes(4)) return false;
-                    _ = self.read_bytes(4);
-                },
-                0x44 => { // f64.const
-                    if (!self.has_bytes(8)) return false;
-                    _ = self.read_bytes(8);
-                },
-                0xd0 => { // ref.null
-                    if (self.skip_heap_type() == null) return false;
-                },
-                0xd2 => { // ref.func
-                    if (!self.has_var_int_bytes()) return false;
-                    _ = self.read_var_uint32();
-                },
-                else => std.debug.panic("Unsupported init expr opcode: 0x{x}", .{opcode}),
-            }
-        }
+        // Reuse readCodeOperator so that all supported opcodes (including GC 0xfb prefix)
+        // are handled consistently without duplicating the operand-size logic here.
+        self.readCodeOperator(.expression) catch return false;
+        return true;
     }
 
     fn skip_table_type(self: *Parser) bool {
