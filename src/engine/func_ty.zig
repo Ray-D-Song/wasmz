@@ -53,11 +53,10 @@ pub const FuncTypeRegistry = struct {
         self.* = undefined;
     }
 
-    fn cloneFuncType(self: *const Self, func_type: FuncType) Allocator.Error!FuncType {
-        return FuncType.init(self.allocator, func_type.params(), func_type.results()) catch |err| switch (err) {
-            error.OutOfMemory => error.OutOfMemory,
-            else => unreachable,
-        };
+    fn cloneFuncType(_: *const Self, func_type: FuncType) Allocator.Error!FuncType {
+        // retain() shares the underlying buffer for heap-allocated types (no allocation),
+        // or simply copies the inline data for small types.
+        return func_type.retain();
     }
 
     fn unwrapOrPanic(self: *const Self, owned: EngineOwned(u32)) u32 {

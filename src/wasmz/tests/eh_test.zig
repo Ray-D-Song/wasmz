@@ -14,10 +14,18 @@ const core = @import("core");
 
 const Store = store_mod.Store;
 const Module = module_mod.Module;
+const ArcModule = module_mod.ArcModule;
 const Instance = instance_mod.Instance;
 const Linker = host_mod.Linker;
 const RawVal = vm_mod.RawVal;
 const TrapCode = vm_mod.TrapCode;
+
+fn releaseArc(arc: ArcModule) void {
+    if (arc.releaseUnwrap()) |m| {
+        var mm = m;
+        mm.deinit();
+    }
+}
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -48,10 +56,10 @@ test "EH new: try_table catches thrown exception and returns payload" {
     var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
-    var module = try Module.compile(engine, eh_new_catch_wasm);
-    defer module.deinit();
+    var arc = try Module.compileArc(engine, eh_new_catch_wasm);
+    defer releaseArc(arc);
 
-    var instance = try Instance.init(&store, &module, Linker.empty);
+    var instance = try Instance.init(&store, arc.retain(), Linker.empty);
     defer instance.deinit();
 
     const exec_r = try instance.call("run", &.{});
@@ -66,10 +74,10 @@ test "EH new: throw_ref rethrows exception causing UnhandledException trap" {
     var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
-    var module = try Module.compile(engine, eh_new_throw_ref_wasm);
-    defer module.deinit();
+    var arc = try Module.compileArc(engine, eh_new_throw_ref_wasm);
+    defer releaseArc(arc);
 
-    var instance = try Instance.init(&store, &module, Linker.empty);
+    var instance = try Instance.init(&store, arc.retain(), Linker.empty);
     defer instance.deinit();
 
     const exec_r = try instance.call("run", &.{});
@@ -91,10 +99,10 @@ test "EH legacy: try/catch catches thrown exception and returns payload" {
     var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
-    var module = try Module.compile(engine, eh_legacy_catch_wasm);
-    defer module.deinit();
+    var arc = try Module.compileArc(engine, eh_legacy_catch_wasm);
+    defer releaseArc(arc);
 
-    var instance = try Instance.init(&store, &module, Linker.empty);
+    var instance = try Instance.init(&store, arc.retain(), Linker.empty);
     defer instance.deinit();
 
     const exec_r = try instance.call("run", &.{});
@@ -109,10 +117,10 @@ test "EH legacy: try/catch_all catches any exception and returns constant" {
     var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
-    var module = try Module.compile(engine, eh_legacy_catch_all_wasm);
-    defer module.deinit();
+    var arc = try Module.compileArc(engine, eh_legacy_catch_all_wasm);
+    defer releaseArc(arc);
 
-    var instance = try Instance.init(&store, &module, Linker.empty);
+    var instance = try Instance.init(&store, arc.retain(), Linker.empty);
     defer instance.deinit();
 
     const exec_r = try instance.call("run", &.{});
@@ -127,10 +135,10 @@ test "EH legacy: rethrow propagates exception to outer catch" {
     var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
-    var module = try Module.compile(engine, eh_legacy_rethrow_wasm);
-    defer module.deinit();
+    var arc = try Module.compileArc(engine, eh_legacy_rethrow_wasm);
+    defer releaseArc(arc);
 
-    var instance = try Instance.init(&store, &module, Linker.empty);
+    var instance = try Instance.init(&store, arc.retain(), Linker.empty);
     defer instance.deinit();
 
     const exec_r = try instance.call("run", &.{});
@@ -145,10 +153,10 @@ test "EH new: catch_ref delivers [payload, exnref] into multi-value block, drop 
     var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
-    var module = try Module.compile(engine, eh_new_catch_ref_wasm);
-    defer module.deinit();
+    var arc = try Module.compileArc(engine, eh_new_catch_ref_wasm);
+    defer releaseArc(arc);
 
-    var instance = try Instance.init(&store, &module, Linker.empty);
+    var instance = try Instance.init(&store, arc.retain(), Linker.empty);
     defer instance.deinit();
 
     const exec_r = try instance.call("run", &.{});

@@ -172,10 +172,24 @@ test "preview1 linker only registers implemented imports" {
         0x0b,
     };
 
-    var module = try wasmz.Module.compile(engine, &wasm);
-    defer module.deinit();
+    var arc = try wasmz.Module.compileArc(engine, &wasm);
+    defer if (arc.releaseUnwrap()) |m| {
+        var mm = m;
+        mm.deinit();
+    };
 
-    try testing.expectError(error.ImportNotSatisfied, wasmz.Instance.init(&store, &module, linker));
+    const result = blk: {
+        const retained = arc.retain();
+        const r = wasmz.Instance.init(&store, retained, linker);
+        if (r) |_| {} else |_| {
+            if (retained.releaseUnwrap()) |m| {
+                var mm = m;
+                mm.deinit();
+            }
+        }
+        break :blk r;
+    };
+    try testing.expectError(error.ImportNotSatisfied, result);
 }
 
 test "preview1 file operations" {

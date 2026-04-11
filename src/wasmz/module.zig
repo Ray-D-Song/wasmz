@@ -8,6 +8,7 @@
 ///   3. Compile each function body into internal IR (CompiledFunction) using Lower. (loop 2)
 ///   4. Assemble all compiled results into a Module for VM instantiation and execution.
 const std = @import("std");
+const zigrc = @import("zigrc");
 const parser_mod = @import("parser");
 const payload_mod = @import("payload");
 const engine_mod = @import("../engine/root.zig");
@@ -795,6 +796,18 @@ pub const Module = struct {
         };
     }
 
+    /// Compile and wrap the module in an `ArcModule`.
+    ///
+    /// Convenience wrapper: equivalent to
+    ///   `ArcModule.init(allocator, try Module.compile(engine, bytes))`
+    /// but handles the error path so that the Module is properly deinited on
+    /// allocation failure.
+    pub fn compileArc(engine: Engine, bytes: []const u8) (ModuleCompileError || std.mem.Allocator.Error)!ArcModule {
+        var m = try compile(engine, bytes);
+        errdefer m.deinit();
+        return ArcModule.init(engine.allocator(), m);
+    }
+
     pub fn deinit(self: *Module) void {
         deinit_functions(self.allocator, self.functions);
         self.allocator.free(self.functions);
@@ -1033,6 +1046,17 @@ pub const Module = struct {
         return std.math.cast(u32, locals_count) orelse error.InvalidLocalCount;
     }
 };
+
+/// A reference-counted, thread-safe handle to a compiled `Module`.
+///
+/// Multiple `Instance` values can share the same `Module` without manual lifetime management.
+/// Cloning increments the refcount; `release` decrements it and frees the module when it reaches zero.
+///
+/// Usage:
+///   var arc = try ArcModule.init(allocator, try Module.compile(engine, bytes));
+///   defer arc.release();
+///   var instance = try Instance.init(&store, arc.retain(), linker);
+pub const ArcModule = zigrc.Arc(Module);
 
 /// Function type resolver: look up function signatures (parameter count, return count) by func_idx.
 ///

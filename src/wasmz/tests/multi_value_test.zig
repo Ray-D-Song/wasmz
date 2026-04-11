@@ -13,6 +13,7 @@ const vm_mod = @import("../../vm/root.zig");
 
 const Store = store_mod.Store;
 const Module = module_mod.Module;
+const ArcModule = module_mod.ArcModule;
 const Instance = instance_mod.Instance;
 const Linker = host_mod.Linker;
 const RawVal = vm_mod.RawVal;
@@ -31,10 +32,13 @@ test "multi-value block: block yields two i32 values that are then added" {
     var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
-    var module = try Module.compile(engine, multi_value_block_wasm);
-    defer module.deinit();
+    var arc = try Module.compileArc(engine, multi_value_block_wasm);
+    defer if (arc.releaseUnwrap()) |m| {
+        var mm = m;
+        mm.deinit();
+    };
 
-    var instance = try Instance.init(&store, &module, Linker.empty);
+    var instance = try Instance.init(&store, arc.retain(), Linker.empty);
     defer instance.deinit();
 
     // block pushes (10, 32) onto the stack; i32.add produces 42.
