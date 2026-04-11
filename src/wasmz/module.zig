@@ -627,6 +627,7 @@ pub const Module = struct {
                     functions[function_index] = compileFunctionBody(
                         allocator,
                         reserved_slots,
+                        func_type.results().len,
                         info.body,
                         engine.config().*,
                         resolver,
@@ -1022,6 +1023,7 @@ pub const FuncTypeResolver = struct {
 pub fn compileFunctionBody(
     allocator: Allocator,
     reserved_slots: u32,
+    n_results: usize,
     body: []const u8,
     config: EngineConfig,
     resolver: FuncTypeResolver,
@@ -1029,15 +1031,16 @@ pub fn compileFunctionBody(
     eh_mode: EHMode,
 ) ModuleCompileError!CompiledFunction {
     if (eh_mode == .legacy) {
-        return compileFunctionBodyLegacy(allocator, reserved_slots, body, config, resolver, tags);
+        return compileFunctionBodyLegacy(allocator, reserved_slots, n_results, body, config, resolver, tags);
     }
-    return compileFunctionBodyNew(allocator, reserved_slots, body, config, resolver, tags);
+    return compileFunctionBodyNew(allocator, reserved_slots, n_results, body, config, resolver, tags);
 }
 
 /// Compile a function body using the new EH proposal (try_table / throw / throw_ref).
 fn compileFunctionBodyNew(
     allocator: Allocator,
     reserved_slots: u32,
+    n_results: usize,
     body: []const u8,
     config: EngineConfig,
     resolver: FuncTypeResolver,
@@ -1049,6 +1052,11 @@ fn compileFunctionBodyNew(
     var lower = Lower.initWithReservedSlots(allocator, reserved_slots);
     lower.composite_types = resolver.composite_types;
     errdefer lower.deinit();
+
+    // Push the implicit function-level block frame so that `br depth` targeting
+    // the function body (e.g. `br 0` at top-level) resolves correctly instead
+    // of triggering ControlStackUnderflow.
+    try lower.pushFunctionFrame(n_results);
 
     var cursor: usize = 0;
     while (cursor < body.len) {
@@ -1081,6 +1089,7 @@ fn compileFunctionBodyNew(
 fn compileFunctionBodyLegacy(
     allocator: Allocator,
     reserved_slots: u32,
+    n_results: usize,
     body: []const u8,
     config: EngineConfig,
     resolver: FuncTypeResolver,
@@ -1092,6 +1101,10 @@ fn compileFunctionBodyLegacy(
     var lower_legacy = LowerLegacy.initWithReservedSlots(allocator, reserved_slots);
     lower_legacy.inner.composite_types = resolver.composite_types;
     errdefer lower_legacy.deinit();
+
+    // Push the implicit function-level block frame (same rationale as the new path).
+    // Use the LowerLegacy wrapper so that try_states stays in sync.
+    try lower_legacy.pushFunctionFrame(n_results);
 
     var cursor: usize = 0;
     while (cursor < body.len) {

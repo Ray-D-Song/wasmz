@@ -58,6 +58,11 @@ pub const ControlFrame = struct {
     /// For try_table frames: the op-index of the `try_table_enter` op.
     /// We need it to backpatch the `end_target` field once we see `end`.
     try_table_enter_pc: ?u32 = null,
+    /// True for the implicit function-level frame pushed at the start of each
+    /// function body.  When `end` pops this frame it emits a `ret` instead of
+    /// a continuation jump, mirroring the special-case that was previously
+    /// triggered by `control_stack.len == 0`.
+    is_function_frame: bool = false,
 };
 
 // ── Input op enum ─────────────────────────────────────────────────────────────
@@ -576,6 +581,31 @@ pub const Lower = struct {
         };
     }
 
+    /// Push the implicit function-level block frame onto the control stack.
+    /// Must be called once after init, before lowering any ops.
+    /// `n_results` is the number of values this function returns (0 for void).
+    /// The frame uses `kind = .block`; `br depth` that resolves to this frame
+    /// is treated as a `return` (just like the function's final `end`).
+    pub fn pushFunctionFrame(self: *Lower, n_results: usize) !void {
+        var result_slots: std.ArrayListUnmanaged(Slot) = .empty;
+        errdefer result_slots.deinit(self.allocator);
+        // Allocate a result slot for each return value.
+        // These slots are not used for the normal fall-through `end` path
+        // (which emits `ret` directly), but `br` targeting this frame will
+        // copy its results here and then emit `ret` via the patch mechanism.
+        var i: usize = 0;
+        while (i < n_results) : (i += 1) {
+            try result_slots.append(self.allocator, self.alloc_slot());
+        }
+        try self.control_stack.append(self.allocator, .{
+            .kind = .block,
+            .stack_height = 0,
+            .result_slots = result_slots,
+            .target_pc = 0, // forward — patched when the function `end` is processed
+            .is_function_frame = true,
+        });
+    }
+
     pub fn deinit(self: *Lower) void {
         self.stack.deinit(self.allocator);
         self.compiled.ops.deinit(self.allocator);
@@ -1054,6 +1084,8 @@ pub const Lower = struct {
             .end => {
                 if (self.control_stack.items.len == 0) {
                     // The final `end` of the function body — emit return.
+                    // This path is taken only when no implicit function frame was pushed
+                    // (legacy code path kept for safety).
                     if (!was_unreachable) {
                         const value = self.stack.pop();
                         try self.emit(.{ .ret = .{ .value = value } });
@@ -1065,6 +1097,24 @@ pub const Lower = struct {
                 defer frame.patch_sites.deinit(self.allocator);
                 defer frame.result_slots.deinit(self.allocator);
                 defer frame.param_slots.deinit(self.allocator);
+
+                // ── Function-level implicit frame ─────────────────────────────
+                // When the implicit function frame is popped we emit `ret` instead
+                // of a continuation jump, exactly like the `control_stack.len == 0`
+                // path above.  Any `br` that targeted this frame already emitted a
+                // `copy` + forward `jump` that will be patched to land right here,
+                // just before the `ret`.
+                if (frame.is_function_frame) {
+                    // Patch all forward jumps (from `br depth` targeting the function
+                    // frame) to land at the upcoming `ret`.
+                    const ret_pc = self.current_pc();
+                    self.patch_forward_jumps(&frame, ret_pc);
+                    if (!was_unreachable) {
+                        const value = self.stack.pop();
+                        try self.emit(.{ .ret = .{ .value = value } });
+                    }
+                    return;
+                }
 
                 // Copy block results from the stack top into the result slots.
                 // Skip this when coming from unreachable code — the br/return already
@@ -2562,7 +2612,6 @@ pub const Lower = struct {
                 self.is_unreachable = true;
             },
 
-            // ── GC Extern/Any conversion (TODO: implement in Phase A3) ────────────────
             .any_convert_extern => {
                 const ref = try self.pop_slot();
                 const dst = self.alloc_slot();

@@ -7,12 +7,9 @@ zig-out/
 
 playgrounds/
 
-tests/**/*.wasm
 *.wat
 
 *.map
-*.js
-*.mjs
 
 .gradle
 tests/gc/build/

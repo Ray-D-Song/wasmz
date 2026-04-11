@@ -185,7 +185,16 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     defer linker.deinit(allocator);
 
     var instance = Instance.init(&store, &module, linker) catch |err| {
-        std.debug.print("error: Failed to instantiate module: {s}\n", .{@errorName(err)});
+        if (err == error.ImportNotSatisfied) {
+            std.debug.print("error: Failed to instantiate module: the following imports are not satisfied:\n", .{});
+            for (module.imported_funcs) |def| {
+                if (linker.get(def.module_name, def.func_name) == null) {
+                    std.debug.print("  - {s}::{s}\n", .{ def.module_name, def.func_name });
+                }
+            }
+        } else {
+            std.debug.print("error: Failed to instantiate module: {s}\n", .{@errorName(err)});
+        }
         std.process.exit(1);
     };
     defer instance.deinit();
