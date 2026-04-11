@@ -92,9 +92,16 @@ pub const ImportedFuncDef = struct {
 };
 
 /// Global variable compilation result, including mutability and the initial value evaluated from constant expressions.
+/// For simple const exprs (i32.const, ref.null, etc.) the value is pre-computed at compile time.
+/// For GC const exprs (struct.new, array.new_fixed, etc.) the value cannot be evaluated until
+/// instantiation time when the GC heap is available.  In that case, `init_expr` holds the raw
+/// bytecode and `value` is set to a zero/null placeholder.
 pub const GlobalInit = struct {
     mutability: Mutability,
     value: TypedRawVal,
+    /// Non-null when this global requires runtime evaluation of a GC constant expression.
+    /// The bytecode is the raw init_expr from the Wasm binary (ending with 0x0b).
+    init_expr: ?[]const u8 = null,
 };
 
 /// Linear memory definition, recording the minimum and maximum number of pages (each page is 64 KiB).
@@ -414,7 +421,7 @@ pub const Module = struct {
                 .global_variable => |entry| {
                     try globals_list.append(
                         allocator,
-                        try compile_global_init(arena.allocator(), entry),
+                        try compile_global_init(allocator, arena.allocator(), entry),
                     );
                 },
                 .memory_type => |entry| {
@@ -636,7 +643,12 @@ pub const Module = struct {
         }
 
         const globals = try globals_list.toOwnedSlice(allocator);
-        errdefer allocator.free(globals);
+        errdefer {
+            for (globals) |g| {
+                if (g.init_expr) |expr| allocator.free(expr);
+            }
+            allocator.free(globals);
+        }
 
         const imported_funcs = try imported_funcs_list.toOwnedSlice(allocator);
 
@@ -742,6 +754,9 @@ pub const Module = struct {
         self.allocator.free(self.func_types);
 
         deinit_exports(self.allocator, &self.exports);
+        for (self.globals) |g| {
+            if (g.init_expr) |expr| self.allocator.free(expr);
+        }
         self.allocator.free(self.globals);
 
         for (self.imported_funcs) |def| {
@@ -870,8 +885,13 @@ pub const Module = struct {
     ///   - typ: value type (content_type) and mutability
     ///   - init_expr: the initialization expression of the global variable, which is a sequence of raw bytecode (constant expression)
     ///
-    /// This function parses the init_expr bytecode and evaluates it (using evaluate_const_expr) to obtain the concrete initial value of the global variable.
+    /// This function first attempts to statically evaluate the init_expr using evaluate_const_expr.
+    /// If the expression contains GC instructions (struct.new, array.new_fixed, etc.) that require
+    /// heap allocation, static evaluation will fail with UnsupportedConstExpr.  In that case, the
+    /// raw init_expr bytecode is stored in GlobalInit.init_expr for deferred runtime evaluation
+    /// during instantiation (when the GC heap is available).
     fn compile_global_init(
+        allocator: Allocator,
         temp_allocator: Allocator,
         global_variable: payload_mod.GlobalVariable,
     ) ModuleCompileError!GlobalInit {
@@ -882,13 +902,25 @@ pub const Module = struct {
             else => return error.InvalidMutability,
         };
 
-        return .{
-            .mutability = mutability,
-            .value = TypedRawVal.init(
-                val_type,
-                try evaluate_const_expr(temp_allocator, global_variable.init_expr, val_type),
-            ),
-        };
+        // Try static evaluation first (works for i32.const, ref.null, etc.)
+        if (evaluate_const_expr(temp_allocator, global_variable.init_expr, val_type)) |value| {
+            return .{
+                .mutability = mutability,
+                .value = TypedRawVal.init(val_type, value),
+            };
+        } else |err| switch (err) {
+            error.UnsupportedConstExpr => {
+                // GC const expr — defer to runtime evaluation.
+                // Store a copy of the raw init_expr bytecode.
+                const expr_copy = try allocator.dupe(u8, global_variable.init_expr);
+                return .{
+                    .mutability = mutability,
+                    .value = TypedRawVal.init(val_type, RawVal.fromBits64(0)),
+                    .init_expr = expr_copy,
+                };
+            },
+            else => return err,
+        }
     }
 
     /// Evaluate a WebAssembly constant expression (init expression) and return the corresponding raw value.
