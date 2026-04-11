@@ -6,6 +6,7 @@
 const std = @import("std");
 const payload_mod = @import("payload");
 const lower_mod = @import("./lower.zig");
+const ir_mod = @import("./ir.zig");
 const core = @import("core");
 
 const OperatorInformation = payload_mod.OperatorInformation;
@@ -281,6 +282,10 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         return try simdWasmOpFromOperatorInfo(info);
     }
 
+    if (isAtomicOpcode(info.code)) {
+        return try atomicWasmOpFromOperatorInfo(info);
+    }
+
     // ── Manual mapping for operations with special payloads ───────────────────
 
     return switch (info.code) {
@@ -385,6 +390,8 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         .data_drop => WasmOp{ .data_drop = info.segment_index orelse return error.UnsupportedOperator },
         .memory_copy => WasmOp.memory_copy,
         .memory_fill => WasmOp.memory_fill,
+        .memory_size => WasmOp.memory_size,
+        .memory_grow => WasmOp.memory_grow,
 
         .return_ => WasmOp.ret,
         .select => WasmOp.select,
@@ -728,5 +735,130 @@ pub fn wasmCompositeTypeFromTypeEntry(
             } };
         },
         else => error.UnsupportedFunctionType,
+    };
+}
+
+// ── Atomic opcode helpers ─────────────────────────────────────────────────────
+
+/// Returns true if the opcode is a Wasm Threads proposal atomic instruction
+/// (any opcode in the 0xFE.. range).
+fn isAtomicOpcode(code: OperatorCode) bool {
+    const v = @intFromEnum(code);
+    return v >= 0xfe00 and v <= 0xfeff;
+}
+
+/// Translate a 0xFE-prefixed atomic opcode into a WasmOp.
+fn atomicWasmOpFromOperatorInfo(info: OperatorInformation) TranslateError!WasmOp {
+    const AtomicWidth = ir_mod.AtomicWidth;
+    const AtomicType = ir_mod.AtomicType;
+    const AtomicRmwOp = ir_mod.AtomicRmwOp;
+    _ = AtomicWidth;
+    _ = AtomicType;
+    _ = AtomicRmwOp;
+
+    const offset = if (info.memory_address) |ma| ma.offset else 0;
+
+    return switch (info.code) {
+        // ── fence ───────────────────────────────────────────────────────────────
+        .atomic_fence => WasmOp.atomic_fence,
+
+        // ── notify / wait ───────────────────────────────────────────────────────
+        .memory_atomic_notify => WasmOp{ .atomic_notify = .{ .offset = offset } },
+        .memory_atomic_wait32 => WasmOp{ .atomic_wait32 = .{ .offset = offset } },
+        .memory_atomic_wait64 => WasmOp{ .atomic_wait64 = .{ .offset = offset } },
+
+        // ── i32 atomic loads ────────────────────────────────────────────────────
+        .i32_atomic_load => WasmOp{ .atomic_load = .{ .offset = offset, .width = .@"32", .ty = .i32 } },
+        .i32_atomic_load8_u => WasmOp{ .atomic_load = .{ .offset = offset, .width = .@"8", .ty = .i32 } },
+        .i32_atomic_load16_u => WasmOp{ .atomic_load = .{ .offset = offset, .width = .@"16", .ty = .i32 } },
+
+        // ── i64 atomic loads ────────────────────────────────────────────────────
+        .i64_atomic_load => WasmOp{ .atomic_load = .{ .offset = offset, .width = .@"64", .ty = .i64 } },
+        .i64_atomic_load8_u => WasmOp{ .atomic_load = .{ .offset = offset, .width = .@"8", .ty = .i64 } },
+        .i64_atomic_load16_u => WasmOp{ .atomic_load = .{ .offset = offset, .width = .@"16", .ty = .i64 } },
+        .i64_atomic_load32_u => WasmOp{ .atomic_load = .{ .offset = offset, .width = .@"32", .ty = .i64 } },
+
+        // ── i32 atomic stores ───────────────────────────────────────────────────
+        .i32_atomic_store => WasmOp{ .atomic_store = .{ .offset = offset, .width = .@"32", .ty = .i32 } },
+        .i32_atomic_store8 => WasmOp{ .atomic_store = .{ .offset = offset, .width = .@"8", .ty = .i32 } },
+        .i32_atomic_store16 => WasmOp{ .atomic_store = .{ .offset = offset, .width = .@"16", .ty = .i32 } },
+
+        // ── i64 atomic stores ───────────────────────────────────────────────────
+        .i64_atomic_store => WasmOp{ .atomic_store = .{ .offset = offset, .width = .@"64", .ty = .i64 } },
+        .i64_atomic_store8 => WasmOp{ .atomic_store = .{ .offset = offset, .width = .@"8", .ty = .i64 } },
+        .i64_atomic_store16 => WasmOp{ .atomic_store = .{ .offset = offset, .width = .@"16", .ty = .i64 } },
+        .i64_atomic_store32 => WasmOp{ .atomic_store = .{ .offset = offset, .width = .@"32", .ty = .i64 } },
+
+        // ── i32 atomic RMW add ──────────────────────────────────────────────────
+        .i32_atomic_rmw_add => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .add, .width = .@"32", .ty = .i32 } },
+        .i32_atomic_rmw8_add_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .add, .width = .@"8", .ty = .i32 } },
+        .i32_atomic_rmw16_add_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .add, .width = .@"16", .ty = .i32 } },
+        // ── i64 atomic RMW add ──────────────────────────────────────────────────
+        .i64_atomic_rmw_add => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .add, .width = .@"64", .ty = .i64 } },
+        .i64_atomic_rmw8_add_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .add, .width = .@"8", .ty = .i64 } },
+        .i64_atomic_rmw16_add_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .add, .width = .@"16", .ty = .i64 } },
+        .i64_atomic_rmw32_add_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .add, .width = .@"32", .ty = .i64 } },
+
+        // ── i32 atomic RMW sub ──────────────────────────────────────────────────
+        .i32_atomic_rmw_sub => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .sub, .width = .@"32", .ty = .i32 } },
+        .i32_atomic_rmw8_sub_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .sub, .width = .@"8", .ty = .i32 } },
+        .i32_atomic_rmw16_sub_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .sub, .width = .@"16", .ty = .i32 } },
+        // ── i64 atomic RMW sub ──────────────────────────────────────────────────
+        .i64_atomic_rmw_sub => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .sub, .width = .@"64", .ty = .i64 } },
+        .i64_atomic_rmw8_sub_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .sub, .width = .@"8", .ty = .i64 } },
+        .i64_atomic_rmw16_sub_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .sub, .width = .@"16", .ty = .i64 } },
+        .i64_atomic_rmw32_sub_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .sub, .width = .@"32", .ty = .i64 } },
+
+        // ── i32 atomic RMW and ──────────────────────────────────────────────────
+        .i32_atomic_rmw_and => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"and", .width = .@"32", .ty = .i32 } },
+        .i32_atomic_rmw8_and_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"and", .width = .@"8", .ty = .i32 } },
+        .i32_atomic_rmw16_and_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"and", .width = .@"16", .ty = .i32 } },
+        // ── i64 atomic RMW and ──────────────────────────────────────────────────
+        .i64_atomic_rmw_and => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"and", .width = .@"64", .ty = .i64 } },
+        .i64_atomic_rmw8_and_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"and", .width = .@"8", .ty = .i64 } },
+        .i64_atomic_rmw16_and_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"and", .width = .@"16", .ty = .i64 } },
+        .i64_atomic_rmw32_and_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"and", .width = .@"32", .ty = .i64 } },
+
+        // ── i32 atomic RMW or ───────────────────────────────────────────────────
+        .i32_atomic_rmw_or => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"or", .width = .@"32", .ty = .i32 } },
+        .i32_atomic_rmw8_or_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"or", .width = .@"8", .ty = .i32 } },
+        .i32_atomic_rmw16_or_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"or", .width = .@"16", .ty = .i32 } },
+        // ── i64 atomic RMW or ───────────────────────────────────────────────────
+        .i64_atomic_rmw_or => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"or", .width = .@"64", .ty = .i64 } },
+        .i64_atomic_rmw8_or_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"or", .width = .@"8", .ty = .i64 } },
+        .i64_atomic_rmw16_or_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"or", .width = .@"16", .ty = .i64 } },
+        .i64_atomic_rmw32_or_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"or", .width = .@"32", .ty = .i64 } },
+
+        // ── i32 atomic RMW xor ──────────────────────────────────────────────────
+        .i32_atomic_rmw_xor => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xor, .width = .@"32", .ty = .i32 } },
+        .i32_atomic_rmw8_xor_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xor, .width = .@"8", .ty = .i32 } },
+        .i32_atomic_rmw16_xor_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xor, .width = .@"16", .ty = .i32 } },
+        // ── i64 atomic RMW xor ──────────────────────────────────────────────────
+        .i64_atomic_rmw_xor => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xor, .width = .@"64", .ty = .i64 } },
+        .i64_atomic_rmw8_xor_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xor, .width = .@"8", .ty = .i64 } },
+        .i64_atomic_rmw16_xor_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xor, .width = .@"16", .ty = .i64 } },
+        .i64_atomic_rmw32_xor_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xor, .width = .@"32", .ty = .i64 } },
+
+        // ── i32 atomic RMW xchg ─────────────────────────────────────────────────
+        .i32_atomic_rmw_xchg => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xchg, .width = .@"32", .ty = .i32 } },
+        .i32_atomic_rmw8_xchg_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xchg, .width = .@"8", .ty = .i32 } },
+        .i32_atomic_rmw16_xchg_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xchg, .width = .@"16", .ty = .i32 } },
+        // ── i64 atomic RMW xchg ─────────────────────────────────────────────────
+        .i64_atomic_rmw_xchg => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xchg, .width = .@"64", .ty = .i64 } },
+        .i64_atomic_rmw8_xchg_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xchg, .width = .@"8", .ty = .i64 } },
+        .i64_atomic_rmw16_xchg_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xchg, .width = .@"16", .ty = .i64 } },
+        .i64_atomic_rmw32_xchg_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xchg, .width = .@"32", .ty = .i64 } },
+
+        // ── i32 atomic cmpxchg ──────────────────────────────────────────────────
+        .i32_atomic_rmw_cmpxchg => WasmOp{ .atomic_cmpxchg = .{ .offset = offset, .width = .@"32", .ty = .i32 } },
+        .i32_atomic_rmw8_cmpxchg_u => WasmOp{ .atomic_cmpxchg = .{ .offset = offset, .width = .@"8", .ty = .i32 } },
+        .i32_atomic_rmw16_cmpxchg_u => WasmOp{ .atomic_cmpxchg = .{ .offset = offset, .width = .@"16", .ty = .i32 } },
+        // ── i64 atomic cmpxchg ──────────────────────────────────────────────────
+        .i64_atomic_rmw_cmpxchg => WasmOp{ .atomic_cmpxchg = .{ .offset = offset, .width = .@"64", .ty = .i64 } },
+        .i64_atomic_rmw8_cmpxchg_u => WasmOp{ .atomic_cmpxchg = .{ .offset = offset, .width = .@"8", .ty = .i64 } },
+        .i64_atomic_rmw16_cmpxchg_u => WasmOp{ .atomic_cmpxchg = .{ .offset = offset, .width = .@"16", .ty = .i64 } },
+        .i64_atomic_rmw32_cmpxchg_u => WasmOp{ .atomic_cmpxchg = .{ .offset = offset, .width = .@"32", .ty = .i64 } },
+
+        else => return error.UnsupportedOperator,
     };
 }

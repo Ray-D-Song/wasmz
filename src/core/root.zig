@@ -10,6 +10,7 @@ pub const heap_type = @import("./heap_type.zig");
 pub const ref_type = @import("./ref_type.zig");
 pub const composite_type = @import("./composite_type.zig");
 pub const gc_ref = @import("./gc_ref.zig");
+pub const memory = @import("./memory.zig");
 
 pub const ValType = value_type.ValType;
 pub const Global = global.Global;
@@ -30,3 +31,7 @@ pub const StructType = composite_type.StructType;
 pub const ArrayType = composite_type.ArrayType;
 pub const CompositeType = composite_type.CompositeType;
 pub const GcRef = gc_ref.GcRef;
+pub const Memory = memory.Memory;
+pub const SharedMemory = memory.SharedMemory;
+pub const WaitResult = memory.WaitResult;
+pub const WASM_PAGE_SIZE = memory.WASM_PAGE_SIZE;

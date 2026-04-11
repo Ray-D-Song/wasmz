@@ -76,9 +76,19 @@ pub const TrapCode = enum(u8) {
     // An exception was thrown but no matching catch handler was found.
     UnhandledException = 17,
 
+    // Atomic memory access at an address that is not naturally aligned.
+    // The Wasm Threads proposal requires alignment == access size for all
+    // atomic operations; misaligned accesses trap.
+    UnalignedAtomicAccess = 18,
+
+    // memory.atomic.wait32/wait64 called on a non-shared memory.
+    // The Wasm Threads spec §memory.atomic.wait step 14 requires a trap
+    // when the memory type is unshared.
+    UnsharedMemoryWait = 19,
+
     pub fn fromInt(value: u8) InvalidTrapCode!TrapCode {
         return switch (value) {
-            inline 1...17 => @enumFromInt(value),
+            inline 1...19 => @enumFromInt(value),
             else => InvalidTrapCode.InvalidTrapCode,
         };
     }
@@ -102,6 +112,8 @@ pub const TrapCode = enum(u8) {
             .ArrayOutOfBounds => "out of bounds array access",
             .OutOfMemory => "GC heap out of memory",
             .UnhandledException => "unhandled exception",
+            .UnalignedAtomicAccess => "unaligned atomic memory access",
+            .UnsharedMemoryWait => "memory.atomic.wait on non-shared memory",
         };
     }
 };

@@ -348,6 +348,26 @@ pub const WasmOp = union(enum) {
     data_drop: u32,
     memory_copy,
     memory_fill,
+    memory_size,
+    memory_grow,
+
+    // ── Atomic memory instructions (Wasm Threads proposal) ───────────────────
+    /// atomic.fence: sequentially-consistent full memory fence (no operands).
+    atomic_fence,
+    /// Atomic load: pop addr (i32), push loaded value (i32 or i64).
+    atomic_load: struct { offset: u32, width: ir.AtomicWidth, ty: ir.AtomicType },
+    /// Atomic store: pop value (i32/i64), pop addr (i32).
+    atomic_store: struct { offset: u32, width: ir.AtomicWidth, ty: ir.AtomicType },
+    /// Atomic RMW: pop src, pop addr, push old value.
+    atomic_rmw: struct { offset: u32, op: ir.AtomicRmwOp, width: ir.AtomicWidth, ty: ir.AtomicType },
+    /// Atomic cmpxchg: pop replacement, pop expected, pop addr, push old value.
+    atomic_cmpxchg: struct { offset: u32, width: ir.AtomicWidth, ty: ir.AtomicType },
+    /// memory.atomic.notify: pop count (i32), pop addr (i32), push woken (i32).
+    atomic_notify: struct { offset: u32 },
+    /// memory.atomic.wait32: pop timeout (i64), pop expected (i32), pop addr (i32), push result (i32).
+    atomic_wait32: struct { offset: u32 },
+    /// memory.atomic.wait64: pop timeout (i64), pop expected (i64), pop addr (i32), push result (i32).
+    atomic_wait64: struct { offset: u32 },
     /// select: stack [val1, val2, cond] -> if cond != 0 then val1 else val2
     select,
     /// select with explicit type annotation (same semantics, type annotation ignored at runtime",)
@@ -1763,6 +1783,128 @@ pub const Lower = struct {
                 const value = try self.pop_slot();
                 const dst_addr = try self.pop_slot();
                 try self.emit(.{ .memory_fill = .{ .dst_addr = dst_addr, .value = value, .len = len } });
+            },
+
+            // memory.size: [] -> [i32 page count]
+            .memory_size => {
+                const dst = self.alloc_slot();
+                try self.stack.push(self.allocator, dst);
+                try self.emit(.{ .memory_size = .{ .dst = dst } });
+            },
+
+            // memory.grow: [delta: i32] -> [i32 old_size or -1]
+            .memory_grow => {
+                const delta = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.stack.push(self.allocator, dst);
+                try self.emit(.{ .memory_grow = .{ .dst = dst, .delta = delta } });
+            },
+
+            // ── Atomic instructions ───────────────────────────────────────────────
+            // atomic.fence: no operands, no result
+            .atomic_fence => {
+                try self.emit(.atomic_fence);
+            },
+            // atomic_load: [addr] -> [value]
+            .atomic_load => |inst| {
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.stack.push(self.allocator, dst);
+                try self.emit(.{ .atomic_load = .{
+                    .dst = dst,
+                    .addr = addr,
+                    .offset = inst.offset,
+                    .width = inst.width,
+                    .ty = inst.ty,
+                } });
+            },
+            // atomic_store: [addr, src] -> []  (src pushed last, so pop src first)
+            .atomic_store => |inst| {
+                const src = try self.pop_slot();
+                const addr = try self.pop_slot();
+                try self.emit(.{ .atomic_store = .{
+                    .addr = addr,
+                    .src = src,
+                    .offset = inst.offset,
+                    .width = inst.width,
+                    .ty = inst.ty,
+                } });
+            },
+            // atomic_rmw: [addr, src] -> [old_value]
+            .atomic_rmw => |inst| {
+                const src = try self.pop_slot();
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.stack.push(self.allocator, dst);
+                try self.emit(.{ .atomic_rmw = .{
+                    .dst = dst,
+                    .addr = addr,
+                    .src = src,
+                    .offset = inst.offset,
+                    .op = inst.op,
+                    .width = inst.width,
+                    .ty = inst.ty,
+                } });
+            },
+            // atomic_cmpxchg: [addr, expected, replacement] -> [old_value]
+            .atomic_cmpxchg => |inst| {
+                const replacement = try self.pop_slot();
+                const expected = try self.pop_slot();
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.stack.push(self.allocator, dst);
+                try self.emit(.{ .atomic_cmpxchg = .{
+                    .dst = dst,
+                    .addr = addr,
+                    .expected = expected,
+                    .replacement = replacement,
+                    .offset = inst.offset,
+                    .width = inst.width,
+                    .ty = inst.ty,
+                } });
+            },
+            // atomic_notify: [addr, count] -> [woken]
+            .atomic_notify => |inst| {
+                const count = try self.pop_slot();
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.stack.push(self.allocator, dst);
+                try self.emit(.{ .atomic_notify = .{
+                    .dst = dst,
+                    .addr = addr,
+                    .count = count,
+                    .offset = inst.offset,
+                } });
+            },
+            // atomic_wait32: [addr, expected_i32, timeout_i64] -> [result_i32]
+            .atomic_wait32 => |inst| {
+                const timeout = try self.pop_slot();
+                const expected = try self.pop_slot();
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.stack.push(self.allocator, dst);
+                try self.emit(.{ .atomic_wait32 = .{
+                    .dst = dst,
+                    .addr = addr,
+                    .expected = expected,
+                    .timeout = timeout,
+                    .offset = inst.offset,
+                } });
+            },
+            // atomic_wait64: [addr, expected_i64, timeout_i64] -> [result_i32]
+            .atomic_wait64 => |inst| {
+                const timeout = try self.pop_slot();
+                const expected = try self.pop_slot();
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.stack.push(self.allocator, dst);
+                try self.emit(.{ .atomic_wait64 = .{
+                    .dst = dst,
+                    .addr = addr,
+                    .expected = expected,
+                    .timeout = timeout,
+                    .offset = inst.offset,
+                } });
             },
 
             // ── select ───────────────────────────────────────────────────────────

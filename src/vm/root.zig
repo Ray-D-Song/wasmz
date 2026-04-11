@@ -26,6 +26,7 @@ const StructLayout = gc_mod.StructLayout;
 const ArrayLayout = gc_mod.ArrayLayout;
 const storageTypeSize = gc_mod.storageTypeSize;
 const gcRefKindFromHeapType = heap_type.gcRefKindFromHeapType;
+const Memory = core.Memory;
 pub const RawVal = core.raw.RawVal;
 pub const Global = core.Global;
 pub const Trap = core.Trap;
@@ -47,7 +48,9 @@ pub const ExecEnv = struct {
     store: *Store,
     host_instance: *HostInstance,
     globals: []Global,
-    memory: []u8,
+    /// Pointer into the Instance's Memory.  Always non-null; even a no-memory module uses
+    /// an empty Memory so the pointer is valid.
+    memory: *Memory,
     functions: []const CompiledFunction,
     func_types: []const FuncType,
     host_funcs: []const HostFunc,
@@ -93,10 +96,10 @@ const EhFrame = struct {
 
 /// Compute effective address and perform bounds check.
 /// Returns the effective address (EA = base +% offset) if in-bounds, null if out-of-bounds.
-inline fn effectiveAddr(slots: []RawVal, addr_slot: u32, offset: u32, size: usize, memory: []u8) ?u32 {
+inline fn effectiveAddr(slots: []RawVal, addr_slot: u32, offset: u32, size: usize, mem: []const u8) ?u32 {
     const base = slots[addr_slot].readAs(u32);
     const ea = base +% offset;
-    if (@as(usize, ea) + size > memory.len) return null;
+    if (@as(usize, ea) + size > mem.len) return null;
     return ea;
 }
 
@@ -160,7 +163,11 @@ pub const VM = struct {
         const store = env.store;
         const host_instance = env.host_instance;
         const globals = env.globals;
-        const memory = env.memory;
+        // Keep a *Memory reference for the whole frame; obtain the byte slice lazily per-access
+        // by calling env.memory.bytes().  For the common case (owned memory, no growth), binding
+        // the slice once here is fine; atomic instructions in Phase B onwards re-obtain it via
+        // env.memory.bytes() directly before each access.
+        var memory: []u8 = env.memory.bytes();
         const functions = env.functions;
         const func_types = env.func_types;
         const host_funcs = env.host_funcs;
@@ -1111,6 +1118,292 @@ pub const VM = struct {
                         return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
                     }
                     @memset(memory[dst_addr .. dst_addr + len], @truncate(value));
+                },
+
+                // ── memory.size ───────────────────────────────────────────────
+                // Push the current memory size in pages (i32).
+                .memory_size => |inst| {
+                    const page_count: i32 = @intCast(env.memory.pageCount());
+                    slots[inst.dst] = RawVal.from(page_count);
+                    // Refresh the cached slice in case another thread grew memory.
+                    memory = env.memory.bytes();
+                },
+
+                // ── memory.grow ───────────────────────────────────────────────
+                // Grow memory by `delta` pages; push old size on success, -1 on failure.
+                .memory_grow => |inst| {
+                    const delta = @as(u32, @bitCast(slots[inst.delta].readAs(i32)));
+                    const old = env.memory.grow(delta);
+                    const result: i32 = if (old == std.math.maxInt(u32)) -1 else @intCast(old);
+                    slots[inst.dst] = RawVal.from(result);
+                    // After a successful grow the slice may have changed; re-bind.
+                    memory = env.memory.bytes();
+                },
+
+                // ── Atomic memory instructions (Wasm Threads proposal) ───────────
+                //
+                // For shared memories we always re-fetch the byte slice so that
+                // any concurrent grow() is visible.  For owned memories the slice
+                // is stable so the re-fetch is a cheap pointer load.
+                //
+                // Natural-alignment check: ea % access_size == 0, else trap.
+
+                .atomic_fence => {
+                    // sequentially-consistent full fence — no operands or result.
+                    // Zig 0.15 does not expose a standalone @fence builtin; use a
+                    // seq_cst RMW on a thread-local dummy as the equivalent barrier.
+                    // Using threadlocal avoids false sharing between threads.
+                    const Fence = struct {
+                        threadlocal var dummy: u8 = 0;
+                    };
+                    _ = @atomicRmw(u8, &Fence.dummy, .Or, 0, .seq_cst);
+                },
+
+                .atomic_load => |inst| {
+                    const mem = env.memory.bytes();
+                    const access_size = inst.width.byteSize();
+                    const base = slots[inst.addr].readAs(u32);
+                    const ea = base +% inst.offset;
+                    // Spec: alignment check BEFORE bounds check.
+                    if (ea % access_size != 0) {
+                        return .{ .trap = Trap.fromTrapCode(.UnalignedAtomicAccess) };
+                    }
+                    if (@as(usize, ea) + access_size > mem.len) {
+                        return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    }
+                    const raw_ptr: [*]u8 = mem.ptr + ea;
+                    const val: u64 = switch (inst.width) {
+                        .@"8" => @atomicLoad(u8, @as(*u8, @ptrCast(raw_ptr)), .seq_cst),
+                        .@"16" => @atomicLoad(u16, @as(*u16, @ptrCast(@alignCast(raw_ptr))), .seq_cst),
+                        .@"32" => @atomicLoad(u32, @as(*u32, @ptrCast(@alignCast(raw_ptr))), .seq_cst),
+                        .@"64" => @atomicLoad(u64, @as(*u64, @ptrCast(@alignCast(raw_ptr))), .seq_cst),
+                    };
+                    slots[inst.dst] = switch (inst.ty) {
+                        .i32 => RawVal.from(@as(i32, @bitCast(@as(u32, @truncate(val))))),
+                        .i64 => RawVal.from(@as(i64, @bitCast(val))),
+                    };
+                },
+
+                .atomic_store => |inst| {
+                    const mem = env.memory.bytes();
+                    const access_size = inst.width.byteSize();
+                    const base = slots[inst.addr].readAs(u32);
+                    const ea = base +% inst.offset;
+                    // Spec: alignment check BEFORE bounds check.
+                    if (ea % access_size != 0) {
+                        return .{ .trap = Trap.fromTrapCode(.UnalignedAtomicAccess) };
+                    }
+                    if (@as(usize, ea) + access_size > mem.len) {
+                        return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    }
+                    const raw_ptr: [*]u8 = mem.ptr + ea;
+                    const src_val: u64 = switch (inst.ty) {
+                        .i32 => @as(u64, @as(u32, @bitCast(slots[inst.src].readAs(i32)))),
+                        .i64 => @as(u64, @bitCast(slots[inst.src].readAs(i64))),
+                    };
+                    switch (inst.width) {
+                        .@"8" => @atomicStore(u8, @as(*u8, @ptrCast(raw_ptr)), @truncate(src_val), .seq_cst),
+                        .@"16" => @atomicStore(u16, @as(*u16, @ptrCast(@alignCast(raw_ptr))), @truncate(src_val), .seq_cst),
+                        .@"32" => @atomicStore(u32, @as(*u32, @ptrCast(@alignCast(raw_ptr))), @truncate(src_val), .seq_cst),
+                        .@"64" => @atomicStore(u64, @as(*u64, @ptrCast(@alignCast(raw_ptr))), src_val, .seq_cst),
+                    }
+                },
+
+                .atomic_rmw => |inst| {
+                    const mem = env.memory.bytes();
+                    const access_size = inst.width.byteSize();
+                    const base = slots[inst.addr].readAs(u32);
+                    const ea = base +% inst.offset;
+                    // Spec: alignment check BEFORE bounds check.
+                    if (ea % access_size != 0) {
+                        return .{ .trap = Trap.fromTrapCode(.UnalignedAtomicAccess) };
+                    }
+                    if (@as(usize, ea) + access_size > mem.len) {
+                        return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    }
+                    const raw_ptr: [*]u8 = mem.ptr + ea;
+                    const src_val: u64 = switch (inst.ty) {
+                        .i32 => @as(u64, @as(u32, @bitCast(slots[inst.src].readAs(i32)))),
+                        .i64 => @as(u64, @bitCast(slots[inst.src].readAs(i64))),
+                    };
+                    // Perform the atomic RMW; returns old value.
+                    const old: u64 = switch (inst.width) {
+                        .@"8" => blk: {
+                            const p = @as(*u8, @ptrCast(raw_ptr));
+                            const v: u8 = @truncate(src_val);
+                            break :blk switch (inst.op) {
+                                .add => @atomicRmw(u8, p, .Add, v, .seq_cst),
+                                .sub => @atomicRmw(u8, p, .Sub, v, .seq_cst),
+                                .@"and" => @atomicRmw(u8, p, .And, v, .seq_cst),
+                                .@"or" => @atomicRmw(u8, p, .Or, v, .seq_cst),
+                                .xor => @atomicRmw(u8, p, .Xor, v, .seq_cst),
+                                .xchg => @atomicRmw(u8, p, .Xchg, v, .seq_cst),
+                            };
+                        },
+                        .@"16" => blk: {
+                            const p = @as(*u16, @ptrCast(@alignCast(raw_ptr)));
+                            const v: u16 = @truncate(src_val);
+                            break :blk switch (inst.op) {
+                                .add => @atomicRmw(u16, p, .Add, v, .seq_cst),
+                                .sub => @atomicRmw(u16, p, .Sub, v, .seq_cst),
+                                .@"and" => @atomicRmw(u16, p, .And, v, .seq_cst),
+                                .@"or" => @atomicRmw(u16, p, .Or, v, .seq_cst),
+                                .xor => @atomicRmw(u16, p, .Xor, v, .seq_cst),
+                                .xchg => @atomicRmw(u16, p, .Xchg, v, .seq_cst),
+                            };
+                        },
+                        .@"32" => blk: {
+                            const p = @as(*u32, @ptrCast(@alignCast(raw_ptr)));
+                            const v: u32 = @truncate(src_val);
+                            break :blk switch (inst.op) {
+                                .add => @atomicRmw(u32, p, .Add, v, .seq_cst),
+                                .sub => @atomicRmw(u32, p, .Sub, v, .seq_cst),
+                                .@"and" => @atomicRmw(u32, p, .And, v, .seq_cst),
+                                .@"or" => @atomicRmw(u32, p, .Or, v, .seq_cst),
+                                .xor => @atomicRmw(u32, p, .Xor, v, .seq_cst),
+                                .xchg => @atomicRmw(u32, p, .Xchg, v, .seq_cst),
+                            };
+                        },
+                        .@"64" => blk: {
+                            const p = @as(*u64, @ptrCast(@alignCast(raw_ptr)));
+                            break :blk switch (inst.op) {
+                                .add => @atomicRmw(u64, p, .Add, src_val, .seq_cst),
+                                .sub => @atomicRmw(u64, p, .Sub, src_val, .seq_cst),
+                                .@"and" => @atomicRmw(u64, p, .And, src_val, .seq_cst),
+                                .@"or" => @atomicRmw(u64, p, .Or, src_val, .seq_cst),
+                                .xor => @atomicRmw(u64, p, .Xor, src_val, .seq_cst),
+                                .xchg => @atomicRmw(u64, p, .Xchg, src_val, .seq_cst),
+                            };
+                        },
+                    };
+                    slots[inst.dst] = switch (inst.ty) {
+                        .i32 => RawVal.from(@as(i32, @bitCast(@as(u32, @truncate(old))))),
+                        .i64 => RawVal.from(@as(i64, @bitCast(old))),
+                    };
+                },
+
+                .atomic_cmpxchg => |inst| {
+                    const mem = env.memory.bytes();
+                    const access_size = inst.width.byteSize();
+                    const base = slots[inst.addr].readAs(u32);
+                    const ea = base +% inst.offset;
+                    // Spec: alignment check BEFORE bounds check.
+                    if (ea % access_size != 0) {
+                        return .{ .trap = Trap.fromTrapCode(.UnalignedAtomicAccess) };
+                    }
+                    if (@as(usize, ea) + access_size > mem.len) {
+                        return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    }
+                    const raw_ptr: [*]u8 = mem.ptr + ea;
+                    const exp_val: u64 = switch (inst.ty) {
+                        .i32 => @as(u64, @as(u32, @bitCast(slots[inst.expected].readAs(i32)))),
+                        .i64 => @as(u64, @bitCast(slots[inst.expected].readAs(i64))),
+                    };
+                    const rep_val: u64 = switch (inst.ty) {
+                        .i32 => @as(u64, @as(u32, @bitCast(slots[inst.replacement].readAs(i32)))),
+                        .i64 => @as(u64, @bitCast(slots[inst.replacement].readAs(i64))),
+                    };
+                    // Returns the old value regardless of whether exchange succeeded.
+                    const old: u64 = switch (inst.width) {
+                        .@"8" => blk: {
+                            const p = @as(*u8, @ptrCast(raw_ptr));
+                            const e: u8 = @truncate(exp_val);
+                            const r: u8 = @truncate(rep_val);
+                            const result = @cmpxchgStrong(u8, p, e, r, .seq_cst, .seq_cst);
+                            break :blk result orelse e; // if null = succeeded = old was `e`; if non-null = old value returned
+                        },
+                        .@"16" => blk: {
+                            const p = @as(*u16, @ptrCast(@alignCast(raw_ptr)));
+                            const e: u16 = @truncate(exp_val);
+                            const r: u16 = @truncate(rep_val);
+                            const result = @cmpxchgStrong(u16, p, e, r, .seq_cst, .seq_cst);
+                            break :blk result orelse e;
+                        },
+                        .@"32" => blk: {
+                            const p = @as(*u32, @ptrCast(@alignCast(raw_ptr)));
+                            const e: u32 = @truncate(exp_val);
+                            const r: u32 = @truncate(rep_val);
+                            const result = @cmpxchgStrong(u32, p, e, r, .seq_cst, .seq_cst);
+                            break :blk result orelse e;
+                        },
+                        .@"64" => blk: {
+                            const p = @as(*u64, @ptrCast(@alignCast(raw_ptr)));
+                            const result = @cmpxchgStrong(u64, p, exp_val, rep_val, .seq_cst, .seq_cst);
+                            break :blk result orelse exp_val;
+                        },
+                    };
+                    slots[inst.dst] = switch (inst.ty) {
+                        .i32 => RawVal.from(@as(i32, @bitCast(@as(u32, @truncate(old))))),
+                        .i64 => RawVal.from(@as(i64, @bitCast(old))),
+                    };
+                },
+
+                // ── memory.atomic.notify ──────────────────────────────────────
+                // Wakes up to `count` threads waiting on `ea` (shared memory only).
+                // For non-shared memory returns 0 (no waiters). Does NOT trap for
+                // non-shared memory (spec §memory.atomic.notify step 14b).
+                .atomic_notify => |inst| {
+                    const mem = env.memory.bytes();
+                    const base = slots[inst.addr].readAs(u32);
+                    const ea = base +% inst.offset;
+                    // Spec: alignment check BEFORE bounds check.
+                    if (ea % 4 != 0) {
+                        return .{ .trap = Trap.fromTrapCode(.UnalignedAtomicAccess) };
+                    }
+                    if (@as(usize, ea) + 4 > mem.len) {
+                        return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    }
+                    const count = @as(u32, @bitCast(slots[inst.count].readAs(i32)));
+                    const woken = env.memory.notify(ea, count);
+                    slots[inst.dst] = RawVal.from(@as(i32, @bitCast(woken)));
+                },
+
+                // ── memory.atomic.wait32 ──────────────────────────────────────
+                // Blocks until mem[ea] != expected or timeout expires.
+                // Returns: 0 = ok (woken), 1 = not-equal, 2 = timed-out.
+                // Traps if memory is not shared (spec §memory.atomic.wait, step 14).
+                .atomic_wait32 => |inst| {
+                    // Spec step 14: trap if memory is not shared.
+                    if (!env.memory.isShared()) {
+                        return .{ .trap = Trap.fromTrapCode(.UnsharedMemoryWait) };
+                    }
+                    const mem = env.memory.bytes();
+                    const base = slots[inst.addr].readAs(u32);
+                    const ea = base +% inst.offset;
+                    // Spec: alignment check BEFORE bounds check.
+                    if (ea % 4 != 0) {
+                        return .{ .trap = Trap.fromTrapCode(.UnalignedAtomicAccess) };
+                    }
+                    if (@as(usize, ea) + 4 > mem.len) {
+                        return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    }
+                    const expected = @as(u32, @bitCast(slots[inst.expected].readAs(i32)));
+                    const timeout_ns = slots[inst.timeout].readAs(i64);
+                    const result = env.memory.wait32(ea, expected, timeout_ns);
+                    slots[inst.dst] = RawVal.from(@as(i32, @intFromEnum(result)));
+                },
+
+                // ── memory.atomic.wait64 ──────────────────────────────────────
+                // Traps if memory is not shared (spec §memory.atomic.wait, step 14).
+                .atomic_wait64 => |inst| {
+                    // Spec step 14: trap if memory is not shared.
+                    if (!env.memory.isShared()) {
+                        return .{ .trap = Trap.fromTrapCode(.UnsharedMemoryWait) };
+                    }
+                    const mem = env.memory.bytes();
+                    const base = slots[inst.addr].readAs(u32);
+                    const ea = base +% inst.offset;
+                    // Spec: alignment check BEFORE bounds check.
+                    if (ea % 8 != 0) {
+                        return .{ .trap = Trap.fromTrapCode(.UnalignedAtomicAccess) };
+                    }
+                    if (@as(usize, ea) + 8 > mem.len) {
+                        return .{ .trap = Trap.fromTrapCode(.MemoryOutOfBounds) };
+                    }
+                    const expected = @as(u64, @bitCast(slots[inst.expected].readAs(i64)));
+                    const timeout_ns = slots[inst.timeout].readAs(i64);
+                    const result = env.memory.wait64(ea, expected, timeout_ns);
+                    slots[inst.dst] = RawVal.from(@as(i32, @intFromEnum(result)));
                 },
 
                 // ── Table instructions ───────────────────────────────────────────────

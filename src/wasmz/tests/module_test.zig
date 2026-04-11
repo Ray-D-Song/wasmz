@@ -15,6 +15,7 @@ const Module = module_mod.Module;
 const Engine = engine_mod.Engine;
 const Global = core.Global;
 const Mutability = core.Mutability;
+const Memory = core.Memory;
 
 test "module.compile builds exported function bodies" {
     const exported_const_wasm = [_]u8{
@@ -50,12 +51,13 @@ test "module.compile builds exported function bodies" {
     var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
     var globals = [_]Global{};
-    var memory: [0]u8 = .{};
+    var raw_memory: [0]u8 = .{};
+    var mem = Memory.initBorrowed(raw_memory[0..]);
     var tables = [_][]u32{};
     var host_instance = HostInstance{
         .module = &module,
         .globals = globals[0..],
-        .memory = memory[0..],
+        .memory = &mem,
         .tables = tables[0..],
     };
     var data_segments_dropped = [_]bool{};
@@ -64,7 +66,7 @@ test "module.compile builds exported function bodies" {
         .store = &store,
         .host_instance = &host_instance,
         .globals = globals[0..],
-        .memory = memory[0..],
+        .memory = &mem,
         .functions = &.{},
         .func_types = module.func_types,
         .host_funcs = &.{},

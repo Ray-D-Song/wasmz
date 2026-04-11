@@ -42,10 +42,15 @@ const CliArgs = struct {
     i32_args: []const []const u8,
     legacy_exceptions: bool,
     positional: []const []const u8,
+    /// The raw args allocation from std.process.argsAlloc; kept alive so that
+    /// the string slices in `file_path`, `func_name`, etc. remain valid.
+    _args_alloc: [][:0]u8,
+    _args_allocator: std.mem.Allocator,
 
     fn parse(allocator: std.mem.Allocator) !CliArgs {
+        // NOTE: do NOT defer-free args here — the returned CliArgs holds slices
+        // that point directly into this allocation.  deinit() frees it instead.
         const args = try std.process.argsAlloc(allocator);
-        defer std.process.argsFree(allocator, args);
 
         var legacy_exceptions = false;
         var positional_buf: [16][]const u8 = undefined;
@@ -68,6 +73,8 @@ const CliArgs = struct {
         };
 
         if (positional.len < 1) {
+            allocator.free(positional);
+            std.process.argsFree(allocator, args);
             return error.MissingFilePath;
         }
 
@@ -86,11 +93,14 @@ const CliArgs = struct {
             .i32_args = i32_args,
             .legacy_exceptions = legacy_exceptions,
             .positional = positional,
+            ._args_alloc = args,
+            ._args_allocator = allocator,
         };
     }
 
     fn deinit(self: *CliArgs, allocator: std.mem.Allocator) void {
         allocator.free(self.positional);
+        std.process.argsFree(self._args_allocator, self._args_alloc);
     }
 };
 
@@ -119,7 +129,7 @@ fn host_print_i32(_: ?*anyopaque, _: *HostContext, params: []const RawVal, _: []
 }
 
 fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
-    const cli_args = CliArgs.parse(allocator) catch |err| {
+    var cli_args = CliArgs.parse(allocator) catch |err| {
         switch (err) {
             error.MissingFilePath => {
                 try stdout.writeAll(
@@ -133,6 +143,7 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
             else => return err,
         }
     };
+    defer cli_args.deinit(allocator);
 
     const file_path = cli_args.file_path;
 

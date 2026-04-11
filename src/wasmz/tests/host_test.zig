@@ -13,6 +13,7 @@ const Module = module_mod.Module;
 const HostInstance = host_mod.HostInstance;
 const HostContext = host_mod.HostContext;
 const Global = core.Global;
+const Memory = core.Memory;
 const TrapCode = core.TrapCode;
 
 test "HostContext userData and hostData cast opaque pointers" {
@@ -26,7 +27,8 @@ test "HostContext userData and hostData cast opaque pointers" {
 
     var host_value: i32 = 42;
     var globals = [_]Global{};
-    var memory = [_]u8{ 1, 2, 3 };
+    var raw_memory = [_]u8{ 1, 2, 3 };
+    var mem = Memory.initBorrowed(raw_memory[0..]);
     var tables = [_][]u32{};
     var dummy_module = try Module.compile(engine, &[_]u8{
         0x00, 0x61, 0x73, 0x6d,
@@ -41,7 +43,7 @@ test "HostContext userData and hostData cast opaque pointers" {
     var host_instance = HostInstance{
         .module = &dummy_module,
         .globals = globals[0..],
-        .memory = memory[0..],
+        .memory = &mem,
         .tables = tables[0..],
     };
     var ctx = HostContext.init(&store, &host_instance, &host_value);
@@ -58,7 +60,8 @@ test "HostContext readBytes traps on out of bounds" {
     defer store.deinit();
 
     var globals = [_]Global{};
-    var memory = [_]u8{ 1, 2, 3 };
+    var raw_memory = [_]u8{ 1, 2, 3 };
+    var mem = Memory.initBorrowed(raw_memory[0..]);
     var tables = [_][]u32{};
     var dummy_module = try Module.compile(engine, &[_]u8{
         0x00, 0x61, 0x73, 0x6d,
@@ -73,7 +76,7 @@ test "HostContext readBytes traps on out of bounds" {
     var host_instance = HostInstance{
         .module = &dummy_module,
         .globals = globals[0..],
-        .memory = memory[0..],
+        .memory = &mem,
         .tables = tables[0..],
     };
     var ctx = HostContext.init(&store, &host_instance, null);
