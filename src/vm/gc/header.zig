@@ -15,6 +15,9 @@ pub const GcKind = struct {
     pub const None: u32 = @as(u32, GcRefKind.None) << 26;
     pub const Func: u32 = @as(u32, GcRefKind.Func) << 26;
     pub const Extern: u32 = @as(u32, GcRefKind.Extern) << 26;
+    /// Exception objects — produced by `throw`/`throw_ref`, caught by `try_table`.
+    /// Uses a dedicated kind bit pattern (0b000001 << 26) not used by any wasm GC type.
+    pub const Exception: u32 = 0x04000000; // 0b000001 << 26
 
     /// Extract the kind bits (high 6 bits) from kind_bits.
     pub fn extractKind(bits: u32) u6 {

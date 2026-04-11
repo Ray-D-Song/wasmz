@@ -80,6 +80,17 @@ const CallFrame = struct {
     dst: ?ir.Slot,
 };
 
+/// One active try_table region on the EH stack.
+/// Pushed when try_table_enter executes, popped when try_table_leave executes.
+const EhFrame = struct {
+    /// Index into call_stack at which this try region lives.
+    call_stack_depth: usize,
+    /// Start index in CompiledFunction.catch_handler_tables.
+    handlers_start: u32,
+    /// Number of catch handlers in this try region.
+    handlers_len: u32,
+};
+
 /// Compute effective address and perform bounds check.
 /// Returns the effective address (EA = base +% offset) if in-bounds, null if out-of-bounds.
 inline fn effectiveAddr(slots: []RawVal, addr_slot: u32, offset: u32, size: usize, memory: []u8) ?u32 {
@@ -186,6 +197,10 @@ pub const VM = struct {
             }
             call_stack.deinit(self.allocator);
         }
+
+        // Exception handler stack: entries are pushed on try_table_enter, popped on try_table_leave.
+        var eh_stack: std.ArrayListUnmanaged(EhFrame) = .empty;
+        defer eh_stack.deinit(self.allocator);
 
         call_stack.append(self.allocator, .{
             .func = func,
@@ -1947,6 +1962,64 @@ pub const VM = struct {
                     slots[inst.dst] = slots[inst.ref];
                 },
 
+                // ── Exception Handling ────────────────────────────────────────
+                .throw => |inst| {
+                    // Collect exception argument values from call_args pool.
+                    const caller_func = call_stack.items[frame_idx].func;
+                    const arg_slots = caller_func.call_args.items[inst.args_start .. inst.args_start + inst.args_len];
+                    var args_buf: [64]RawVal = undefined; // static buffer (up to 64 args)
+                    const n_args = @min(arg_slots.len, args_buf.len);
+                    for (arg_slots[0..n_args], 0..) |slot, i| {
+                        args_buf[i] = slots[slot];
+                    }
+                    const exc_args = args_buf[0..n_args];
+
+                    // Allocate exception object on the GC heap.
+                    // If the first attempt fails, run a GC cycle and retry once.
+                    const exn_ref: GcRef = blk: {
+                        if (store.gc_heap.allocException(inst.tag_index, exc_args)) |r| break :blk r;
+                        const roots = try self.collectGcRoots(call_stack.items, globals);
+                        defer self.allocator.free(roots);
+                        store.gc_heap.collect(roots, composite_types, struct_layouts, array_layouts);
+                        break :blk store.gc_heap.allocException(inst.tag_index, exc_args) orelse
+                            return .{ .trap = Trap.fromTrapCode(.OutOfMemory) };
+                    };
+
+                    // Search for a matching handler and, if found, jump there.
+                    if (try self.dispatchException(inst.tag_index, exn_ref, &call_stack, &eh_stack, store)) {
+                        continue;
+                    }
+                    return .{ .trap = Trap.fromTrapCode(.UnhandledException) };
+                },
+                .throw_ref => |inst| {
+                    // inst.ref is a slot containing an exnref (encoded GcRef).
+                    const exn_raw = slots[inst.ref];
+                    const exn_ref = exn_raw.readAsGcRef();
+                    if (exn_ref.asHeapIndex() == null) {
+                        // Null exnref: trap per spec.
+                        return .{ .trap = Trap.fromTrapCode(.NullReference) };
+                    }
+                    const tag_index = store.gc_heap.exceptionTagIndex(exn_ref);
+
+                    if (try self.dispatchException(tag_index, exn_ref, &call_stack, &eh_stack, store)) {
+                        continue;
+                    }
+                    return .{ .trap = Trap.fromTrapCode(.UnhandledException) };
+                },
+                .try_table_enter => |inst| {
+                    // Register the handler region on the EH stack.
+                    try eh_stack.append(self.allocator, .{
+                        .call_stack_depth = call_stack.items.len,
+                        .handlers_start = inst.handlers_start,
+                        .handlers_len = inst.handlers_len,
+                    });
+                },
+                .try_table_leave => |inst| {
+                    // Pop the innermost EH handler frame and jump to the continuation.
+                    _ = eh_stack.pop();
+                    call_stack.items[frame_idx].pc = inst.target;
+                    continue;
+                },
                 // ── return ────────────────────────────────────────────────────────
                 .ret => |inst| {
                     const ret_val: ?RawVal = if (inst.value) |slot|
@@ -2040,5 +2113,88 @@ pub const VM = struct {
         gc_heap.collect(roots, composite_types, struct_layouts, array_layouts);
 
         return gc_heap.alloc(size); // null means heap is truly exhausted
+    }
+
+    /// Search the EH stack for a handler matching `tag_index`, and if found,
+    /// set up the destination slots and jump to the handler.
+    ///
+    /// Returns `true` if a handler was found and dispatched (caller should `continue`),
+    /// `false` if no handler was found (caller should trap).
+    ///
+    /// This function may unwind call frames from `call_stack` when the matching
+    /// handler lives in a shallower frame.
+    fn dispatchException(
+        self: *VM,
+        tag_index: u32,
+        exn_ref: GcRef,
+        call_stack: *std.ArrayListUnmanaged(CallFrame),
+        eh_stack: *std.ArrayListUnmanaged(EhFrame),
+        store: *Store,
+    ) Allocator.Error!bool {
+
+        // Walk the EH stack from innermost (top) to outermost (bottom).
+        while (eh_stack.items.len > 0) {
+            const eh = &eh_stack.items[eh_stack.items.len - 1];
+
+            // The function that owns this try region.
+            const target_frame_idx = eh.call_stack_depth - 1;
+            const target_frame = &call_stack.items[target_frame_idx];
+            const handlers = target_frame.func.catch_handler_tables.items[eh.handlers_start .. eh.handlers_start + eh.handlers_len];
+
+            // Check each handler in this try region.
+            for (handlers) |h| {
+                const matched: bool = switch (h.kind) {
+                    .catch_tag, .catch_tag_ref => h.tag_index == tag_index,
+                    .catch_all, .catch_all_ref => true,
+                };
+                if (!matched) continue;
+
+                // Found a matching handler.
+                // Unwind call frames back to the target frame.
+                while (call_stack.items.len > eh.call_stack_depth) {
+                    const popped = call_stack.pop().?;
+                    self.allocator.free(popped.slots);
+                }
+                // Also pop all EH frames that were inside the unwound frames.
+                while (eh_stack.items.len > 0 and eh_stack.items[eh_stack.items.len - 1].call_stack_depth > eh.call_stack_depth) {
+                    _ = eh_stack.pop();
+                }
+                // Pop this EH frame itself.
+                _ = eh_stack.pop();
+
+                // Get (possibly updated) target frame slots.
+                const tgt_slots = call_stack.items[call_stack.items.len - 1].slots;
+                const tgt_func = call_stack.items[call_stack.items.len - 1].func;
+
+                // Copy exception payload into destination slots.
+                switch (h.kind) {
+                    .catch_tag => {
+                        const n = h.dst_slots_len;
+                        const dst_start = h.dst_slots_start;
+                        // dst_slots are stored in the function's call_args pool.
+                        const dst_slots = tgt_func.call_args.items[dst_start .. dst_start + n];
+                        var i: u32 = 0;
+                        while (i < n) : (i += 1) {
+                            tgt_slots[dst_slots[i]] = store.gc_heap.exceptionArg(exn_ref, i);
+                        }
+                    },
+                    .catch_tag_ref, .catch_all_ref => {
+                        tgt_slots[h.dst_ref] = RawVal.fromGcRef(exn_ref);
+                    },
+                    .catch_all => {
+                        // No payload to copy.
+                    },
+                }
+
+                // Jump to the handler target.
+                call_stack.items[call_stack.items.len - 1].pc = h.target;
+                return true;
+            }
+
+            // No handler matched in this try region; pop it and try the next outer one.
+            _ = eh_stack.pop();
+        }
+
+        return false;
     }
 };

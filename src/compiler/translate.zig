@@ -59,6 +59,8 @@ pub fn wasmValTypeFromType(typ: Type) TranslateError!ValType {
             .i31ref => ValType.i31ref(),
             .structref => ValType.structref(),
             .arrayref => ValType.arrayref(),
+            .exnref => ValType.exnref(),
+            .null_exnref => ValType.nullexnref(),
             else => error.UnsupportedFunctionType,
         },
         .ref_type => |ref_type| blk: {
@@ -74,6 +76,8 @@ pub fn wasmValTypeFromType(typ: Type) TranslateError!ValType {
                     .i31ref => HeapType.I31,
                     .structref => HeapType.Struct,
                     .arrayref => HeapType.Array,
+                    .exnref => HeapType.Exn,
+                    .null_exnref => HeapType.NoExn,
                     else => return error.UnsupportedFunctionType,
                 },
                 .index => |idx| HeapType.fromConcreteType(idx),
@@ -527,6 +531,20 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         // ── GC Extern/Any conversion instructions ──────────────────────────────────
         .any_convert_extern => WasmOp.any_convert_extern,
         .extern_convert_any => WasmOp.extern_convert_any,
+
+        // ── Exception Handling instructions ────────────────────────────────────────
+        // throw.n_args is a placeholder (0); module.zig fills in the real arity by
+        // looking up the tag's FuncType (same pattern as call.n_params).
+        .throw => WasmOp{
+            .throw = .{
+                .tag_index = info.tag_index orelse return error.UnsupportedOperator,
+                .n_args = 0, // placeholder, filled by module.zig
+            },
+        },
+        .throw_ref => WasmOp.throw_ref,
+        // .try_table is handled as a special case in module.zig compileFunctionBody
+        // (needs an allocator for CatchHandlerWasm slice conversion) and therefore
+        // never reaches this function.
 
         else => |op| {
             std.debug.print("UnsupportedOperator: {s}\n", .{@tagName(op)});

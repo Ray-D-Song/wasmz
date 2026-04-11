@@ -848,6 +848,63 @@ pub const Op = union(enum) {
         dst: Slot,
         ref: Slot,
     },
+
+    // ── Exception Handling instructions ───────────────────────────────────────────
+    /// throw: allocate exception with tag `tag_index` and args, then unwind.
+    /// Args are stored in CompiledFunction.call_args (reusing that pool).
+    throw: struct {
+        tag_index: u32,
+        args_start: u32,
+        args_len: u32,
+    },
+    /// throw_ref: re-throw an existing exception reference from `ref` slot.
+    throw_ref: struct {
+        ref: Slot,
+    },
+    /// try_table_enter: announce the start of a try_table region and register its handlers.
+    /// Handlers are stored in CompiledFunction.catch_handler_tables indexed by
+    /// (handlers_start, handlers_len).  `end_target` is the op index just after
+    /// the last handler arm (where normal flow resumes after the try block exits).
+    try_table_enter: struct {
+        handlers_start: u32,
+        handlers_len: u32,
+        /// Op index of the instruction immediately after this try region's body
+        /// (the point normal/non-exception control flow jumps to).
+        end_target: u32,
+    },
+    /// try_table_leave: pop the innermost handler frame and jump to `target`.
+    /// Emitted at the end of every try-table body (for both normal exit and
+    /// each catch arm's cleanup edge).
+    try_table_leave: struct {
+        target: u32,
+    },
+};
+
+/// A single catch arm inside a try_table block.
+pub const CatchHandlerKind = enum(u8) {
+    /// catch <tag> — caught values pushed to `dst_slots`
+    catch_tag,
+    /// catch_ref <tag> — exception reference pushed to `dst_ref`
+    catch_tag_ref,
+    /// catch_all — no tag check, no value push (dst_slots unused)
+    catch_all,
+    /// catch_all_ref — no tag check, exception reference pushed to `dst_ref`
+    catch_all_ref,
+};
+
+pub const CatchHandlerEntry = struct {
+    kind: CatchHandlerKind,
+    /// Tag index to match (unused for catch_all / catch_all_ref).
+    tag_index: u32,
+    /// Op index to jump to when this handler fires.
+    target: u32,
+    /// For catch_tag: starting slot index for extracted exception payload values.
+    /// Slots are allocated consecutively starting here.
+    dst_slots_start: u32,
+    /// Number of payload slots (== tag arity for catch_tag; 0 for others).
+    dst_slots_len: u32,
+    /// For catch_tag_ref / catch_all_ref: slot that receives the exnref.
+    dst_ref: Slot,
 };
 
 pub const CompiledFunction = struct {
@@ -855,8 +912,12 @@ pub const CompiledFunction = struct {
     ops: std.ArrayListUnmanaged(Op),
     /// All call instruction argument slots are stored here (concatenated in call order).
     /// Op.call indexes into the corresponding argument slot segment using (args_start, args_len).
+    /// Op.throw also indexes here for its exception payload arguments.
     call_args: std.ArrayListUnmanaged(Slot),
     /// Resolved target PCs for jump_table (br_table) ops.
     /// Each jump_table op indexes into this with (targets_start, targets_len).
     br_table_targets: std.ArrayListUnmanaged(u32),
+    /// Catch handler tables for try_table_enter ops.
+    /// Each try_table_enter indexes into this with (handlers_start, handlers_len).
+    catch_handler_tables: std.ArrayListUnmanaged(CatchHandlerEntry),
 };

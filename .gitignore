@@ -8,7 +8,7 @@ zig-out/
 playgrounds/
 
 tests/**/*.wasm
-*.wasm
+*.wat
 
 *.map
 *.js

@@ -221,7 +221,7 @@ fn parse_single_function_module(allocator: std.mem.Allocator, wasm: []const u8) 
 }
 
 fn lowerParsedFunction(allocator: std.mem.Allocator, reserved_slots: u32, body_expr: []const u8) !CompiledFunction {
-    return try compileFunctionBody(allocator, reserved_slots, body_expr, .{}, empty_resolver);
+    return try compileFunctionBody(allocator, reserved_slots, body_expr, .{}, empty_resolver, &.{}, .none);
 }
 
 fn executeUnaryOp(op: WasmOp, param: RawVal) !vm_mod.ExecResult {

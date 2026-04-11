@@ -4,6 +4,9 @@
 ///   wasmz <file.wasm>                          List exported functions
 ///   wasmz <file.wasm> <func_name> [i32_args]   Call the specified function and print the return value
 ///
+/// Flags:
+///   --legacy-exceptions   Force the legacy exception-handling proposal (try/catch/rethrow/delegate)
+///
 /// Current limitations:
 ///   - Function arguments only support i32 (parsed as decimal integers)
 ///   - Return values are printed as i32 (void functions do not output)
@@ -33,6 +36,64 @@ const HostFunc = wasmz.HostFunc;
 const HostContext = wasmz.HostContext;
 const ValType = wasmz.ValType;
 
+const CliArgs = struct {
+    file_path: []const u8,
+    func_name: ?[]const u8,
+    i32_args: []const []const u8,
+    legacy_exceptions: bool,
+    positional: []const []const u8,
+
+    fn parse(allocator: std.mem.Allocator) !CliArgs {
+        const args = try std.process.argsAlloc(allocator);
+        defer std.process.argsFree(allocator, args);
+
+        var legacy_exceptions = false;
+        var positional_buf: [16][]const u8 = undefined;
+        var positional_count: usize = 0;
+        for (args[1..]) |arg| {
+            if (std.mem.eql(u8, arg, "--legacy-exceptions")) {
+                legacy_exceptions = true;
+            } else {
+                if (positional_count >= positional_buf.len) {
+                    std.debug.print("error: too many arguments\n", .{});
+                    std.process.exit(1);
+                }
+                positional_buf[positional_count] = arg;
+                positional_count += 1;
+            }
+        }
+        const positional = allocator.dupe([]const u8, positional_buf[0..positional_count]) catch {
+            std.debug.print("error: out of memory\n", .{});
+            std.process.exit(1);
+        };
+
+        if (positional.len < 1) {
+            return error.MissingFilePath;
+        }
+
+        const file_path = positional[0];
+        if (!std.mem.endsWith(u8, file_path, ".wasm")) {
+            std.debug.print("error: {s}: Unsupported file extension, expected .wasm\n", .{file_path});
+            std.process.exit(1);
+        }
+
+        const func_name: ?[]const u8 = if (positional.len >= 2) positional[1] else null;
+        const i32_args = if (positional.len >= 3) positional[2..] else &.{};
+
+        return .{
+            .file_path = file_path,
+            .func_name = func_name,
+            .i32_args = i32_args,
+            .legacy_exceptions = legacy_exceptions,
+            .positional = positional,
+        };
+    }
+
+    fn deinit(self: *CliArgs, allocator: std.mem.Allocator) void {
+        allocator.free(self.positional);
+    }
+};
+
 pub fn main() void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -58,24 +119,22 @@ fn host_print_i32(_: ?*anyopaque, _: *HostContext, params: []const RawVal, _: []
 }
 
 fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    const cli_args = CliArgs.parse(allocator) catch |err| {
+        switch (err) {
+            error.MissingFilePath => {
+                try stdout.writeAll(
+                    \\Usage:
+                    \\  wasmz [--legacy-exceptions] <file.wasm>                       List exported functions
+                    \\  wasmz [--legacy-exceptions] <file.wasm> <func> [i32_arg...]   Call the specified function and print the return value
+                    \\
+                );
+                std.process.exit(1);
+            },
+            else => return err,
+        }
+    };
 
-    if (args.len < 2) {
-        try stdout.writeAll(
-            \\Usage:
-            \\  wasmz <file.wasm>                       List exported functions
-            \\  wasmz <file.wasm> <func> [i32_arg...]   Call the specified function and print the return value
-            \\
-        );
-        std.process.exit(1);
-    }
-
-    const file_path = args[1];
-    if (!std.mem.endsWith(u8, file_path, ".wasm")) {
-        std.debug.print("error: {s}: Unsupported file extension, expected .wasm\n", .{file_path});
-        std.process.exit(1);
-    }
+    const file_path = cli_args.file_path;
 
     // ── Read file (max 64 MiB) ──────────────────────────────────────────────
 
@@ -93,7 +152,7 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
 
     // ── Compile module ──────────────────────────────────────────────────────────────
 
-    var engine = Engine.init(allocator, Config{}) catch |err| {
+    var engine = Engine.init(allocator, Config{ .legacy_exceptions = cli_args.legacy_exceptions }) catch |err| {
         std.debug.print("error: Failed to initialize engine: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
@@ -112,7 +171,7 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
 
     var wasi_host = wasi_preview1.Host.init(allocator);
     defer wasi_host.deinit();
-    try wasi_host.setArgs(args[1..]);
+    try wasi_host.setArgs(cli_args.positional);
 
     var linker = Linker.empty;
     try wasi_host.addToLinker(&linker, allocator);
@@ -132,7 +191,7 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
 
     // ── No function name → List exports or run _start ─────────────────────────
 
-    if (args.len < 3) {
+    if (cli_args.func_name == null) {
         // If the module exports a "_start" function, call it automatically (WASI command pattern)
         if (module.exports.get("_start")) |_| {
             const result = instance.call("_start", &.{}) catch |err| {
@@ -166,12 +225,12 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
 
     // ── Parse i32 arguments and call function ───────────────────────────────────────────────
 
-    const func_name = args[2];
+    const func_name = cli_args.func_name.?;
 
     var call_args = std.ArrayList(RawVal){};
     defer call_args.deinit(allocator);
 
-    for (args[3..]) |arg| {
+    for (cli_args.i32_args) |arg| {
         const val = std.fmt.parseInt(i32, arg, 10) catch |err| {
             std.debug.print("error: Argument \"{s}\" is not a valid i32: {s}\n", .{ arg, @errorName(err) });
             std.process.exit(1);

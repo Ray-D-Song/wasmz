@@ -28,7 +28,7 @@ pub const LowerError = error{
 // ── Control flow ──────────────────────────────────────────────────────────────
 
 /// Which WASM structured-control construct opened this frame.
-pub const BlockKind = enum { block, loop, if_ };
+pub const BlockKind = enum { block, loop, if_, try_table };
 
 /// A single entry on the control stack, created when we enter a block/loop/if.
 pub const ControlFrame = struct {
@@ -46,9 +46,24 @@ pub const ControlFrame = struct {
     /// Indices into compiled.ops that hold `jump` / `jump_if_z` ops whose
     /// target needs to be patched when we know where `end` lands.
     patch_sites: std.ArrayListUnmanaged(u32) = .empty,
+    /// For try_table frames: the op-index of the `try_table_enter` op.
+    /// We need it to backpatch the `end_target` field once we see `end`.
+    try_table_enter_pc: ?u32 = null,
 };
 
 // ── Input op enum ─────────────────────────────────────────────────────────────
+
+/// A single catch arm as parsed (used in try_table WasmOp).
+/// This mirrors payload.CatchHandler but uses our local types.
+pub const CatchHandlerWasm = struct {
+    kind: @import("payload").CatchHandlerKind,
+    tag_index: ?u32,
+    /// Branch depth within the try_table block's label context.
+    depth: u32,
+    /// Number of values the tag carries (== tag FuncType params().len).
+    /// 0 for catch_all / catch_all_ref.
+    tag_arity: u32,
+};
 
 pub const WasmOp = union(enum) {
     unreachable_,
@@ -464,6 +479,22 @@ pub const WasmOp = union(enum) {
     any_convert_extern,
     /// extern.convert_any: pop anyref, push externref (type conversion).
     extern_convert_any,
+
+    // ── Exception Handling instructions ───────────────────────────────────────────
+    /// throw: pop N args from stack (per tag arity), throw exception with the given tag.
+    throw: struct {
+        tag_index: u32,
+        /// Number of arguments to pop (== tag's FuncType param count). Filled by module.zig.
+        n_args: u32,
+    },
+    /// throw_ref: pop exnref from stack, re-throw.
+    throw_ref,
+    /// try_table: begin a try block with a set of catch handlers.
+    /// handlers is the slice of catch arms (from the parser).
+    try_table: struct {
+        block_type: ?BlockType,
+        handlers: []const CatchHandlerWasm,
+    },
 };
 
 /// Block/loop/if result type. null means void (no result).
@@ -480,6 +511,7 @@ pub const Lower = struct {
         .ops = .empty,
         .call_args = .empty,
         .br_table_targets = .empty,
+        .catch_handler_tables = .empty,
     },
     stack: ValueStack = .{},
     next_slot: Slot = 0,
@@ -498,6 +530,7 @@ pub const Lower = struct {
                 .ops = .empty,
                 .call_args = .empty,
                 .br_table_targets = .empty,
+                .catch_handler_tables = .empty,
             },
             .next_slot = reserved_slots,
         };
@@ -508,6 +541,7 @@ pub const Lower = struct {
         self.compiled.ops.deinit(self.allocator);
         self.compiled.call_args.deinit(self.allocator);
         self.compiled.br_table_targets.deinit(self.allocator);
+        self.compiled.catch_handler_tables.deinit(self.allocator);
         for (self.control_stack.items) |*frame| {
             frame.patch_sites.deinit(self.allocator);
         }
@@ -516,7 +550,7 @@ pub const Lower = struct {
 
     // ── Slot helpers ──────────────────────────────────────────────────────────
 
-    fn alloc_slot(self: *Lower) Slot {
+    pub fn alloc_slot(self: *Lower) Slot {
         const slot = self.next_slot;
         self.next_slot += 1;
         if (self.compiled.slots_len < self.next_slot) {
@@ -525,12 +559,12 @@ pub const Lower = struct {
         return slot;
     }
 
-    fn emit(self: *Lower, op: Op) !void {
+    pub fn emit(self: *Lower, op: Op) !void {
         try self.compiled.ops.append(self.allocator, op);
     }
 
     /// Current index that the *next* emitted op will occupy.
-    fn current_pc(self: *Lower) u32 {
+    pub fn current_pc(self: *Lower) u32 {
         return @intCast(self.compiled.ops.items.len);
     }
 
@@ -553,7 +587,7 @@ pub const Lower = struct {
 
     /// Restore the value stack to the height recorded in `frame`, then
     /// optionally push the frame's result slot back (if the frame has one).
-    fn unwind_stack_to_frame(self: *Lower, frame: *const ControlFrame) !void {
+    pub fn unwind_stack_to_frame(self: *Lower, frame: *const ControlFrame) !void {
         // Truncate the value stack to the frame's entry height.
         self.stack.slots.shrinkRetainingCapacity(frame.stack_height);
         // If this frame produces a value, push the result slot so downstream
@@ -572,12 +606,16 @@ pub const Lower = struct {
     /// Fill in all forward-jump targets in `frame` to point to `target_pc`.
     /// Patch sites with bit 31 set encode br_table_targets indices (bit 31 cleared gives the index).
     /// All other sites are op indices for jump / jump_if_z / br_on_* ops.
-    fn patch_forward_jumps(self: *Lower, frame: *ControlFrame, target_pc: u32) void {
+    pub fn patch_forward_jumps(self: *Lower, frame: *ControlFrame, target_pc: u32) void {
         for (frame.patch_sites.items) |site| {
             if (site & 0x8000_0000 != 0) {
                 // br_table_targets patch site
                 const tgt_idx = site & 0x7FFF_FFFF;
                 self.compiled.br_table_targets.items[tgt_idx] = target_pc;
+            } else if (site & 0x4000_0000 != 0) {
+                // catch_handler_tables patch site
+                const handler_idx = site & 0x3FFF_FFFF;
+                self.compiled.catch_handler_tables.items[handler_idx].target = target_pc;
             } else {
                 switch (self.compiled.ops.items[site]) {
                     .jump => |*j| j.target = target_pc,
@@ -586,6 +624,7 @@ pub const Lower = struct {
                     .br_on_non_null => |*j| j.target = target_pc,
                     .br_on_cast => |*j| j.target = target_pc,
                     .br_on_cast_fail => |*j| j.target = target_pc,
+                    .try_table_leave => |*j| j.target = target_pc,
                     else => unreachable,
                 }
             }
@@ -837,6 +876,23 @@ pub const Lower = struct {
                 if (frame.result_slot) |rs| {
                     if (self.stack.peek()) |src| {
                         try self.emit(.{ .copy = .{ .dst = rs, .src = src } });
+                    }
+                }
+
+                // For try_table: emit try_table_leave (normal-exit jump) and
+                // backpatch try_table_enter.end_target to point here.
+                if (frame.kind == .try_table) {
+                    // Record pc of try_table_leave as a patch site (forward jump to continuation).
+                    const leave_pc = self.current_pc();
+                    try self.emit(.{ .try_table_leave = .{ .target = 0 } });
+                    try frame.patch_sites.append(self.allocator, leave_pc);
+
+                    // Backpatch try_table_enter.end_target.
+                    if (frame.try_table_enter_pc) |epc| {
+                        switch (self.compiled.ops.items[epc]) {
+                            .try_table_enter => |*e| e.end_target = leave_pc,
+                            else => unreachable,
+                        }
                     }
                 }
 
@@ -2169,6 +2225,172 @@ pub const Lower = struct {
                     .ref = ref,
                 } });
                 try self.stack.push(self.allocator, dst);
+            },
+
+            // ── Exception Handling ────────────────────────────────────────────────────
+
+            // throw: pop n_args values from the stack (last pushed == first arg in reverse),
+            // allocate exception args in call_args pool, emit throw.
+            // n_args must have been filled in by module.zig before lowerOp is called.
+            .throw => |inst| {
+                const args_start: u32 = @intCast(self.compiled.call_args.items.len);
+                var i: u32 = 0;
+                while (i < inst.n_args) : (i += 1) {
+                    const slot = try self.pop_slot();
+                    try self.compiled.call_args.append(self.allocator, slot);
+                }
+                // Reverse so that the first argument comes first in call_args
+                const args = self.compiled.call_args.items[args_start..];
+                std.mem.reverse(Slot, args);
+
+                try self.emit(.{ .throw = .{
+                    .tag_index = inst.tag_index,
+                    .args_start = args_start,
+                    .args_len = inst.n_args,
+                } });
+
+                // throw is a control-flow terminator; mark subsequent code unreachable.
+                self.stack.slots.shrinkRetainingCapacity(0);
+            },
+
+            // throw_ref: pop exnref slot, emit throw_ref.
+            .throw_ref => {
+                const ref = try self.pop_slot();
+                try self.emit(.{ .throw_ref = .{ .ref = ref } });
+                // throw_ref is also a control-flow terminator.
+                self.stack.slots.shrinkRetainingCapacity(0);
+            },
+
+            // try_table: begin a try block with catch handlers.
+            //
+            // Layout emitted:
+            //   [try_table_enter { handlers_start, handlers_len, end_target=0(patched) }]
+            //   <body ops ...>
+            //   [try_table_leave { target=<after continuation> }]   <- normal exit
+            //   [after continuation: ...]
+            //
+            // The try_table block itself acts as a label for br depth=0.
+            // Each catch arm's br_depth is resolved to the appropriate enclosing frame.
+            // The CatchHandlerEntry.target field is patched via the outer frame's patch_sites
+            // using the encoding:  0x4000_0000 | catch_handler_tables_index.
+            .try_table => |inst| {
+                // Allocate result slot for the block type if any.
+                const result_slot: ?Slot = if (inst.block_type != null) blk: {
+                    const s = self.alloc_slot();
+                    break :blk s;
+                } else null;
+
+                // Translate each CatchHandlerWasm into a CatchHandlerEntry and
+                // store them in compiled.catch_handler_tables.
+                // We also register forward patch sites on the target frames so that
+                // when those frames' `end` is processed, CatchHandlerEntry.target is filled in.
+                const handlers_start: u32 = @intCast(self.compiled.catch_handler_tables.items.len);
+                for (inst.handlers) |h| {
+                    const handler_kind: ir.CatchHandlerKind = switch (h.kind) {
+                        .catch_ => .catch_tag,
+                        .catch_ref => .catch_tag_ref,
+                        .catch_all => .catch_all,
+                        .catch_all_ref => .catch_all_ref,
+                    };
+
+                    const handler_idx: u32 = @intCast(self.compiled.catch_handler_tables.items.len);
+
+                    // Resolve the target frame for this handler, so we can use its
+                    // result_slot as the destination for payload values.
+                    //
+                    // IMPORTANT: depth is relative to the label stack *before* the
+                    // try_table frame is pushed.  depth=0 refers to the immediately
+                    // enclosing block/loop/if, NOT the try_table itself.
+                    const target_result_slot: ?Slot = blk: {
+                        if (h.depth < self.control_stack.items.len) {
+                            const tgt = try self.frame_at_depth(h.depth);
+                            break :blk tgt.result_slot;
+                        }
+                        break :blk null;
+                    };
+
+                    // Allocate destination slots based on handler kind and tag arity.
+                    // For catch_tag with arity 1 targeting a block with a result_slot,
+                    // reuse the block's result_slot so the VM writes directly there.
+                    const dst_slots_start: u32 = @intCast(self.compiled.call_args.items.len);
+                    var dst_slots_len: u32 = 0;
+                    var dst_ref: Slot = 0;
+                    switch (h.kind) {
+                        .catch_ => {
+                            dst_slots_len = h.tag_arity;
+                            if (h.tag_arity == 1 and target_result_slot != null) {
+                                // Reuse the target block's result slot directly.
+                                try self.compiled.call_args.append(self.allocator, target_result_slot.?);
+                            } else {
+                                // Allocate one slot per tag argument.
+                                var ai: u32 = 0;
+                                while (ai < h.tag_arity) : (ai += 1) {
+                                    const s = self.alloc_slot();
+                                    try self.compiled.call_args.append(self.allocator, s);
+                                }
+                            }
+                        },
+                        .catch_ref => {
+                            dst_ref = if (target_result_slot) |rs| rs else self.alloc_slot();
+                        },
+                        .catch_all => {},
+                        .catch_all_ref => {
+                            dst_ref = if (target_result_slot) |rs| rs else self.alloc_slot();
+                        },
+                    }
+
+                    try self.compiled.catch_handler_tables.append(self.allocator, .{
+                        .kind = handler_kind,
+                        .tag_index = h.tag_index orelse 0,
+                        .target = 0, // patched via outer frame patch_sites
+                        .dst_slots_start = dst_slots_start,
+                        .dst_slots_len = dst_slots_len,
+                        .dst_ref = dst_ref,
+                    });
+
+                    // Resolve the br_depth to the target frame and register a patch site.
+                    //
+                    // IMPORTANT: depth is relative to the label stack *before* the
+                    // try_table frame is pushed.  All depths (including 0) refer to
+                    // already-pushed frames on the control stack.
+                    if (h.depth < self.control_stack.items.len) {
+                        const target_frame = try self.frame_at_depth(h.depth);
+                        if (target_frame.kind == .loop) {
+                            // Backward jump: target is known immediately.
+                            self.compiled.catch_handler_tables.items[handler_idx].target = target_frame.target_pc;
+                        } else {
+                            // Forward jump: patch when target frame's 'end' is seen.
+                            try target_frame.patch_sites.append(self.allocator, 0x4000_0000 | handler_idx);
+                        }
+                    }
+                }
+                const handlers_len: u32 = @intCast(inst.handlers.len);
+
+                // Emit try_table_enter (end_target patched at 'end').
+                const enter_pc = self.current_pc();
+                try self.emit(.{
+                    .try_table_enter = .{
+                        .handlers_start = handlers_start,
+                        .handlers_len = handlers_len,
+                        .end_target = 0, // placeholder
+                    },
+                });
+
+                // Push control frame for this try_table block.
+                const try_frame: ControlFrame = .{
+                    .kind = .try_table,
+                    .stack_height = self.stack.len(),
+                    .result_slot = result_slot,
+                    .target_pc = 0, // forward — filled at end
+                    .try_table_enter_pc = enter_pc,
+                };
+
+                // NOTE: depth-0 patch sites are already registered on the correct
+                // enclosing frame above (not on try_frame).  The try_table frame's
+                // own patch_sites are only for br instructions targeting the try_table
+                // block from inside the body.
+
+                try self.control_stack.append(self.allocator, try_frame);
             },
         }
     }

@@ -49,6 +49,14 @@ pub const ValType = union(enum) {
         return .{ .Ref = ref_type.RefType.nullexternref() };
     }
 
+    pub fn exnref() ValType {
+        return .{ .Ref = ref_type.RefType.exnref() };
+    }
+
+    pub fn nullexnref() ValType {
+        return .{ .Ref = ref_type.RefType.nullexnref() };
+    }
+
     pub fn eql(self: ValType, other: ValType) bool {
         return std.meta.eql(self, other);
     }
