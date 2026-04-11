@@ -210,8 +210,10 @@ pub const HostFunc = struct {
 /// Two-level string map: module name -> function name -> HostFunc.
 pub const Linker = struct {
     map: std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(HostFunc)),
+    /// Two-level string map for imported globals: module name -> global name -> RawVal (initial value).
+    global_map: std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(RawVal)),
 
-    pub const empty: Linker = .{ .map = .empty };
+    pub const empty: Linker = .{ .map = .empty, .global_map = .empty };
 
     pub fn define(
         self: *Linker,
@@ -236,12 +238,43 @@ pub const Linker = struct {
         return inner.get(func_name);
     }
 
+    /// Register a global import value with the linker.
+    /// The module_name and global_name keys are not copied; the caller must ensure they remain valid.
+    pub fn defineGlobal(
+        self: *Linker,
+        allocator: Allocator,
+        module_name: []const u8,
+        global_name: []const u8,
+        value: RawVal,
+    ) Allocator.Error!void {
+        const gop = try self.global_map.getOrPut(allocator, module_name);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = .empty;
+        }
+        try gop.value_ptr.put(allocator, global_name, value);
+    }
+
+    /// Look up a global import value by (module_name, global_name).
+    pub fn getGlobal(
+        self: *const Linker,
+        module_name: []const u8,
+        global_name: []const u8,
+    ) ?RawVal {
+        const inner = self.global_map.get(module_name) orelse return null;
+        return inner.get(global_name);
+    }
+
     pub fn deinit(self: *Linker, allocator: Allocator) void {
         var it = self.map.valueIterator();
         while (it.next()) |inner| {
             inner.deinit(allocator);
         }
         self.map.deinit(allocator);
+        var git = self.global_map.valueIterator();
+        while (git.next()) |inner| {
+            inner.deinit(allocator);
+        }
+        self.global_map.deinit(allocator);
         self.* = .empty;
     }
 };

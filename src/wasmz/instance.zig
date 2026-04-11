@@ -83,17 +83,31 @@ pub const Instance = struct {
     pub fn init(store: *Store, module: *const Module, imports: Linker) InstanceError!Instance {
         const allocator = store.allocator;
 
+        // ── 0. resolve imported global values ───────────────────────────────────
+        // Build a flat slice of RawVal for each imported global, in the order they
+        // appear in the Import Section.  These values are used by global.get in
+        // constant expressions (Wasm spec: global.get in const expr can only
+        // reference imported globals).  Missing imported globals default to zero.
+        const imported_global_values = try allocator.alloc(RawVal, module.imported_globals.len);
+        defer allocator.free(imported_global_values);
+        for (module.imported_globals, 0..) |def, i| {
+            imported_global_values[i] = imports.getGlobal(def.module_name, def.global_name) orelse
+                RawVal.fromBits64(0);
+        }
+
         // ── 1. copy globals ──────────────────────────────────────────
         const globals = try allocator.alloc(Global, module.globals.len);
         errdefer allocator.free(globals);
 
         for (module.globals, 0..) |global_init, i| {
             if (global_init.init_expr) |init_expr| {
-                // Deferred GC const expr — evaluate at runtime using the store's GC heap.
+                // Deferred const expr — evaluate at runtime.
+                // Pass imported_global_values so global.get can resolve imported globals.
                 const value = evaluateGcConstExpr(
                     store.allocator,
                     &store.gc_heap,
                     init_expr,
+                    imported_global_values,
                     globals[0..i],
                     module.composite_types,
                     module.struct_layouts,
@@ -212,16 +226,25 @@ pub const Instance = struct {
         if (shared.capacity() < required_capacity) return error.SharedMemoryTooSmall;
 
         // ── 1. copy globals ────────────────────────────────────────────────────
+        // Resolve imported global values first for use in global.get const exprs.
+        const imported_global_values_shared = try allocator.alloc(RawVal, module.imported_globals.len);
+        defer allocator.free(imported_global_values_shared);
+        for (module.imported_globals, 0..) |def, i| {
+            imported_global_values_shared[i] = imports.getGlobal(def.module_name, def.global_name) orelse
+                RawVal.fromBits64(0);
+        }
+
         const globals = try allocator.alloc(Global, module.globals.len);
         errdefer allocator.free(globals);
 
         for (module.globals, 0..) |global_init, i| {
             if (global_init.init_expr) |init_expr| {
-                // Deferred GC const expr — evaluate at runtime using the store's GC heap.
+                // Deferred const expr — evaluate at runtime.
                 const value = evaluateGcConstExpr(
                     store.allocator,
                     &store.gc_heap,
                     init_expr,
+                    imported_global_values_shared,
                     globals[0..i],
                     module.composite_types,
                     module.struct_layouts,
@@ -393,7 +416,7 @@ const GcConstExprError = error{
 /// Implements a minimal Wasm stack machine supporting the const-expr subset:
 ///   - i32.const, i64.const, f32.const, f64.const
 ///   - ref.null, ref.func
-///   - global.get (from already-initialized globals)
+///   - global.get (imported globals via imported_global_values; module globals via initialized_globals)
 ///   - struct.new, struct.new_default
 ///   - array.new_default, array.new_fixed
 ///   - ref.cast (passthrough in const expr context)
@@ -403,6 +426,9 @@ fn evaluateGcConstExpr(
     allocator: Allocator,
     gc_heap: *GcHeap,
     expr: []const u8,
+    /// Values for imported globals (index 0..n_imported-1 in the global index space).
+    imported_global_values: []const RawVal,
+    /// Already-initialized module-defined globals (index n_imported..i-1 in the global index space).
     initialized_globals: []const Global,
     composite_types: []const CompositeType,
     struct_layouts: []const ?StructLayout,
@@ -430,8 +456,16 @@ fn evaluateGcConstExpr(
             .global_get => {
                 if (sp >= stack.len) return error.StackUnderflow;
                 const global_idx = info.global_index orelse return error.UnsupportedOpcode;
-                if (global_idx >= initialized_globals.len) return error.BadTypeIndex;
-                stack[sp] = initialized_globals[global_idx].value;
+                const n_imported = imported_global_values.len;
+                if (global_idx < n_imported) {
+                    // Wasm spec: const expr global.get may only reference imported globals.
+                    stack[sp] = imported_global_values[global_idx];
+                } else {
+                    // Fallback: reference a previously-initialized module-defined global.
+                    const local_idx = global_idx - n_imported;
+                    if (local_idx >= initialized_globals.len) return error.BadTypeIndex;
+                    stack[sp] = initialized_globals[local_idx].value;
+                }
                 sp += 1;
             },
             .struct_new => {
