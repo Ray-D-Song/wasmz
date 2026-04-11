@@ -27,6 +27,9 @@ const eh_new_catch_wasm = @embedFile("fixtures/eh_new_catch.wasm");
 /// New proposal: catch_ref + throw_ref → rethrows, should trap UnhandledException
 const eh_new_throw_ref_wasm = @embedFile("fixtures/eh_new_throw_ref.wasm");
 
+/// New proposal: catch_ref delivers [payload, exnref] into a multi-value block → returns payload
+const eh_new_catch_ref_wasm = @embedFile("fixtures/eh_new_catch_ref.wasm");
+
 /// Legacy proposal: try/catch $t → returns i32 payload (42)
 const eh_legacy_catch_wasm = @embedFile("fixtures/eh_legacy_catch.wasm");
 
@@ -125,6 +128,24 @@ test "EH legacy: rethrow propagates exception to outer catch" {
     defer store.deinit();
 
     var module = try Module.compile(engine, eh_legacy_rethrow_wasm);
+    defer module.deinit();
+
+    var instance = try Instance.init(&store, &module, Linker.empty);
+    defer instance.deinit();
+
+    const exec_r = try instance.call("run", &.{});
+    const result = exec_r.ok orelse return error.MissingReturnValue;
+    try testing.expectEqual(@as(i32, 42), result.readAs(i32));
+}
+
+test "EH new: catch_ref delivers [payload, exnref] into multi-value block, drop exnref returns payload" {
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = try Store.init(testing.allocator, engine);
+    defer store.deinit();
+
+    var module = try Module.compile(engine, eh_new_catch_ref_wasm);
     defer module.deinit();
 
     var instance = try Instance.init(&store, &module, Linker.empty);

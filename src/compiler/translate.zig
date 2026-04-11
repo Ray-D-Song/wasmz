@@ -91,15 +91,16 @@ pub fn wasmValTypeFromType(typ: Type) TranslateError!ValType {
 
 /// Translates a Wasm block type (optional Type) into a BlockType used by Lower.
 /// empty_block_type (0x40) corresponds to null (void block).
-/// All single-value types are delegated to wasmValTypeFromType.
-/// TODO: support multi-value block types (positive type index referencing the Type Section).
+/// Single-value types produce BlockType{ .val_type = ... }.
+/// A positive type-section index produces BlockType{ .type_index = idx }.
 pub fn wasmBlockTypeFromType(block_type: ?Type) TranslateError!?BlockType {
     const typ = block_type orelse return error.UnsupportedBlockType;
     return switch (typ) {
         .kind => |kind| switch (kind) {
             .empty_block_type => null,
-            else => try wasmValTypeFromType(typ),
+            else => BlockType{ .val_type = try wasmValTypeFromType(typ) },
         },
+        .index => |idx| BlockType{ .type_index = idx },
         else => error.UnsupportedBlockType,
     };
 }

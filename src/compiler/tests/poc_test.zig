@@ -555,7 +555,7 @@ test "lower if-else selects correct branch" {
 
     const ops = [_]WasmOp{
         .{ .local_get = 0 },
-        .{ .if_ = .I32 },
+        .{ .if_ = .{ .val_type = .I32 } },
         .{ .i32_const = 10 },
         .else_,
         .{ .i32_const = 20 },

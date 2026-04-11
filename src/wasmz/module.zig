@@ -49,9 +49,13 @@ const LowerLegacy = lower_legacy_mod.LowerLegacy;
 const LegacyWasmOp = lower_legacy_mod.LegacyWasmOp;
 const EngineConfig = engine_config_mod.Config;
 
-// TODO: Currently only supports function exports; other export kinds (memory, global, table) are ignored.
-pub const ExportEntry = struct {
+/// Exported item from a Wasm module.
+/// Currently function and tag exports are supported; memory/global/table exports are ignored.
+pub const ExportEntry = union(enum) {
+    /// Index into Module.functions (imports + locals, in Wasm function index space).
     function_index: u32,
+    /// Index into Module.tags (imports + locals, in Wasm tag index space).
+    tag_index: u32,
 };
 
 /// Exception tag definition.
@@ -148,6 +152,7 @@ pub const ModuleCompileError = Allocator.Error ||
         DisabledSimd,
         DisabledRelaxedSimd,
         InvalidTagIndex,
+        InvalidTagImport,
     };
 
 /// Compiled WebAssembly module, holding all data required for runtime execution.
@@ -321,11 +326,18 @@ pub const Module = struct {
         // If no EH opcodes are seen, mode stays .none.
         var detected_eh_mode: EHMode = .none;
 
-        // Pre-scan: collect tag definitions from the Tag Section (section id=13).
-        // Tag section comes AFTER Code section in the binary, so we must gather tags
-        // before the main loop compiles function bodies.
+        // Pre-scan: collect tag definitions in Wasm tag index order:
+        //   [imported tags (Import Section)]  then  [locally defined tags (Tag Section)]
+        // Both sections may come before or after the Code Section, so we gather
+        // everything here before the main compile loop.
         for (payloads) |pre_payload| {
             switch (pre_payload) {
+                .import_entry => |entry| {
+                    if (entry.kind == .tag) {
+                        const tt = if (entry.typ) |t| t.tag else return error.InvalidTagImport;
+                        try tags_list.append(allocator, .{ .type_index = tt.type_index });
+                    }
+                },
                 .tag_type => |tt| {
                     try tags_list.append(allocator, .{ .type_index = tt.type_index });
                 },
@@ -416,6 +428,12 @@ pub const Module = struct {
                             &exports,
                             entry.field,
                             .{ .function_index = entry.index },
+                        ),
+                        .tag => try put_function_export(
+                            allocator,
+                            &exports,
+                            entry.field,
+                            .{ .tag_index = entry.index },
                         ),
                         else => {},
                     }
@@ -1011,6 +1029,7 @@ fn compileFunctionBodyNew(
     defer arena.deinit();
 
     var lower = Lower.initWithReservedSlots(allocator, reserved_slots);
+    lower.func_types = resolver.func_types;
     errdefer lower.deinit();
 
     var cursor: usize = 0;
@@ -1051,6 +1070,7 @@ fn compileFunctionBodyLegacy(
     defer arena.deinit();
 
     var lower_legacy = LowerLegacy.initWithReservedSlots(allocator, reserved_slots);
+    lower_legacy.inner.func_types = resolver.func_types;
     errdefer lower_legacy.deinit();
 
     var cursor: usize = 0;

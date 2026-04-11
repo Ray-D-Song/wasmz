@@ -23,6 +23,7 @@ pub const LowerError = error{
     StackUnderflow,
     ControlStackUnderflow,
     MismatchedEnd,
+    InvalidFunctionType,
 };
 
 // ── Control flow ──────────────────────────────────────────────────────────────
@@ -33,11 +34,19 @@ pub const BlockKind = enum { block, loop, if_, try_table };
 /// A single entry on the control stack, created when we enter a block/loop/if.
 pub const ControlFrame = struct {
     kind: BlockKind,
-    /// Number of values on the value stack at the time this block was entered.
+    /// Number of values on the value stack at the time this block was entered
+    /// (after consuming any block parameters for multi-value blocks).
     /// Used to restore the stack when we branch out of the block.
     stack_height: usize,
-    /// The slot that holds this block's result value (null = void block).
-    result_slot: ?Slot,
+    /// The slots that hold this block's result values (empty = void block).
+    /// For multi-value blocks these are allocated in order: result_slots[0] is
+    /// the first result type, result_slots[N-1] is the last (top of stack).
+    result_slots: std.ArrayListUnmanaged(Slot) = .empty,
+    /// For multi-value blocks: the slots that hold the block's parameter values.
+    /// For loop: br targets param_slots (phi semantics, jumps back to header).
+    /// For block/if: params are consumed on entry and re-pushed immediately,
+    /// so param_slots is only needed to track their slot numbers.
+    param_slots: std.ArrayListUnmanaged(Slot) = .empty,
     /// For block/if: the op-index of the start of the continuation (filled in
     /// when we see `end`).  For loop: the op-index of the loop header (filled
     /// in immediately at open time, since `br` goes back to the top).
@@ -497,10 +506,14 @@ pub const WasmOp = union(enum) {
     },
 };
 
-/// Block/loop/if result type. null means void (no result).
-/// TODO: support multi-value block types (positive type index referencing the Type Section),
-/// which require a union(enum) { val_type: ValType, type_index: u32 } instead of a plain alias.
-pub const BlockType = ValType;
+/// Block/loop/if result type.
+/// - null (as ?BlockType) means void (no result / empty_block_type 0x40).
+/// - .val_type: single-value block result (i32, i64, f32, f64, v128, any ref type).
+/// - .type_index: index into the module's Type Section (multi-value: params and/or multiple results).
+pub const BlockType = union(enum) {
+    val_type: ValType,
+    type_index: u32,
+};
 
 // ── Lowering pass ─────────────────────────────────────────────────────────────
 
@@ -517,6 +530,8 @@ pub const Lower = struct {
     next_slot: Slot = 0,
     /// Control-flow nesting stack.
     control_stack: std.ArrayListUnmanaged(ControlFrame) = .empty,
+    /// Module-level function types (Type Section), used to resolve multi-value block types.
+    func_types: []const core.func_type.FuncType = &.{},
 
     pub fn init(allocator: Allocator) Lower {
         return .{ .allocator = allocator };
@@ -544,11 +559,49 @@ pub const Lower = struct {
         self.compiled.catch_handler_tables.deinit(self.allocator);
         for (self.control_stack.items) |*frame| {
             frame.patch_sites.deinit(self.allocator);
+            frame.result_slots.deinit(self.allocator);
+            frame.param_slots.deinit(self.allocator);
         }
         self.control_stack.deinit(self.allocator);
     }
 
     // ── Slot helpers ──────────────────────────────────────────────────────────
+
+    /// Resolve a ?BlockType into allocated param_slots and result_slots lists.
+    /// For void (null): both lists are empty.
+    /// For .val_type: result_slots has one allocated slot; param_slots is empty.
+    /// For .type_index: looks up the FuncType and allocates one slot per param
+    ///   and one slot per result.
+    ///
+    /// The caller owns the returned lists and must deinit them.
+    pub fn resolve_block_slots(
+        self: *Lower,
+        block_type: ?BlockType,
+    ) !struct { params: std.ArrayListUnmanaged(Slot), results: std.ArrayListUnmanaged(Slot) } {
+        var params: std.ArrayListUnmanaged(Slot) = .empty;
+        errdefer params.deinit(self.allocator);
+        var results: std.ArrayListUnmanaged(Slot) = .empty;
+        errdefer results.deinit(self.allocator);
+
+        const bt = block_type orelse return .{ .params = params, .results = results };
+        switch (bt) {
+            .val_type => {
+                // Single result, no params.
+                try results.append(self.allocator, self.alloc_slot());
+            },
+            .type_index => |idx| {
+                if (idx >= self.func_types.len) return error.InvalidFunctionType;
+                const ft = &self.func_types[idx];
+                for (ft.params()) |_| {
+                    try params.append(self.allocator, self.alloc_slot());
+                }
+                for (ft.results()) |_| {
+                    try results.append(self.allocator, self.alloc_slot());
+                }
+            },
+        }
+        return .{ .params = params, .results = results };
+    }
 
     pub fn alloc_slot(self: *Lower) Slot {
         const slot = self.next_slot;
@@ -586,13 +639,12 @@ pub const Lower = struct {
     }
 
     /// Restore the value stack to the height recorded in `frame`, then
-    /// optionally push the frame's result slot back (if the frame has one).
+    /// push the frame's result slots back (in order: first result at bottom).
     pub fn unwind_stack_to_frame(self: *Lower, frame: *const ControlFrame) !void {
         // Truncate the value stack to the frame's entry height.
         self.stack.slots.shrinkRetainingCapacity(frame.stack_height);
-        // If this frame produces a value, push the result slot so downstream
-        // ops can consume it.
-        if (frame.result_slot) |rs| {
+        // Push result slots so downstream ops can consume them.
+        for (frame.result_slots.items) |rs| {
             try self.stack.push(self.allocator, rs);
         }
     }
@@ -639,10 +691,23 @@ pub const Lower = struct {
     /// Returns the index of the emitted jump op (so callers can add it as a
     /// patch site if needed).
     fn emit_branch_to(self: *Lower, frame: *ControlFrame) !u32 {
-        // Copy result value into the frame's result slot before jumping.
-        if (frame.result_slot) |rs| {
-            const src = self.stack.peek() orelse return error.StackUnderflow;
-            try self.emit(.{ .copy = .{ .dst = rs, .src = src } });
+        // For a loop: br passes params (phi semantics, back to header).
+        // For block/if: br passes results.
+        const target_slots = if (frame.kind == .loop)
+            frame.param_slots.items
+        else
+            frame.result_slots.items;
+
+        // Copy values from stack top into the target slots (reverse order:
+        // TOS = last slot, bottom = first slot).
+        if (target_slots.len > 0) {
+            var ri: usize = target_slots.len;
+            while (ri > 0) {
+                ri -= 1;
+                const src = self.stack.peek() orelse return error.StackUnderflow;
+                try self.emit(.{ .copy = .{ .dst = target_slots[ri], .src = src } });
+                _ = self.stack.pop();
+            }
         }
 
         const jump_pc = self.current_pc();
@@ -777,41 +842,88 @@ pub const Lower = struct {
             // ── Structured control flow ───────────────────────────────────────
 
             .block => |block_type| {
-                const result_slot: ?Slot = if (block_type != null) blk: {
-                    const s = self.alloc_slot();
-                    break :blk s;
-                } else null;
+                const slots = try self.resolve_block_slots(block_type);
+                // For multi-value blocks: pop params from stack, re-push so body can access them.
+                // Copy param values from stack into param_slots (in order, lowest first).
+                for (slots.params.items) |ps| {
+                    _ = ps; // slot already allocated; we'll copy from stack below
+                }
+                // Actually we need to pop params from the stack top (last param = TOS) and
+                // store them in param_slots, then re-push them back for the body.
+                // Stack before: [..., param0, param1, ..., paramN-1]  (paramN-1 = TOS)
+                // We need to copy them into param_slots[0..N], then restore the stack.
+                const n_params = slots.params.items.len;
+                if (n_params > 0) {
+                    // Pop params off the value stack (TOS = last param).
+                    // We re-push them back after so the block body sees them.
+                    var pi: usize = n_params;
+                    while (pi > 0) {
+                        pi -= 1;
+                        const src = try self.pop_slot();
+                        try self.emit(.{ .copy = .{ .dst = slots.params.items[pi], .src = src } });
+                    }
+                }
+                // Record the stack height AFTER consuming params (before block body).
+                const height_after_params = self.stack.len();
+                // Re-push param slots so the block body can use them.
+                for (slots.params.items) |ps| {
+                    try self.stack.push(self.allocator, ps);
+                }
 
                 try self.control_stack.append(self.allocator, .{
                     .kind = .block,
-                    .stack_height = self.stack.len(),
-                    .result_slot = result_slot,
+                    .stack_height = height_after_params,
+                    .result_slots = slots.results,
+                    .param_slots = slots.params,
                     .target_pc = 0, // forward — filled at end
                 });
             },
 
             .loop => |block_type| {
-                const result_slot: ?Slot = if (block_type != null) blk: {
-                    const s = self.alloc_slot();
-                    break :blk s;
-                } else null;
+                const slots = try self.resolve_block_slots(block_type);
+                // Pop params from stack (TOS = last param), copy to param_slots, re-push.
+                const n_params = slots.params.items.len;
+                if (n_params > 0) {
+                    var pi: usize = n_params;
+                    while (pi > 0) {
+                        pi -= 1;
+                        const src = try self.pop_slot();
+                        try self.emit(.{ .copy = .{ .dst = slots.params.items[pi], .src = src } });
+                    }
+                }
+                const height_after_params = self.stack.len();
+                for (slots.params.items) |ps| {
+                    try self.stack.push(self.allocator, ps);
+                }
 
                 // The loop target is right here (top of the loop body).
                 const loop_header_pc = self.current_pc();
                 try self.control_stack.append(self.allocator, .{
                     .kind = .loop,
-                    .stack_height = self.stack.len(),
-                    .result_slot = result_slot,
+                    .stack_height = height_after_params,
+                    .result_slots = slots.results,
+                    .param_slots = slots.params,
                     .target_pc = loop_header_pc,
                 });
             },
 
             .if_ => |block_type| {
                 const cond = try self.pop_slot();
-                const result_slot: ?Slot = if (block_type != null) blk: {
-                    const s = self.alloc_slot();
-                    break :blk s;
-                } else null;
+                const slots = try self.resolve_block_slots(block_type);
+                // Pop params from stack (TOS = last param), copy to param_slots, re-push.
+                const n_params = slots.params.items.len;
+                if (n_params > 0) {
+                    var pi: usize = n_params;
+                    while (pi > 0) {
+                        pi -= 1;
+                        const src = try self.pop_slot();
+                        try self.emit(.{ .copy = .{ .dst = slots.params.items[pi], .src = src } });
+                    }
+                }
+                const height_after_params = self.stack.len();
+                for (slots.params.items) |ps| {
+                    try self.stack.push(self.allocator, ps);
+                }
 
                 // Emit a conditional jump that skips the then-body if cond==0.
                 // Target is patched at else_ or end.
@@ -820,8 +932,9 @@ pub const Lower = struct {
 
                 try self.control_stack.append(self.allocator, .{
                     .kind = .if_,
-                    .stack_height = self.stack.len(),
-                    .result_slot = result_slot,
+                    .stack_height = height_after_params,
+                    .result_slots = slots.results,
+                    .param_slots = slots.params,
                     .target_pc = 0, // forward
                     .patch_sites = blk: {
                         // The jump_if_z is a forward patch site for the else/end.
@@ -837,11 +950,16 @@ pub const Lower = struct {
                 if (len == 0) return error.MismatchedEnd;
                 const frame = &self.control_stack.items[len - 1];
 
-                // If the block produces a value, copy the then-branch result into
-                // the result slot before leaving the then-body.
-                if (frame.result_slot) |rs| {
-                    if (self.stack.peek()) |src| {
-                        try self.emit(.{ .copy = .{ .dst = rs, .src = src } });
+                // Copy the then-branch results into the result slots before leaving the then-body.
+                // The stack top holds the last result; result_slots[N-1] is the last result slot.
+                {
+                    const n = frame.result_slots.items.len;
+                    var ri: usize = n;
+                    while (ri > 0) {
+                        ri -= 1;
+                        const src = self.stack.peek() orelse break;
+                        try self.emit(.{ .copy = .{ .dst = frame.result_slots.items[ri], .src = src } });
+                        _ = self.stack.pop();
                     }
                 }
 
@@ -856,8 +974,12 @@ pub const Lower = struct {
                 // The then_end_jump is now the new forward patch site for `end`.
                 try self.add_patch_site(frame, then_end_jump_pc);
 
-                // Reset the value stack to block-entry height.
+                // Reset the value stack to block-entry height, then re-push param slots
+                // so the else body sees the same inputs as the then body.
                 self.stack.slots.shrinkRetainingCapacity(frame.stack_height);
+                for (frame.param_slots.items) |ps| {
+                    try self.stack.push(self.allocator, ps);
+                }
             },
 
             .end => {
@@ -870,12 +992,20 @@ pub const Lower = struct {
 
                 var frame = self.control_stack.pop().?;
                 defer frame.patch_sites.deinit(self.allocator);
+                defer frame.result_slots.deinit(self.allocator);
+                defer frame.param_slots.deinit(self.allocator);
 
-                // If the block has a result and there is a value on the stack,
-                // copy it into the result slot.
-                if (frame.result_slot) |rs| {
-                    if (self.stack.peek()) |src| {
-                        try self.emit(.{ .copy = .{ .dst = rs, .src = src } });
+                // Copy block results from the stack top into the result slots.
+                // Stack top = last result (result_slots[N-1]); bottom of N values = first result.
+                {
+                    const n = frame.result_slots.items.len;
+                    var ri: usize = n;
+                    while (ri > 0) {
+                        ri -= 1;
+                        if (self.stack.peek()) |src| {
+                            try self.emit(.{ .copy = .{ .dst = frame.result_slots.items[ri], .src = src } });
+                            _ = self.stack.pop();
+                        }
                     }
                 }
 
@@ -900,7 +1030,7 @@ pub const Lower = struct {
                 const end_pc = self.current_pc();
                 self.patch_forward_jumps(&frame, end_pc);
 
-                // Restore value stack and push result if any.
+                // Restore value stack and push result slots.
                 try self.unwind_stack_to_frame(&frame);
             },
 
@@ -917,23 +1047,37 @@ pub const Lower = struct {
                 const cond = try self.pop_slot();
                 const frame = try self.frame_at_depth(depth);
 
-                // Copy result to frame's result slot (if any).
-                if (frame.result_slot) |rs| {
-                    const src = self.stack.peek() orelse return error.StackUnderflow;
-                    try self.emit(.{ .copy = .{ .dst = rs, .src = src } });
+                // For a loop: br_if passes params; for block/if: passes results.
+                const target_slots = if (frame.kind == .loop)
+                    frame.param_slots.items
+                else
+                    frame.result_slots.items;
+
+                // Copy values from stack into target slots (peek, don't pop — fall-through
+                // needs the values still on stack).
+                // Stack top = last result slot; we peek from TOS downward.
+                if (target_slots.len > 0) {
+                    const stack_len = self.stack.len();
+                    if (stack_len < target_slots.len) return error.StackUnderflow;
+                    var ri: usize = target_slots.len;
+                    while (ri > 0) {
+                        ri -= 1;
+                        // stack[stack_len - 1 - (target_slots.len - 1 - ri)]
+                        // = stack[stack_len - target_slots.len + ri]
+                        const src = self.stack.slots.items[stack_len - target_slots.len + ri];
+                        try self.emit(.{ .copy = .{ .dst = target_slots[ri], .src = src } });
+                    }
                 }
 
                 // Emit conditional jump.
-                const jiz_pc = self.current_pc();
                 // We jump when cond != 0, but our op is jump_if_z.
                 // Work-around: emit jump_if_z to skip the unconditional jump,
                 // then emit the unconditional jump to the target.
                 //   jump_if_z cond → skip_jump
                 //   jump → target
-                //   skip_jump: (fall-through, continue",)
-                const skip_jump_placeholder_pc = self.current_pc();
+                //   skip_jump: (fall-through, continue)
+                const jiz_pc = self.current_pc();
                 try self.emit(.{ .jump_if_z = .{ .cond = cond, .target = 0 } }); // skip the jump below if cond==0
-                _ = skip_jump_placeholder_pc;
 
                 // Now emit the actual branch to the target frame.
                 const branch_jump_pc = self.current_pc();
@@ -972,10 +1116,19 @@ pub const Lower = struct {
                         depth: u32,
                     ) !void {
                         const f = try l.frame_at_depth(depth);
-                        // Copy result into the frame's result slot (if any).
-                        if (f.result_slot) |rs| {
-                            if (l.stack.peek()) |src| {
-                                try l.emit(.{ .copy = .{ .dst = rs, .src = src } });
+                        // Copy results/params into the frame's slots.
+                        const target_slots = if (f.kind == .loop)
+                            f.param_slots.items
+                        else
+                            f.result_slots.items;
+                        if (target_slots.len > 0) {
+                            const stack_len = l.stack.len();
+                            if (stack_len < target_slots.len) return error.StackUnderflow;
+                            var ri: usize = target_slots.len;
+                            while (ri > 0) {
+                                ri -= 1;
+                                const src = l.stack.slots.items[stack_len - target_slots.len + ri];
+                                try l.emit(.{ .copy = .{ .dst = target_slots[ri], .src = src } });
                             }
                         }
                         if (f.kind == .loop) {
@@ -2274,11 +2427,8 @@ pub const Lower = struct {
             // The CatchHandlerEntry.target field is patched via the outer frame's patch_sites
             // using the encoding:  0x4000_0000 | catch_handler_tables_index.
             .try_table => |inst| {
-                // Allocate result slot for the block type if any.
-                const result_slot: ?Slot = if (inst.block_type != null) blk: {
-                    const s = self.alloc_slot();
-                    break :blk s;
-                } else null;
+                // Allocate result slots for the block type (try_table has no params per spec).
+                const slots = try self.resolve_block_slots(inst.block_type);
 
                 // Translate each CatchHandlerWasm into a CatchHandlerEntry and
                 // store them in compiled.catch_handler_tables.
@@ -2295,47 +2445,100 @@ pub const Lower = struct {
 
                     const handler_idx: u32 = @intCast(self.compiled.catch_handler_tables.items.len);
 
-                    // Resolve the target frame for this handler, so we can use its
-                    // result_slot as the destination for payload values.
+                    // Resolve the target frame for this handler.
                     //
                     // IMPORTANT: depth is relative to the label stack *before* the
                     // try_table frame is pushed.  depth=0 refers to the immediately
                     // enclosing block/loop/if, NOT the try_table itself.
-                    const target_result_slot: ?Slot = blk: {
-                        if (h.depth < self.control_stack.items.len) {
-                            const tgt = try self.frame_at_depth(h.depth);
-                            break :blk tgt.result_slot;
-                        }
-                        break :blk null;
-                    };
+                    //
+                    // For catch_tag with arity matching the target block's result_slots count,
+                    // reuse those slots so the VM writes directly there (avoids extra copies).
+                    // For catch_ref, the last result slot is the exnref; preceding slots are payload.
+                    const target_frame_opt: ?*ControlFrame = if (h.depth < self.control_stack.items.len)
+                        try self.frame_at_depth(h.depth)
+                    else
+                        null;
 
-                    // Allocate destination slots based on handler kind and tag arity.
-                    // For catch_tag with arity 1 targeting a block with a result_slot,
-                    // reuse the block's result_slot so the VM writes directly there.
                     const dst_slots_start: u32 = @intCast(self.compiled.call_args.items.len);
                     var dst_slots_len: u32 = 0;
                     var dst_ref: Slot = 0;
                     switch (h.kind) {
                         .catch_ => {
                             dst_slots_len = h.tag_arity;
-                            if (h.tag_arity == 1 and target_result_slot != null) {
-                                // Reuse the target block's result slot directly.
-                                try self.compiled.call_args.append(self.allocator, target_result_slot.?);
-                            } else {
-                                // Allocate one slot per tag argument.
-                                var ai: u32 = 0;
-                                while (ai < h.tag_arity) : (ai += 1) {
-                                    const s = self.alloc_slot();
-                                    try self.compiled.call_args.append(self.allocator, s);
+                            if (h.tag_arity > 0) {
+                                if (target_frame_opt) |tf| {
+                                    if (tf.result_slots.items.len == h.tag_arity) {
+                                        // Reuse the target block's result slots directly.
+                                        for (tf.result_slots.items) |rs| {
+                                            try self.compiled.call_args.append(self.allocator, rs);
+                                        }
+                                    } else {
+                                        // Allocate one slot per tag argument.
+                                        var ai: u32 = 0;
+                                        while (ai < h.tag_arity) : (ai += 1) {
+                                            try self.compiled.call_args.append(self.allocator, self.alloc_slot());
+                                        }
+                                    }
+                                } else {
+                                    var ai: u32 = 0;
+                                    while (ai < h.tag_arity) : (ai += 1) {
+                                        try self.compiled.call_args.append(self.allocator, self.alloc_slot());
+                                    }
                                 }
                             }
                         },
                         .catch_ref => {
-                            dst_ref = if (target_result_slot) |rs| rs else self.alloc_slot();
+                            // catch_ref <tag> <label>: branch delivers [tag_values... exnref].
+                            // Allocate payload slots for the tag arguments.
+                            dst_slots_len = h.tag_arity;
+                            if (h.tag_arity > 0) {
+                                if (target_frame_opt) |tf| {
+                                    const n = tf.result_slots.items.len;
+                                    if (h.tag_arity + 1 == n) {
+                                        // Reuse the first n-1 result slots for tag payload.
+                                        for (tf.result_slots.items[0 .. n - 1]) |rs| {
+                                            try self.compiled.call_args.append(self.allocator, rs);
+                                        }
+                                    } else {
+                                        var ai: u32 = 0;
+                                        while (ai < h.tag_arity) : (ai += 1) {
+                                            try self.compiled.call_args.append(self.allocator, self.alloc_slot());
+                                        }
+                                    }
+                                } else {
+                                    var ai: u32 = 0;
+                                    while (ai < h.tag_arity) : (ai += 1) {
+                                        try self.compiled.call_args.append(self.allocator, self.alloc_slot());
+                                    }
+                                }
+                            }
+                            // The exnref is the last value on the target stack.
+                            // Use the last result slot of the target block if the counts match;
+                            // otherwise allocate a fresh slot.
+                            if (target_frame_opt) |tf| {
+                                const n = tf.result_slots.items.len;
+                                if (n > 0) {
+                                    dst_ref = tf.result_slots.items[n - 1];
+                                } else {
+                                    dst_ref = self.alloc_slot();
+                                }
+                            } else {
+                                dst_ref = self.alloc_slot();
+                            }
                         },
                         .catch_all => {},
                         .catch_all_ref => {
-                            dst_ref = if (target_result_slot) |rs| rs else self.alloc_slot();
+                            // catch_all_ref: branch delivers [exnref].
+                            // Use the target block's sole result slot if it has exactly one.
+                            if (target_frame_opt) |tf| {
+                                if (tf.result_slots.items.len == 1) {
+                                    dst_ref = tf.result_slots.items[0];
+                                } else {
+                                    dst_ref = self.alloc_slot();
+                                }
+                            } else {
+                                dst_ref = self.alloc_slot();
+                            }
                         },
                     }
 
@@ -2353,8 +2556,7 @@ pub const Lower = struct {
                     // IMPORTANT: depth is relative to the label stack *before* the
                     // try_table frame is pushed.  All depths (including 0) refer to
                     // already-pushed frames on the control stack.
-                    if (h.depth < self.control_stack.items.len) {
-                        const target_frame = try self.frame_at_depth(h.depth);
+                    if (target_frame_opt) |target_frame| {
                         if (target_frame.kind == .loop) {
                             // Backward jump: target is known immediately.
                             self.compiled.catch_handler_tables.items[handler_idx].target = target_frame.target_pc;
@@ -2380,7 +2582,8 @@ pub const Lower = struct {
                 const try_frame: ControlFrame = .{
                     .kind = .try_table,
                     .stack_height = self.stack.len(),
-                    .result_slot = result_slot,
+                    .result_slots = slots.results,
+                    .param_slots = slots.params,
                     .target_pc = 0, // forward — filled at end
                     .try_table_enter_pc = enter_pc,
                 };
