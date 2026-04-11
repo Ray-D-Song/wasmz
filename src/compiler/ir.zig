@@ -882,13 +882,15 @@ pub const Op = union(enum) {
 
 /// A single catch arm inside a try_table block.
 pub const CatchHandlerKind = enum(u8) {
-    /// catch <tag> — caught values pushed to `dst_slots`
+    /// catch <tag> — tag payload values written to `dst_slots[0..dst_slots_len]`
     catch_tag,
-    /// catch_ref <tag> — exception reference pushed to `dst_ref`
+    /// catch_ref <tag> — tag payload values written to `dst_slots[0..dst_slots_len]`,
+    /// then the exnref written to `dst_ref`.
+    /// Per spec: branch target receives [tag_values... exnref].
     catch_tag_ref,
     /// catch_all — no tag check, no value push (dst_slots unused)
     catch_all,
-    /// catch_all_ref — no tag check, exception reference pushed to `dst_ref`
+    /// catch_all_ref — no tag check, exnref written to `dst_ref`
     catch_all_ref,
 };
 
@@ -898,10 +900,10 @@ pub const CatchHandlerEntry = struct {
     tag_index: u32,
     /// Op index to jump to when this handler fires.
     target: u32,
-    /// For catch_tag: starting slot index for extracted exception payload values.
-    /// Slots are allocated consecutively starting here.
+    /// For catch_tag / catch_tag_ref: starting index in the function's call_args pool
+    /// for the extracted tag payload slots.
     dst_slots_start: u32,
-    /// Number of payload slots (== tag arity for catch_tag; 0 for others).
+    /// Number of payload slots (== tag arity for catch_tag / catch_tag_ref; 0 for others).
     dst_slots_len: u32,
     /// For catch_tag_ref / catch_all_ref: slot that receives the exnref.
     dst_ref: Slot,

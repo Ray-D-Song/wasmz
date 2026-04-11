@@ -1967,12 +1967,11 @@ pub const VM = struct {
                     // Collect exception argument values from call_args pool.
                     const caller_func = call_stack.items[frame_idx].func;
                     const arg_slots = caller_func.call_args.items[inst.args_start .. inst.args_start + inst.args_len];
-                    var args_buf: [64]RawVal = undefined; // static buffer (up to 64 args)
-                    const n_args = @min(arg_slots.len, args_buf.len);
-                    for (arg_slots[0..n_args], 0..) |slot, i| {
-                        args_buf[i] = slots[slot];
+                    const exc_args = try self.allocator.alloc(RawVal, arg_slots.len);
+                    defer self.allocator.free(exc_args);
+                    for (arg_slots, 0..) |slot, i| {
+                        exc_args[i] = slots[slot];
                     }
-                    const exc_args = args_buf[0..n_args];
 
                     // Allocate exception object on the GC heap.
                     // If the first attempt fails, run a GC cycle and retry once.
@@ -2178,7 +2177,20 @@ pub const VM = struct {
                             tgt_slots[dst_slots[i]] = store.gc_heap.exceptionArg(exn_ref, i);
                         }
                     },
-                    .catch_tag_ref, .catch_all_ref => {
+                    .catch_tag_ref => {
+                        // Per spec: branch target receives [tag_values... exnref].
+                        // First write all tag payload values into dst_slots.
+                        const n = h.dst_slots_len;
+                        const dst_start = h.dst_slots_start;
+                        const dst_slots = tgt_func.call_args.items[dst_start .. dst_start + n];
+                        var i: u32 = 0;
+                        while (i < n) : (i += 1) {
+                            tgt_slots[dst_slots[i]] = store.gc_heap.exceptionArg(exn_ref, i);
+                        }
+                        // Then write the exnref as the last value.
+                        tgt_slots[h.dst_ref] = RawVal.fromGcRef(exn_ref);
+                    },
+                    .catch_all_ref => {
                         tgt_slots[h.dst_ref] = RawVal.fromGcRef(exn_ref);
                     },
                     .catch_all => {

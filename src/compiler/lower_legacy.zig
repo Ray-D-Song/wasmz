@@ -177,10 +177,7 @@ pub const LowerLegacy = struct {
             // We emit try_table_enter with 0 handlers for now; the actual handler
             // entries are appended incrementally as each catch arm is processed.
             .try_ => |block_type| {
-                const result_slot: ?Slot = if (block_type != null) blk: {
-                    const s = self.alloc_slot();
-                    break :blk s;
-                } else null;
+                const slots = try self.inner.resolve_block_slots(block_type);
 
                 const handlers_start: u32 = @intCast(self.inner.compiled.catch_handler_tables.items.len);
 
@@ -198,7 +195,8 @@ pub const LowerLegacy = struct {
                 try self.inner.control_stack.append(self.allocator, .{
                     .kind = .try_table,
                     .stack_height = self.inner.stack.len(),
-                    .result_slot = result_slot,
+                    .result_slots = slots.results,
+                    .param_slots = slots.params,
                     .target_pc = 0, // forward
                     .try_table_enter_pc = enter_pc,
                 });
@@ -296,10 +294,16 @@ pub const LowerLegacy = struct {
 
         // First catch arm: terminate the try body.
         if (!legacy_ts.in_catch_body) {
-            // Copy block result if any (end of try body).
-            if (frame.result_slot) |rs| {
-                if (self.inner.stack.peek()) |src| {
-                    try self.emit(.{ .copy = .{ .dst = rs, .src = src } });
+            // Copy block results from stack into result slots (end of try body).
+            {
+                const n = frame.result_slots.items.len;
+                var ri: usize = n;
+                while (ri > 0) {
+                    ri -= 1;
+                    if (self.inner.stack.peek()) |src| {
+                        try self.emit(.{ .copy = .{ .dst = frame.result_slots.items[ri], .src = src } });
+                        _ = self.inner.stack.pop();
+                    }
                 }
             }
 
@@ -507,6 +511,8 @@ pub const LowerLegacy = struct {
         // Now pop the try frame (equivalent to processing an `end`).
         var popped_frame = self.inner.control_stack.pop().?;
         defer popped_frame.patch_sites.deinit(self.allocator);
+        defer popped_frame.result_slots.deinit(self.allocator);
+        defer popped_frame.param_slots.deinit(self.allocator);
         _ = self.try_states.pop();
 
         // After the throw_ref + handler, the continuation PC is here.
@@ -549,9 +555,15 @@ pub const LowerLegacy = struct {
 
         if (legacy_ts.in_catch_body) {
             // Close the last catch arm body with a copy + jump to AFTER_CATCHES.
-            if (frame.result_slot) |rs| {
-                if (self.inner.stack.peek()) |src| {
-                    try self.emit(.{ .copy = .{ .dst = rs, .src = src } });
+            {
+                const n = frame.result_slots.items.len;
+                var ri: usize = n;
+                while (ri > 0) {
+                    ri -= 1;
+                    if (self.inner.stack.peek()) |src| {
+                        try self.emit(.{ .copy = .{ .dst = frame.result_slots.items[ri], .src = src } });
+                        _ = self.inner.stack.pop();
+                    }
                 }
             }
             const jump_pc = self.current_pc();
@@ -559,9 +571,15 @@ pub const LowerLegacy = struct {
             try frame.patch_sites.append(self.allocator, jump_pc);
         } else {
             // No catch arms seen: close the try body normally (like a plain block).
-            if (frame.result_slot) |rs| {
-                if (self.inner.stack.peek()) |src| {
-                    try self.emit(.{ .copy = .{ .dst = rs, .src = src } });
+            {
+                const n = frame.result_slots.items.len;
+                var ri: usize = n;
+                while (ri > 0) {
+                    ri -= 1;
+                    if (self.inner.stack.peek()) |src| {
+                        try self.emit(.{ .copy = .{ .dst = frame.result_slots.items[ri], .src = src } });
+                        _ = self.inner.stack.pop();
+                    }
                 }
             }
 
@@ -584,11 +602,13 @@ pub const LowerLegacy = struct {
         // Pop the frame and patch all forward jumps.
         var popped_frame = self.inner.control_stack.pop().?;
         defer popped_frame.patch_sites.deinit(self.allocator);
+        defer popped_frame.result_slots.deinit(self.allocator);
+        defer popped_frame.param_slots.deinit(self.allocator);
         _ = self.try_states.pop();
 
         self.inner.patch_forward_jumps(&popped_frame, end_pc);
 
-        // Restore value stack and push result if any.
+        // Restore value stack and push result slots.
         try self.inner.unwind_stack_to_frame(&popped_frame);
     }
 };

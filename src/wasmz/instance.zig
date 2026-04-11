@@ -188,9 +188,13 @@ pub const Instance = struct {
     ///   Allocator.Error          — Host memory allocation failure
     ///   ExecResult.ok(val)       — Normal execution completed, val is the return value (null for void functions)
     ///   ExecResult.trap(trap)    — Wasm runtime trap (e.g., out-of-bounds memory access)
-    pub fn call(self: *Instance, name: []const u8, args: []const RawVal) (Allocator.Error || error{ExportNotFound})!ExecResult {
+    pub fn call(self: *Instance, name: []const u8, args: []const RawVal) (Allocator.Error || error{ ExportNotFound, ExportNotCallable })!ExecResult {
         const export_entry = self.module.exports.get(name) orelse return error.ExportNotFound;
-        const func = self.module.functions[export_entry.function_index];
+        const func_index = switch (export_entry) {
+            .function_index => |idx| idx,
+            else => return error.ExportNotCallable,
+        };
+        const func = self.module.functions[func_index];
         var vm = VM.init(self.store.allocator);
         return vm.execute(func, args, self.execEnv());
     }

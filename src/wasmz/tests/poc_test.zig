@@ -424,7 +424,7 @@ test "if-else selects correct branch at runtime" {
 
     const ops = [_]WasmOp{
         .{ .local_get = 0 },
-        .{ .if_ = .I32 },
+        .{ .if_ = .{ .val_type = .I32 } },
         .{ .i32_const = 10 },
         .else_,
         .{ .i32_const = 20 },
@@ -726,9 +726,7 @@ test "return_call: tail call replaces current frame" {
     const ops1 = [_]WasmOp{
         .{ .local_get = 0 },
         .i32_eqz,
-        .{ .if_ = .I32 },
-        .{ .i32_const = 0 },
-        .else_,
+        .{ .if_ = .{ .val_type = .I32 } },
         .{ .local_get = 0 },
         .{ .i32_const = 1 },
         .i32_sub,

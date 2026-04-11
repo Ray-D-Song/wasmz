@@ -40,4 +40,5 @@ test {
     _ = @import("wasmz/tests/store_test.zig");
     _ = @import("wasmz/tests/host_test.zig");
     _ = @import("wasmz/tests/eh_test.zig");
+    _ = @import("wasmz/tests/multi_value_test.zig");
 }

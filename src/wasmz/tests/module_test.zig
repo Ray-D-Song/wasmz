@@ -40,7 +40,11 @@ test "module.compile builds exported function bodies" {
     try testing.expectEqual(@as(usize, 1), module.exports.count());
 
     const export_entry = module.exports.get("f") orelse return error.MissingExport;
-    try testing.expectEqual(@as(u32, 0), export_entry.function_index);
+    const func_index = switch (export_entry) {
+        .function_index => |idx| idx,
+        else => return error.NotAFunction,
+    };
+    try testing.expectEqual(@as(u32, 0), func_index);
 
     var vm = VM.init(testing.allocator);
     var store = try Store.init(testing.allocator, engine);
@@ -76,7 +80,7 @@ test "module.compile builds exported function bodies" {
         .type_ancestors = module.type_ancestors,
     };
     const result = (try vm.execute(
-        module.functions[@intCast(export_entry.function_index)],
+        module.functions[@intCast(func_index)],
         &.{},
         exec_env,
     )).ok orelse {
