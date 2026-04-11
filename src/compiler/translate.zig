@@ -102,7 +102,7 @@ pub fn wasmBlockTypeFromType(block_type: ?Type) TranslateError!?BlockType {
             else => BlockType{ .val_type = try wasmValTypeFromType(typ) },
         },
         .index => |idx| BlockType{ .type_index = idx },
-        else => error.UnsupportedBlockType,
+        .ref_type => BlockType{ .val_type = try wasmValTypeFromType(typ) },
     };
 }
 
@@ -422,61 +422,63 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
 
         // ── GC Struct instructions ─────────────────────────────────────────────────
         // Note: n_fields will be filled by module.zig after looking up the type definition
+        // Parser stores the type index in info.ref_type (not info.type_index).
         .struct_new => WasmOp{
             .struct_new = .{
-                .type_idx = try typeIndexFromHeapType(info.type_index),
+                .type_idx = try typeIndexFromHeapType(info.ref_type),
                 .n_fields = info.len orelse 0, // placeholder, filled by module.zig
             },
         },
-        .struct_new_default => WasmOp{ .struct_new_default = try typeIndexFromHeapType(info.type_index) },
+        .struct_new_default => WasmOp{ .struct_new_default = try typeIndexFromHeapType(info.ref_type) },
         .struct_get => WasmOp{ .struct_get = .{
-            .type_idx = try typeIndexFromHeapType(info.type_index),
+            .type_idx = try typeIndexFromHeapType(info.ref_type),
             .field_idx = info.field_index orelse return error.UnsupportedOperator,
         } },
         .struct_get_s => WasmOp{ .struct_get_s = .{
-            .type_idx = try typeIndexFromHeapType(info.type_index),
+            .type_idx = try typeIndexFromHeapType(info.ref_type),
             .field_idx = info.field_index orelse return error.UnsupportedOperator,
         } },
         .struct_get_u => WasmOp{ .struct_get_u = .{
-            .type_idx = try typeIndexFromHeapType(info.type_index),
+            .type_idx = try typeIndexFromHeapType(info.ref_type),
             .field_idx = info.field_index orelse return error.UnsupportedOperator,
         } },
         .struct_set => WasmOp{ .struct_set = .{
-            .type_idx = try typeIndexFromHeapType(info.type_index),
+            .type_idx = try typeIndexFromHeapType(info.ref_type),
             .field_idx = info.field_index orelse return error.UnsupportedOperator,
         } },
 
         // ── GC Array instructions ──────────────────────────────────────────────────
-        .array_new => WasmOp{ .array_new = try typeIndexFromHeapType(info.type_index) },
-        .array_new_default => WasmOp{ .array_new_default = try typeIndexFromHeapType(info.type_index) },
+        // Parser stores the type index in info.ref_type (not info.type_index).
+        .array_new => WasmOp{ .array_new = try typeIndexFromHeapType(info.ref_type) },
+        .array_new_default => WasmOp{ .array_new_default = try typeIndexFromHeapType(info.ref_type) },
         .array_new_fixed => WasmOp{ .array_new_fixed = .{
-            .type_idx = try typeIndexFromHeapType(info.type_index),
+            .type_idx = try typeIndexFromHeapType(info.ref_type),
             .n = info.len orelse return error.UnsupportedOperator,
         } },
         .array_new_data => WasmOp{ .array_new_data = .{
-            .type_idx = try typeIndexFromHeapType(info.type_index),
+            .type_idx = try typeIndexFromHeapType(info.ref_type),
             .data_idx = info.segment_index orelse return error.UnsupportedOperator,
         } },
         .array_new_elem => WasmOp{ .array_new_elem = .{
-            .type_idx = try typeIndexFromHeapType(info.type_index),
+            .type_idx = try typeIndexFromHeapType(info.ref_type),
             .elem_idx = info.segment_index orelse return error.UnsupportedOperator,
         } },
-        .array_get => WasmOp{ .array_get = try typeIndexFromHeapType(info.type_index) },
-        .array_get_s => WasmOp{ .array_get_s = try typeIndexFromHeapType(info.type_index) },
-        .array_get_u => WasmOp{ .array_get_u = try typeIndexFromHeapType(info.type_index) },
-        .array_set => WasmOp{ .array_set = try typeIndexFromHeapType(info.type_index) },
+        .array_get => WasmOp{ .array_get = try typeIndexFromHeapType(info.ref_type) },
+        .array_get_s => WasmOp{ .array_get_s = try typeIndexFromHeapType(info.ref_type) },
+        .array_get_u => WasmOp{ .array_get_u = try typeIndexFromHeapType(info.ref_type) },
+        .array_set => WasmOp{ .array_set = try typeIndexFromHeapType(info.ref_type) },
         .array_len => WasmOp.array_len,
-        .array_fill => WasmOp{ .array_fill = try typeIndexFromHeapType(info.type_index) },
+        .array_fill => WasmOp{ .array_fill = try typeIndexFromHeapType(info.ref_type) },
         .array_copy => WasmOp{ .array_copy = .{
-            .dst_type_idx = try typeIndexFromHeapType(info.type_index),
+            .dst_type_idx = try typeIndexFromHeapType(info.ref_type),
             .src_type_idx = try typeIndexFromHeapType(info.src_type),
         } },
         .array_init_data => WasmOp{ .array_init_data = .{
-            .type_idx = try typeIndexFromHeapType(info.type_index),
+            .type_idx = try typeIndexFromHeapType(info.ref_type),
             .data_idx = info.segment_index orelse return error.UnsupportedOperator,
         } },
         .array_init_elem => WasmOp{ .array_init_elem = .{
-            .type_idx = try typeIndexFromHeapType(info.type_index),
+            .type_idx = try typeIndexFromHeapType(info.ref_type),
             .elem_idx = info.segment_index orelse return error.UnsupportedOperator,
         } },
 

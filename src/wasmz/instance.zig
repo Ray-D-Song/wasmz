@@ -97,7 +97,9 @@ pub const Instance = struct {
                     module.composite_types,
                     module.struct_layouts,
                     module.array_layouts,
-                ) catch return error.GcConstExprError;
+                ) catch {
+                    return error.GcConstExprError;
+                };
                 globals[i] = Global.init(
                     GlobalType.init(global_init.mutability, global_init.value.ty),
                     value,
@@ -129,8 +131,14 @@ pub const Instance = struct {
         errdefer allocator.free(host_funcs);
 
         for (module.imported_funcs, 0..) |def, i| {
-            const hf = imports.get(def.module_name, def.func_name) orelse return error.ImportNotSatisfied;
-            if (!hf.matches(module.func_types[def.type_index])) {
+            const hf = imports.get(def.module_name, def.func_name) orelse {
+                return error.ImportNotSatisfied;
+            };
+            const func_type = switch (module.composite_types[def.type_index]) {
+                .func_type => |ft| ft,
+                else => return error.ImportSignatureMismatch,
+            };
+            if (!hf.matches(func_type)) {
                 return error.ImportSignatureMismatch;
             }
             host_funcs[i] = hf;
@@ -240,7 +248,11 @@ pub const Instance = struct {
 
         for (module.imported_funcs, 0..) |def, i| {
             const hf = imports.get(def.module_name, def.func_name) orelse return error.ImportNotSatisfied;
-            if (!hf.matches(module.func_types[def.type_index])) {
+            const func_type = switch (module.composite_types[def.type_index]) {
+                .func_type => |ft| ft,
+                else => return error.ImportSignatureMismatch,
+            };
+            if (!hf.matches(func_type)) {
                 return error.ImportSignatureMismatch;
             }
             host_funcs[i] = hf;
@@ -288,14 +300,16 @@ pub const Instance = struct {
         self.* = undefined;
     }
 
-    fn execEnv(self: *Instance) ExecEnv {
+    pub fn execEnv(self: *Instance) ExecEnv {
+        // Ensure host_view.memory always points to the Instance's own memory
+        // field (not a stale local from init).
+        self.host_view.memory = &self.memory;
         return .{
             .store = self.store,
             .host_instance = &self.host_view,
             .globals = self.globals,
             .memory = &self.memory,
             .functions = self.module.functions,
-            .func_types = self.module.func_types,
             .host_funcs = self.host_funcs,
             .tables = self.module.tables,
             .func_type_indices = self.module.func_type_indices,
@@ -330,6 +344,18 @@ pub const Instance = struct {
         const func = self.module.functions[func_index];
         var vm = VM.init(self.store.allocator);
         return vm.execute(func, args, self.execEnv());
+    }
+
+    /// Execute the module's start function (WebAssembly spec §4.5.4).
+    ///
+    /// The start function is called automatically during instantiation to perform
+    /// module-level initialization (e.g. Kotlin's _initializeModule which sets up
+    /// string pools and field data).  Returns null if there is no start function.
+    pub fn runStartFunction(self: *Instance) Allocator.Error!?ExecResult {
+        const start_idx = self.module.start_function orelse return null;
+        const func = self.module.functions[start_idx];
+        var vm = VM.init(self.store.allocator);
+        return try vm.execute(func, &.{}, self.execEnv());
     }
 };
 
@@ -452,8 +478,8 @@ fn evaluateGcConstExpr(
                 sp += 1;
             },
             .struct_new => {
-                // type_index is a payload HeapType (index variant)
-                const type_idx = if (info.type_index) |ht| switch (ht) {
+                // ref_type is a payload HeapType (index variant) — parser stores GC struct type here
+                const type_idx = if (info.ref_type) |ht| switch (ht) {
                     .index => |idx| idx,
                     else => return error.BadTypeIndex,
                 } else return error.BadTypeIndex;
@@ -486,7 +512,7 @@ fn evaluateGcConstExpr(
                 sp += 1;
             },
             .struct_new_default => {
-                const type_idx = if (info.type_index) |ht| switch (ht) {
+                const type_idx = if (info.ref_type) |ht| switch (ht) {
                     .index => |idx| idx,
                     else => return error.BadTypeIndex,
                 } else return error.BadTypeIndex;
@@ -509,7 +535,7 @@ fn evaluateGcConstExpr(
                 sp += 1;
             },
             .array_new_default => {
-                const type_idx = if (info.type_index) |ht| switch (ht) {
+                const type_idx = if (info.ref_type) |ht| switch (ht) {
                     .index => |idx| idx,
                     else => return error.BadTypeIndex,
                 } else return error.BadTypeIndex;
@@ -539,7 +565,7 @@ fn evaluateGcConstExpr(
                 sp += 1;
             },
             .array_new_fixed => {
-                const type_idx = if (info.type_index) |ht| switch (ht) {
+                const type_idx = if (info.ref_type) |ht| switch (ht) {
                     .index => |idx| idx,
                     else => return error.BadTypeIndex,
                 } else return error.BadTypeIndex;

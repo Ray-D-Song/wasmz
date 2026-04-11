@@ -37,7 +37,7 @@ test "module.compile builds exported function bodies" {
     defer module.deinit();
 
     try testing.expectEqual(@as(usize, 1), module.functions.len);
-    try testing.expectEqual(@as(usize, 1), module.func_types.len);
+    try testing.expectEqual(@as(usize, 1), module.composite_types.len);
     try testing.expectEqual(@as(usize, 1), module.exports.count());
 
     const export_entry = module.exports.get("f") orelse return error.MissingExport;
@@ -68,7 +68,6 @@ test "module.compile builds exported function bodies" {
         .globals = globals[0..],
         .memory = &mem,
         .functions = &.{},
-        .func_types = module.func_types,
         .host_funcs = &.{},
         .tables = tables[0..],
         .func_type_indices = &.{},
@@ -162,7 +161,7 @@ test "compileFunctionBody rejects simd when disabled" {
         body[0..],
         .{ .simd = false },
         .{
-            .func_types = &.{},
+            .composite_types = &.{},
             .type_indices = &.{},
             .import_type_indices = &.{},
             .import_count = 0,
@@ -185,7 +184,7 @@ test "compileFunctionBody rejects relaxed simd when disabled" {
         body[0..],
         .{ .relaxed_simd = false },
         .{
-            .func_types = &.{},
+            .composite_types = &.{},
             .type_indices = &.{},
             .import_type_indices = &.{},
             .import_count = 0,

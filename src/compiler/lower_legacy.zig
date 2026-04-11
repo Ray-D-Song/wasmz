@@ -211,11 +211,17 @@ pub const LowerLegacy = struct {
 
             // ── catch_ <tag_index> ─────────────────────────────────────────────
             .catch_ => |info| {
+                // A catch arm is reachable even if the try body ended in unreachable code
+                // (throw, br, etc.), similar to how `else` resets unreachable after `if`.
+                self.inner.is_unreachable = false;
+                self.inner.unreachable_depth = 0;
                 try self.handle_catch_start(info.tag_index, info.tag_arity, false);
             },
 
             // ── catch_all ──────────────────────────────────────────────────────
             .catch_all => {
+                self.inner.is_unreachable = false;
+                self.inner.unreachable_depth = 0;
                 try self.handle_catch_start(null, 0, true);
             },
 
@@ -228,6 +234,7 @@ pub const LowerLegacy = struct {
                 try self.emit(.{ .throw_ref = .{ .ref = exn_slot } });
                 // Control-flow terminator: mark stack unreachable.
                 self.inner.stack.slots.shrinkRetainingCapacity(0);
+                self.inner.is_unreachable = true;
             },
 
             // ── delegate <relative_depth> ────────────────────────────────────
@@ -610,6 +617,10 @@ pub const LowerLegacy = struct {
 
         // Restore value stack and push result slots.
         try self.inner.unwind_stack_to_frame(&popped_frame);
+
+        // After the try/catch block, execution continues normally.
+        self.inner.is_unreachable = false;
+        self.inner.unreachable_depth = 0;
     }
 };
 

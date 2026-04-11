@@ -169,7 +169,6 @@ pub const ModuleCompileError = Allocator.Error ||
 ///
 /// Field descriptions:
 ///   - functions:        List of compiled functions, indexed according to the Wasm function index space (imported functions come first).
-///   - func_types:       All function signatures defined in the Type Section.
 ///   - exports:          Mapping from export names to ExportEntry, currently only function exports are supported.
 ///   - globals:          List of global variables, each containing mutability and the initial value evaluated from constant expressions.
 ///   - memory:           Linear memory definition (optional), currently supports at most one memory segment.
@@ -179,13 +178,13 @@ pub const ModuleCompileError = Allocator.Error ||
 ///                       Populated from active element segments in the Element Section.
 ///   - func_type_indices: Maps func_idx → type section index for every function (imports + locals).
 ///                        Used by call_indirect for runtime type checking.
-///   - composite_types:  GC composite types from the Type Section (struct, array).
+///   - composite_types:  Unified type index space from the Type Section (func, struct, array).
+///                       Index matches the Wasm type section index.
 ///   - struct_layouts:   Precomputed memory layouts for struct types (index matches composite_types).
 ///   - array_layouts:    Precomputed memory layouts for array types (index matches composite_types).
 pub const Module = struct {
     allocator: Allocator,
     functions: []CompiledFunction,
-    func_types: []FuncType,
     exports: std.StringHashMapUnmanaged(ExportEntry),
     globals: []GlobalInit,
     memory: ?MemoryDef,
@@ -244,10 +243,8 @@ pub const Module = struct {
         var parser = Parser.init(arena.allocator());
         const payloads = try parser.parseAll(bytes);
 
-        var func_types_list: std.ArrayListUnmanaged(FuncType) = .empty;
-        errdefer deinit_func_type_list(allocator, &func_types_list);
-
-        // GC types: struct/array composite types and their layouts.
+        // Unified type section: composite_types covers ALL type entries (func, struct, array)
+        // indexed by the unified type section index.
         var composite_types_list: std.ArrayListUnmanaged(CompositeType) = .empty;
         errdefer {
             for (composite_types_list.items) |*ct| {
@@ -360,10 +357,14 @@ pub const Module = struct {
                 .type_entry => |entry| {
                     switch (entry.type) {
                         .func => {
-                            try func_types_list.append(
-                                allocator,
-                                try compile_func_type(allocator, arena.allocator(), entry),
-                            );
+                            const func_type = try compile_func_type(allocator, arena.allocator(), entry);
+                            // Add to the unified composite_types_list (sole owner of FuncType buffers).
+                            try composite_types_list.append(allocator, CompositeType{ .func_type = func_type });
+                            // func types have no struct/array layout
+                            try struct_layouts_list.append(allocator, null);
+                            try array_layouts_list.append(allocator, null);
+                            // func types have no concrete supertype in the GC sense
+                            try direct_parents_list.append(allocator, null);
                         },
                         .struct_type, .array_type => {
                             const composite_type = try translate_mod.wasmCompositeTypeFromTypeEntry(allocator, entry);
@@ -394,6 +395,7 @@ pub const Module = struct {
                                     try struct_layouts_list.append(allocator, null);
                                     try array_layouts_list.append(allocator, gc_mod.computeArrayLayout(a));
                                 },
+                                .func_type => unreachable,
                             }
                         },
                         else => return error.UnsupportedFunctionType,
@@ -600,23 +602,28 @@ pub const Module = struct {
                     }
 
                     const type_index = function_type_indices.items[local_function_index];
-                    if (type_index >= func_types_list.items.len) {
+                    // Validate against the unified type index space (composite_types_list).
+                    if (type_index >= composite_types_list.items.len) {
                         return error.InvalidFunctionTypeIndex;
                     }
+                    const func_type = switch (composite_types_list.items[type_index]) {
+                        .func_type => |ft| ft,
+                        else => return error.InvalidFunctionTypeIndex,
+                    };
 
-                    const reserved_slots = try compute_reserved_slots(func_types_list.items[type_index], info);
+                    const reserved_slots = try compute_reserved_slots(func_type, info);
                     const function_index = imported_function_count + local_function_index;
 
                     // Build function type resolver for looking up callee signatures when translating call instructions.
                     // import_type_indices allows the resolver to return signatures for imported functions too.
                     const resolver = FuncTypeResolver{
-                        .func_types = func_types_list.items,
+                        .composite_types = composite_types_list.items,
                         .type_indices = function_type_indices.items,
                         .import_type_indices = import_type_indices_list.items,
                         .import_count = imported_function_count,
                     };
 
-                    functions[function_index] = try compileFunctionBody(
+                    functions[function_index] = compileFunctionBody(
                         allocator,
                         reserved_slots,
                         info.body,
@@ -624,7 +631,9 @@ pub const Module = struct {
                         resolver,
                         tags_list.items,
                         detected_eh_mode,
-                    );
+                    ) catch |err| {
+                        return err;
+                    };
                     local_function_index += 1;
                 },
                 else => {},
@@ -632,14 +641,6 @@ pub const Module = struct {
         }
         if (local_function_index != function_type_indices.items.len) {
             return error.MismatchedFunctionCount;
-        }
-
-        const func_types = try func_types_list.toOwnedSlice(allocator);
-        errdefer {
-            for (func_types) |func_type| {
-                func_type.deinit(allocator);
-            }
-            allocator.free(func_types);
         }
 
         const globals = try globals_list.toOwnedSlice(allocator);
@@ -725,7 +726,6 @@ pub const Module = struct {
         return .{
             .allocator = allocator,
             .functions = functions,
-            .func_types = func_types,
             .exports = exports,
             .globals = globals,
             .memory = memory,
@@ -747,11 +747,6 @@ pub const Module = struct {
     pub fn deinit(self: *Module) void {
         deinit_functions(self.allocator, self.functions);
         self.allocator.free(self.functions);
-
-        for (self.func_types) |func_type| {
-            func_type.deinit(self.allocator);
-        }
-        self.allocator.free(self.func_types);
 
         deinit_exports(self.allocator, &self.exports);
         for (self.globals) |g| {
@@ -816,14 +811,6 @@ pub const Module = struct {
             function.br_table_targets.deinit(allocator);
             function.catch_handler_tables.deinit(allocator);
         }
-    }
-
-    /// Free the FuncType list: first free each element, then free the list itself.
-    fn deinit_func_type_list(allocator: Allocator, list: *std.ArrayListUnmanaged(FuncType)) void {
-        for (list.items) |func_type| {
-            func_type.deinit(allocator);
-        }
-        list.deinit(allocator);
     }
 
     /// Free the exports map: first free each key (the heap memory of the export name), then free the map itself.
@@ -1005,8 +992,9 @@ pub const Module = struct {
 ///
 /// Wasm function index space = imported functions + local functions.
 /// type_indices covers only local functions; import_type_indices covers only imported functions.
+/// Uses the unified composite_types array (indexed by type section index).
 pub const FuncTypeResolver = struct {
-    func_types: []const FuncType,
+    composite_types: []const CompositeType,
     /// Type index for each local (non-imported) function, in order.
     type_indices: []const u32,
     /// Type index for each imported function, in the order they appear in the Import Section.
@@ -1015,19 +1003,26 @@ pub const FuncTypeResolver = struct {
     import_count: usize,
 
     /// Look up the FuncType by func_idx.
-    /// Returns an error if func_idx is out of bounds.
+    /// Returns an error if func_idx is out of bounds or the type is not a func type.
     pub fn resolve(self: FuncTypeResolver, func_idx: u32) ModuleCompileError!*const FuncType {
         if (func_idx < self.import_count) {
             // Imported function: look up via import_type_indices.
             const type_idx = self.import_type_indices[func_idx];
-            if (type_idx >= self.func_types.len) return error.InvalidFunctionTypeIndex;
-            return &self.func_types[type_idx];
+            return self.getFuncType(type_idx);
         }
         const local_idx = func_idx - @as(u32, @intCast(self.import_count));
         if (local_idx >= self.type_indices.len) return error.InvalidFunctionTypeIndex;
         const type_idx = self.type_indices[local_idx];
-        if (type_idx >= self.func_types.len) return error.InvalidFunctionTypeIndex;
-        return &self.func_types[type_idx];
+        return self.getFuncType(type_idx);
+    }
+
+    /// Look up the FuncType by type section index.
+    fn getFuncType(self: FuncTypeResolver, type_idx: u32) ModuleCompileError!*const FuncType {
+        if (type_idx >= self.composite_types.len) return error.InvalidFunctionTypeIndex;
+        return switch (self.composite_types[type_idx]) {
+            .func_type => |*ft| ft,
+            else => error.InvalidFunctionTypeIndex,
+        };
     }
 };
 
@@ -1065,7 +1060,7 @@ fn compileFunctionBodyNew(
     defer arena.deinit();
 
     var lower = Lower.initWithReservedSlots(allocator, reserved_slots);
-    lower.func_types = resolver.func_types;
+    lower.composite_types = resolver.composite_types;
     errdefer lower.deinit();
 
     var cursor: usize = 0;
@@ -1081,7 +1076,9 @@ fn compileFunctionBodyNew(
         }
 
         const wasm_op = try buildWasmOp(parsed.info, resolver, tags, arena.allocator());
-        try lower.lowerOp(wasm_op);
+        lower.lowerOp(wasm_op) catch |err| {
+            return err;
+        };
     }
 
     const compiled = lower.finish();
@@ -1106,7 +1103,7 @@ fn compileFunctionBodyLegacy(
     defer arena.deinit();
 
     var lower_legacy = LowerLegacy.initWithReservedSlots(allocator, reserved_slots);
-    lower_legacy.inner.func_types = resolver.func_types;
+    lower_legacy.inner.composite_types = resolver.composite_types;
     errdefer lower_legacy.deinit();
 
     var cursor: usize = 0;
@@ -1133,8 +1130,8 @@ fn compileFunctionBodyLegacy(
                 const tag_idx = parsed.info.tag_index orelse return error.UnsupportedOperator;
                 if (tag_idx >= tags.len) return error.InvalidTagIndex;
                 const tag_type_idx = tags[tag_idx].type_index;
-                if (tag_type_idx >= resolver.func_types.len) return error.InvalidFunctionTypeIndex;
-                const tag_arity: u32 = @intCast(resolver.func_types[tag_type_idx].params().len);
+                const tag_func_type = try resolver.getFuncType(tag_type_idx);
+                const tag_arity: u32 = @intCast(tag_func_type.params().len);
                 try lower_legacy.lowerLegacyOp(.{ .catch_ = .{
                     .tag_index = tag_idx,
                     .tag_arity = tag_arity,
@@ -1194,8 +1191,8 @@ fn buildWasmOp(
             .index => |idx| idx,
             .kind => return error.UnsupportedOperator,
         };
-        if (type_index >= resolver.func_types.len) return error.InvalidFunctionTypeIndex;
-        const func_type = &resolver.func_types[type_index];
+        if (type_index >= resolver.composite_types.len) return error.InvalidFunctionTypeIndex;
+        const func_type = try resolver.getFuncType(type_index);
         // table_index: the parser discards it (reads as var_uint1), so always use 0.
         break :blk .{ .call_indirect = .{
             .type_index = type_index,
@@ -1216,8 +1213,8 @@ fn buildWasmOp(
             .index => |idx| idx,
             .kind => return error.UnsupportedOperator,
         };
-        if (type_index >= resolver.func_types.len) return error.InvalidFunctionTypeIndex;
-        const func_type = &resolver.func_types[type_index];
+        if (type_index >= resolver.composite_types.len) return error.InvalidFunctionTypeIndex;
+        const func_type = try resolver.getFuncType(type_index);
         break :blk .{ .return_call_indirect = .{
             .type_index = type_index,
             .table_index = 0,
@@ -1228,8 +1225,7 @@ fn buildWasmOp(
         const tag_idx = info.tag_index orelse return error.UnsupportedOperator;
         if (tag_idx >= tags.len) return error.InvalidTagIndex;
         const tag_type_idx = tags[tag_idx].type_index;
-        if (tag_type_idx >= resolver.func_types.len) return error.InvalidFunctionTypeIndex;
-        const tag_func_type = &resolver.func_types[tag_type_idx];
+        const tag_func_type = try resolver.getFuncType(tag_type_idx);
         break :blk .{ .throw = .{
             .tag_index = tag_idx,
             .n_args = @intCast(tag_func_type.params().len),
@@ -1245,8 +1241,8 @@ fn buildWasmOp(
             const tag_arity: u32 = if (h.tag_index) |ti| arity: {
                 if (ti >= tags.len) return error.InvalidTagIndex;
                 const ti_type = tags[ti].type_index;
-                if (ti_type >= resolver.func_types.len) return error.InvalidFunctionTypeIndex;
-                break :arity @intCast(resolver.func_types[ti_type].params().len);
+                const ti_func_type = try resolver.getFuncType(ti_type);
+                break :arity @intCast(ti_func_type.params().len);
             } else 0;
             try handlers_list.append(arena_allocator, .{
                 .kind = h.kind,
@@ -1264,6 +1260,44 @@ fn buildWasmOp(
         break :blk .{ .try_table = .{
             .block_type = block_type,
             .handlers = handlers_list.items,
+        } };
+    } else if (info.code == .struct_new) blk: {
+        // struct_new needs n_fields from the StructType definition.
+        const type_idx = switch (info.ref_type orelse return error.UnsupportedOperator) {
+            .index => |idx| idx,
+            .kind => return error.UnsupportedOperator,
+        };
+        if (type_idx >= resolver.composite_types.len) return error.InvalidFunctionTypeIndex;
+        const n_fields: u32 = switch (resolver.composite_types[type_idx]) {
+            .struct_type => |st| @intCast(st.fields.len),
+            else => return error.InvalidFunctionTypeIndex,
+        };
+        break :blk .{ .struct_new = .{
+            .type_idx = type_idx,
+            .n_fields = n_fields,
+        } };
+    } else if (info.code == .call_ref) blk: {
+        // call_ref operand is a type index (functype); fill in n_params/has_result.
+        const type_idx = switch (info.type_index orelse return error.UnsupportedOperator) {
+            .index => |idx| idx,
+            .kind => return error.UnsupportedOperator,
+        };
+        const func_type = try resolver.getFuncType(type_idx);
+        break :blk .{ .call_ref = .{
+            .type_idx = type_idx,
+            .n_params = @intCast(func_type.params().len),
+            .has_result = func_type.results().len > 0,
+        } };
+    } else if (info.code == .return_call_ref) blk: {
+        // return_call_ref operand is a type index (functype); fill in n_params.
+        const type_idx = switch (info.type_index orelse return error.UnsupportedOperator) {
+            .index => |idx| idx,
+            .kind => return error.UnsupportedOperator,
+        };
+        const func_type = try resolver.getFuncType(type_idx);
+        break :blk .{ .return_call_ref = .{
+            .type_idx = type_idx,
+            .n_params = @intCast(func_type.params().len),
         } };
     } else try translate_mod.operatorToWasmOp(info);
 }
