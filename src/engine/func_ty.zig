@@ -3,7 +3,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const core = @import("core");
 const FuncType = core.func_type.FuncType;
-const DedupArenaWithContext = @import("../utils/arena/dedup.zig").DedupArenaWithContext;
+const DedupArenaWithContext = @import("../utils/dedup.zig").DedupArenaWithContext;
 const EngineId = @import("./root.zig").EngineId;
 const EngineOwned = @import("./root.zig").EngineOwned;
 

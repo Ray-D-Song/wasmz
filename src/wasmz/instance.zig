@@ -14,6 +14,7 @@ const vm_mod = @import("../vm/root.zig");
 const parser_mod = @import("parser");
 const payload_mod = @import("payload");
 const gc_mod = @import("../vm/gc/root.zig");
+const utils_parse = @import("../utils/parse.zig");
 
 const Allocator = std.mem.Allocator;
 const Store = store_mod.Store;
@@ -421,53 +422,9 @@ fn evaluateGcConstExpr(
         const info = result.info;
 
         switch (info.code) {
-            .i32_const => {
+            .i32_const, .i64_const, .f32_const, .f64_const, .ref_null, .ref_func => {
                 if (sp >= stack.len) return error.StackUnderflow;
-                const val: i32 = if (info.literal) |lit| switch (lit) {
-                    .number => |n| @truncate(n),
-                    else => return error.UnsupportedOpcode,
-                } else return error.UnsupportedOpcode;
-                stack[sp] = RawVal.from(val);
-                sp += 1;
-            },
-            .i64_const => {
-                if (sp >= stack.len) return error.StackUnderflow;
-                const val: i64 = if (info.literal) |lit| switch (lit) {
-                    .int64 => |n| n,
-                    .number => |n| n,
-                    else => return error.UnsupportedOpcode,
-                } else return error.UnsupportedOpcode;
-                stack[sp] = RawVal.from(val);
-                sp += 1;
-            },
-            .f32_const => {
-                if (sp >= stack.len) return error.StackUnderflow;
-                const val: f32 = if (info.literal) |lit| switch (lit) {
-                    .bytes => |b| @bitCast(std.mem.readInt(u32, b[0..4], .little)),
-                    else => return error.UnsupportedOpcode,
-                } else return error.UnsupportedOpcode;
-                stack[sp] = RawVal.from(val);
-                sp += 1;
-            },
-            .f64_const => {
-                if (sp >= stack.len) return error.StackUnderflow;
-                const val: f64 = if (info.literal) |lit| switch (lit) {
-                    .bytes => |b| @bitCast(std.mem.readInt(u64, b[0..8], .little)),
-                    else => return error.UnsupportedOpcode,
-                } else return error.UnsupportedOpcode;
-                stack[sp] = RawVal.from(val);
-                sp += 1;
-            },
-            .ref_null => {
-                if (sp >= stack.len) return error.StackUnderflow;
-                stack[sp] = RawVal.fromBits64(0);
-                sp += 1;
-            },
-            .ref_func => {
-                if (sp >= stack.len) return error.StackUnderflow;
-                const func_idx = info.func_index orelse return error.UnsupportedOpcode;
-                // funcref encoding: func_idx + 1 (so that func_idx=0 is not confused with null)
-                stack[sp] = RawVal.fromBits64(func_idx + 1);
+                stack[sp] = utils_parse.parseConstLiteral(info) catch return error.UnsupportedOpcode;
                 sp += 1;
             },
             .global_get => {

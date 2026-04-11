@@ -17,6 +17,7 @@ const lower_legacy_mod = @import("../compiler/lower_legacy.zig");
 const translate_mod = @import("../compiler/translate.zig");
 const ir = @import("../compiler/ir.zig");
 const core = @import("core");
+const utils_parse = @import("../utils/parse.zig");
 const func_type_mod = core.func_type;
 const global_mod = core.global;
 const raw_mod = core.raw;
@@ -930,22 +931,8 @@ pub const Module = struct {
         cursor += init.consumed;
 
         const value = switch (expected_type) {
-            .I32 => switch (init.info.code) {
-                .i32_const => RawVal.from(try translate_mod.literalAsI32(init.info)),
-                else => return error.UnsupportedConstExpr,
-            },
-            .I64 => switch (init.info.code) {
-                .i64_const => RawVal.from(try translate_mod.literalAsI64(init.info)),
-                else => return error.UnsupportedConstExpr,
-            },
-            .F32 => switch (init.info.code) {
-                .f32_const => RawVal.from(try translate_mod.literalAsF32(init.info)),
-                else => return error.UnsupportedConstExpr,
-            },
-            .F64 => switch (init.info.code) {
-                .f64_const => RawVal.from(try translate_mod.literalAsF64(init.info)),
-                else => return error.UnsupportedConstExpr,
-            },
+            .I32, .I64, .F32, .F64 => utils_parse.parseConstLiteral(init.info) catch
+                return error.UnsupportedConstExpr,
             .Ref => |ref_ty| switch (ref_ty.heap_type) {
                 // All null references use the unified sentinel: low64 == 0.
                 // funcref non-null values are encoded as func_idx+1 so that
