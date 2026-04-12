@@ -202,6 +202,9 @@ pub const Instance = struct {
         store.registerInstance();
         errdefer store.unregisterInstance();
 
+        // Register initial linear memory size into the budget.
+        store.memory_budget.recordLinearGrow(mem.byteLen());
+
         return .{
             .store = store,
             .module = arc,
@@ -338,6 +341,9 @@ pub const Instance = struct {
         store.registerInstance();
         errdefer store.unregisterInstance();
 
+        // Register shared memory capacity into the budget.
+        store.memory_budget.recordSharedGrow(mem.byteLen());
+
         return .{
             .store = store,
             .module = arc,
@@ -371,6 +377,11 @@ pub const Instance = struct {
         // field (not a stale local from init).
         self.host_view.memory = &self.memory;
         const m = self.module.value;
+        // Expose budget pointer if the store has a limit configured.
+        const budget_ptr: ?*store_mod.MemoryBudget = if (self.store.memory_budget.limit_bytes != null)
+            &self.store.memory_budget
+        else
+            null;
         return .{
             .store = self.store,
             .host_instance = &self.host_view,
@@ -388,6 +399,7 @@ pub const Instance = struct {
             .struct_layouts = m.struct_layouts,
             .array_layouts = m.array_layouts,
             .type_ancestors = m.type_ancestors,
+            .memory_budget = budget_ptr,
         };
     }
 

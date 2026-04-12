@@ -63,12 +63,12 @@ async function ensureWasm() {
  * Run esbuild.wasm via wasmz
  * @returns {Promise<RunResult>}
  */
-async function runEsbuild() {
+async function runEsbuild(wasmzArgs = []) {
   const startTime = performance.now();
   const sourceContent = readFileSync(SOURCE, 'utf-8');
 
   return new Promise((resolve, reject) => {
-    const wasmz = spawn(WASMZ, [WASM, '--args', '--bundle --platform=node --sourcefile=source.js'], {
+    const wasmz = spawn(WASMZ, [WASM, ...wasmzArgs, '--args', '--bundle --platform=node --sourcefile=source.js'], {
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
@@ -88,7 +88,7 @@ async function runEsbuild() {
       if (code !== 0) {
         reject(new Error(`wasmz exited with code ${code}: ${errorOutput}`));
       } else {
-        resolve({ output, time });
+        resolve({ output, time, stderr: errorOutput });
       }
     });
 
@@ -97,15 +97,22 @@ async function runEsbuild() {
   });
 }
 
-describe('esbuild', () => {
+describe.concurrent('esbuild', () => {
   beforeAll(async () => {
     await ensureWasm();
   }, 60000);
 
   it('should bundle source.js and match expected output', async () => {
-    const { output, time } = await runEsbuild();
+    const { output, time, stderr } = await runEsbuild(['--mem-stats']);
     console.log(`esbuild execution time: ${time.toFixed(2)}s`);
+    if (stderr) {
+      console.log(stderr.trimEnd());
+    }
     const expectedOutput = readFileSync(EXPECTED, 'utf-8');
     expect(output.trim()).toBe(expectedOutput.trim());
+  }, 30000);
+
+  it('should trap when memory limit is 10MB', async () => {
+    await expect(runEsbuild(['--mem-stats', '--mem-limit', '10'])).rejects.toThrow();
   }, 30000);
 });

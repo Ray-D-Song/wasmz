@@ -15,6 +15,7 @@ const GcHeader = @import("./header.zig").GcHeader;
 const GcKind = @import("./header.zig").GcKind;
 const StructLayout = @import("./layout.zig").StructLayout;
 const ArrayLayout = @import("./layout.zig").ArrayLayout;
+const MemoryBudget = core.MemoryBudget;
 
 /// Minimum alignment for all allocations (8 bytes for GcHeader).
 const MIN_ALIGNMENT: u32 = 8;
@@ -81,19 +82,26 @@ pub const GcHeap = struct {
     used: u32,
     /// Tracks all live allocations for GC traversal.
     live_objects: std.ArrayListUnmanaged(AllocationInfo),
+    /// Optional pointer to the store's MemoryBudget for limit enforcement.
+    /// null when no budget is configured (unlimited mode).
+    budget: ?*MemoryBudget,
 
     const Self = @This();
 
     /// Initializes a new GC heap with the default initial capacity (INITIAL_HEAP_SIZE).
-    pub fn initDefault(allocator: std.mem.Allocator) std.mem.Allocator.Error!Self {
-        return init(allocator, INITIAL_HEAP_SIZE);
+    pub fn initDefault(allocator: std.mem.Allocator, budget: ?*MemoryBudget) std.mem.Allocator.Error!Self {
+        return init(allocator, INITIAL_HEAP_SIZE, budget);
     }
 
     /// Initializes a new GC heap with the given initial capacity.
     /// The initial buffer starts empty and will be allocated via bump allocation.
-    pub fn init(allocator: std.mem.Allocator, initial_size: u32) std.mem.Allocator.Error!Self {
+    pub fn init(allocator: std.mem.Allocator, initial_size: u32, budget: ?*MemoryBudget) std.mem.Allocator.Error!Self {
         const aligned_size = alignUp(initial_size);
         const bytes = try allocator.alloc(u8, aligned_size);
+
+        if (budget) |b| {
+            b.recordGcGrow(aligned_size);
+        }
 
         return .{
             .bytes = bytes,
@@ -101,6 +109,7 @@ pub const GcHeap = struct {
             .allocator = allocator,
             .used = 0,
             .live_objects = .{},
+            .budget = budget,
         };
     }
 
@@ -411,7 +420,18 @@ pub const GcHeap = struct {
             const double_size = current_size * 2;
             const new_len = alignUp(@max(min_needed, double_size));
 
+            // Enforce memory budget before growing.
+            const additional = new_len - current_size;
+            if (self.budget) |b| {
+                if (!b.canGrow(additional)) return null;
+            }
+
             self.bytes = self.allocator.realloc(self.bytes, new_len) catch return null;
+
+            // Update budget with new capacity.
+            if (self.budget) |b| {
+                b.recordGcGrow(new_len);
+            }
         }
 
         self.used += size;
