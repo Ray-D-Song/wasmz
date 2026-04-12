@@ -1,0 +1,25 @@
+/* Custom styles for wasmz documentation */
+
+/* Add logo to menu bar */
+.menu-bar .left-buttons {
+    display: flex;
+    align-items: center;
+}
+
+.menu-bar .left-buttons::before {
+    content: '';
+    display: inline-block;
+    width: 32px;
+    height: 32px;
+    margin-right: 12px;
+    background-image: url('../img/logo.svg');
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center;
+}
+
+/* Center logo on introduction page */
+.content img[alt="wasmz logo"] {
+    margin: 0 auto;
+    display: block;
+}
