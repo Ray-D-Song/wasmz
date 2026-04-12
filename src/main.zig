@@ -1,11 +1,13 @@
 /// wasmz CLI entry
 ///
 /// Usage:
-///   wasmz <file.wasm>                          List exported functions
-///   wasmz <file.wasm> <func_name> [i32_args]   Call the specified function and print the return value
+///   wasmz <file.wasm>                                        List exported functions
+///   wasmz <file.wasm> <func_name> [i32_args]                 Call the specified function and print the return value
+///   wasmz <file.wasm> --args "<wasm_arg...>"                 Run _start, forwarding args to the WASM module
 ///
 /// Flags:
 ///   --legacy-exceptions   Force the legacy exception-handling proposal (try/catch/rethrow/delegate)
+///   --args <string>       Arguments to pass to the WASM module (space-separated, shell-quoted)
 const std = @import("std");
 const builtin = @import("builtin");
 const wasmz = @import("wasmz");
@@ -43,37 +45,77 @@ const CliArgs = struct {
     i32_args: []const []const u8,
     legacy_exceptions: bool,
     /// argv passed to the WASI module: [file_path, wasm_args...]
-    /// When `--` is present, wasm_args are everything after `--`.
-    /// Otherwise wasm_args are positional[1..] (func_name / i32_args mode).
+    /// Populated from the value of --args "<wasm_arg...>" (shell-word-split).
     wasi_args: []const []const u8,
-    /// When true, positional[1..] are wasm pass-through args (after `--`),
-    /// not a func_name + i32 args tuple.
+    /// When true, --args was provided and _start is the target.
     passthrough: bool,
     /// Kept alive so that string slices in the fields above remain valid.
     _args_alloc: [][:0]u8,
     _args_allocator: std.mem.Allocator,
+    /// Storage for wasm args parsed from --args string (owned by allocator).
+    _wasm_args_parsed: [][]const u8,
+
+    /// Simple shell-word split: split `s` on whitespace, respecting
+    /// single- and double-quoted spans.  Returns a slice owned by `allocator`.
+    fn splitArgs(allocator: std.mem.Allocator, s: []const u8) ![][]const u8 {
+        var result: std.ArrayList([]const u8) = .empty;
+        errdefer result.deinit(allocator);
+
+        var i: usize = 0;
+        while (i < s.len) {
+            // skip whitespace
+            while (i < s.len and (s[i] == ' ' or s[i] == '\t')) : (i += 1) {}
+            if (i >= s.len) break;
+
+            var token: std.ArrayList(u8) = .empty;
+            errdefer token.deinit(allocator);
+
+            while (i < s.len and s[i] != ' ' and s[i] != '\t') {
+                const ch = s[i];
+                if (ch == '\'' or ch == '"') {
+                    // consume everything until matching closing quote
+                    const quote = ch;
+                    i += 1;
+                    while (i < s.len and s[i] != quote) : (i += 1) {
+                        try token.append(allocator, s[i]);
+                    }
+                    if (i < s.len) i += 1; // skip closing quote
+                } else {
+                    try token.append(allocator, ch);
+                    i += 1;
+                }
+            }
+
+            try result.append(allocator, try token.toOwnedSlice(allocator));
+        }
+
+        return result.toOwnedSlice(allocator);
+    }
 
     fn parse(allocator: std.mem.Allocator) !CliArgs {
         const args = try std.process.argsAlloc(allocator);
 
         var legacy_exceptions = false;
-        // Split on `--`: everything before is wasmz flags + wasm file path,
-        // everything after is forwarded verbatim to the WASM module as argv.
-        var dashdash_pos: ?usize = null;
-        for (args[1..], 0..) |arg, i| {
-            if (std.mem.eql(u8, arg, "--")) {
-                dashdash_pos = i + 1; // index in args[]
-                break;
-            }
-        }
+        var args_flag_value: ?[]const u8 = null; // value of --args
 
-        // Collect wasmz-side positional args (before `--` or end of args).
+        // Collect wasmz-side positional args (everything that is not a known flag).
         var positional_buf: [16][]const u8 = undefined;
         var positional_count: usize = 0;
-        const scan_end: usize = if (dashdash_pos) |p| p else args.len;
-        for (args[1..scan_end]) |arg| {
+
+        var idx: usize = 1;
+        while (idx < args.len) : (idx += 1) {
+            const arg = args[idx];
             if (std.mem.eql(u8, arg, "--legacy-exceptions")) {
                 legacy_exceptions = true;
+            } else if (std.mem.eql(u8, arg, "--args")) {
+                idx += 1;
+                if (idx >= args.len) {
+                    std.debug.print("error: --args requires a value\n", .{});
+                    std.process.exit(1);
+                }
+                args_flag_value = args[idx];
+            } else if (std.mem.startsWith(u8, arg, "--args=")) {
+                args_flag_value = arg["--args=".len..];
             } else {
                 if (positional_count >= positional_buf.len) {
                     std.debug.print("error: too many arguments\n", .{});
@@ -83,6 +125,7 @@ const CliArgs = struct {
                 positional_count += 1;
             }
         }
+
         const positional = allocator.dupe([]const u8, positional_buf[0..positional_count]) catch {
             std.debug.print("error: out of memory\n", .{});
             std.process.exit(1);
@@ -100,19 +143,17 @@ const CliArgs = struct {
             std.process.exit(1);
         }
 
-        // Build the WASI argv slice: always starts with file_path as argv[0].
-        const passthrough = dashdash_pos != null;
-        const wasm_extra: []const []const u8 = if (passthrough)
-            // everything after `--`
-            @as([]const []const u8, args[dashdash_pos.? + 1 ..])
+        // --args mode: forward split tokens to the WASM module.
+        const passthrough = args_flag_value != null;
+        const wasm_args_parsed: [][]const u8 = if (args_flag_value) |val|
+            splitArgs(allocator, val) catch &.{}
         else
-            // legacy mode: positional[1..] are func_name + i32 args, not wasm args
-            positional[1..];
+            try allocator.alloc([]const u8, 0);
 
-        // wasi_args = [file_path] ++ wasm_extra  (allocate a combined slice)
-        const wasi_args = try allocator.alloc([]const u8, 1 + wasm_extra.len);
+        // wasi_args = [file_path] ++ wasm_args_parsed
+        const wasi_args = try allocator.alloc([]const u8, 1 + wasm_args_parsed.len);
         wasi_args[0] = file_path;
-        @memcpy(wasi_args[1..], wasm_extra);
+        @memcpy(wasi_args[1..], wasm_args_parsed);
 
         const func_name: ?[]const u8 = if (!passthrough and positional.len >= 2) positional[1] else null;
         const i32_args: []const []const u8 = if (!passthrough and positional.len >= 3) positional[2..] else &.{};
@@ -126,11 +167,14 @@ const CliArgs = struct {
             .passthrough = passthrough,
             ._args_alloc = args,
             ._args_allocator = allocator,
+            ._wasm_args_parsed = wasm_args_parsed,
         };
     }
 
     fn deinit(self: *CliArgs, allocator: std.mem.Allocator) void {
         allocator.free(self.wasi_args);
+        for (self._wasm_args_parsed) |tok| allocator.free(tok);
+        allocator.free(self._wasm_args_parsed);
         std.process.argsFree(self._args_allocator, self._args_alloc);
     }
 };
@@ -163,9 +207,9 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
             error.MissingFilePath => {
                 try stdout.writeAll(
                     \\Usage:
-                    \\  wasmz [--legacy-exceptions] <file.wasm>                        List exported functions
-                    \\  wasmz [--legacy-exceptions] <file.wasm> <func> [i32_arg...]    Call the specified function and print the return value
-                    \\  wasmz [--legacy-exceptions] <file.wasm> -- [wasm_arg...]       Run _start, forwarding args to the WASM module
+                    \\  wasmz [--legacy-exceptions] <file.wasm>                                List exported functions
+                    \\  wasmz [--legacy-exceptions] <file.wasm> <func> [i32_arg...]            Call the specified function and print the return value
+                    \\  wasmz [--legacy-exceptions] <file.wasm> --args "<wasm_arg...>"         Run _start, forwarding args to the WASM module
                     \\
                 );
                 std.process.exit(1);
