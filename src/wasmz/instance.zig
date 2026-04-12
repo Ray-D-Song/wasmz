@@ -438,6 +438,34 @@ pub const Instance = struct {
         var vm = VM.init(self.store.allocator);
         return try vm.execute(func, &.{}, self.execEnv());
     }
+
+    /// Initialize a Reactor module by calling its `_initialize` export (if present).
+    ///
+    /// WASI Reactor model lifecycle:
+    ///   1. Instantiate the module (Instance.init)
+    ///   2. Call Instance.initializeReactor() — runs `_initialize` once if exported
+    ///   3. Call any exported function repeatedly via Instance.call()
+    ///
+    /// Returns null if the module does not export `_initialize`.
+    /// Returns the ExecResult if `_initialize` was found and called.
+    pub fn initializeReactor(self: *Instance) (Allocator.Error || error{ ExportNotFound, ExportNotCallable })!?ExecResult {
+        const m = self.module.value;
+        if (m.exports.get("_initialize") == null) return null;
+        return try self.call("_initialize", &.{});
+    }
+
+    /// Returns true if the module is a Command module (exports `_start`).
+    pub fn isCommand(self: *const Instance) bool {
+        return self.module.value.exports.get("_start") != null;
+    }
+
+    /// Returns true if the module is a Reactor module (exports `_initialize` or
+    /// has neither `_start` nor `_initialize`, i.e. a library).
+    pub fn isReactor(self: *const Instance) bool {
+        const exports = self.module.value.exports;
+        // A module is considered a reactor if it has no _start, regardless of _initialize.
+        return exports.get("_start") == null;
+    }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

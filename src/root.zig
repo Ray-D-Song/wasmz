@@ -11,6 +11,16 @@
 ///   - HostFunc         : A single host-provided callable function
 ///   - ExecResult       : VM execution result (ok with optional return value, or trap)
 ///   - Trap / TrapCode  : Wasm runtime trap type and trap code enumeration
+///
+/// Reactor model support:
+///   Instance.initializeReactor()  — calls `_initialize` export if present
+///   Instance.isCommand()          — true if module exports `_start`
+///   Instance.isReactor()          — true if module does NOT export `_start`
+///
+/// Typical reactor usage:
+///   var instance = try Instance.init(&store, arc.retain(), linker);
+///   _ = try instance.initializeReactor();   // runs _initialize if exported
+///   const result = try instance.call("my_func", &args);
 pub const Engine = @import("engine/root.zig").Engine;
 pub const ExecResult = @import("vm/root.zig").ExecResult;
 pub const Config = @import("engine/config.zig").Config;
@@ -37,6 +47,7 @@ test {
     _ = @import("wasmz/tests/poc_test.zig");
     _ = @import("wasmz/tests/module_test.zig");
     _ = @import("wasmz/tests/instance_test.zig");
+    _ = @import("wasmz/tests/reactor_test.zig");
     _ = @import("wasmz/tests/store_test.zig");
     _ = @import("wasmz/tests/host_test.zig");
     _ = @import("wasmz/tests/eh_test.zig");
