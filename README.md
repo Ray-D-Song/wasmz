@@ -1,7 +1,7 @@
 # wasmz
 
 <div align="center">
-    <img src="./imgs/logo.svg" width="60px">
+    <img src="imgs/logo.svg" width="60px">
 </div>
 
 A WebAssembly runtime written in [Zig](https://ziglang.org/), designed to be fast, compact, and easy to embed.
