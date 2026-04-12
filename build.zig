@@ -275,4 +275,38 @@ pub fn build(b: *std.Build) void {
     const clib_step = b.step("clib", "Build the C shared library (libwasmz)");
     clib_step.dependOn(&b.addInstallArtifact(clib, .{}).step);
     clib_step.dependOn(&install_header.step);
+
+    // ── SQLite WASM fixture ───────────────────────────────────────────────────
+    //
+    // Build with: zig build sqlite-wasm
+    // Output:     tests/sqlite/fixtures/sqlite_wasm/sqlite3.wasm
+    //
+    // Builds the SQLite 3.53 amalgamation + Zig wrapper as a wasm32-wasi reactor.
+    // The resulting sqlite3.wasm is used by sqlite_test.zig integration tests.
+    const sqlite_wasm_build = b.addSystemCommand(&.{
+        "zig", "build",
+    });
+    sqlite_wasm_build.setCwd(b.path("tests/sqlite/fixtures/sqlite_wasm"));
+
+    const sqlite_wasm_step = b.step("sqlite-wasm", "Build sqlite3.wasm fixture for integration tests");
+    sqlite_wasm_step.dependOn(&sqlite_wasm_build.step);
+
+    // ── SQLite integration tests ──────────────────────────────────────────────
+    //
+    // Requires sqlite3.wasm to be built first:  zig build sqlite-wasm
+    // Then run:                                  zig build test-sqlite
+    const sqlite_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/sqlite/sqlite_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "wasmz", .module = mod },
+                .{ .name = "wasi", .module = wasi_mod },
+            },
+        }),
+    });
+    const run_sqlite_tests = b.addRunArtifact(sqlite_tests);
+    const sqlite_test_step = b.step("test-sqlite", "Run SQLite WASM integration tests");
+    sqlite_test_step.dependOn(&run_sqlite_tests.step);
 }
