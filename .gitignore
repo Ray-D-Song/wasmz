@@ -20,3 +20,6 @@ node_modules
 
 # Large wasm binary files
 *.wasm
+
+# mdbook build output
+docs/book/
