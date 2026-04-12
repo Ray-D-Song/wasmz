@@ -68,7 +68,7 @@ async function runEsbuild() {
   const sourceContent = readFileSync(SOURCE, 'utf-8');
 
   return new Promise((resolve, reject) => {
-    const wasmz = spawn(WASMZ, [WASM, '--', '--bundle', '--platform=node', '--sourcefile=source.js'], {
+    const wasmz = spawn(WASMZ, [WASM, '--args', '--bundle --platform=node --sourcefile=source.js'], {
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
