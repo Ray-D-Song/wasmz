@@ -42,7 +42,13 @@ const CliArgs = struct {
     func_name: ?[]const u8,
     i32_args: []const []const u8,
     legacy_exceptions: bool,
-    positional: []const []const u8,
+    /// argv passed to the WASI module: [file_path, wasm_args...]
+    /// When `--` is present, wasm_args are everything after `--`.
+    /// Otherwise wasm_args are positional[1..] (func_name / i32_args mode).
+    wasi_args: []const []const u8,
+    /// When true, positional[1..] are wasm pass-through args (after `--`),
+    /// not a func_name + i32 args tuple.
+    passthrough: bool,
     /// Kept alive so that string slices in the fields above remain valid.
     _args_alloc: [][:0]u8,
     _args_allocator: std.mem.Allocator,
@@ -51,9 +57,21 @@ const CliArgs = struct {
         const args = try std.process.argsAlloc(allocator);
 
         var legacy_exceptions = false;
+        // Split on `--`: everything before is wasmz flags + wasm file path,
+        // everything after is forwarded verbatim to the WASM module as argv.
+        var dashdash_pos: ?usize = null;
+        for (args[1..], 0..) |arg, i| {
+            if (std.mem.eql(u8, arg, "--")) {
+                dashdash_pos = i + 1; // index in args[]
+                break;
+            }
+        }
+
+        // Collect wasmz-side positional args (before `--` or end of args).
         var positional_buf: [16][]const u8 = undefined;
         var positional_count: usize = 0;
-        for (args[1..]) |arg| {
+        const scan_end: usize = if (dashdash_pos) |p| p else args.len;
+        for (args[1..scan_end]) |arg| {
             if (std.mem.eql(u8, arg, "--legacy-exceptions")) {
                 legacy_exceptions = true;
             } else {
@@ -82,22 +100,37 @@ const CliArgs = struct {
             std.process.exit(1);
         }
 
-        const func_name: ?[]const u8 = if (positional.len >= 2) positional[1] else null;
-        const i32_args = if (positional.len >= 3) positional[2..] else &.{};
+        // Build the WASI argv slice: always starts with file_path as argv[0].
+        const passthrough = dashdash_pos != null;
+        const wasm_extra: []const []const u8 = if (passthrough)
+            // everything after `--`
+            @as([]const []const u8, args[dashdash_pos.? + 1 ..])
+        else
+            // legacy mode: positional[1..] are func_name + i32 args, not wasm args
+            positional[1..];
+
+        // wasi_args = [file_path] ++ wasm_extra  (allocate a combined slice)
+        const wasi_args = try allocator.alloc([]const u8, 1 + wasm_extra.len);
+        wasi_args[0] = file_path;
+        @memcpy(wasi_args[1..], wasm_extra);
+
+        const func_name: ?[]const u8 = if (!passthrough and positional.len >= 2) positional[1] else null;
+        const i32_args: []const []const u8 = if (!passthrough and positional.len >= 3) positional[2..] else &.{};
 
         return .{
             .file_path = file_path,
             .func_name = func_name,
             .i32_args = i32_args,
             .legacy_exceptions = legacy_exceptions,
-            .positional = positional,
+            .wasi_args = wasi_args,
+            .passthrough = passthrough,
             ._args_alloc = args,
             ._args_allocator = allocator,
         };
     }
 
     fn deinit(self: *CliArgs, allocator: std.mem.Allocator) void {
-        allocator.free(self.positional);
+        allocator.free(self.wasi_args);
         std.process.argsFree(self._args_allocator, self._args_alloc);
     }
 };
@@ -130,8 +163,9 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
             error.MissingFilePath => {
                 try stdout.writeAll(
                     \\Usage:
-                    \\  wasmz [--legacy-exceptions] <file.wasm>                       List exported functions
-                    \\  wasmz [--legacy-exceptions] <file.wasm> <func> [i32_arg...]   Call the specified function and print the return value
+                    \\  wasmz [--legacy-exceptions] <file.wasm>                        List exported functions
+                    \\  wasmz [--legacy-exceptions] <file.wasm> <func> [i32_arg...]    Call the specified function and print the return value
+                    \\  wasmz [--legacy-exceptions] <file.wasm> -- [wasm_arg...]       Run _start, forwarding args to the WASM module
                     \\
                 );
                 std.process.exit(1);
@@ -175,7 +209,7 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
 
     var wasi_host = wasi_preview1.Host.init(allocator);
     defer wasi_host.deinit();
-    try wasi_host.setArgs(cli_args.positional);
+    try wasi_host.setArgs(cli_args.wasi_args);
 
     var linker = Linker.empty;
     try wasi_host.addToLinker(&linker, allocator);
@@ -188,15 +222,34 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     defer linker.deinit(allocator);
 
     var instance = Instance.init(&store, arc_module.retain(), linker) catch |err| {
-        if (err == error.ImportNotSatisfied) {
-            std.debug.print("error: Failed to instantiate module: the following imports are not satisfied:\n", .{});
-            for (arc_module.value.imported_funcs) |def| {
-                if (linker.get(def.module_name, def.func_name) == null) {
-                    std.debug.print("  - {s}::{s}\n", .{ def.module_name, def.func_name });
+        switch (err) {
+            error.ImportNotSatisfied => {
+                std.debug.print("error: Failed to instantiate module: the following imports are not satisfied:\n", .{});
+                for (arc_module.value.imported_funcs) |def| {
+                    if (linker.get(def.module_name, def.func_name) == null) {
+                        std.debug.print("  - {s}::{s}\n", .{ def.module_name, def.func_name });
+                    }
                 }
-            }
-        } else {
-            std.debug.print("error: Failed to instantiate module: {s}\n", .{@errorName(err)});
+            },
+            error.ImportSignatureMismatch => {
+                std.debug.print("error: Failed to instantiate module: import signature mismatch\n", .{});
+                for (arc_module.value.imported_funcs) |def| {
+                    const hf = linker.get(def.module_name, def.func_name);
+                    if (hf == null) continue;
+
+                    const func_type = switch (arc_module.value.composite_types[def.type_index]) {
+                        .func_type => |ft| ft,
+                        else => continue,
+                    };
+
+                    if (!hf.?.matches(func_type)) {
+                        std.debug.print("  - {s}::{s}\n", .{ def.module_name, def.func_name });
+                        std.debug.print("    expected: {any} -> {any}\n", .{ func_type.params(), func_type.results() });
+                        std.debug.print("    provided: {any} -> {any}\n", .{ hf.?.param_types, hf.?.result_types });
+                    }
+                }
+            },
+            else => std.debug.print("error: Failed to instantiate module: {s}\n", .{@errorName(err)}),
         }
         std.process.exit(1);
     };
