@@ -4,4 +4,4 @@ authors = ["Ray-D-Song"]
 language = "en"
 
 [output.html]
-additional-css = ["css/custom.css"]
+additional-css = ["src/css/custom.css"]
