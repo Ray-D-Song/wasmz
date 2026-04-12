@@ -17,3 +17,6 @@ tests/gc/build/
 package/
 
 node_modules
+
+# Large wasm binary files
+*.wasm
