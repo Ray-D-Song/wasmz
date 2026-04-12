@@ -27,6 +27,7 @@ const ArrayLayout = gc_mod.ArrayLayout;
 const storageTypeSize = gc_mod.storageTypeSize;
 const gcRefKindFromHeapType = heap_type.gcRefKindFromHeapType;
 const Memory = core.Memory;
+const MemoryBudget = core.MemoryBudget;
 pub const RawVal = core.raw.RawVal;
 pub const Global = core.Global;
 pub const Trap = core.Trap;
@@ -66,6 +67,9 @@ pub const ExecEnv = struct {
     /// type_ancestors[i] lists all strict ancestor composite type indices of type i.
     /// Empty for types with no declared supertypes.
     type_ancestors: []const []const u32,
+    /// Optional pointer to the Store's MemoryBudget for linear-memory limit enforcement.
+    /// null when the Store has no limit configured.
+    memory_budget: ?*MemoryBudget,
 };
 
 /// One call frame is one function call
@@ -1127,9 +1131,25 @@ pub const VM = struct {
                 // Grow memory by `delta` pages; push old size on success, -1 on failure.
                 .memory_grow => |inst| {
                     const delta = @as(u32, @bitCast(slots[inst.delta].readAs(i32)));
+                    // Check memory budget before growing (owned memory only).
+                    if (delta > 0) {
+                        if (env.memory_budget) |b| {
+                            const additional_bytes = @as(u64, delta) * @import("core").WASM_PAGE_SIZE;
+                            if (!b.canGrow(additional_bytes)) {
+                                slots[inst.dst] = RawVal.from(@as(i32, -1));
+                                continue;
+                            }
+                        }
+                    }
                     const old = env.memory.grow(delta);
                     const result: i32 = if (old == std.math.maxInt(u32)) -1 else @intCast(old);
                     slots[inst.dst] = RawVal.from(result);
+                    // Record new linear memory size in budget after successful grow.
+                    if (result != -1) {
+                        if (env.memory_budget) |b| {
+                            b.recordLinearGrow(env.memory.byteLen());
+                        }
+                    }
                     // After a successful grow the slice may have changed; re-bind.
                     memory = env.memory.bytes();
                 },

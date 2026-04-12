@@ -49,11 +49,17 @@ const CliArgs = struct {
     wasi_args: []const []const u8,
     /// When true, --args was provided and _start is the target.
     passthrough: bool,
+    /// When true, print memory usage stats to stderr after execution.
+    mem_stats: bool,
+    /// Memory limit in MB, null means unlimited.
+    mem_limit_mb: ?u64,
     /// Kept alive so that string slices in the fields above remain valid.
     _args_alloc: [][:0]u8,
     _args_allocator: std.mem.Allocator,
     /// Storage for wasm args parsed from --args string (owned by allocator).
     _wasm_args_parsed: [][]const u8,
+    /// The positional argument slice (owned by allocator).
+    _positional: []const []const u8,
 
     /// Simple shell-word split: split `s` on whitespace, respecting
     /// single- and double-quoted spans.  Returns a slice owned by `allocator`.
@@ -96,6 +102,8 @@ const CliArgs = struct {
         const args = try std.process.argsAlloc(allocator);
 
         var legacy_exceptions = false;
+        var mem_stats = false;
+        var mem_limit_mb: ?u64 = null;
         var args_flag_value: ?[]const u8 = null; // value of --args
 
         // Collect wasmz-side positional args (everything that is not a known flag).
@@ -107,6 +115,18 @@ const CliArgs = struct {
             const arg = args[idx];
             if (std.mem.eql(u8, arg, "--legacy-exceptions")) {
                 legacy_exceptions = true;
+            } else if (std.mem.eql(u8, arg, "--mem-stats")) {
+                mem_stats = true;
+            } else if (std.mem.eql(u8, arg, "--mem-limit")) {
+                idx += 1;
+                if (idx >= args.len) {
+                    std.debug.print("error: --mem-limit requires a value (MB)\n", .{});
+                    std.process.exit(1);
+                }
+                mem_limit_mb = std.fmt.parseInt(u64, args[idx], 10) catch {
+                    std.debug.print("error: --mem-limit value must be a positive integer (MB)\n", .{});
+                    std.process.exit(1);
+                };
             } else if (std.mem.eql(u8, arg, "--args")) {
                 idx += 1;
                 if (idx >= args.len) {
@@ -163,11 +183,14 @@ const CliArgs = struct {
             .func_name = func_name,
             .i32_args = i32_args,
             .legacy_exceptions = legacy_exceptions,
+            .mem_stats = mem_stats,
+            .mem_limit_mb = mem_limit_mb,
             .wasi_args = wasi_args,
             .passthrough = passthrough,
             ._args_alloc = args,
             ._args_allocator = allocator,
             ._wasm_args_parsed = wasm_args_parsed,
+            ._positional = positional,
         };
     }
 
@@ -175,6 +198,7 @@ const CliArgs = struct {
         allocator.free(self.wasi_args);
         for (self._wasm_args_parsed) |tok| allocator.free(tok);
         allocator.free(self._wasm_args_parsed);
+        allocator.free(self._positional);
         std.process.argsFree(self._args_allocator, self._args_alloc);
     }
 };
@@ -199,6 +223,63 @@ pub fn main() void {
 fn host_print_i32(_: ?*anyopaque, _: *HostContext, params: []const RawVal, _: []RawVal) wasmz.HostError!void {
     const val = params[0].readAs(i32);
     std.debug.print("host_print_i32: {d}\n", .{val});
+}
+
+/// Context used for the proc_exit callback when --mem-stats is active.
+const MemStatsCtx = struct {
+    store: ?*Store = null,
+    instance: ?*Instance = null,
+};
+
+fn onExitMemStats(_: u32, data: ?*anyopaque) void {
+    if (data) |d| {
+        const ctx: *MemStatsCtx = @ptrCast(@alignCast(d));
+        if (ctx.store != null and ctx.instance != null) {
+            printMemStats(ctx.store.?, ctx.instance.?);
+        }
+    }
+}
+
+/// Print memory usage stats to stderr.
+fn printMemStats(store: *Store, instance: *Instance) void {
+    const linear_bytes = instance.memory.byteLen();
+    const linear_pages = instance.memory.pageCount();
+    const gc_used = store.gc_heap.usedSize();
+    const gc_cap = store.gc_heap.totalSize();
+    const shared_bytes = store.memory_budget.shared_bytes;
+    const total = linear_bytes + gc_cap + shared_bytes;
+
+    const linear_mb = @as(f64, @floatFromInt(linear_bytes)) / (1024.0 * 1024.0);
+    const gc_cap_mb = @as(f64, @floatFromInt(gc_cap)) / (1024.0 * 1024.0);
+    const gc_used_kb = @as(f64, @floatFromInt(gc_used)) / 1024.0;
+    const gc_cap_kb = @as(f64, @floatFromInt(gc_cap)) / 1024.0;
+    const shared_mb = @as(f64, @floatFromInt(shared_bytes)) / (1024.0 * 1024.0);
+    const total_mb = @as(f64, @floatFromInt(total)) / (1024.0 * 1024.0);
+
+    const shared_annotation: []const u8 = if (shared_bytes == 0) "(none)" else "";
+
+    var buf: [512]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    const w = fbs.writer();
+    w.print(
+        "Memory usage:\n" ++
+            "  Linear memory:  {d:.2} MB  ({d} pages)\n" ++
+            "  GC heap:        {d:.2} MB  (used {d:.1} KB / capacity {d:.1} KB)\n" ++
+            "  Shared memory:  {d:.2} MB  {s}\n" ++
+            "  \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n" ++
+            "  Total:          {d:.2} MB\n",
+        .{
+            linear_mb,
+            linear_pages,
+            gc_cap_mb,
+            gc_used_kb,
+            gc_cap_kb,
+            shared_mb,
+            shared_annotation,
+            total_mb,
+        },
+    ) catch {};
+    std.fs.File.stderr().writeAll(fbs.getWritten()) catch {};
 }
 
 fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
@@ -233,7 +314,10 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     };
     defer allocator.free(bytes);
 
-    var engine = Engine.init(allocator, Config{ .legacy_exceptions = cli_args.legacy_exceptions }) catch |err| {
+    var engine = Engine.init(allocator, Config{
+        .legacy_exceptions = cli_args.legacy_exceptions,
+        .mem_limit_bytes = if (cli_args.mem_limit_mb) |mb| mb * 1024 * 1024 else null,
+    }) catch |err| {
         std.debug.print("error: Failed to initialize engine: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
@@ -249,11 +333,20 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     };
 
     var store = try Store.init(allocator, engine);
+    store.linkBudget();
     defer store.deinit();
 
     var wasi_host = wasi_preview1.Host.init(allocator);
     defer wasi_host.deinit();
     try wasi_host.setArgs(cli_args.wasi_args);
+
+    // If --mem-stats is set, register a proc_exit callback so that stats are
+    // printed even when the WASM module calls proc_exit (which bypasses defer).
+    var mem_stats_ctx = MemStatsCtx{};
+    mem_stats_ctx.store = &store;
+    if (cli_args.mem_stats) {
+        wasi_host.setOnExit(onExitMemStats, &mem_stats_ctx);
+    }
 
     var linker = Linker.empty;
     try wasi_host.addToLinker(&linker, allocator);
@@ -297,7 +390,13 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
         }
         std.process.exit(1);
     };
-    defer instance.deinit();
+    // Point the mem-stats callback context at the live instance.
+    mem_stats_ctx.instance = &instance;
+    // Defer deinit last so we can print stats before it runs.
+    defer {
+        if (cli_args.mem_stats) printMemStats(&store, &instance);
+        instance.deinit();
+    }
 
     if (instance.runStartFunction() catch |err| {
         std.debug.print("error: Failed to run start function: {s}\n", .{@errorName(err)});

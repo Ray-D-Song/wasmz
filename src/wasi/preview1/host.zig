@@ -25,6 +25,10 @@ pub const Host = struct {
     fd_io: *FdIO,
     clock: *Clock,
     env_args: *EnvArgs,
+    /// Optional callback invoked just before process exit.
+    /// Signature: fn(exit_code: u32, data: ?*anyopaque) void
+    on_exit: ?*const fn (u32, ?*anyopaque) void = null,
+    on_exit_data: ?*anyopaque = null,
 
     pub fn init(allocator: Allocator) Host {
         const fd_io_ptr = allocator.create(FdIO) catch @panic("OOM");
@@ -77,6 +81,14 @@ pub const Host = struct {
 
     pub fn setMonotonicClock(self: *Host, source: ClockSource) void {
         self.clock.setMonotonic(source);
+    }
+
+    /// Register a callback that will be invoked (with the exit code) just
+    /// before proc_exit terminates the process.  Use this to flush stats or
+    /// perform other cleanup that must survive a WASI proc_exit call.
+    pub fn setOnExit(self: *Host, cb: *const fn (u32, ?*anyopaque) void, data: ?*anyopaque) void {
+        self.on_exit = cb;
+        self.on_exit_data = data;
     }
 
     pub fn addPreopen(self: *Host, path: []const u8) !types.Fd {
@@ -375,9 +387,14 @@ fn random_get(_: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results
 
 /// proc_exit: Terminate the process
 /// params: rval(i32)
-fn proc_exit(_: ?*anyopaque, _: *HostContext, params: []const RawVal, _: []RawVal) wasmz.HostError!void {
+fn proc_exit(host_data: ?*anyopaque, _: *HostContext, params: []const RawVal, _: []RawVal) wasmz.HostError!void {
     const rval = params[0].readAs(i32);
-    std.process.exit(@intCast(@as(u32, @bitCast(rval))));
+    const code: u32 = @bitCast(rval);
+    if (host_data) |data| {
+        const host: *Host = @ptrCast(@alignCast(data));
+        if (host.on_exit) |cb| cb(code, host.on_exit_data);
+    }
+    std.process.exit(@intCast(code));
 }
 
 /// proc_raise: Send a signal to the process
