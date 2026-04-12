@@ -1095,14 +1095,10 @@ pub const VM = struct {
                     }
 
                     if (len > 0) {
-                        if (dst_addr < src_addr) {
-                            @memcpy(memory[dst_addr .. dst_addr + len], memory[src_addr .. src_addr + len]);
-                        } else if (dst_addr > src_addr) {
-                            var i: usize = len;
-                            while (i > 0) {
-                                i -= 1;
-                                memory[dst_addr + i] = memory[src_addr + i];
-                            }
+                        if (dst_addr <= src_addr) {
+                            std.mem.copyForwards(u8, memory[dst_addr .. dst_addr + len], memory[src_addr .. src_addr + len]);
+                        } else {
+                            std.mem.copyBackwards(u8, memory[dst_addr .. dst_addr + len], memory[src_addr .. src_addr + len]);
                         }
                     }
                 },

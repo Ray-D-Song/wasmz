@@ -13,3 +13,7 @@ playgrounds/
 
 .gradle
 tests/gc/build/
+
+package/
+
+node_modules

@@ -9,53 +9,53 @@
 - [x] clock_time_get
 
 ## File descriptor and IO
-- [ ] fd_advise
-- [ ] fd_allocate
+- [x] fd_advise
+- [x] fd_allocate
 - [x] fd_close
-- [ ] fd_datasync
+- [x] fd_datasync
 - [x] fd_fdstat_get
-- [ ] fd_fdstat_set_flags
-- [ ] fd_fdstat_set_rights
+- [x] fd_fdstat_set_flags
+- [x] fd_fdstat_set_rights
 - [x] fd_filestat_get
-- [ ] fd_filestat_set_size
-- [ ] fd_filestat_set_times
+- [x] fd_filestat_set_size
+- [x] fd_filestat_set_times
 - [x] fd_pread
 - [x] fd_prestat_get
 - [x] fd_prestat_dir_name
 - [x] fd_pwrite
 - [x] fd_read
-- [ ] fd_readdir
-- [ ] fd_renumber
+- [x] fd_readdir
+- [x] fd_renumber
 - [x] fd_seek
-- [ ] fd_sync
-- [ ] fd_tell
+- [x] fd_sync
+- [x] fd_tell
 - [x] fd_write
 
 ## Path and FS
-- [ ] path_create_directory
-- [ ] path_filestat_get
-- [ ] path_filestat_set_times
-- [ ] path_link
+- [x] path_create_directory
+- [x] path_filestat_get
+- [x] path_filestat_set_times
+- [x] path_link
 - [x] path_open
-- [ ] path_readlink
-- [ ] path_remove_directory
-- [ ] path_rename
-- [ ] path_symlink
-- [ ] path_unlink_file
+- [x] path_readlink
+- [x] path_remove_directory
+- [x] path_rename
+- [x] path_symlink
+- [x] path_unlink_file
 
 ## Event and poll
-- [ ] poll_oneoff
+- [x] poll_oneoff
 
 ## Process
-- [ ] proc_exit
-- [ ] proc_raise
-- [ ] sched_yield
+- [x] proc_exit
+- [x] proc_raise
+- [x] sched_yield
 
 ## Random num
-- [ ] random_get
+- [x] random_get
 
 ## Socket
-- [ ] sock_accept
-- [ ] sock_recv
-- [ ] sock_send
-- [ ] sock_shutdown
+- [x] sock_accept
+- [x] sock_recv
+- [x] sock_send
+- [x] sock_shutdown

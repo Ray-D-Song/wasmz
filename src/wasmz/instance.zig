@@ -52,6 +52,8 @@ pub const InstanceError = Allocator.Error || error{
     SharedMemoryTooSmall,
     /// GC constant expression evaluation failed (e.g. unknown opcode, GC heap OOM).
     GcConstExprError,
+    /// An active data segment's target range exceeds the linear memory size.
+    DataSegmentOutOfBounds,
 };
 
 pub const Instance = struct {
@@ -177,6 +179,21 @@ pub const Instance = struct {
         errdefer allocator.free(data_segments_dropped);
         @memset(data_segments_dropped, false);
 
+        // ── 4a. apply active data segments to linear memory (WASM spec §4.5.4) ──
+        // Active segments are copied into linear memory at instantiation time and
+        // then implicitly dropped (they cannot be used by memory.init after this).
+        {
+            const mem_bytes = mem.bytes();
+            for (module.data_segments, 0..) |seg, i| {
+                if (seg.mode != .active) continue;
+                const dst: usize = seg.offset;
+                const len: usize = seg.data.len;
+                if (dst + len > mem_bytes.len) return error.DataSegmentOutOfBounds;
+                @memcpy(mem_bytes[dst..][0..len], seg.data);
+                data_segments_dropped[i] = true;
+            }
+        }
+
         // ── 5. initialize element segment dropped flags ──────────────────────────────
         const elem_segments_dropped = try allocator.alloc(bool, module.elem_segments.len);
         errdefer allocator.free(elem_segments_dropped);
@@ -300,6 +317,19 @@ pub const Instance = struct {
         const data_segments_dropped = try allocator.alloc(bool, module.data_segments.len);
         errdefer allocator.free(data_segments_dropped);
         @memset(data_segments_dropped, false);
+
+        // ── 4a. apply active data segments to linear memory (WASM spec §4.5.4) ──
+        {
+            const mem_bytes = mem.bytes();
+            for (module.data_segments, 0..) |seg, i| {
+                if (seg.mode != .active) continue;
+                const dst: usize = seg.offset;
+                const len: usize = seg.data.len;
+                if (dst + len > mem_bytes.len) return error.DataSegmentOutOfBounds;
+                @memcpy(mem_bytes[dst..][0..len], seg.data);
+                data_segments_dropped[i] = true;
+            }
+        }
 
         const elem_segments_dropped = try allocator.alloc(bool, module.elem_segments.len);
         errdefer allocator.free(elem_segments_dropped);
