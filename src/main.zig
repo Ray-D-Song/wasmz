@@ -8,6 +8,8 @@
 /// Flags:
 ///   --legacy-exceptions   Force the legacy exception-handling proposal (try/catch/rethrow/delegate)
 ///   --args <string>       Arguments to pass to the WASM module (space-separated, shell-quoted)
+///   --func <name>         Name of the exported function to call (reactor/library mode)
+///   --reactor             Initialize the module as a reactor (_initialize) before calling --func
 const std = @import("std");
 const builtin = @import("builtin");
 const wasmz = @import("wasmz");
@@ -53,6 +55,8 @@ const CliArgs = struct {
     mem_stats: bool,
     /// Memory limit in MB, null means unlimited.
     mem_limit_mb: ?u64,
+    /// When true, call _initialize before --func (reactor mode).
+    reactor: bool,
     /// Kept alive so that string slices in the fields above remain valid.
     _args_alloc: [][:0]u8,
     _args_allocator: std.mem.Allocator,
@@ -105,6 +109,8 @@ const CliArgs = struct {
         var mem_stats = false;
         var mem_limit_mb: ?u64 = null;
         var args_flag_value: ?[]const u8 = null; // value of --args
+        var func_flag_value: ?[]const u8 = null; // value of --func
+        var reactor = false;
 
         // Collect wasmz-side positional args (everything that is not a known flag).
         var positional_buf: [16][]const u8 = undefined;
@@ -117,6 +123,8 @@ const CliArgs = struct {
                 legacy_exceptions = true;
             } else if (std.mem.eql(u8, arg, "--mem-stats")) {
                 mem_stats = true;
+            } else if (std.mem.eql(u8, arg, "--reactor")) {
+                reactor = true;
             } else if (std.mem.eql(u8, arg, "--mem-limit")) {
                 idx += 1;
                 if (idx >= args.len) {
@@ -136,6 +144,15 @@ const CliArgs = struct {
                 args_flag_value = args[idx];
             } else if (std.mem.startsWith(u8, arg, "--args=")) {
                 args_flag_value = arg["--args=".len..];
+            } else if (std.mem.eql(u8, arg, "--func")) {
+                idx += 1;
+                if (idx >= args.len) {
+                    std.debug.print("error: --func requires a function name\n", .{});
+                    std.process.exit(1);
+                }
+                func_flag_value = args[idx];
+            } else if (std.mem.startsWith(u8, arg, "--func=")) {
+                func_flag_value = arg["--func=".len..];
             } else {
                 if (positional_count >= positional_buf.len) {
                     std.debug.print("error: too many arguments\n", .{});
@@ -175,8 +192,24 @@ const CliArgs = struct {
         wasi_args[0] = file_path;
         @memcpy(wasi_args[1..], wasm_args_parsed);
 
-        const func_name: ?[]const u8 = if (!passthrough and positional.len >= 2) positional[1] else null;
-        const i32_args: []const []const u8 = if (!passthrough and positional.len >= 3) positional[2..] else &.{};
+        // --func flag takes priority over positional func name
+        const func_name: ?[]const u8 = if (func_flag_value) |f|
+            f
+        else if (!passthrough and positional.len >= 2)
+            positional[1]
+        else
+            null;
+        // i32_args: when --func is used, all remaining positionals (after file) are args.
+        // When positional func name is used, positionals after the func name are args.
+        const i32_args: []const []const u8 = if (!passthrough) blk: {
+            if (func_flag_value != null) {
+                // --func <name> used: positional[1..] are all i32 args (no func name in positionals)
+                break :blk if (positional.len >= 2) positional[1..] else &.{};
+            } else {
+                // positional[0]=file, positional[1]=func, positional[2..]=args
+                break :blk if (positional.len >= 3) positional[2..] else &.{};
+            }
+        } else &.{};
 
         return .{
             .file_path = file_path,
@@ -185,6 +218,7 @@ const CliArgs = struct {
             .legacy_exceptions = legacy_exceptions,
             .mem_stats = mem_stats,
             .mem_limit_mb = mem_limit_mb,
+            .reactor = reactor,
             .wasi_args = wasi_args,
             .passthrough = passthrough,
             ._args_alloc = args,
@@ -291,6 +325,9 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
                     \\  wasmz [--legacy-exceptions] <file.wasm>                                List exported functions
                     \\  wasmz [--legacy-exceptions] <file.wasm> <func> [i32_arg...]            Call the specified function and print the return value
                     \\  wasmz [--legacy-exceptions] <file.wasm> --args "<wasm_arg...>"         Run _start, forwarding args to the WASM module
+                    \\  wasmz [--legacy-exceptions] <file.wasm> --func <name> [i32_arg...]     Call exported function (reactor mode)
+                    \\  wasmz [--legacy-exceptions] <file.wasm> --reactor --func <name> [i32_arg...]
+                    \\                                                                          Run _initialize then call function
                     \\
                 );
                 std.process.exit(1);
@@ -409,6 +446,25 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
                 std.debug.print("error: start function trapped: {s}\n", .{msg});
                 std.process.exit(1);
             },
+        }
+    }
+
+    // Reactor initialization: only if --reactor flag is explicitly given.
+    const should_init_reactor = cli_args.reactor;
+    if (should_init_reactor) {
+        const init_result = instance.initializeReactor() catch |err| {
+            std.debug.print("error: Failed to call _initialize: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
+        if (init_result) |res| {
+            switch (res) {
+                .ok => {},
+                .trap => |t| {
+                    const msg = t.allocPrint(allocator) catch "?";
+                    std.debug.print("error: _initialize trapped: {s}\n", .{msg});
+                    std.process.exit(1);
+                },
+            }
         }
     }
 

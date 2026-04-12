@@ -241,4 +241,38 @@ pub fn build(b: *std.Build) void {
     //
     // Lastly, the Zig build system is relatively simple and self-contained,
     // and reading its source code will allow you to master it.
+
+    // ── C API shared library (libwasmz) ──────────────────────────────────────
+    //
+    // Build with: zig build clib
+    // Output:     zig-out/lib/libwasmz.{so,dylib,dll}
+    //             zig-out/include/wasmz.h  (copied from include/wasmz.h)
+    //
+    // The C API is implemented in src/capi.zig and uses the libc allocator so
+    // that callers can free error strings with the standard free().
+    const clib = b.addLibrary(.{
+        .name = "wasmz",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/capi.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "wasmz", .module = mod },
+            },
+            .link_libc = true,
+        }),
+    });
+    b.installArtifact(clib);
+
+    // Copy the public header to zig-out/include/wasmz.h
+    const install_header = b.addInstallFile(
+        b.path("include/wasmz.h"),
+        "include/wasmz.h",
+    );
+    b.getInstallStep().dependOn(&install_header.step);
+
+    const clib_step = b.step("clib", "Build the C shared library (libwasmz)");
+    clib_step.dependOn(&b.addInstallArtifact(clib, .{}).step);
+    clib_step.dependOn(&install_header.step);
 }
