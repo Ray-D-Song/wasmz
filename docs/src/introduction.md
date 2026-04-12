@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="img/logo.svg" alt="wasmz logo" width="200" height="200">
+</div>
+
 # Introduction
 
 **wasmz** is a WebAssembly runtime written in [Zig](https://ziglang.org/), designed to be fast, compact, and easy to embed. It implements a full-featured interpreter with support for modern WebAssembly proposals.
