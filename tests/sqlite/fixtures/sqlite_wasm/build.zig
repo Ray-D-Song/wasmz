@@ -35,9 +35,9 @@ pub fn build(b: *std.Build) void {
         .root_module = root_mod,
     });
 
-    // Add sqlite3.c as a C source file
+    // Add sqlite3.c as a C source file (download via ./download-sqlite.sh)
     root_mod.addCSourceFile(.{
-        .file = b.path("sqlite3.c"),
+        .file = b.path("lib/sqlite3.c"),
         .flags = &.{
             "-DSQLITE_OMIT_LOAD_EXTENSION=1",
             "-DSQLITE_THREADSAFE=0",
@@ -50,7 +50,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Make sqlite3.h findable
-    root_mod.addIncludePath(b.path("."));
+    root_mod.addIncludePath(b.path("lib"));
 
     // WASI reactor: export _initialize instead of _start
     lib.wasi_exec_model = .reactor;

@@ -21,5 +21,8 @@ node_modules
 # Large wasm binary files
 *.wasm
 
+# SQLite amalgamation (downloaded, not committed)
+tests/sqlite/fixtures/sqlite_wasm/lib/sqlite3.*
+
 # mdbook build output
 docs/book/
