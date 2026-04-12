@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="img/logo.svg" alt="wasmz logo" width="200" height="200">
+  <img src="img/logo.svg" alt="wasmz logo" width="64" height="64">
 </div>
 
 # Introduction
