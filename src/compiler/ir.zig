@@ -1056,6 +1056,52 @@ pub const CompiledFunction = struct {
     catch_handler_tables: std.ArrayListUnmanaged(CatchHandlerEntry),
 };
 
+/// Lazy compilation metadata for a not-yet-compiled local function.
+///
+/// `body` is a borrowed slice into the original Wasm bytes held by the caller
+/// (must outlive the Module).  All other fields are pre-computed during the
+/// first parse pass so that compilation can proceed without re-parsing the
+/// module-level metadata.
+pub const PendingFunction = struct {
+    /// Raw Wasm bytecode of the function body (borrowed, not owned).
+    body: []const u8,
+    /// Index into Module.composite_types giving the function's FuncType.
+    type_index: u32,
+    /// Total value-stack slots needed (params + locals).
+    reserved_slots: u32,
+    /// Number of local variable slots (excluding parameters).
+    locals_count: u16,
+};
+
+/// A slot in Module.functions[]: either a host-import placeholder, a not-yet-compiled
+/// local function, or a fully compiled (encoded) local function.
+pub const FunctionSlot = union(enum) {
+    /// Imported function — dispatched through Instance.host_funcs[]; never executed via M3.
+    import,
+    /// Local function that has not been compiled yet.
+    pending: PendingFunction,
+    /// Local function that has been compiled into M3 threaded-dispatch bytecode.
+    encoded: EncodedFunction,
+
+    /// Return a pointer to the EncodedFunction, or null if not yet compiled.
+    pub fn getEncoded(self: *const FunctionSlot) ?*const EncodedFunction {
+        return switch (self.*) {
+            .encoded => |*ef| ef,
+            else => null,
+        };
+    }
+
+    /// Free any owned heap memory held by this slot.
+    /// Only `.encoded` variants own memory; `.import` and `.pending` do not.
+    pub fn deinit(self: *FunctionSlot, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .encoded => |*ef| ef.deinit(allocator),
+            .import, .pending => {},
+        }
+        self.* = undefined;
+    }
+};
+
 /// Encoded (M3 threaded-dispatch) form of a compiled function.
 ///
 /// Layout of `code`:

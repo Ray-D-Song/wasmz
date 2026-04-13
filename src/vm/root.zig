@@ -8,6 +8,10 @@ const gc_mod = @import("./gc/root.zig");
 const dispatch_mod = @import("dispatch.zig");
 
 const EncodedFunction = ir.EncodedFunction;
+const FunctionSlot = ir.FunctionSlot;
+const engine_mod = @import("../engine/root.zig");
+const Engine = engine_mod.Engine;
+const Module = module_mod.Module;
 const CompiledDataSegment = module_mod.CompiledDataSegment;
 const CompiledElemSegment = module_mod.CompiledElemSegment;
 const CompositeType = core.CompositeType;
@@ -40,7 +44,12 @@ pub const ExecEnv = struct {
     /// Pointer into the Instance's Memory.  Always non-null; even a no-memory module uses
     /// an empty Memory so the pointer is valid.
     memory: *Memory,
-    functions: []const EncodedFunction,
+    /// Full Wasm function index space (imports as `.import`, locals as `.pending`/`.encoded`).
+    functions: []FunctionSlot,
+    /// Engine reference used for lazy compilation of `.pending` function slots.
+    engine: Engine,
+    /// Pointer to the Module, used for lazy compilation of pending function slots.
+    module: *Module,
     host_funcs: []const HostFunc,
     tables: [][]u32,
     func_type_indices: []const u32,
@@ -108,6 +117,8 @@ pub const VM = struct {
             .globals = env.globals,
             .memory = env.memory,
             .functions = env.functions,
+            .engine = env.engine,
+            .module = env.module,
             .host_funcs = env.host_funcs,
             .tables = env.tables,
             .func_type_indices = env.func_type_indices,

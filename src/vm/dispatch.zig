@@ -32,6 +32,10 @@ pub const ExecResult = vm_root.ExecResult;
 pub const Trap = vm_root.Trap;
 pub const Global = vm_root.Global;
 const EncodedFunction = ir.EncodedFunction;
+const FunctionSlot = ir.FunctionSlot;
+const engine_mod = @import("../engine/root.zig");
+const Engine = engine_mod.Engine;
+const Module = module_mod.Module;
 const CatchHandlerEntry = ir.CatchHandlerEntry;
 const Slot = ir.Slot;
 const Store = store_mod.Store;
@@ -71,14 +75,21 @@ pub const Handler = *const fn (
 // ── Execution environment (read-only) ─────────────────────────────────────────
 
 /// Read-only view of the module instance, passed by pointer to every handler.
-/// This mirrors ExecEnv in root.zig but uses EncodedFunction instead of
-/// CompiledFunction.
+/// `functions` covers the *full* Wasm function index space (imports + locals).
+/// Handlers use host_funcs.len to split host vs. local calls; for local calls
+/// they index into `functions` directly and trigger lazy compilation when needed.
 pub const ExecEnv = struct {
     store: *Store,
     host_instance: *HostInstance,
     globals: []Global,
     memory: *Memory,
-    functions: []const EncodedFunction,
+    /// Full Wasm function index space (imports as `.import`, locals as `.pending`/`.encoded`).
+    /// Mutable so that handlers can compile `.pending` slots in place.
+    functions: []FunctionSlot,
+    /// Engine reference, used to compile `.pending` function slots on first call.
+    engine: Engine,
+    /// Pointer to the Module, used for lazy compilation of pending function slots.
+    module: *Module,
     host_funcs: []const HostFunc,
     tables: [][]u32,
     func_type_indices: []const u32,

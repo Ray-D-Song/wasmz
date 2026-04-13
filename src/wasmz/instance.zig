@@ -15,10 +15,12 @@ const parser_mod = @import("parser");
 const payload_mod = @import("payload");
 const gc_mod = @import("../vm/gc/root.zig");
 const utils_parse = @import("../utils/parse.zig");
+const engine_mod = @import("../engine/root.zig");
 
 const Allocator = std.mem.Allocator;
 const Store = store_mod.Store;
 const Module = module_mod.Module;
+const Engine = engine_mod.Engine;
 pub const ArcModule = module_mod.ArcModule;
 const Global = core.Global;
 const GlobalType = core.GlobalType;
@@ -393,7 +395,10 @@ pub const Instance = struct {
             .host_instance = &self.host_view,
             .globals = self.globals,
             .memory = &self.memory,
-            .functions = m.functions[m.imported_funcs.len..],
+            // Pass the full function index space so VM handlers can trigger lazy compilation.
+            .functions = m.functions,
+            .engine = self.store.engine,
+            .module = m,
             .host_funcs = self.host_funcs,
             .tables = m.tables,
             .func_type_indices = m.func_type_indices,
@@ -420,14 +425,17 @@ pub const Instance = struct {
     ///   Allocator.Error          — Host memory allocation failure
     ///   ExecResult.ok(val)       — Normal execution completed, val is the return value (null for void functions)
     ///   ExecResult.trap(trap)    — Wasm runtime trap (e.g., out-of-bounds memory access)
-    pub fn call(self: *Instance, name: []const u8, args: []const RawVal) (Allocator.Error || error{ ExportNotFound, ExportNotCallable })!ExecResult {
+    pub fn call(self: *Instance, name: []const u8, args: []const RawVal) (module_mod.ModuleCompileError || Allocator.Error || error{ ExportNotFound, ExportNotCallable })!ExecResult {
         const m = self.module.value;
         const export_entry = m.exports.get(name) orelse return error.ExportNotFound;
         const func_index = switch (export_entry) {
             .function_index => |idx| idx,
             else => return error.ExportNotCallable,
         };
-        return self.vm.execute(&m.functions[func_index], args, self.execEnv());
+        // Lazily compile the function on first call.
+        try m.compileFunctionAt(self.store.engine, func_index);
+        const encoded = &m.functions[func_index].encoded;
+        return self.vm.execute(encoded, args, self.execEnv());
     }
 
     /// Execute the module's start function (WebAssembly spec §4.5.4).
@@ -435,10 +443,12 @@ pub const Instance = struct {
     /// The start function is called automatically during instantiation to perform
     /// module-level initialization (e.g. Kotlin's _initializeModule which sets up
     /// string pools and field data).  Returns null if there is no start function.
-    pub fn runStartFunction(self: *Instance) Allocator.Error!?ExecResult {
+    pub fn runStartFunction(self: *Instance) (module_mod.ModuleCompileError || Allocator.Error)!?ExecResult {
         const m = self.module.value;
         const start_idx = m.start_function orelse return null;
-        return try self.vm.execute(&m.functions[start_idx], &.{}, self.execEnv());
+        try m.compileFunctionAt(self.store.engine, start_idx);
+        const encoded = &m.functions[start_idx].encoded;
+        return try self.vm.execute(encoded, &.{}, self.execEnv());
     }
 
     /// Initialize a Reactor module by calling its `_initialize` export (if present).
@@ -450,7 +460,7 @@ pub const Instance = struct {
     ///
     /// Returns null if the module does not export `_initialize`.
     /// Returns the ExecResult if `_initialize` was found and called.
-    pub fn initializeReactor(self: *Instance) (Allocator.Error || error{ ExportNotFound, ExportNotCallable })!?ExecResult {
+    pub fn initializeReactor(self: *Instance) (module_mod.ModuleCompileError || Allocator.Error || error{ ExportNotFound, ExportNotCallable })!?ExecResult {
         const m = self.module.value;
         if (m.exports.get("_initialize") == null) return null;
         return try self.call("_initialize", &.{});

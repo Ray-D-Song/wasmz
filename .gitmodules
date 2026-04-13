@@ -1,0 +1,6 @@
+[submodule "bench/projects/wasmi"]
+	path = bench/projects/wasmi
+	url = https://github.com/wasmi-labs/wasmi.git
+[submodule "bench/projects/wasm3"]
+	path = bench/projects/wasm3
+	url = https://github.com/wasm3/wasm3.git

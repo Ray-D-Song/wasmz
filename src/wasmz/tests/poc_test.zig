@@ -34,6 +34,7 @@ const Engine = engine_mod.Engine;
 const Config = config_mod.Config;
 const compileFunctionBody = module_mod.compileFunctionBody;
 const FuncTypeResolver = module_mod.FuncTypeResolver;
+const FunctionSlot = ir_mod.FunctionSlot;
 
 const empty_resolver = FuncTypeResolver{
     .composite_types = &.{},
@@ -282,6 +283,8 @@ fn executeWithEmptyRuntime(
         .globals = globals[0..],
         .memory = &mem,
         .functions = &.{},
+        .engine = engine,
+        .module = &module,
         .host_funcs = &.{},
         .tables = tables[0..],
         .func_type_indices = &.{},
@@ -724,13 +727,18 @@ test "return_call: tail call replaces current frame" {
     };
 
     const func_type_indices = [_]u32{ 0, 1 };
-    const functions = [_]EncodedFunction{ encoded0, encoded1 };
+    var functions = [_]FunctionSlot{
+        .{ .encoded = encoded0 },
+        .{ .encoded = encoded1 },
+    };
     const exec_env = ExecEnv{
         .store = &store,
         .host_instance = &host_instance,
         .globals = globals[0..],
         .memory = &mem2,
         .functions = &functions,
+        .engine = engine,
+        .module = &module,
         .host_funcs = &.{},
         .tables = tables[0..],
         .func_type_indices = &func_type_indices,
