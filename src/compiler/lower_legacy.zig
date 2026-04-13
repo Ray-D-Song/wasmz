@@ -104,6 +104,13 @@ pub const LowerLegacy = struct {
         self.try_states.deinit(self.allocator);
     }
 
+    /// Reset this LowerLegacy for reuse on a new function body, retaining all
+    /// allocated buffer capacity.  Mirrors `Lower.reset`.
+    pub fn reset(self: *LowerLegacy, reserved_slots: u32, locals_count: u16) void {
+        self.inner.reset(reserved_slots, locals_count);
+        self.try_states.clearRetainingCapacity();
+    }
+
     pub fn finish(self: *LowerLegacy) ir.CompiledFunction {
         return self.inner.finish();
     }
