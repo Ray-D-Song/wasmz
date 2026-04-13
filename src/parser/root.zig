@@ -231,7 +231,7 @@ pub const Parser = struct {
     }
 
     // Helper function to check if there are enough bytes left in the input data for parsing.
-    fn has_bytes(self: *Parser, len: usize) bool {
+    pub fn has_bytes(self: *Parser, len: usize) bool {
         return self.cur_pos + len <= self.cur_len;
     }
 
@@ -244,7 +244,7 @@ pub const Parser = struct {
         return self.has_bytes(sect_range.end - self.cur_pos);
     }
 
-    fn read_u8(self: *Parser) u8 {
+    pub fn read_u8(self: *Parser) u8 {
         const byte = self.cur_data[self.cur_pos];
         self.cur_pos += 1;
         return byte;
@@ -289,7 +289,7 @@ pub const Parser = struct {
         return self.read_bytes(length);
     }
 
-    fn read_bytes(self: *Parser, len: usize) []const u8 {
+    pub fn read_bytes(self: *Parser, len: usize) []const u8 {
         const bytes = self.cur_data[self.cur_pos .. self.cur_pos + len];
         self.cur_pos += len;
         return bytes;
@@ -298,7 +298,7 @@ pub const Parser = struct {
     /// Check if there are enough bytes to read a complete LEB128 integer starting from the current position.
     /// LEB128 uses the most significant bit as a continuation flag.
     /// When a byte with the most significant bit set to 0 is encountered, it indicates the end of the integer.
-    fn has_var_int_bytes(self: *Parser) bool {
+    pub fn has_var_int_bytes(self: *Parser) bool {
         var pos = self.cur_pos;
         while (pos < self.cur_len) {
             // 0x80: LEB128_CONTINUATION_BIT
@@ -352,7 +352,7 @@ pub const Parser = struct {
     ///
     /// Encoding length: 1-5 bytes
     /// Maximum representable value: 2^32 - 1 = 4294967295
-    fn read_var_uint32(self: *Parser) u32 {
+    pub fn read_var_uint32(self: *Parser) u32 {
         var result: u32 = 0;
         var shift: u32 = 0;
 
@@ -376,7 +376,7 @@ pub const Parser = struct {
     /// For example, decoding -1:
     ///   Encoding: 0x7F (01111111) -> end, value is 127
     ///   Sign extension: (127 << 25) >> 25 = -1
-    fn read_var_int32(self: *Parser) i32 {
+    pub fn read_var_int32(self: *Parser) i32 {
         var result: u32 = 0;
         var shift: u32 = 0;
 
@@ -403,7 +403,7 @@ pub const Parser = struct {
     /// Decoding process is similar to the 32-bit version, but uses 64-bit storage
     /// Encoding length: 1-10 bytes
     /// Maximum representable value: 2^63 - 1 = 9223372036854775807
-    fn read_var_int64(self: *Parser) i64 {
+    pub fn read_var_int64(self: *Parser) i64 {
         var result: u64 = 0;
         var shift: u32 = 0;
 
@@ -1532,7 +1532,7 @@ pub const Parser = struct {
         }
     }
 
-    fn read_memory_immediate(self: *Parser) CodeReadError!MemoryAddress {
+    pub fn read_memory_immediate(self: *Parser) CodeReadError!MemoryAddress {
         if (!self.has_var_int_bytes()) return error.NeedMoreData;
         const flags = self.read_var_uint32();
         if (!self.has_var_int_bytes()) return error.NeedMoreData;
@@ -1540,19 +1540,19 @@ pub const Parser = struct {
         return .{ .flags = flags, .offset = offset };
     }
 
-    fn read_type_checked(self: *Parser) CodeReadError!Type {
+    pub fn read_type_checked(self: *Parser) CodeReadError!Type {
         var probe = self.*;
         if (!probe.skip_type()) return error.NeedMoreData;
         return self.readTypeInternal();
     }
 
-    fn read_heap_type_checked(self: *Parser) CodeReadError!HeapType {
+    pub fn read_heap_type_checked(self: *Parser) CodeReadError!HeapType {
         var probe = self.*;
         _ = probe.skip_heap_type() orelse return error.NeedMoreData;
         return self.readHeapTypeInternal();
     }
 
-    fn read_br_table(self: *Parser) CodeReadError![]const u32 {
+    pub fn read_br_table(self: *Parser) CodeReadError![]const u32 {
         if (!self.has_var_int_bytes()) return error.NeedMoreData;
         const table_count = self.read_var_uint32();
         const br_table = self.allocator.alloc(u32, @intCast(table_count + 1)) catch @panic("OOM");
@@ -1563,7 +1563,7 @@ pub const Parser = struct {
         return br_table;
     }
 
-    fn read_try_table(self: *Parser) CodeReadError![]const CatchHandler {
+    pub fn read_try_table(self: *Parser) CodeReadError![]const CatchHandler {
         if (!self.has_var_int_bytes()) return error.NeedMoreData;
         const table_count = self.read_var_uint32();
         const handlers = self.allocator.alloc(CatchHandler, @intCast(table_count)) catch @panic("OOM");
@@ -2116,7 +2116,7 @@ pub const Parser = struct {
         return info;
     }
 
-    fn readSingleOperator(self: *Parser) CodeReadError!OperatorInformation {
+    pub fn readSingleOperator(self: *Parser) CodeReadError!OperatorInformation {
         const start_pos = self.cur_pos;
         errdefer self.cur_pos = start_pos;
 
@@ -2875,6 +2875,13 @@ pub const FunctionBodyParser = struct {
 
     pub fn next(self: *FunctionBodyParser) CodeReadError!OperatorInformation {
         return self.parser.readSingleOperator();
+    }
+
+    /// Expose the inner parser for decode-to-lower fusion.
+    /// The caller can directly call parser read methods (read_u8, read_var_uint32, etc.)
+    /// to decode operands inline without constructing an OperatorInformation.
+    pub fn getParser(self: *FunctionBodyParser) *Parser {
+        return &self.parser;
     }
 };
 
