@@ -1040,6 +1040,9 @@ pub const CatchHandlerEntry = struct {
 
 pub const CompiledFunction = struct {
     slots_len: u32,
+    /// Number of local variable slots (excluding parameters).
+    /// Used to limit @memset in allocCalleeSlots to only the locals range.
+    locals_count: u16,
     ops: std.ArrayListUnmanaged(Op),
     /// All call instruction argument slots are stored here (concatenated in call order).
     /// Op.call indexes into the corresponding argument slot segment using (args_start, args_len).
@@ -1051,4 +1054,43 @@ pub const CompiledFunction = struct {
     /// Catch handler tables for try_table_enter ops.
     /// Each try_table_enter indexes into this with (handlers_start, handlers_len).
     catch_handler_tables: std.ArrayListUnmanaged(CatchHandlerEntry),
+};
+
+/// Encoded (M3 threaded-dispatch) form of a compiled function.
+///
+/// Layout of `code`:
+///   For each instruction:
+///     [ handler_ptr: *const fn (8 bytes, align 8) ] [ operands: packed bytes ]
+///
+/// Jump targets stored inside `code` are byte offsets from the start of `code[]`.
+///
+/// The three auxiliary tables (`call_args`, `br_table_targets`, `catch_handler_tables`)
+/// are owned slices migrated verbatim from CompiledFunction.
+pub const EncodedFunction = struct {
+    /// Flat bytecode stream; 8-byte aligned.
+    code: []align(8) u8,
+    /// Number of register slots required for this function's frame.
+    slots_len: u32,
+    /// Number of local variable slots (excluding parameters).
+    /// Used to limit @memset in allocCalleeSlots to only the locals range.
+    locals_count: u16,
+    /// Argument/result slot lists for call / throw / struct_new / array_new_fixed.
+    /// Indexed by (args_start, args_len) embedded in each encoded instruction's operand bytes.
+    call_args: []Slot,
+    /// Branch targets for jump_table (br_table) ops.
+    /// Stored as byte offsets into `code`.
+    /// Indexed by (targets_start, targets_len) embedded in the instruction's operand bytes.
+    br_table_targets: []u32,
+    /// Catch handler entries for try_table_enter ops.
+    /// CatchHandlerEntry.target is a byte offset into `code` after encoding.
+    /// Indexed by (handlers_start, handlers_len) embedded in the instruction's operand bytes.
+    catch_handler_tables: []CatchHandlerEntry,
+
+    pub fn deinit(self: *EncodedFunction, allocator: std.mem.Allocator) void {
+        allocator.free(self.code);
+        allocator.free(self.call_args);
+        allocator.free(self.br_table_targets);
+        allocator.free(self.catch_handler_tables);
+        self.* = undefined;
+    }
 };

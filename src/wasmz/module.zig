@@ -35,6 +35,7 @@ const TypeKind = payload_mod.TypeKind;
 const ExternalKind = payload_mod.ExternalKind;
 const OperatorInformation = payload_mod.OperatorInformation;
 const CompiledFunction = ir.CompiledFunction;
+const EncodedFunction = ir.EncodedFunction;
 const FuncType = func_type_mod.FuncType;
 const Mutability = global_mod.Mutability;
 const Global = core.Global;
@@ -50,6 +51,8 @@ const Lower = lower_mod.Lower;
 const LowerLegacy = lower_legacy_mod.LowerLegacy;
 const LegacyWasmOp = lower_legacy_mod.LegacyWasmOp;
 const EngineConfig = engine_config_mod.Config;
+const encode_mod = @import("../compiler/encode.zig");
+const handler_table_mod = @import("../vm/handler_table.zig");
 
 /// Exported item from a Wasm module.
 /// Currently function and tag exports are supported; memory/global/table exports are ignored.
@@ -199,7 +202,7 @@ pub const ModuleCompileError = Allocator.Error ||
 ///   - array_layouts:    Precomputed memory layouts for array types (index matches composite_types).
 pub const Module = struct {
     allocator: Allocator,
-    functions: []CompiledFunction,
+    functions: []EncodedFunction,
     exports: std.StringHashMapUnmanaged(ExportEntry),
     globals: []GlobalInit,
     memory: ?MemoryDef,
@@ -621,18 +624,17 @@ pub const Module = struct {
 
         const imported_function_count = imported_funcs_list.items.len;
         const function_count = imported_function_count + function_type_indices.items.len;
-        const functions = try allocator.alloc(CompiledFunction, function_count);
+        const functions = try allocator.alloc(EncodedFunction, function_count);
         errdefer {
             deinit_functions(allocator, functions);
             allocator.free(functions);
         }
-        @memset(functions, .{
-            .slots_len = 0,
-            .ops = .empty,
-            .call_args = .empty,
-            .br_table_targets = .empty,
-            .catch_handler_tables = .empty,
-        });
+        // Initialize all slots to empty (imported functions are never executed via M3;
+        // their slots remain empty as host dispatch goes through host_funcs[]).
+        // code.len == 0 marks an import slot so deinit_functions skips it.
+        for (functions) |*f| {
+            f.* = std.mem.zeroes(EncodedFunction);
+        }
 
         // Build the import type index slice for FuncTypeResolver:
         // imported_funcs_list.items[i].type_index gives the type of import i.
@@ -661,6 +663,8 @@ pub const Module = struct {
                     };
 
                     const reserved_slots = try compute_reserved_slots(func_type, info);
+                    const params_count = func_type.params().len;
+                    const locals_count: u16 = @intCast(reserved_slots - params_count);
                     const function_index = imported_function_count + local_function_index;
 
                     // Build function type resolver for looking up callee signatures when translating call instructions.
@@ -672,17 +676,35 @@ pub const Module = struct {
                         .import_count = imported_function_count,
                     };
 
-                    functions[function_index] = compileFunctionBody(
-                        allocator,
-                        reserved_slots,
-                        func_type.results().len,
-                        info.body,
-                        engine.config().*,
-                        resolver,
-                        tags_list.items,
-                        detected_eh_mode,
-                    ) catch |err| {
-                        return err;
+                    functions[function_index] = blk: {
+                        var compiled = compileFunctionBody(
+                            allocator,
+                            reserved_slots,
+                            locals_count,
+                            func_type.results().len,
+                            info.body,
+                            engine.config().*,
+                            resolver,
+                            tags_list.items,
+                            detected_eh_mode,
+                        ) catch |err| {
+                            return err;
+                        };
+                        // encode() duplicates the auxiliary tables; we must free the
+                        // original CompiledFunction data regardless of success or failure.
+                        defer {
+                            compiled.ops.deinit(allocator);
+                            compiled.call_args.deinit(allocator);
+                            compiled.br_table_targets.deinit(allocator);
+                            compiled.catch_handler_tables.deinit(allocator);
+                        }
+                        break :blk encode_mod.encode(
+                            allocator,
+                            &compiled,
+                            &handler_table_mod.handler_table,
+                        ) catch |err| {
+                            return err;
+                        };
                     };
                     local_function_index += 1;
                 },
@@ -873,13 +895,14 @@ pub const Module = struct {
 
     // ── deinit helpers ───────────────────────────────────────────────────────────
 
-    /// Free the operations list held by each CompiledFunction in the functions slice.
-    fn deinit_functions(allocator: Allocator, functions: []CompiledFunction) void {
+    /// Free the encoded bytecode and auxiliary tables held by each EncodedFunction.
+    /// Imported function slots have empty (zero-length) code and are skipped.
+    fn deinit_functions(allocator: Allocator, functions: []EncodedFunction) void {
         for (functions) |*function| {
-            function.call_args.deinit(allocator);
-            function.ops.deinit(allocator);
-            function.br_table_targets.deinit(allocator);
-            function.catch_handler_tables.deinit(allocator);
+            // Imported functions have zero-length code (never heap-allocated); skip them.
+            if (function.code.len > 0) {
+                function.deinit(allocator);
+            }
         }
     }
 
@@ -1105,6 +1128,7 @@ pub const FuncTypeResolver = struct {
 pub fn compileFunctionBody(
     allocator: Allocator,
     reserved_slots: u32,
+    locals_count: u16,
     n_results: usize,
     body: []const u8,
     config: EngineConfig,
@@ -1113,15 +1137,16 @@ pub fn compileFunctionBody(
     eh_mode: EHMode,
 ) ModuleCompileError!CompiledFunction {
     if (eh_mode == .legacy) {
-        return compileFunctionBodyLegacy(allocator, reserved_slots, n_results, body, config, resolver, tags);
+        return compileFunctionBodyLegacy(allocator, reserved_slots, locals_count, n_results, body, config, resolver, tags);
     }
-    return compileFunctionBodyNew(allocator, reserved_slots, n_results, body, config, resolver, tags);
+    return compileFunctionBodyNew(allocator, reserved_slots, locals_count, n_results, body, config, resolver, tags);
 }
 
 /// Compile a function body using the new EH proposal (try_table / throw / throw_ref).
 fn compileFunctionBodyNew(
     allocator: Allocator,
     reserved_slots: u32,
+    locals_count: u16,
     n_results: usize,
     body: []const u8,
     config: EngineConfig,
@@ -1131,7 +1156,7 @@ fn compileFunctionBodyNew(
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    var lower = Lower.initWithReservedSlots(allocator, reserved_slots);
+    var lower = Lower.initWithReservedSlots(allocator, reserved_slots, locals_count);
     lower.composite_types = resolver.composite_types;
     errdefer lower.deinit();
 
@@ -1171,6 +1196,7 @@ fn compileFunctionBodyNew(
 fn compileFunctionBodyLegacy(
     allocator: Allocator,
     reserved_slots: u32,
+    locals_count: u16,
     n_results: usize,
     body: []const u8,
     config: EngineConfig,
@@ -1180,7 +1206,7 @@ fn compileFunctionBodyLegacy(
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    var lower_legacy = LowerLegacy.initWithReservedSlots(allocator, reserved_slots);
+    var lower_legacy = LowerLegacy.initWithReservedSlots(allocator, reserved_slots, locals_count);
     lower_legacy.inner.composite_types = resolver.composite_types;
     errdefer lower_legacy.deinit();
 

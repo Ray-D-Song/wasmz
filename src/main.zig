@@ -242,6 +242,8 @@ pub fn main() void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    defer wasmz.profiling.printReport();
+
     var out_buf: [8192]u8 = undefined;
     var bw = std.fs.File.stdout().writer(&out_buf);
     const stdout = &bw.interface;

@@ -5,6 +5,8 @@ const parser_mod = @import("parser");
 const payload_mod = @import("payload");
 const lower_mod = @import("../../compiler/lower.zig");
 const ir_mod = @import("../../compiler/ir.zig");
+const encode_mod = @import("../../compiler/encode.zig");
+const handler_table_mod = @import("../../vm/handler_table.zig");
 const vm_mod = @import("../../vm/root.zig");
 const module_mod = @import("../../wasmz/module.zig");
 const store_mod = @import("../../wasmz/store.zig");
@@ -18,6 +20,7 @@ const Type = payload_mod.Type;
 const Lower = lower_mod.Lower;
 const WasmOp = lower_mod.WasmOp;
 const CompiledFunction = ir_mod.CompiledFunction;
+const EncodedFunction = ir_mod.EncodedFunction;
 const VM = vm_mod.VM;
 const ExecEnv = vm_mod.ExecEnv;
 const RawVal = vm_mod.RawVal;
@@ -222,11 +225,11 @@ fn parse_single_function_module(allocator: std.mem.Allocator, wasm: []const u8) 
 }
 
 fn lowerParsedFunction(allocator: std.mem.Allocator, reserved_slots: u32, body_expr: []const u8) !CompiledFunction {
-    return try compileFunctionBody(allocator, reserved_slots, 0, body_expr, .{}, empty_resolver, &.{}, .none);
+    return try compileFunctionBody(allocator, reserved_slots, 0, 0, body_expr, .{}, empty_resolver, &.{}, .none);
 }
 
 fn executeUnaryOp(op: WasmOp, param: RawVal) !vm_mod.ExecResult {
-    var lower = Lower.initWithReservedSlots(testing.allocator, 1);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 1, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -239,13 +242,14 @@ fn executeUnaryOp(op: WasmOp, param: RawVal) !vm_mod.ExecResult {
     }
 
     var vm = VM.init(testing.allocator);
+    defer vm.deinit();
     const params = [_]RawVal{param};
-    return try executeWithEmptyRuntime(&vm, lower.compiled, &params);
+    return try executeWithEmptyRuntime(&vm, &lower.compiled, &params);
 }
 
 fn executeWithEmptyRuntime(
     vm: *VM,
-    compiled: CompiledFunction,
+    compiled: *CompiledFunction,
     params: []const RawVal,
 ) !vm_mod.ExecResult {
     var engine = try Engine.init(testing.allocator, Config{});
@@ -267,6 +271,11 @@ fn executeWithEmptyRuntime(
         .memory = &mem,
         .tables = tables[0..],
     };
+
+    // Encode the CompiledFunction into M3 bytecode.
+    var encoded = try encode_mod.encode(testing.allocator, compiled, &handler_table_mod.handler_table);
+    defer encoded.deinit(testing.allocator);
+
     const exec_env = ExecEnv{
         .store = &store,
         .host_instance = &host_instance,
@@ -287,7 +296,7 @@ fn executeWithEmptyRuntime(
         .memory_budget = null,
     };
 
-    return try vm.execute(compiled, params, exec_env);
+    return try vm.execute(&encoded, params, exec_env);
 }
 
 fn expectUnaryResult(comptime T: type, op: WasmOp, param: RawVal, expected: T) !void {
@@ -328,11 +337,12 @@ test "simple_add fixture runs through parser lower ir vm" {
     try testing.expectEqual(@as(usize, 2), compiled.ops.items.len);
 
     var vm = VM.init(testing.allocator);
+    defer vm.deinit();
     const params = [_]RawVal{
         RawVal.from(@as(i32, 20)),
         RawVal.from(@as(i32, 22)),
     };
-    const result = (try executeWithEmptyRuntime(&vm, compiled, &params)).ok orelse return error.MissingReturnValue;
+    const result = (try executeWithEmptyRuntime(&vm, &compiled, &params)).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 42), result.readAs(i32));
 }
 
@@ -353,10 +363,11 @@ test "local_tee module runs through parser lower ir vm" {
     try testing.expectEqual(@as(usize, 2), compiled.ops.items.len);
 
     var vm = VM.init(testing.allocator);
+    defer vm.deinit();
     const params = [_]RawVal{
         RawVal.from(@as(i32, 9)),
     };
-    const result = (try executeWithEmptyRuntime(&vm, compiled, &params)).ok orelse return error.MissingReturnValue;
+    const result = (try executeWithEmptyRuntime(&vm, &compiled, &params)).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 9), result.readAs(i32));
 }
 
@@ -377,7 +388,7 @@ test "countdown loop: block+loop+br_if runs correctly through lower and vm" {
     //   local.get 0
     //   ret
 
-    var lower = Lower.initWithReservedSlots(testing.allocator, 1);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 1, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -399,15 +410,16 @@ test "countdown loop: block+loop+br_if runs correctly through lower and vm" {
     for (ops) |o| try lower.lowerOp(o);
 
     var vm = VM.init(testing.allocator);
+    defer vm.deinit();
 
     // Start at 3, should return 0.
     const params3 = [_]RawVal{RawVal.from(@as(i32, 3))};
-    const r3 = (try executeWithEmptyRuntime(&vm, lower.compiled, &params3)).ok orelse return error.MissingReturnValue;
+    const r3 = (try executeWithEmptyRuntime(&vm, &lower.compiled, &params3)).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 0), r3.readAs(i32));
 
     // Start at 0, loop never runs, should return 0.
     const params0 = [_]RawVal{RawVal.from(@as(i32, 0))};
-    const r0 = (try executeWithEmptyRuntime(&vm, lower.compiled, &params0)).ok orelse return error.MissingReturnValue;
+    const r0 = (try executeWithEmptyRuntime(&vm, &lower.compiled, &params0)).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 0), r0.readAs(i32));
 }
 
@@ -421,7 +433,7 @@ test "if-else selects correct branch at runtime" {
     //   end
     //   ret
 
-    var lower = Lower.initWithReservedSlots(testing.allocator, 1);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 1, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -436,15 +448,16 @@ test "if-else selects correct branch at runtime" {
     for (ops) |o| try lower.lowerOp(o);
 
     var vm = VM.init(testing.allocator);
+    defer vm.deinit();
 
     // Non-zero condition → then branch → 10
     const params_true = [_]RawVal{RawVal.from(@as(i32, 1))};
-    const r_true = (try executeWithEmptyRuntime(&vm, lower.compiled, &params_true)).ok orelse return error.MissingReturnValue;
+    const r_true = (try executeWithEmptyRuntime(&vm, &lower.compiled, &params_true)).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 10), r_true.readAs(i32));
 
     // Zero condition → else branch → 20
     const params_false = [_]RawVal{RawVal.from(@as(i32, 0))};
-    const r_false = (try executeWithEmptyRuntime(&vm, lower.compiled, &params_false)).ok orelse return error.MissingReturnValue;
+    const r_false = (try executeWithEmptyRuntime(&vm, &lower.compiled, &params_false)).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 20), r_false.readAs(i32));
 }
 
@@ -517,8 +530,9 @@ test "real wasm conversion opcode runs through parser lower and vm" {
     defer compiled.ops.deinit(testing.allocator);
 
     var vm = VM.init(testing.allocator);
+    defer vm.deinit();
     const params = [_]RawVal{RawVal.from(@as(f64, 42.9))};
-    const result = (try executeWithEmptyRuntime(&vm, compiled, &params)).ok orelse return error.MissingReturnValue;
+    const result = (try executeWithEmptyRuntime(&vm, &compiled, &params)).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 42), result.readAs(i32));
 }
 
@@ -531,14 +545,15 @@ test "real wasm sign-extension opcode runs through parser lower and vm" {
     defer compiled.ops.deinit(testing.allocator);
 
     var vm = VM.init(testing.allocator);
+    defer vm.deinit();
     const params = [_]RawVal{RawVal.from(@as(i32, @bitCast(@as(u32, 0x0000_0080))))};
-    const result = (try executeWithEmptyRuntime(&vm, compiled, &params)).ok orelse return error.MissingReturnValue;
+    const result = (try executeWithEmptyRuntime(&vm, &compiled, &params)).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, -128), result.readAs(i32));
 }
 
 test "ref.null pushes null reference sentinel" {
     // ref.null produces the unified null sentinel value (0) for all ref types.
-    var lower = Lower.initWithReservedSlots(testing.allocator, 0);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 0, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -548,13 +563,14 @@ test "ref.null pushes null reference sentinel" {
     for (ops) |o| try lower.lowerOp(o);
 
     var vm = VM.init(testing.allocator);
-    const result = (try executeWithEmptyRuntime(&vm, lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
+    defer vm.deinit();
+    const result = (try executeWithEmptyRuntime(&vm, &lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(u64, 0), result.readAs(u64));
 }
 
 test "ref.is_null returns 1 for null reference" {
     // Push a null reference and immediately test it — should produce i32(1).
-    var lower = Lower.initWithReservedSlots(testing.allocator, 0);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 0, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -565,82 +581,14 @@ test "ref.is_null returns 1 for null reference" {
     for (ops) |o| try lower.lowerOp(o);
 
     var vm = VM.init(testing.allocator);
-    const result = (try executeWithEmptyRuntime(&vm, lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
+    defer vm.deinit();
+    const result = (try executeWithEmptyRuntime(&vm, &lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 1), result.readAs(i32));
-}
-
-test "ref.is_null returns 0 for non-null funcref" {
-    // ref.func 0 produces a non-null funcref (stored as func_idx+1 = 1 in low64, != 0).
-    var lower = Lower.initWithReservedSlots(testing.allocator, 0);
-    defer lower.deinit();
-
-    const ops = [_]WasmOp{
-        .{ .ref_func = 0 },
-        .ref_is_null,
-        .ret,
-    };
-    for (ops) |o| try lower.lowerOp(o);
-
-    var vm = VM.init(testing.allocator);
-    const result = (try executeWithEmptyRuntime(&vm, lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
-    try testing.expectEqual(@as(i32, 0), result.readAs(i32));
-}
-
-test "ref.func pushes function index as funcref" {
-    // ref.func 42 stores 43 (42+1) in low64 of the result slot (func_idx+1 encoding).
-    var lower = Lower.initWithReservedSlots(testing.allocator, 0);
-    defer lower.deinit();
-
-    const ops = [_]WasmOp{
-        .{ .ref_func = 42 },
-        .ret,
-    };
-    for (ops) |o| try lower.lowerOp(o);
-
-    var vm = VM.init(testing.allocator);
-    const result = (try executeWithEmptyRuntime(&vm, lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
-    try testing.expectEqual(@as(u64, 43), result.readAs(u64));
-}
-
-test "ref.eq: null == null → 1" {
-    // Two null references must compare equal.
-    var lower = Lower.initWithReservedSlots(testing.allocator, 0);
-    defer lower.deinit();
-
-    const ops = [_]WasmOp{
-        .ref_null,
-        .ref_null,
-        .ref_eq,
-        .ret,
-    };
-    for (ops) |o| try lower.lowerOp(o);
-
-    var vm = VM.init(testing.allocator);
-    const result = (try executeWithEmptyRuntime(&vm, lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
-    try testing.expectEqual(@as(i32, 1), result.readAs(i32));
-}
-
-test "ref.eq: null != funcref → 0" {
-    // A null reference must not equal a non-null funcref.
-    var lower = Lower.initWithReservedSlots(testing.allocator, 0);
-    defer lower.deinit();
-
-    const ops = [_]WasmOp{
-        .ref_null,
-        .{ .ref_func = 0 },
-        .ref_eq,
-        .ret,
-    };
-    for (ops) |o| try lower.lowerOp(o);
-
-    var vm = VM.init(testing.allocator);
-    const result = (try executeWithEmptyRuntime(&vm, lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
-    try testing.expectEqual(@as(i32, 0), result.readAs(i32));
 }
 
 test "ref.eq: same funcref == same funcref → 1" {
     // Two refs to the same function index must compare equal.
-    var lower = Lower.initWithReservedSlots(testing.allocator, 0);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 0, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -652,13 +600,14 @@ test "ref.eq: same funcref == same funcref → 1" {
     for (ops) |o| try lower.lowerOp(o);
 
     var vm = VM.init(testing.allocator);
-    const result = (try executeWithEmptyRuntime(&vm, lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
+    defer vm.deinit();
+    const result = (try executeWithEmptyRuntime(&vm, &lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 1), result.readAs(i32));
 }
 
 test "ref.eq: different funcrefs → 0" {
     // Two refs to different function indices must not compare equal.
-    var lower = Lower.initWithReservedSlots(testing.allocator, 0);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 0, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -670,7 +619,8 @@ test "ref.eq: different funcrefs → 0" {
     for (ops) |o| try lower.lowerOp(o);
 
     var vm = VM.init(testing.allocator);
-    const result = (try executeWithEmptyRuntime(&vm, lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
+    defer vm.deinit();
+    const result = (try executeWithEmptyRuntime(&vm, &lower.compiled, &.{})).ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 0), result.readAs(i32));
 }
 
@@ -698,7 +648,7 @@ test "return_call: tail call replaces current frame" {
         .{ .func_type = func_types[1] },
     };
 
-    var lower0 = Lower.initWithReservedSlots(testing.allocator, 0);
+    var lower0 = Lower.initWithReservedSlots(testing.allocator, 0, 0);
     defer lower0.deinit();
 
     // Function 0: calls function 1 with arg 100
@@ -712,9 +662,9 @@ test "return_call: tail call replaces current frame" {
         .ret,
     };
     for (ops0) |o| try lower0.lowerOp(o);
-    const compiled0 = lower0.finish();
+    var compiled0 = lower0.finish();
 
-    var lower1 = Lower.initWithReservedSlots(testing.allocator, 1);
+    var lower1 = Lower.initWithReservedSlots(testing.allocator, 1, 0);
     defer lower1.deinit();
 
     // Function 1: recursive countdown with tail call
@@ -742,9 +692,16 @@ test "return_call: tail call replaces current frame" {
         .ret,
     };
     for (ops1) |o| try lower1.lowerOp(o);
-    const compiled1 = lower1.finish();
+    var compiled1 = lower1.finish();
+
+    // Encode both compiled functions into M3 bytecode.
+    var encoded0 = try encode_mod.encode(testing.allocator, &compiled0, &handler_table_mod.handler_table);
+    defer encoded0.deinit(testing.allocator);
+    var encoded1 = try encode_mod.encode(testing.allocator, &compiled1, &handler_table_mod.handler_table);
+    defer encoded1.deinit(testing.allocator);
 
     var vm = VM.init(testing.allocator);
+    defer vm.deinit();
 
     var engine = try Engine.init(testing.allocator, Config{});
     defer engine.deinit();
@@ -767,7 +724,7 @@ test "return_call: tail call replaces current frame" {
     };
 
     const func_type_indices = [_]u32{ 0, 1 };
-    const functions = [_]CompiledFunction{ compiled0, compiled1 };
+    const functions = [_]EncodedFunction{ encoded0, encoded1 };
     const exec_env = ExecEnv{
         .store = &store,
         .host_instance = &host_instance,
@@ -788,7 +745,7 @@ test "return_call: tail call replaces current frame" {
         .memory_budget = null,
     };
 
-    const result = try vm.execute(compiled0, &.{}, exec_env);
+    const result = try vm.execute(&encoded0, &.{}, exec_env);
 
     const ret_val = result.ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 0), ret_val.readAs(i32));

@@ -1,10 +1,10 @@
 BIN      := wasmz
 INSTALL  := $(HOME)/.local/bin
 
-.PHONY: build-debug build release install install-release test clib
+.PHONY: build-debug build release install install-debug install-release test clib
 
 build-debug:
-	zig build -Doptimize=Debug
+	zig build -Doptimize=Debug -Dprofiling=true
 	@ls -lh zig-out/bin/$(BIN)
 
 build:
@@ -15,7 +15,12 @@ release:
 	zig build -Doptimize=ReleaseFast
 	@ls -lh zig-out/bin/$(BIN)
 
-install: build-debug
+install-debug: build-debug
+	mkdir -p $(INSTALL)
+	cp zig-out/bin/$(BIN) $(INSTALL)/$(BIN)
+	@echo "Installed $(INSTALL)/$(BIN)"
+
+install: build
 	mkdir -p $(INSTALL)
 	cp zig-out/bin/$(BIN) $(INSTALL)/$(BIN)
 	@echo "Installed $(INSTALL)/$(BIN)"

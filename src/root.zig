@@ -38,6 +38,9 @@ pub const ArcModule = @import("wasmz/instance.zig").ArcModule;
 pub const Trap = @import("wasmz/instance.zig").Trap;
 pub const TrapCode = @import("wasmz/instance.zig").TrapCode;
 
+/// Profiling utilities (conditional on -Dprofiling=true build option).
+pub const profiling = @import("utils/profiling.zig");
+
 // Include all submodule tests in the coverage of `zig build test`
 test {
     _ = @import("engine/func_ty.zig");

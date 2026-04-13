@@ -14,7 +14,7 @@ const Op = ir.Op;
 const Simd = core.simd;
 
 fn expect_binary_cmp_lowered(op: WasmOp, comptime tag: std.meta.Tag(Op)) !void {
-    var lower = Lower.initWithReservedSlots(testing.allocator, 2);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 2, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -36,7 +36,7 @@ fn expect_binary_cmp_lowered(op: WasmOp, comptime tag: std.meta.Tag(Op)) !void {
 }
 
 fn expect_convert_lowered(op: WasmOp, comptime tag: std.meta.Tag(Op)) !void {
-    var lower = Lower.initWithReservedSlots(testing.allocator, 1);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 1, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -56,7 +56,7 @@ fn expect_convert_lowered(op: WasmOp, comptime tag: std.meta.Tag(Op)) !void {
 }
 
 test "lower simple add function into slot IR" {
-    var lower = Lower.initWithReservedSlots(testing.allocator, 2);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 2, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -122,7 +122,7 @@ test "translate folds simd ops into generic wasm ops" {
 }
 
 test "lower uses generic ir nodes for simd ops" {
-    var lower = Lower.initWithReservedSlots(testing.allocator, 2);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 2, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -141,7 +141,7 @@ test "lower uses generic ir nodes for simd ops" {
 }
 
 test "lower reports stack underflow for i32_add without operands" {
-    var lower = Lower.initWithReservedSlots(testing.allocator, 0);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 0, 0);
     defer lower.deinit();
 
     try testing.expectError(LowerError.StackUnderflow, lower.lowerOp(.i32_add));
@@ -149,7 +149,7 @@ test "lower reports stack underflow for i32_add without operands" {
 }
 
 test "lower local_set consumes the top stack value" {
-    var lower = Lower.initWithReservedSlots(testing.allocator, 1);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 1, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -190,7 +190,7 @@ test "lower local_set consumes the top stack value" {
 }
 
 test "lower local_tee writes local and keeps the top stack value" {
-    var lower = Lower.initWithReservedSlots(testing.allocator, 1);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 1, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -231,7 +231,7 @@ test "lower local_tee writes local and keeps the top stack value" {
 }
 
 test "lower drop consumes the top stack value without emitting IR" {
-    var lower = Lower.initWithReservedSlots(testing.allocator, 0);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 0, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -264,7 +264,7 @@ test "lower drop consumes the top stack value without emitting IR" {
 }
 
 test "lower i32_sub into slot IR" {
-    var lower = Lower.initWithReservedSlots(testing.allocator, 2);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 2, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -299,7 +299,7 @@ test "lower i32_sub into slot IR" {
 }
 
 test "lower i32_mul into slot IR" {
-    var lower = Lower.initWithReservedSlots(testing.allocator, 2);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 2, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -334,7 +334,7 @@ test "lower i32_mul into slot IR" {
 }
 
 test "lower i32_eqz into slot IR" {
-    var lower = Lower.initWithReservedSlots(testing.allocator, 1);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 1, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -367,7 +367,7 @@ test "lower i32_eqz into slot IR" {
 }
 
 test "lower i32_eq into slot IR" {
-    var lower = Lower.initWithReservedSlots(testing.allocator, 2);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 2, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -402,7 +402,7 @@ test "lower i32_eq into slot IR" {
 }
 
 test "lower i32_ne into slot IR" {
-    var lower = Lower.initWithReservedSlots(testing.allocator, 2);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 2, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -464,7 +464,7 @@ test "lower block with void result and br exits cleanly" {
     //   end
     //   i32.const 1
     //   ret
-    var lower = Lower.initWithReservedSlots(testing.allocator, 0);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 0, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -502,7 +502,7 @@ test "lower if without else: skips body when condition is zero" {
     //     nop  (represented here as const_i32 99 + drop)
     //   end
     //   ret (void)
-    var lower = Lower.initWithReservedSlots(testing.allocator, 1);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 1, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -550,7 +550,7 @@ test "lower if-else selects correct branch" {
     //     i32.const 20
     //   end
     //   ret
-    var lower = Lower.initWithReservedSlots(testing.allocator, 1);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 1, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{
@@ -611,7 +611,7 @@ test "lower loop with br_if: IR structure has backward jump" {
     //   end
     //   local.get 0
     //   ret
-    var lower = Lower.initWithReservedSlots(testing.allocator, 1);
+    var lower = Lower.initWithReservedSlots(testing.allocator, 1, 0);
     defer lower.deinit();
 
     const ops = [_]WasmOp{

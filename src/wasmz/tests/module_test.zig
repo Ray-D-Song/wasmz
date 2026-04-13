@@ -48,6 +48,7 @@ test "module.compile builds exported function bodies" {
     try testing.expectEqual(@as(u32, 0), func_index);
 
     var vm = VM.init(testing.allocator);
+    defer vm.deinit();
     var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
     var globals = [_]Global{};
@@ -82,7 +83,7 @@ test "module.compile builds exported function bodies" {
         .memory_budget = null,
     };
     const result = (try vm.execute(
-        module.functions[@intCast(func_index)],
+        &module.functions[@intCast(func_index)],
         &.{},
         exec_env,
     )).ok orelse {
@@ -160,6 +161,7 @@ test "compileFunctionBody rejects simd when disabled" {
         testing.allocator,
         0,
         0,
+        0,
         body[0..],
         .{ .simd = false },
         .{
@@ -182,6 +184,7 @@ test "compileFunctionBody rejects relaxed simd when disabled" {
 
     try testing.expectError(error.DisabledRelaxedSimd, module_mod.compileFunctionBody(
         testing.allocator,
+        0,
         0,
         0,
         body[0..],
