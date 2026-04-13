@@ -1,11 +1,13 @@
 /// module.zig - WebAssembly module compile entry
 ///
-/// It will parse the raw Wasm bytes using the Parser, extract necessary information from the Payloads,
-/// and compile the function bodies into internal IR (CompiledFunction) using Lower.
+/// It will parse the raw Wasm bytes using the Parser in streaming mode, extract necessary
+/// information from each Payload event as it arrives, and compile function bodies into
+/// internal IR (CompiledFunction) using Lower.
 /// Process:
-///   1. Parse the bytecode into a sequence of Payload events using the Parser.
-///   2. Extract types, functions, globals, memory, exports, etc., from the Payloads. (loop 1)
-///   3. Compile each function body into internal IR (CompiledFunction) using Lower. (loop 2)
+///   1. Stream-parse the bytecode: the Parser emits one Payload event at a time; each event
+///      is processed immediately without materializing the full payload array.
+///   2. Extract types, functions, globals, memory, exports, etc., from each event inline.
+///   3. Compile each function body into internal IR (CompiledFunction) using Lower (lazily on first call).
 ///   4. Assemble all compiled results into a Module for VM instantiation and execution.
 const std = @import("std");
 const zigrc = @import("zigrc");
@@ -315,11 +317,11 @@ pub const Module = struct {
 
     /// Compile WebAssembly bytecode into a Module.
     ///
-    /// The compilation is done in two passes:
-    ///   1. First pass: Collect types, imports, function type indices, global variables, memory, exports, and other metadata.
-    ///   2. Second pass: Compile each function body (function_info payload) into a CompiledFunction.
-    /// The Arena allocator is used internally to store temporary data during the compilation process,
-    /// which will be automatically released after compilation.
+    /// Uses streaming parsing: the Parser emits one event at a time and each is
+    /// processed immediately, avoiding the allocation of a full []Payload array.
+    /// Function bodies are stored as pending (lazy) and compiled on first call.
+    /// The Arena allocator is used internally to store temporary data during the
+    /// compilation process, which will be automatically released after compilation.
     pub fn compile(engine: Engine, bytes: []const u8) ModuleCompileError!Module {
         const allocator = engine.allocator();
 
@@ -327,7 +329,7 @@ pub const Module = struct {
         defer arena.deinit();
 
         var parser = Parser.init(arena.allocator());
-        const payloads = try parser.parseAll(bytes);
+        var remaining_bytes = bytes;
 
         // Unified type section: composite_types covers ALL type entries (func, struct, array)
         // indexed by the unified type section index.
@@ -434,11 +436,24 @@ pub const Module = struct {
         // If no EH opcodes are seen, mode stays .none.
         var detected_eh_mode: EHMode = .none;
 
-        // All metadata collection is done in a single pass over payloads.
-        // Tags from both Import Section and Tag Section are collected inline;
-        // Wasm spec guarantees both appear before the Code Section.
+        // All metadata collection is done in a single streaming pass over the
+        // parser output. Tags from both Import Section and Tag Section are
+        // collected inline; Wasm spec guarantees both appear before the Code Section.
+        // Using streaming parse avoids materializing the full []Payload array (~5-8MB
+        // for large modules like esbuild.wasm).
 
-        for (payloads) |payload| {
+        while (true) {
+            const parse_result = parser.parse(remaining_bytes, true);
+            const payload = switch (parse_result) {
+                .parsed => |parsed| blk: {
+                    if (parsed.consumed == 0) return error.UnexpectedNeedMoreData;
+                    remaining_bytes = remaining_bytes[parsed.consumed..];
+                    break :blk parsed.payload;
+                },
+                .need_more_data => return error.UnexpectedNeedMoreData,
+                .end => break,
+                .err => |err| return err,
+            };
             switch (payload) {
                 .type_entry => |entry| {
                     switch (entry.type) {
