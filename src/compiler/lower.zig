@@ -626,6 +626,41 @@ pub const Lower = struct {
         self.control_stack.deinit(self.allocator);
     }
 
+    /// Reset this Lower for reuse on a new function body, retaining all
+    /// allocated buffer capacity to avoid repeated alloc/free churn.
+    ///
+    /// After `reset`, the Lower is in the same logical state as a fresh
+    /// `initWithReservedSlots(self.allocator, reserved_slots, locals_count)`
+    /// but without freeing and reallocating any backing memory.
+    pub fn reset(self: *Lower, reserved_slots: u32, locals_count: u16) void {
+        // Clear value stack retaining capacity.
+        self.stack.slots.clearRetainingCapacity();
+
+        // Clear compiled output lists retaining capacity.
+        self.compiled.ops.clearRetainingCapacity();
+        self.compiled.call_args.clearRetainingCapacity();
+        self.compiled.br_table_targets.clearRetainingCapacity();
+        self.compiled.catch_handler_tables.clearRetainingCapacity();
+        self.compiled.slots_len = reserved_slots;
+        self.compiled.locals_count = locals_count;
+
+        // Clear and deinit each ControlFrame's inner lists.
+        // We free the per-frame inner lists (they are typically tiny) and clear
+        // the outer control_stack slice retaining its backing array.
+        for (self.control_stack.items) |*frame| {
+            frame.patch_sites.deinit(self.allocator);
+            frame.result_slots.deinit(self.allocator);
+            frame.param_slots.deinit(self.allocator);
+        }
+        self.control_stack.clearRetainingCapacity();
+
+        // Reset scalar fields.
+        self.next_slot = reserved_slots;
+        self.composite_types = &.{};
+        self.is_unreachable = false;
+        self.unreachable_depth = 0;
+    }
+
     // ── Slot helpers ──────────────────────────────────────────────────────────
 
     /// Resolve a ?BlockType into allocated param_slots and result_slots lists.

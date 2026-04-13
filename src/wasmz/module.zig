@@ -185,6 +185,56 @@ pub const ModuleCompileError = Allocator.Error ||
         InvalidTagImport,
     };
 
+/// Reusable allocations for function compilation, modelled after wasmi's
+/// `FuncTranslatorAllocations`.  A single instance is kept per `Module` so
+/// that the backing buffers of the lowering pass (the `Lower` / `LowerLegacy`
+/// ArrayLists and the scratch `ArenaAllocator`) are reused across every lazy
+/// compilation, avoiding the alloc/free churn of creating fresh structures for
+/// each function body.
+///
+/// Lifecycle:
+///   - Created on the first call to `compileFunctionAt`.
+///   - Reused for every subsequent call via `reset()`.
+///   - Freed in `Module.deinit()`.
+pub const FuncTranslatorAllocations = struct {
+    /// Reusable lowering state for the new EH path.
+    lower: Lower,
+    /// Reusable lowering state for the legacy EH path.
+    lower_legacy: LowerLegacy,
+    /// Scratch arena for per-operator temporary allocations inside the
+    /// compilation loop (parse results, try_table handler slices, etc.).
+    /// Reset with `.retain_capacity` after each function so the backing
+    /// memory is reused without freeing.
+    scratch: std.heap.ArenaAllocator,
+
+    pub fn init(allocator: Allocator) FuncTranslatorAllocations {
+        return .{
+            .lower = Lower.init(allocator),
+            .lower_legacy = LowerLegacy.init(allocator),
+            .scratch = std.heap.ArenaAllocator.init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *FuncTranslatorAllocations) void {
+        self.lower.deinit();
+        self.lower_legacy.deinit();
+        self.scratch.deinit();
+    }
+
+    /// Prepare the allocations for compiling a new function with the new EH path.
+    /// Resets all lists retaining capacity; resets the scratch arena.
+    pub fn resetNew(self: *FuncTranslatorAllocations, reserved_slots: u32, locals_count: u16) void {
+        self.lower.reset(reserved_slots, locals_count);
+        _ = self.scratch.reset(.retain_capacity);
+    }
+
+    /// Prepare the allocations for compiling a new function with the legacy EH path.
+    pub fn resetLegacy(self: *FuncTranslatorAllocations, reserved_slots: u32, locals_count: u16) void {
+        self.lower_legacy.reset(reserved_slots, locals_count);
+        _ = self.scratch.reset(.retain_capacity);
+    }
+};
+
 /// Compiled WebAssembly module, holding all data required for runtime execution.
 ///
 /// Field descriptions:
@@ -258,6 +308,9 @@ pub const Module = struct {
     tags: []TagDef,
     /// Module-level configuration.
     config: ModuleConfig,
+    /// Reusable compilation state for lazy function compilation.
+    /// Null until the first `compileFunctionAt` call; freed in `deinit`.
+    translator: ?FuncTranslatorAllocations,
 
     /// Compile WebAssembly bytecode into a Module.
     ///
@@ -797,6 +850,7 @@ pub const Module = struct {
             .type_ancestors = type_ancestors_outer,
             .tags = tags,
             .config = .{ .eh_mode = detected_eh_mode },
+            .translator = null,
         };
     }
 
@@ -844,17 +898,34 @@ pub const Module = struct {
             else => return error.InvalidFunctionTypeIndex,
         };
 
-        var compiled = try compileFunctionBody(
-            self.allocator,
-            pending.reserved_slots,
-            pending.locals_count,
-            func_type.results().len,
-            pending.body,
-            engine.config().*,
-            resolver,
-            self.tags,
-            self.config.eh_mode,
-        );
+        // Lazily initialise the reusable translator allocations on first use.
+        if (self.translator == null) {
+            self.translator = FuncTranslatorAllocations.init(self.allocator);
+        }
+        const ta = &self.translator.?;
+
+        var compiled = if (self.config.eh_mode == .legacy)
+            try compileFunctionBodyLegacyInto(
+                ta,
+                pending.reserved_slots,
+                pending.locals_count,
+                func_type.results().len,
+                pending.body,
+                engine.config().*,
+                resolver,
+                self.tags,
+            )
+        else
+            try compileFunctionBodyNewInto(
+                ta,
+                pending.reserved_slots,
+                pending.locals_count,
+                func_type.results().len,
+                pending.body,
+                engine.config().*,
+                resolver,
+                self.tags,
+            );
         defer {
             compiled.ops.deinit(self.allocator);
             compiled.call_args.deinit(self.allocator);
@@ -871,6 +942,7 @@ pub const Module = struct {
     }
 
     pub fn deinit(self: *Module) void {
+        if (self.translator) |*t| t.deinit();
         deinit_functions(self.allocator, self.functions);
         self.allocator.free(self.functions);
 
@@ -1313,6 +1385,129 @@ fn compileFunctionBodyLegacy(
     lower_legacy.inner.compiled.br_table_targets = .empty;
     lower_legacy.inner.compiled.catch_handler_tables = .empty;
     lower_legacy.deinit();
+    return compiled;
+}
+
+/// Compile a function body using the new EH proposal, reusing `ta`'s Lower and
+/// scratch arena to avoid per-function allocation churn.
+fn compileFunctionBodyNewInto(
+    ta: *FuncTranslatorAllocations,
+    reserved_slots: u32,
+    locals_count: u16,
+    n_results: usize,
+    body: []const u8,
+    config: EngineConfig,
+    resolver: FuncTypeResolver,
+    tags: []const TagDef,
+) ModuleCompileError!CompiledFunction {
+    ta.resetNew(reserved_slots, locals_count);
+    const lower = &ta.lower;
+    lower.composite_types = resolver.composite_types;
+
+    try lower.pushFunctionFrame(n_results);
+
+    const scratch = ta.scratch.allocator();
+    var cursor: usize = 0;
+    while (cursor < body.len) {
+        const parsed = try parser_mod.readNextOperator(scratch, body[cursor..]);
+        cursor += parsed.consumed;
+
+        if (simd.isSimdOpcode(parsed.info.code)) {
+            if (!config.simd) return error.DisabledSimd;
+            if (simd.isRelaxedSimdOpcode(parsed.info.code) and !config.relaxed_simd) {
+                return error.DisabledRelaxedSimd;
+            }
+        }
+
+        const wasm_op = try buildWasmOp(parsed.info, resolver, tags, scratch);
+        lower.lowerOp(wasm_op) catch |err| return err;
+    }
+
+    // Transfer ownership of the compiled lists out of the reusable Lower.
+    // Null the originals so the next reset() does not double-free them.
+    const compiled = lower.finish();
+    lower.compiled.ops = .empty;
+    lower.compiled.call_args = .empty;
+    lower.compiled.br_table_targets = .empty;
+    lower.compiled.catch_handler_tables = .empty;
+    return compiled;
+}
+
+/// Compile a function body using the legacy EH proposal, reusing `ta`.
+fn compileFunctionBodyLegacyInto(
+    ta: *FuncTranslatorAllocations,
+    reserved_slots: u32,
+    locals_count: u16,
+    n_results: usize,
+    body: []const u8,
+    config: EngineConfig,
+    resolver: FuncTypeResolver,
+    tags: []const TagDef,
+) ModuleCompileError!CompiledFunction {
+    ta.resetLegacy(reserved_slots, locals_count);
+    const lower_legacy = &ta.lower_legacy;
+    lower_legacy.inner.composite_types = resolver.composite_types;
+
+    try lower_legacy.pushFunctionFrame(n_results);
+
+    const scratch = ta.scratch.allocator();
+    var cursor: usize = 0;
+    while (cursor < body.len) {
+        const parsed = try parser_mod.readNextOperator(scratch, body[cursor..]);
+        cursor += parsed.consumed;
+
+        if (simd.isSimdOpcode(parsed.info.code)) {
+            if (!config.simd) return error.DisabledSimd;
+            if (simd.isRelaxedSimdOpcode(parsed.info.code) and !config.relaxed_simd) {
+                return error.DisabledRelaxedSimd;
+            }
+        }
+
+        switch (parsed.info.code) {
+            .try_ => {
+                const block_type: ?lower_mod.BlockType = if (parsed.info.block_type) |bt|
+                    try translate_mod.wasmBlockTypeFromType(bt)
+                else
+                    null;
+                try lower_legacy.lowerLegacyOp(.{ .try_ = block_type });
+            },
+            .catch_ => {
+                const tag_idx = parsed.info.tag_index orelse return error.UnsupportedOperator;
+                if (tag_idx >= tags.len) return error.InvalidTagIndex;
+                const tag_type_idx = tags[tag_idx].type_index;
+                const tag_func_type = try resolver.getFuncType(tag_type_idx);
+                const tag_arity: u32 = @intCast(tag_func_type.params().len);
+                try lower_legacy.lowerLegacyOp(.{ .catch_ = .{
+                    .tag_index = tag_idx,
+                    .tag_arity = tag_arity,
+                } });
+            },
+            .catch_all => {
+                try lower_legacy.lowerLegacyOp(.catch_all);
+            },
+            .rethrow => {
+                const depth = parsed.info.relative_depth orelse 0;
+                try lower_legacy.lowerLegacyOp(.{ .rethrow = depth });
+            },
+            .delegate => {
+                const depth = parsed.info.relative_depth orelse 0;
+                try lower_legacy.lowerLegacyOp(.{ .delegate = depth });
+            },
+            .end => {
+                try lower_legacy.lowerLegacyEnd();
+            },
+            else => {
+                const wasm_op = try buildWasmOp(parsed.info, resolver, tags, scratch);
+                try lower_legacy.lowerLegacyOp(.{ .non_legacy = wasm_op });
+            },
+        }
+    }
+
+    const compiled = lower_legacy.finish();
+    lower_legacy.inner.compiled.ops = .empty;
+    lower_legacy.inner.compiled.call_args = .empty;
+    lower_legacy.inner.compiled.br_table_targets = .empty;
+    lower_legacy.inner.compiled.catch_handler_tables = .empty;
     return compiled;
 }
 
