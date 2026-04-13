@@ -9,6 +9,38 @@ const std = @import("std");
 const ir = @import("./ir.zig");
 const ValueStack = @import("./value_stack.zig").ValueStack;
 const core = @import("core");
+// Profiling stub — lower.zig cannot import ../utils/profiling.zig because the
+// compiler_tests module root is src/compiler/ which cannot reach src/utils/.
+// The frame-level counters are development-only; keep a minimal stub so the
+// code compiles in both contexts.  When the full profiling module is needed,
+// build with -Dprofiling=true via the wasmz module where the path resolves.
+const profiling = struct {
+    const enabled = false;
+    const frame_prof = struct {
+        var total_frames: usize = 0;
+        var result_slots_0: usize = 0;
+        var result_slots_1: usize = 0;
+        var result_slots_2: usize = 0;
+        var result_slots_gt2: usize = 0;
+        var result_slots_max: usize = 0;
+        var param_slots_0: usize = 0;
+        var param_slots_1: usize = 0;
+        var param_slots_2: usize = 0;
+        var param_slots_gt2: usize = 0;
+        var param_slots_max: usize = 0;
+        var patch_sites_0: usize = 0;
+        var patch_sites_1: usize = 0;
+        var patch_sites_2: usize = 0;
+        var patch_sites_3: usize = 0;
+        var patch_sites_4: usize = 0;
+        var patch_sites_gt4: usize = 0;
+        var patch_sites_max: usize = 0;
+    };
+};
+const translate_mod = @import("./translate.zig");
+const payload_mod = @import("payload");
+const OperatorInformation = payload_mod.OperatorInformation;
+const OperatorCode = payload_mod.OperatorCode;
 
 const Allocator = std.mem.Allocator;
 const Slot = ir.Slot;
@@ -31,6 +63,110 @@ pub const LowerError = error{
 /// Which WASM structured-control construct opened this frame.
 pub const BlockKind = enum { block, loop, if_, try_table };
 
+/// Inline small-buffer list for Slot values (result_slots / param_slots).
+/// Holds up to INLINE_CAP elements without any heap allocation.
+/// Overflows to a heap-allocated slice for the rare multi-value block case.
+/// Data shows: result_slots is 0 in 99.999% of frames, 1 in the rest.
+///             param_slots  is 0 in 100% of esbuild frames.
+/// INLINE_CAP=2 covers all observed cases with zero heap traffic.
+pub const SmallSlotList = struct {
+    const INLINE_CAP = 2;
+    inline_buf: [INLINE_CAP]Slot = undefined,
+    len: u8 = 0,
+    /// Non-null only when len > INLINE_CAP; owns a heap slice of length `len`.
+    overflow: ?[]Slot = null,
+
+    pub const empty: SmallSlotList = .{};
+
+    /// Return a slice over the current contents (inline or overflow).
+    pub fn items(self: *const SmallSlotList) []const Slot {
+        if (self.overflow) |ov| return ov[0..self.len];
+        return self.inline_buf[0..self.len];
+    }
+
+    pub fn append(self: *SmallSlotList, allocator: Allocator, slot: Slot) !void {
+        if (self.len < INLINE_CAP) {
+            self.inline_buf[self.len] = slot;
+            self.len += 1;
+            return;
+        }
+        // Need to spill to heap (very rare).
+        const new_len = self.len + 1;
+        if (self.overflow) |ov| {
+            // Already on heap — grow.
+            const new_ov = try allocator.realloc(ov, new_len);
+            new_ov[self.len] = slot;
+            self.overflow = new_ov;
+        } else {
+            // First spill: copy inline_buf to heap then append.
+            const new_ov = try allocator.alloc(Slot, new_len);
+            @memcpy(new_ov[0..INLINE_CAP], &self.inline_buf);
+            new_ov[self.len] = slot;
+            self.overflow = new_ov;
+        }
+        self.len = @intCast(new_len);
+    }
+
+    pub fn deinit(self: *SmallSlotList, allocator: Allocator) void {
+        if (self.overflow) |ov| allocator.free(ov);
+        self.* = .empty;
+    }
+};
+
+/// Inline small-buffer list for patch-site op-indices (u32).
+/// Holds up to INLINE_CAP entries without heap allocation.
+/// Data shows: 80% len=1, 6% len=2, 7% len=3, 3% len=4, 3% len>4, max=1761.
+/// INLINE_CAP=4 covers 97% of frames inline; the remaining 3% fall back to heap.
+pub const SmallPatchList = struct {
+    const INLINE_CAP = 4;
+    inline_buf: [INLINE_CAP]u32 = undefined,
+    len: u32 = 0,
+    /// Non-null only when len > INLINE_CAP; owns a heap ArrayList for dynamic growth.
+    overflow: ?std.ArrayListUnmanaged(u32) = null,
+
+    pub const empty: SmallPatchList = .{};
+
+    pub fn items(self: *const SmallPatchList) []const u32 {
+        if (self.overflow) |*ov| return ov.items;
+        return self.inline_buf[0..self.len];
+    }
+
+    pub fn append(self: *SmallPatchList, allocator: Allocator, site: u32) !void {
+        if (self.overflow) |*ov| {
+            try ov.append(allocator, site);
+            return;
+        }
+        if (self.len < INLINE_CAP) {
+            self.inline_buf[self.len] = site;
+            self.len += 1;
+            return;
+        }
+        // First spill: move inline_buf into ArrayList then append new entry.
+        var list = std.ArrayListUnmanaged(u32){};
+        try list.ensureTotalCapacity(allocator, INLINE_CAP + 1);
+        list.appendSliceAssumeCapacity(self.inline_buf[0..INLINE_CAP]);
+        list.appendAssumeCapacity(site);
+        self.overflow = list;
+        // len is no longer used once overflow is set; keep consistent.
+        self.len = INLINE_CAP + 1;
+    }
+
+    pub fn clearRetainingCapacity(self: *SmallPatchList) void {
+        if (self.overflow) |*ov| {
+            ov.clearRetainingCapacity();
+            // Keep overflow allocated so next use avoids realloc.
+            self.len = 0;
+            return;
+        }
+        self.len = 0;
+    }
+
+    pub fn deinit(self: *SmallPatchList, allocator: Allocator) void {
+        if (self.overflow) |*ov| ov.deinit(allocator);
+        self.* = .empty;
+    }
+};
+
 /// A single entry on the control stack, created when we enter a block/loop/if.
 pub const ControlFrame = struct {
     kind: BlockKind,
@@ -41,12 +177,14 @@ pub const ControlFrame = struct {
     /// The slots that hold this block's result values (empty = void block).
     /// For multi-value blocks these are allocated in order: result_slots[0] is
     /// the first result type, result_slots[N-1] is the last (top of stack).
-    result_slots: std.ArrayListUnmanaged(Slot) = .empty,
+    /// Data: 99.999% of frames have 0 or 1 result slots → stored inline.
+    result_slots: SmallSlotList = .empty,
     /// For multi-value blocks: the slots that hold the block's parameter values.
     /// For loop: br targets param_slots (phi semantics, jumps back to header).
     /// For block/if: params are consumed on entry and re-pushed immediately,
     /// so param_slots is only needed to track their slot numbers.
-    param_slots: std.ArrayListUnmanaged(Slot) = .empty,
+    /// Data: 100% of frames have 0 param slots in practice → stored inline.
+    param_slots: SmallSlotList = .empty,
     /// For block/if: the op-index of the start of the continuation (filled in
     /// when we see `end`).  For loop: the op-index of the loop header (filled
     /// in immediately at open time, since `br` goes back to the top).
@@ -54,7 +192,8 @@ pub const ControlFrame = struct {
     target_pc: u32,
     /// Indices into compiled.ops that hold `jump` / `jump_if_z` ops whose
     /// target needs to be patched when we know where `end` lands.
-    patch_sites: std.ArrayListUnmanaged(u32) = .empty,
+    /// Data: 97% of frames have ≤4 patch sites → stored inline.
+    patch_sites: SmallPatchList = .empty,
     /// For try_table frames: the op-index of the `try_table_enter` op.
     /// We need it to backpatch the `end_target` field once we see `end`.
     try_table_enter_pc: ?u32 = null,
@@ -558,6 +697,11 @@ pub const Lower = struct {
     },
     stack: ValueStack = .{},
     next_slot: Slot = 0,
+    /// Slots [0..reserved_slots) are params+locals and must never be recycled.
+    /// Slots >= reserved_slots are SSA temporaries and can be put back in free_slots.
+    reserved_slots: Slot = 0,
+    /// Free-list of recycled temporary slots. alloc_slot() pops from here first.
+    free_slots: std.ArrayListUnmanaged(Slot) = .empty,
     /// Control-flow nesting stack.
     control_stack: std.ArrayListUnmanaged(ControlFrame) = .empty,
     /// Unified type section (func, struct, array), used to resolve multi-value block types.
@@ -584,6 +728,7 @@ pub const Lower = struct {
                 .catch_handler_tables = .empty,
             },
             .next_slot = reserved_slots,
+            .reserved_slots = reserved_slots,
         };
     }
 
@@ -593,7 +738,7 @@ pub const Lower = struct {
     /// The frame uses `kind = .block`; `br depth` that resolves to this frame
     /// is treated as a `return` (just like the function's final `end`).
     pub fn pushFunctionFrame(self: *Lower, n_results: usize) !void {
-        var result_slots: std.ArrayListUnmanaged(Slot) = .empty;
+        var result_slots: SmallSlotList = .empty;
         errdefer result_slots.deinit(self.allocator);
         // Allocate a result slot for each return value.
         // These slots are not used for the normal fall-through `end` path
@@ -624,6 +769,7 @@ pub const Lower = struct {
             frame.param_slots.deinit(self.allocator);
         }
         self.control_stack.deinit(self.allocator);
+        self.free_slots.deinit(self.allocator);
     }
 
     /// Reset this Lower for reuse on a new function body, retaining all
@@ -656,9 +802,12 @@ pub const Lower = struct {
 
         // Reset scalar fields.
         self.next_slot = reserved_slots;
+        self.reserved_slots = reserved_slots;
         self.composite_types = &.{};
         self.is_unreachable = false;
         self.unreachable_depth = 0;
+        // Recycle the free-list capacity but discard stale slot numbers.
+        self.free_slots.clearRetainingCapacity();
     }
 
     // ── Slot helpers ──────────────────────────────────────────────────────────
@@ -673,13 +822,16 @@ pub const Lower = struct {
     pub fn resolve_block_slots(
         self: *Lower,
         block_type: ?BlockType,
-    ) !struct { params: std.ArrayListUnmanaged(Slot), results: std.ArrayListUnmanaged(Slot) } {
-        var params: std.ArrayListUnmanaged(Slot) = .empty;
+    ) !struct { params: SmallSlotList, results: SmallSlotList } {
+        var params: SmallSlotList = .empty;
         errdefer params.deinit(self.allocator);
-        var results: std.ArrayListUnmanaged(Slot) = .empty;
+        var results: SmallSlotList = .empty;
         errdefer results.deinit(self.allocator);
 
-        const bt = block_type orelse return .{ .params = params, .results = results };
+        const bt = block_type orelse {
+            record_frame_slots(0, 0);
+            return .{ .params = params, .results = results };
+        };
         switch (bt) {
             .val_type => {
                 // Single result, no params.
@@ -699,10 +851,36 @@ pub const Lower = struct {
                 }
             },
         }
+        record_frame_slots(params.items().len, results.items().len);
         return .{ .params = params, .results = results };
     }
 
+    inline fn record_frame_slots(n_params: usize, n_results: usize) void {
+        if (!profiling.enabled) return;
+        profiling.frame_prof.total_frames += 1;
+        switch (n_results) {
+            0 => profiling.frame_prof.result_slots_0 += 1,
+            1 => profiling.frame_prof.result_slots_1 += 1,
+            2 => profiling.frame_prof.result_slots_2 += 1,
+            else => profiling.frame_prof.result_slots_gt2 += 1,
+        }
+        if (n_results > profiling.frame_prof.result_slots_max)
+            profiling.frame_prof.result_slots_max = n_results;
+        switch (n_params) {
+            0 => profiling.frame_prof.param_slots_0 += 1,
+            1 => profiling.frame_prof.param_slots_1 += 1,
+            2 => profiling.frame_prof.param_slots_2 += 1,
+            else => profiling.frame_prof.param_slots_gt2 += 1,
+        }
+        if (n_params > profiling.frame_prof.param_slots_max)
+            profiling.frame_prof.param_slots_max = n_params;
+    }
+
     pub fn alloc_slot(self: *Lower) Slot {
+        // Reuse a recycled temporary slot if available.
+        if (self.free_slots.pop()) |slot| {
+            return slot;
+        }
         const slot = self.next_slot;
         self.next_slot += 1;
         if (self.compiled.slots_len < self.next_slot) {
@@ -721,7 +899,13 @@ pub const Lower = struct {
     }
 
     fn pop_slot(self: *Lower) LowerError!Slot {
-        return self.stack.pop() orelse error.StackUnderflow;
+        const slot = self.stack.pop() orelse return error.StackUnderflow;
+        // Recycle SSA temporaries (slots >= reserved_slots) back into the free-list.
+        // Params and locals ([0..reserved_slots)) live for the full function and must not be recycled.
+        if (slot >= self.reserved_slots) {
+            self.free_slots.append(self.allocator, slot) catch {};
+        }
+        return slot;
     }
 
     fn local_to_slot(_: *Lower, local: u32) Slot {
@@ -746,7 +930,7 @@ pub const Lower = struct {
         }
         self.stack.slots.shrinkRetainingCapacity(frame.stack_height);
         // Push result slots so downstream ops can consume them.
-        for (frame.result_slots.items) |rs| {
+        for (frame.result_slots.items()) |rs| {
             try self.stack.push(self.allocator, rs);
         }
     }
@@ -761,7 +945,20 @@ pub const Lower = struct {
     /// Patch sites with bit 31 set encode br_table_targets indices (bit 31 cleared gives the index).
     /// All other sites are op indices for jump / jump_if_z / br_on_* ops.
     pub fn patch_forward_jumps(self: *Lower, frame: *ControlFrame, target_pc: u32) void {
-        for (frame.patch_sites.items) |site| {
+        if (profiling.enabled) {
+            const n = frame.patch_sites.items().len;
+            switch (n) {
+                0 => profiling.frame_prof.patch_sites_0 += 1,
+                1 => profiling.frame_prof.patch_sites_1 += 1,
+                2 => profiling.frame_prof.patch_sites_2 += 1,
+                3 => profiling.frame_prof.patch_sites_3 += 1,
+                4 => profiling.frame_prof.patch_sites_4 += 1,
+                else => profiling.frame_prof.patch_sites_gt4 += 1,
+            }
+            if (n > profiling.frame_prof.patch_sites_max)
+                profiling.frame_prof.patch_sites_max = n;
+        }
+        for (frame.patch_sites.items()) |site| {
             if (site & 0x8000_0000 != 0) {
                 // br_table_targets patch site
                 const tgt_idx = site & 0x7FFF_FFFF;
@@ -796,9 +993,9 @@ pub const Lower = struct {
         // For a loop: br passes params (phi semantics, back to header).
         // For block/if: br passes results.
         const target_slots = if (frame.kind == .loop)
-            frame.param_slots.items
+            frame.param_slots.items()
         else
-            frame.result_slots.items;
+            frame.result_slots.items();
 
         // Copy values from stack top into the target slots (reverse order:
         // TOS = last slot, bottom = first slot).
@@ -985,14 +1182,14 @@ pub const Lower = struct {
                 const slots = try self.resolve_block_slots(block_type);
                 // For multi-value blocks: pop params from stack, re-push so body can access them.
                 // Copy param values from stack into param_slots (in order, lowest first).
-                for (slots.params.items) |ps| {
+                for (slots.params.items()) |ps| {
                     _ = ps; // slot already allocated; we'll copy from stack below
                 }
                 // Actually we need to pop params from the stack top (last param = TOS) and
                 // store them in param_slots, then re-push them back for the body.
                 // Stack before: [..., param0, param1, ..., paramN-1]  (paramN-1 = TOS)
                 // We need to copy them into param_slots[0..N], then restore the stack.
-                const n_params = slots.params.items.len;
+                const n_params = slots.params.items().len;
                 if (n_params > 0) {
                     // Pop params off the value stack (TOS = last param).
                     // We re-push them back after so the block body sees them.
@@ -1000,13 +1197,13 @@ pub const Lower = struct {
                     while (pi > 0) {
                         pi -= 1;
                         const src = try self.pop_slot();
-                        try self.emit(.{ .copy = .{ .dst = slots.params.items[pi], .src = src } });
+                        try self.emit(.{ .copy = .{ .dst = slots.params.items()[pi], .src = src } });
                     }
                 }
                 // Record the stack height AFTER consuming params (before block body).
                 const height_after_params = self.stack.len();
                 // Re-push param slots so the block body can use them.
-                for (slots.params.items) |ps| {
+                for (slots.params.items()) |ps| {
                     try self.stack.push(self.allocator, ps);
                 }
 
@@ -1022,17 +1219,17 @@ pub const Lower = struct {
             .loop => |block_type| {
                 const slots = try self.resolve_block_slots(block_type);
                 // Pop params from stack (TOS = last param), copy to param_slots, re-push.
-                const n_params = slots.params.items.len;
+                const n_params = slots.params.items().len;
                 if (n_params > 0) {
                     var pi: usize = n_params;
                     while (pi > 0) {
                         pi -= 1;
                         const src = try self.pop_slot();
-                        try self.emit(.{ .copy = .{ .dst = slots.params.items[pi], .src = src } });
+                        try self.emit(.{ .copy = .{ .dst = slots.params.items()[pi], .src = src } });
                     }
                 }
                 const height_after_params = self.stack.len();
-                for (slots.params.items) |ps| {
+                for (slots.params.items()) |ps| {
                     try self.stack.push(self.allocator, ps);
                 }
 
@@ -1051,17 +1248,17 @@ pub const Lower = struct {
                 const cond = try self.pop_slot();
                 const slots = try self.resolve_block_slots(block_type);
                 // Pop params from stack (TOS = last param), copy to param_slots, re-push.
-                const n_params = slots.params.items.len;
+                const n_params = slots.params.items().len;
                 if (n_params > 0) {
                     var pi: usize = n_params;
                     while (pi > 0) {
                         pi -= 1;
                         const src = try self.pop_slot();
-                        try self.emit(.{ .copy = .{ .dst = slots.params.items[pi], .src = src } });
+                        try self.emit(.{ .copy = .{ .dst = slots.params.items()[pi], .src = src } });
                     }
                 }
                 const height_after_params = self.stack.len();
-                for (slots.params.items) |ps| {
+                for (slots.params.items()) |ps| {
                     try self.stack.push(self.allocator, ps);
                 }
 
@@ -1078,7 +1275,7 @@ pub const Lower = struct {
                     .target_pc = 0, // forward
                     .patch_sites = blk: {
                         // The jump_if_z is a forward patch site for the else/end.
-                        var ps: std.ArrayListUnmanaged(u32) = .empty;
+                        var ps: SmallPatchList = .empty;
                         try ps.append(self.allocator, jiz_pc);
                         break :blk ps;
                     },
@@ -1094,12 +1291,12 @@ pub const Lower = struct {
                 // Copy the then-branch results into the result slots before leaving the then-body.
                 // The stack top holds the last result; result_slots[N-1] is the last result slot.
                 {
-                    const n = frame.result_slots.items.len;
+                    const n = frame.result_slots.items().len;
                     var ri: usize = n;
                     while (ri > 0) {
                         ri -= 1;
                         const src = self.stack.peek() orelse break;
-                        try self.emit(.{ .copy = .{ .dst = frame.result_slots.items[ri], .src = src } });
+                        try self.emit(.{ .copy = .{ .dst = frame.result_slots.items()[ri], .src = src } });
                         _ = self.stack.pop();
                     }
                 }
@@ -1118,7 +1315,7 @@ pub const Lower = struct {
                 // Reset the value stack to block-entry height, then re-push param slots
                 // so the else body sees the same inputs as the then body.
                 self.stack.slots.shrinkRetainingCapacity(frame.stack_height);
-                for (frame.param_slots.items) |ps| {
+                for (frame.param_slots.items()) |ps| {
                     try self.stack.push(self.allocator, ps);
                 }
             },
@@ -1171,12 +1368,12 @@ pub const Lower = struct {
                 // copied values into result_slots and the stack has been trimmed.
                 if (!was_unreachable) {
                     // Stack top = last result (result_slots[N-1]); bottom of N values = first result.
-                    const n = frame.result_slots.items.len;
+                    const n = frame.result_slots.items().len;
                     var ri: usize = n;
                     while (ri > 0) {
                         ri -= 1;
                         if (self.stack.peek()) |src| {
-                            try self.emit(.{ .copy = .{ .dst = frame.result_slots.items[ri], .src = src } });
+                            try self.emit(.{ .copy = .{ .dst = frame.result_slots.items()[ri], .src = src } });
                             _ = self.stack.pop();
                         }
                     }
@@ -1195,7 +1392,7 @@ pub const Lower = struct {
                 // false_path:
                 //   const_i64 0 → result_slots[0..N]
                 // continuation:                 ← both paths merge here
-                if (frame.kind == .if_ and !frame.has_else and frame.result_slots.items.len > 0) {
+                if (frame.kind == .if_ and !frame.has_else and frame.result_slots.items().len > 0) {
                     // Emit a jump from the then-path over the false-path zeroing.
                     const then_skip_pc = self.current_pc();
                     try self.emit(.{ .jump = .{ .target = 0 } }); // placeholder, patched below
@@ -1205,7 +1402,7 @@ pub const Lower = struct {
                     self.patch_forward_jumps(&frame, false_path_pc);
 
                     // Emit explicit zero-init for each result slot.
-                    for (frame.result_slots.items) |rs| {
+                    for (frame.result_slots.items()) |rs| {
                         try self.emit(.{ .const_i64 = .{ .dst = rs, .value = 0 } });
                     }
 
@@ -1262,9 +1459,9 @@ pub const Lower = struct {
 
                 // For a loop: br_if passes params; for block/if: passes results.
                 const target_slots = if (frame.kind == .loop)
-                    frame.param_slots.items
+                    frame.param_slots.items()
                 else
-                    frame.result_slots.items;
+                    frame.result_slots.items();
 
                 // Copy values from stack into target slots (peek, don't pop — fall-through
                 // needs the values still on stack).
@@ -1331,9 +1528,9 @@ pub const Lower = struct {
                         const f = try l.frame_at_depth(depth);
                         // Copy results/params into the frame's slots.
                         const target_slots = if (f.kind == .loop)
-                            f.param_slots.items
+                            f.param_slots.items()
                         else
-                            f.result_slots.items;
+                            f.result_slots.items();
                         if (target_slots.len > 0) {
                             const stack_len = l.stack.len();
                             if (stack_len < target_slots.len) return error.StackUnderflow;
@@ -2807,9 +3004,9 @@ pub const Lower = struct {
                             dst_slots_len = h.tag_arity;
                             if (h.tag_arity > 0) {
                                 if (target_frame_opt) |tf| {
-                                    if (tf.result_slots.items.len == h.tag_arity) {
+                                    if (tf.result_slots.items().len == h.tag_arity) {
                                         // Reuse the target block's result slots directly.
-                                        for (tf.result_slots.items) |rs| {
+                                        for (tf.result_slots.items()) |rs| {
                                             try self.compiled.call_args.append(self.allocator, rs);
                                         }
                                     } else {
@@ -2833,10 +3030,10 @@ pub const Lower = struct {
                             dst_slots_len = h.tag_arity;
                             if (h.tag_arity > 0) {
                                 if (target_frame_opt) |tf| {
-                                    const n = tf.result_slots.items.len;
+                                    const n = tf.result_slots.items().len;
                                     if (h.tag_arity + 1 == n) {
                                         // Reuse the first n-1 result slots for tag payload.
-                                        for (tf.result_slots.items[0 .. n - 1]) |rs| {
+                                        for (tf.result_slots.items()[0 .. n - 1]) |rs| {
                                             try self.compiled.call_args.append(self.allocator, rs);
                                         }
                                     } else {
@@ -2856,9 +3053,9 @@ pub const Lower = struct {
                             // Use the last result slot of the target block if the counts match;
                             // otherwise allocate a fresh slot.
                             if (target_frame_opt) |tf| {
-                                const n = tf.result_slots.items.len;
+                                const n = tf.result_slots.items().len;
                                 if (n > 0) {
-                                    dst_ref = tf.result_slots.items[n - 1];
+                                    dst_ref = tf.result_slots.items()[n - 1];
                                 } else {
                                     dst_ref = self.alloc_slot();
                                 }
@@ -2871,8 +3068,8 @@ pub const Lower = struct {
                             // catch_all_ref: branch delivers [exnref].
                             // Use the target block's sole result slot if it has exactly one.
                             if (target_frame_opt) |tf| {
-                                if (tf.result_slots.items.len == 1) {
-                                    dst_ref = tf.result_slots.items[0];
+                                if (tf.result_slots.items().len == 1) {
+                                    dst_ref = tf.result_slots.items()[0];
                                 } else {
                                     dst_ref = self.alloc_slot();
                                 }
@@ -2936,6 +3133,724 @@ pub const Lower = struct {
                 try self.control_stack.append(self.allocator, try_frame);
             },
         }
+    }
+
+    // ── Direct OperatorInformation → IR dispatch (bypass WasmOp) ─────────────
+
+    /// Attempt to lower an OperatorInformation directly to IR, bypassing the
+    /// WasmOp intermediate tagged union.  Returns `true` if the opcode was
+    /// handled, `false` if the caller should fall back to the old
+    /// `buildWasmOp` + `lowerOp` path (for opcodes that need the resolver:
+    /// call, call_indirect, return_call, return_call_indirect, throw,
+    /// try_table, struct_new, call_ref, return_call_ref).
+    pub fn lowerOpFromInfo(self: *Lower, info: OperatorInformation) !bool {
+        // ── Dead-code elimination (same logic as lowerOp) ────────────────────
+        var was_unreachable = false;
+        if (self.is_unreachable) {
+            switch (info.code) {
+                .block, .loop, .if_, .try_table => {
+                    self.unreachable_depth += 1;
+                    return true;
+                },
+                .end => {
+                    if (self.unreachable_depth > 0) {
+                        self.unreachable_depth -= 1;
+                        return true;
+                    }
+                    self.is_unreachable = false;
+                    was_unreachable = true;
+                    if (self.control_stack.items.len > 0) {
+                        const frame = &self.control_stack.items[self.control_stack.items.len - 1];
+                        self.stack.slots.shrinkRetainingCapacity(frame.stack_height);
+                    }
+                    // Fall through to normal end handling.
+                },
+                .else_ => {
+                    if (self.unreachable_depth > 0) {
+                        return true;
+                    }
+                    self.is_unreachable = false;
+                    // Fall through to normal else handling.
+                },
+                else => return true, // skip all other ops in unreachable code
+            }
+        }
+
+        // ── Special opcodes: fall back to buildWasmOp + lowerOp ──────────────
+        switch (info.code) {
+            .call,
+            .call_indirect,
+            .return_call,
+            .return_call_indirect,
+            .throw,
+            .try_table,
+            .struct_new,
+            .call_ref,
+            .return_call_ref,
+            => {
+                // Undo the unreachable state change we may have applied above.
+                // Since these opcodes are NOT end/else, we only reach here when
+                // is_unreachable was false at entry (the `else => return true`
+                // catch above already handled the unreachable case).
+                return false;
+            },
+            else => {},
+        }
+
+        // ── Dispatch directly from OperatorCode ──────────────────────────────
+        switch (info.code) {
+            .unreachable_ => {
+                try self.emit(.unreachable_);
+                self.is_unreachable = true;
+            },
+            .nop => {},
+            .drop => {
+                _ = try self.pop_slot();
+            },
+
+            // ── Structured control flow ──────────────────────────────────────
+            .block => {
+                const block_type = try translate_mod.wasmBlockTypeFromType(info.block_type);
+                try self.lowerOp(.{ .block = block_type });
+                // We already handled unreachable above, and lowerOp's unreachable
+                // logic won't re-trigger since we cleared is_unreachable.
+                // Actually — we need a cleaner approach. Let's inline.
+                // WAIT: the problem is lowerOp will check is_unreachable again
+                // and do different things. Since we already handled it above, and
+                // set was_unreachable, we should inline. But block/loop/if/else/end
+                // are complex — let's delegate to lowerOp for these.
+            },
+            .loop => {
+                const block_type = try translate_mod.wasmBlockTypeFromType(info.block_type);
+                try self.lowerOp(.{ .loop = block_type });
+            },
+            .if_ => {
+                const block_type = try translate_mod.wasmBlockTypeFromType(info.block_type);
+                try self.lowerOp(.{ .if_ = block_type });
+            },
+            .else_ => try self.lowerOp(.else_),
+            .end => try self.lowerOpEnd(was_unreachable),
+            .br => {
+                const depth = info.br_depth orelse return error.UnsupportedOperator;
+                try self.lowerOp(.{ .br = depth });
+            },
+            .br_if => {
+                const depth = info.br_depth orelse return error.UnsupportedOperator;
+                try self.lowerOp(.{ .br_if = depth });
+            },
+            .br_table => try self.lowerOp(.{ .br_table = .{ .targets = info.br_table } }),
+
+            // ── Locals & globals ─────────────────────────────────────────────
+            .local_get => {
+                const local = info.local_index orelse return error.UnsupportedOperator;
+                try self.stack.push(self.allocator, self.local_to_slot(local));
+            },
+            .local_set => {
+                const local = info.local_index orelse return error.UnsupportedOperator;
+                const src = try self.pop_slot();
+                try self.emit(.{ .local_set = .{ .local = local, .src = src } });
+            },
+            .local_tee => {
+                const local = info.local_index orelse return error.UnsupportedOperator;
+                const src = self.stack.peek() orelse return error.StackUnderflow;
+                try self.emit(.{ .local_set = .{ .local = local, .src = src } });
+            },
+            .global_get => {
+                const global_idx = info.global_index orelse return error.UnsupportedOperator;
+                const dst = self.alloc_slot();
+                try self.emit(.{ .global_get = .{ .dst = dst, .global_idx = global_idx } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .global_set => {
+                const global_idx = info.global_index orelse return error.UnsupportedOperator;
+                const src = try self.pop_slot();
+                try self.emit(.{ .global_set = .{ .src = src, .global_idx = global_idx } });
+            },
+
+            // ── Constants ────────────────────────────────────────────────────
+            .i32_const => {
+                const value = try translate_mod.literalAsI32(info);
+                const dst = self.alloc_slot();
+                try self.emit(.{ .const_i32 = .{ .dst = dst, .value = value } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i64_const => {
+                const value = try translate_mod.literalAsI64(info);
+                const dst = self.alloc_slot();
+                try self.emit(.{ .const_i64 = .{ .dst = dst, .value = value } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .f32_const => {
+                const value = try translate_mod.literalAsF32(info);
+                const dst = self.alloc_slot();
+                try self.emit(.{ .const_f32 = .{ .dst = dst, .value = value } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .f64_const => {
+                const value = try translate_mod.literalAsF64(info);
+                const dst = self.alloc_slot();
+                try self.emit(.{ .const_f64 = .{ .dst = dst, .value = value } });
+                try self.stack.push(self.allocator, dst);
+            },
+
+            // ── i32 binary ───────────────────────────────────────────────────
+            .i32_add => try self.lower_binary_op("i32_add"),
+            .i32_sub => try self.lower_binary_op("i32_sub"),
+            .i32_mul => try self.lower_binary_op("i32_mul"),
+            .i32_div_s => try self.lower_binary_op("i32_div_s"),
+            .i32_div_u => try self.lower_binary_op("i32_div_u"),
+            .i32_rem_s => try self.lower_binary_op("i32_rem_s"),
+            .i32_rem_u => try self.lower_binary_op("i32_rem_u"),
+            .i32_and => try self.lower_binary_op("i32_and"),
+            .i32_or => try self.lower_binary_op("i32_or"),
+            .i32_xor => try self.lower_binary_op("i32_xor"),
+            .i32_shl => try self.lower_binary_op("i32_shl"),
+            .i32_shr_s => try self.lower_binary_op("i32_shr_s"),
+            .i32_shr_u => try self.lower_binary_op("i32_shr_u"),
+            .i32_rotl => try self.lower_binary_op("i32_rotl"),
+            .i32_rotr => try self.lower_binary_op("i32_rotr"),
+
+            // ── i64 binary ───────────────────────────────────────────────────
+            .i64_add => try self.lower_binary_op("i64_add"),
+            .i64_sub => try self.lower_binary_op("i64_sub"),
+            .i64_mul => try self.lower_binary_op("i64_mul"),
+            .i64_div_s => try self.lower_binary_op("i64_div_s"),
+            .i64_div_u => try self.lower_binary_op("i64_div_u"),
+            .i64_rem_s => try self.lower_binary_op("i64_rem_s"),
+            .i64_rem_u => try self.lower_binary_op("i64_rem_u"),
+            .i64_and => try self.lower_binary_op("i64_and"),
+            .i64_or => try self.lower_binary_op("i64_or"),
+            .i64_xor => try self.lower_binary_op("i64_xor"),
+            .i64_shl => try self.lower_binary_op("i64_shl"),
+            .i64_shr_s => try self.lower_binary_op("i64_shr_s"),
+            .i64_shr_u => try self.lower_binary_op("i64_shr_u"),
+            .i64_rotl => try self.lower_binary_op("i64_rotl"),
+            .i64_rotr => try self.lower_binary_op("i64_rotr"),
+
+            // ── f32 binary ───────────────────────────────────────────────────
+            .f32_add => try self.lower_binary_op("f32_add"),
+            .f32_sub => try self.lower_binary_op("f32_sub"),
+            .f32_mul => try self.lower_binary_op("f32_mul"),
+            .f32_div => try self.lower_binary_op("f32_div"),
+            .f32_min => try self.lower_binary_op("f32_min"),
+            .f32_max => try self.lower_binary_op("f32_max"),
+            .f32_copysign => try self.lower_binary_op("f32_copysign"),
+
+            // ── f64 binary ───────────────────────────────────────────────────
+            .f64_add => try self.lower_binary_op("f64_add"),
+            .f64_sub => try self.lower_binary_op("f64_sub"),
+            .f64_mul => try self.lower_binary_op("f64_mul"),
+            .f64_div => try self.lower_binary_op("f64_div"),
+            .f64_min => try self.lower_binary_op("f64_min"),
+            .f64_max => try self.lower_binary_op("f64_max"),
+            .f64_copysign => try self.lower_binary_op("f64_copysign"),
+
+            // ── i32 unary ────────────────────────────────────────────────────
+            .i32_clz => try self.lower_unary_op("i32_clz"),
+            .i32_ctz => try self.lower_unary_op("i32_ctz"),
+            .i32_popcnt => try self.lower_unary_op("i32_popcnt"),
+
+            // ── i64 unary ────────────────────────────────────────────────────
+            .i64_clz => try self.lower_unary_op("i64_clz"),
+            .i64_ctz => try self.lower_unary_op("i64_ctz"),
+            .i64_popcnt => try self.lower_unary_op("i64_popcnt"),
+
+            // ── f32 unary ────────────────────────────────────────────────────
+            .f32_abs => try self.lower_unary_op("f32_abs"),
+            .f32_neg => try self.lower_unary_op("f32_neg"),
+            .f32_ceil => try self.lower_unary_op("f32_ceil"),
+            .f32_floor => try self.lower_unary_op("f32_floor"),
+            .f32_trunc => try self.lower_unary_op("f32_trunc"),
+            .f32_nearest => try self.lower_unary_op("f32_nearest"),
+            .f32_sqrt => try self.lower_unary_op("f32_sqrt"),
+
+            // ── f64 unary ────────────────────────────────────────────────────
+            .f64_abs => try self.lower_unary_op("f64_abs"),
+            .f64_neg => try self.lower_unary_op("f64_neg"),
+            .f64_ceil => try self.lower_unary_op("f64_ceil"),
+            .f64_floor => try self.lower_unary_op("f64_floor"),
+            .f64_trunc => try self.lower_unary_op("f64_trunc"),
+            .f64_nearest => try self.lower_unary_op("f64_nearest"),
+            .f64_sqrt => try self.lower_unary_op("f64_sqrt"),
+
+            // ── i32 comparisons ──────────────────────────────────────────────
+            .i32_eqz => try self.lower_unary_op("i32_eqz"),
+            .i32_eq => try self.lower_compare_op("i32_eq"),
+            .i32_ne => try self.lower_compare_op("i32_ne"),
+            .i32_lt_s => try self.lower_compare_op("i32_lt_s"),
+            .i32_lt_u => try self.lower_compare_op("i32_lt_u"),
+            .i32_gt_s => try self.lower_compare_op("i32_gt_s"),
+            .i32_gt_u => try self.lower_compare_op("i32_gt_u"),
+            .i32_le_s => try self.lower_compare_op("i32_le_s"),
+            .i32_le_u => try self.lower_compare_op("i32_le_u"),
+            .i32_ge_s => try self.lower_compare_op("i32_ge_s"),
+            .i32_ge_u => try self.lower_compare_op("i32_ge_u"),
+
+            // ── i64 comparisons ──────────────────────────────────────────────
+            .i64_eqz => try self.lower_unary_op("i64_eqz"),
+            .i64_eq => try self.lower_compare_op("i64_eq"),
+            .i64_ne => try self.lower_compare_op("i64_ne"),
+            .i64_lt_s => try self.lower_compare_op("i64_lt_s"),
+            .i64_lt_u => try self.lower_compare_op("i64_lt_u"),
+            .i64_gt_s => try self.lower_compare_op("i64_gt_s"),
+            .i64_gt_u => try self.lower_compare_op("i64_gt_u"),
+            .i64_le_s => try self.lower_compare_op("i64_le_s"),
+            .i64_le_u => try self.lower_compare_op("i64_le_u"),
+            .i64_ge_s => try self.lower_compare_op("i64_ge_s"),
+            .i64_ge_u => try self.lower_compare_op("i64_ge_u"),
+
+            // ── f32 comparisons ──────────────────────────────────────────────
+            .f32_eq => try self.lower_compare_op("f32_eq"),
+            .f32_ne => try self.lower_compare_op("f32_ne"),
+            .f32_lt => try self.lower_compare_op("f32_lt"),
+            .f32_gt => try self.lower_compare_op("f32_gt"),
+            .f32_le => try self.lower_compare_op("f32_le"),
+            .f32_ge => try self.lower_compare_op("f32_ge"),
+
+            // ── f64 comparisons ──────────────────────────────────────────────
+            .f64_eq => try self.lower_compare_op("f64_eq"),
+            .f64_ne => try self.lower_compare_op("f64_ne"),
+            .f64_lt => try self.lower_compare_op("f64_lt"),
+            .f64_gt => try self.lower_compare_op("f64_gt"),
+            .f64_le => try self.lower_compare_op("f64_le"),
+            .f64_ge => try self.lower_compare_op("f64_ge"),
+
+            // ── Conversions & sign-extension ─────────────────────────────────
+            .i32_wrap_i64 => try self.lower_convert_op("i32_wrap_i64"),
+            .i32_trunc_f32_s => try self.lower_convert_op("i32_trunc_f32_s"),
+            .i32_trunc_f32_u => try self.lower_convert_op("i32_trunc_f32_u"),
+            .i32_trunc_f64_s => try self.lower_convert_op("i32_trunc_f64_s"),
+            .i32_trunc_f64_u => try self.lower_convert_op("i32_trunc_f64_u"),
+            .i64_extend_i32_s => try self.lower_convert_op("i64_extend_i32_s"),
+            .i64_extend_i32_u => try self.lower_convert_op("i64_extend_i32_u"),
+            .i64_trunc_f32_s => try self.lower_convert_op("i64_trunc_f32_s"),
+            .i64_trunc_f32_u => try self.lower_convert_op("i64_trunc_f32_u"),
+            .i64_trunc_f64_s => try self.lower_convert_op("i64_trunc_f64_s"),
+            .i64_trunc_f64_u => try self.lower_convert_op("i64_trunc_f64_u"),
+            .i32_trunc_sat_f32_s => try self.lower_convert_op("i32_trunc_sat_f32_s"),
+            .i32_trunc_sat_f32_u => try self.lower_convert_op("i32_trunc_sat_f32_u"),
+            .i32_trunc_sat_f64_s => try self.lower_convert_op("i32_trunc_sat_f64_s"),
+            .i32_trunc_sat_f64_u => try self.lower_convert_op("i32_trunc_sat_f64_u"),
+            .i64_trunc_sat_f32_s => try self.lower_convert_op("i64_trunc_sat_f32_s"),
+            .i64_trunc_sat_f32_u => try self.lower_convert_op("i64_trunc_sat_f32_u"),
+            .i64_trunc_sat_f64_s => try self.lower_convert_op("i64_trunc_sat_f64_s"),
+            .i64_trunc_sat_f64_u => try self.lower_convert_op("i64_trunc_sat_f64_u"),
+            .f32_convert_i32_s => try self.lower_convert_op("f32_convert_i32_s"),
+            .f32_convert_i32_u => try self.lower_convert_op("f32_convert_i32_u"),
+            .f32_convert_i64_s => try self.lower_convert_op("f32_convert_i64_s"),
+            .f32_convert_i64_u => try self.lower_convert_op("f32_convert_i64_u"),
+            .f32_demote_f64 => try self.lower_convert_op("f32_demote_f64"),
+            .f64_convert_i32_s => try self.lower_convert_op("f64_convert_i32_s"),
+            .f64_convert_i32_u => try self.lower_convert_op("f64_convert_i32_u"),
+            .f64_convert_i64_s => try self.lower_convert_op("f64_convert_i64_s"),
+            .f64_convert_i64_u => try self.lower_convert_op("f64_convert_i64_u"),
+            .f64_promote_f32 => try self.lower_convert_op("f64_promote_f32"),
+            .i32_reinterpret_f32 => try self.lower_convert_op("i32_reinterpret_f32"),
+            .i64_reinterpret_f64 => try self.lower_convert_op("i64_reinterpret_f64"),
+            .f32_reinterpret_i32 => try self.lower_convert_op("f32_reinterpret_i32"),
+            .f64_reinterpret_i64 => try self.lower_convert_op("f64_reinterpret_i64"),
+            .i32_extend8_s => try self.lower_convert_op("i32_extend8_s"),
+            .i32_extend16_s => try self.lower_convert_op("i32_extend16_s"),
+            .i64_extend8_s => try self.lower_convert_op("i64_extend8_s"),
+            .i64_extend16_s => try self.lower_convert_op("i64_extend16_s"),
+            .i64_extend32_s => try self.lower_convert_op("i64_extend32_s"),
+
+            // ── Memory loads ─────────────────────────────────────────────────
+            .i32_load => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_load = .{ .dst = dst, .addr = addr, .offset = offset } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i32_load8_s => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_load8_s = .{ .dst = dst, .addr = addr, .offset = offset } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i32_load8_u => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_load8_u = .{ .dst = dst, .addr = addr, .offset = offset } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i32_load16_s => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_load16_s = .{ .dst = dst, .addr = addr, .offset = offset } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i32_load16_u => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i32_load16_u = .{ .dst = dst, .addr = addr, .offset = offset } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i64_load => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i64_load = .{ .dst = dst, .addr = addr, .offset = offset } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i64_load8_s => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i64_load8_s = .{ .dst = dst, .addr = addr, .offset = offset } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i64_load8_u => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i64_load8_u = .{ .dst = dst, .addr = addr, .offset = offset } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i64_load16_s => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i64_load16_s = .{ .dst = dst, .addr = addr, .offset = offset } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i64_load16_u => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i64_load16_u = .{ .dst = dst, .addr = addr, .offset = offset } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i64_load32_s => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i64_load32_s = .{ .dst = dst, .addr = addr, .offset = offset } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .i64_load32_u => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .i64_load32_u = .{ .dst = dst, .addr = addr, .offset = offset } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .f32_load => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .f32_load = .{ .dst = dst, .addr = addr, .offset = offset } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .f64_load => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const addr = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .f64_load = .{ .dst = dst, .addr = addr, .offset = offset } });
+                try self.stack.push(self.allocator, dst);
+            },
+
+            // ── Memory stores ────────────────────────────────────────────────
+            .i32_store => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const src = try self.pop_slot();
+                const addr = try self.pop_slot();
+                try self.emit(.{ .i32_store = .{ .addr = addr, .src = src, .offset = offset } });
+            },
+            .i32_store8 => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const src = try self.pop_slot();
+                const addr = try self.pop_slot();
+                try self.emit(.{ .i32_store8 = .{ .addr = addr, .src = src, .offset = offset } });
+            },
+            .i32_store16 => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const src = try self.pop_slot();
+                const addr = try self.pop_slot();
+                try self.emit(.{ .i32_store16 = .{ .addr = addr, .src = src, .offset = offset } });
+            },
+            .i64_store => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const src = try self.pop_slot();
+                const addr = try self.pop_slot();
+                try self.emit(.{ .i64_store = .{ .addr = addr, .src = src, .offset = offset } });
+            },
+            .i64_store8 => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const src = try self.pop_slot();
+                const addr = try self.pop_slot();
+                try self.emit(.{ .i64_store8 = .{ .addr = addr, .src = src, .offset = offset } });
+            },
+            .i64_store16 => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const src = try self.pop_slot();
+                const addr = try self.pop_slot();
+                try self.emit(.{ .i64_store16 = .{ .addr = addr, .src = src, .offset = offset } });
+            },
+            .i64_store32 => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const src = try self.pop_slot();
+                const addr = try self.pop_slot();
+                try self.emit(.{ .i64_store32 = .{ .addr = addr, .src = src, .offset = offset } });
+            },
+            .f32_store => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const src = try self.pop_slot();
+                const addr = try self.pop_slot();
+                try self.emit(.{ .f32_store = .{ .addr = addr, .src = src, .offset = offset } });
+            },
+            .f64_store => {
+                const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
+                const src = try self.pop_slot();
+                const addr = try self.pop_slot();
+                try self.emit(.{ .f64_store = .{ .addr = addr, .src = src, .offset = offset } });
+            },
+
+            // ── Bulk memory ──────────────────────────────────────────────────
+            .memory_init => {
+                const segment_idx = info.segment_index orelse return error.UnsupportedOperator;
+                const len = try self.pop_slot();
+                const src_offset = try self.pop_slot();
+                const dst_addr = try self.pop_slot();
+                try self.emit(.{ .memory_init = .{ .segment_idx = segment_idx, .dst_addr = dst_addr, .src_offset = src_offset, .len = len } });
+            },
+            .data_drop => {
+                const segment_idx = info.segment_index orelse return error.UnsupportedOperator;
+                try self.emit(.{ .data_drop = .{ .segment_idx = segment_idx } });
+            },
+            .memory_copy => {
+                const len = try self.pop_slot();
+                const src_addr = try self.pop_slot();
+                const dst_addr = try self.pop_slot();
+                try self.emit(.{ .memory_copy = .{ .dst_addr = dst_addr, .src_addr = src_addr, .len = len } });
+            },
+            .memory_fill => {
+                const len = try self.pop_slot();
+                const value = try self.pop_slot();
+                const dst_addr = try self.pop_slot();
+                try self.emit(.{ .memory_fill = .{ .dst_addr = dst_addr, .value = value, .len = len } });
+            },
+            .memory_size => {
+                const dst = self.alloc_slot();
+                try self.stack.push(self.allocator, dst);
+                try self.emit(.{ .memory_size = .{ .dst = dst } });
+            },
+            .memory_grow => {
+                const delta = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.stack.push(self.allocator, dst);
+                try self.emit(.{ .memory_grow = .{ .dst = dst, .delta = delta } });
+            },
+
+            // ── Return ───────────────────────────────────────────────────────
+            .return_ => {
+                const value = self.stack.pop();
+                try self.emit(.{ .ret = .{ .value = value } });
+                self.is_unreachable = true;
+            },
+
+            // ── Select ───────────────────────────────────────────────────────
+            .select, .select_with_type => {
+                const cond = try self.pop_slot();
+                const val2 = try self.pop_slot();
+                const val1 = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .select = .{ .dst = dst, .val1 = val1, .val2 = val2, .cond = cond } });
+                try self.stack.push(self.allocator, dst);
+            },
+
+            // ── Reference types ──────────────────────────────────────────────
+            .ref_null => {
+                const dst = self.alloc_slot();
+                try self.emit(.{ .const_ref_null = .{ .dst = dst } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .ref_is_null => {
+                const src = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .ref_is_null = .{ .dst = dst, .src = src } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .ref_func => {
+                const func_idx = info.func_index orelse return error.UnsupportedOperator;
+                const dst = self.alloc_slot();
+                try self.emit(.{ .ref_func = .{ .dst = dst, .func_idx = func_idx } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .ref_eq => {
+                const rhs = try self.pop_slot();
+                const lhs = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .ref_eq = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+                try self.stack.push(self.allocator, dst);
+            },
+
+            // ── Table instructions ───────────────────────────────────────────
+            .table_get => {
+                const table_index = info.table_index orelse return error.UnsupportedOperator;
+                const index = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .table_get = .{ .dst = dst, .table_index = table_index, .index = index } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .table_set => {
+                const table_index = info.table_index orelse return error.UnsupportedOperator;
+                const value = try self.pop_slot();
+                const index = try self.pop_slot();
+                try self.emit(.{ .table_set = .{ .table_index = table_index, .index = index, .value = value } });
+            },
+            .table_size => {
+                const table_index = info.table_index orelse return error.UnsupportedOperator;
+                const dst = self.alloc_slot();
+                try self.emit(.{ .table_size = .{ .dst = dst, .table_index = table_index } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .table_grow => {
+                const table_index = info.table_index orelse return error.UnsupportedOperator;
+                const delta = try self.pop_slot();
+                const init_slot = try self.pop_slot();
+                const dst = self.alloc_slot();
+                try self.emit(.{ .table_grow = .{ .dst = dst, .table_index = table_index, .init = init_slot, .delta = delta } });
+                try self.stack.push(self.allocator, dst);
+            },
+            .table_fill => {
+                const table_index = info.table_index orelse return error.UnsupportedOperator;
+                const len = try self.pop_slot();
+                const value = try self.pop_slot();
+                const dst_idx = try self.pop_slot();
+                try self.emit(.{ .table_fill = .{ .table_index = table_index, .dst_idx = dst_idx, .value = value, .len = len } });
+            },
+            .table_copy => {
+                const dst_table = info.table_index orelse return error.UnsupportedOperator;
+                const src_table = info.destination_index orelse return error.UnsupportedOperator;
+                const len = try self.pop_slot();
+                const src_idx = try self.pop_slot();
+                const dst_idx = try self.pop_slot();
+                try self.emit(.{ .table_copy = .{ .dst_table = dst_table, .src_table = src_table, .dst_idx = dst_idx, .src_idx = src_idx, .len = len } });
+            },
+            .table_init => {
+                const table_index = info.table_index orelse return error.UnsupportedOperator;
+                const segment_idx = info.segment_index orelse return error.UnsupportedOperator;
+                const len = try self.pop_slot();
+                const src_offset = try self.pop_slot();
+                const dst_idx = try self.pop_slot();
+                try self.emit(.{ .table_init = .{ .table_index = table_index, .segment_idx = segment_idx, .dst_idx = dst_idx, .src_offset = src_offset, .len = len } });
+            },
+            .elem_drop => {
+                const segment_idx = info.segment_index orelse return error.UnsupportedOperator;
+                try self.emit(.{ .elem_drop = .{ .segment_idx = segment_idx } });
+            },
+
+            // ── SIMD / Atomic / GC-non-struct_new / other rare opcodes ────
+            // All handled by the `else` fallback below via operatorToWasmOp.
+
+            // ── Special opcodes already returned false above ─────────────────
+            .call,
+            .call_indirect,
+            .return_call,
+            .return_call_indirect,
+            .throw,
+            .try_table,
+            .struct_new,
+            .call_ref,
+            .return_call_ref,
+            => unreachable,
+
+            // ── Anything else: delegate to operatorToWasmOp + lowerOp ────────
+            else => {
+                const wasm_op = try translate_mod.operatorToWasmOp(info);
+                try self.lowerOp(wasm_op);
+            },
+        }
+        return true;
+    }
+
+    /// Helper: process `end` opcode when called from lowerOpFromInfo.
+    /// This is needed because lowerOp's `end` case relies on `was_unreachable`
+    /// being computed in the same function scope. lowerOpFromInfo computes it
+    /// in its own scope and then needs to delegate just the `end` logic.
+    fn lowerOpEnd(self: *Lower, was_unreachable: bool) !void {
+        if (self.control_stack.items.len == 0) {
+            if (!was_unreachable) {
+                const value = self.stack.pop();
+                try self.emit(.{ .ret = .{ .value = value } });
+            } else {
+                try self.emit(.{ .ret = .{ .value = null } });
+            }
+            return;
+        }
+
+        var frame = self.control_stack.pop().?;
+        defer frame.patch_sites.deinit(self.allocator);
+        defer frame.result_slots.deinit(self.allocator);
+        defer frame.param_slots.deinit(self.allocator);
+
+        if (frame.is_function_frame) {
+            const ret_pc = self.current_pc();
+            self.patch_forward_jumps(&frame, ret_pc);
+            if (!was_unreachable) {
+                const value = self.stack.pop();
+                try self.emit(.{ .ret = .{ .value = value } });
+            } else {
+                try self.emit(.{ .ret = .{ .value = null } });
+            }
+            return;
+        }
+
+        if (!was_unreachable) {
+            const n = frame.result_slots.items().len;
+            var ri: usize = n;
+            while (ri > 0) {
+                ri -= 1;
+                if (self.stack.peek()) |src| {
+                    try self.emit(.{ .copy = .{ .dst = frame.result_slots.items()[ri], .src = src } });
+                    _ = self.stack.pop();
+                }
+            }
+        }
+
+        if (frame.kind == .if_ and !frame.has_else and frame.result_slots.items().len > 0) {
+            const then_skip_pc = self.current_pc();
+            try self.emit(.{ .jump = .{ .target = 0 } });
+
+            const false_path_pc = self.current_pc();
+            self.patch_forward_jumps(&frame, false_path_pc);
+
+            for (frame.result_slots.items()) |rs| {
+                try self.emit(.{ .const_i64 = .{ .dst = rs, .value = 0 } });
+            }
+
+            const continuation_pc = self.current_pc();
+            switch (self.compiled.ops.items[then_skip_pc]) {
+                .jump => |*j| j.target = continuation_pc,
+                else => unreachable,
+            }
+
+            frame.patch_sites.clearRetainingCapacity();
+        }
+
+        if (frame.kind == .try_table) {
+            const leave_pc = self.current_pc();
+            try self.emit(.{ .try_table_leave = .{ .target = 0 } });
+            try frame.patch_sites.append(self.allocator, leave_pc);
+
+            if (frame.try_table_enter_pc) |epc| {
+                switch (self.compiled.ops.items[epc]) {
+                    .try_table_enter => |*e| e.end_target = leave_pc,
+                    else => unreachable,
+                }
+            }
+        }
+
+        const end_pc = self.current_pc();
+        self.patch_forward_jumps(&frame, end_pc);
+
+        try self.unwind_stack_to_frame(&frame);
     }
 
     pub fn finish(self: *Lower) CompiledFunction {

@@ -1,0 +1,2 @@
+# !/bin/bash
+set -euo pipefail && make build-debug && ./zig-out/bin/wasmz tests/esbuild/package/esbuild.wasm --args "--bundle --platform=node --sourcefile=source.js" < tests/esbuild/source.js > /dev/null

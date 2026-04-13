@@ -26,6 +26,7 @@ const simd = core.simd;
 const typed_mod = core.typed;
 const value_type_mod = core.value_type;
 const gc_mod = @import("../vm/gc/root.zig");
+const profiling = @import("../utils/profiling.zig");
 
 const Allocator = std.mem.Allocator;
 const Parser = parser_mod.Parser;
@@ -904,6 +905,7 @@ pub const Module = struct {
         }
         const ta = &self.translator.?;
 
+        var compile_timer = profiling.ScopedTimer.start();
         var compiled = if (self.config.eh_mode == .legacy)
             try compileFunctionBodyLegacyInto(
                 ta,
@@ -926,6 +928,7 @@ pub const Module = struct {
                 resolver,
                 self.tags,
             );
+        profiling.call_prof.ns_compile_body += compile_timer.read();
         defer {
             compiled.ops.deinit(self.allocator);
             compiled.call_args.deinit(self.allocator);
@@ -933,11 +936,13 @@ pub const Module = struct {
             compiled.catch_handler_tables.deinit(self.allocator);
         }
 
+        var encode_timer = profiling.ScopedTimer.start();
         const encoded = try encode_mod.encode(
             self.allocator,
             &compiled,
             &handler_table_mod.handler_table,
         );
+        profiling.call_prof.ns_encode_ir += encode_timer.read();
         slot.* = .{ .encoded = encoded };
     }
 
@@ -1265,9 +1270,19 @@ fn compileFunctionBodyNew(
     resolver: FuncTypeResolver,
     tags: []const TagDef,
 ) ModuleCompileError!CompiledFunction {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
+    var timer = profiling.ScopedTimer.start();
+    profiling.compile_prof.functions_compiled += 1;
+    const start_total = timer.read();
 
+    timer.lap(&profiling.compile_prof.ns_arena_init);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer {
+        const before_deinit = timer.read();
+        arena.deinit();
+        profiling.compile_prof.ns_arena_deinit += timer.read() - before_deinit;
+    }
+
+    timer.lap(&profiling.compile_prof.ns_lower_init);
     var lower = Lower.initWithReservedSlots(allocator, reserved_slots, locals_count);
     lower.composite_types = resolver.composite_types;
     errdefer lower.deinit();
@@ -1277,30 +1292,43 @@ fn compileFunctionBodyNew(
     // of triggering ControlStackUnderflow.
     try lower.pushFunctionFrame(n_results);
 
-    var cursor: usize = 0;
-    while (cursor < body.len) {
-        const parsed = try parser_mod.readNextOperator(arena.allocator(), body[cursor..]);
-        cursor += parsed.consumed;
+    var fbp = parser_mod.FunctionBodyParser.init(arena.allocator(), body);
+    while (!fbp.done()) {
+        const before_read = timer.read();
+        const op_info = try fbp.next();
+        profiling.compile_prof.ns_read_operator += timer.read() - before_read;
+        profiling.compile_prof.opcodes_processed += 1;
 
-        if (simd.isSimdOpcode(parsed.info.code)) {
+        if (simd.isSimdOpcode(op_info.code)) {
             if (!config.simd) return error.DisabledSimd;
-            if (simd.isRelaxedSimdOpcode(parsed.info.code) and !config.relaxed_simd) {
+            if (simd.isRelaxedSimdOpcode(op_info.code) and !config.relaxed_simd) {
                 return error.DisabledRelaxedSimd;
             }
         }
 
-        const wasm_op = try buildWasmOp(parsed.info, resolver, tags, arena.allocator());
-        lower.lowerOp(wasm_op) catch |err| {
-            return err;
-        };
+        const before_lower = timer.read();
+        if (!try lower.lowerOpFromInfo(op_info)) {
+            const before_build = timer.read();
+            const wasm_op = try buildWasmOp(op_info, resolver, tags, arena.allocator());
+            profiling.compile_prof.ns_build_wasm_op += timer.read() - before_build;
+
+            lower.lowerOp(wasm_op) catch |err| {
+                return err;
+            };
+        }
+        profiling.compile_prof.ns_lower_op += timer.read() - before_lower;
     }
 
+    const before_encode = timer.read();
     const compiled = lower.finish();
     lower.compiled.ops = .empty;
     lower.compiled.call_args = .empty;
     lower.compiled.br_table_targets = .empty;
     lower.compiled.catch_handler_tables = .empty;
     lower.deinit();
+    profiling.compile_prof.ns_encode += timer.read() - before_encode;
+
+    profiling.compile_prof.ns_total += timer.read() - start_total;
     return compiled;
 }
 
@@ -1326,28 +1354,27 @@ fn compileFunctionBodyLegacy(
     // Use the LowerLegacy wrapper so that try_states stays in sync.
     try lower_legacy.pushFunctionFrame(n_results);
 
-    var cursor: usize = 0;
-    while (cursor < body.len) {
-        const parsed = try parser_mod.readNextOperator(arena.allocator(), body[cursor..]);
-        cursor += parsed.consumed;
+    var fbp_nonfunc = parser_mod.FunctionBodyParser.init(arena.allocator(), body);
+    while (!fbp_nonfunc.done()) {
+        const op_info = try fbp_nonfunc.next();
 
-        if (simd.isSimdOpcode(parsed.info.code)) {
+        if (simd.isSimdOpcode(op_info.code)) {
             if (!config.simd) return error.DisabledSimd;
-            if (simd.isRelaxedSimdOpcode(parsed.info.code) and !config.relaxed_simd) {
+            if (simd.isRelaxedSimdOpcode(op_info.code) and !config.relaxed_simd) {
                 return error.DisabledRelaxedSimd;
             }
         }
 
-        switch (parsed.info.code) {
+        switch (op_info.code) {
             .try_ => {
-                const block_type: ?lower_mod.BlockType = if (parsed.info.block_type) |bt|
+                const block_type: ?lower_mod.BlockType = if (op_info.block_type) |bt|
                     try translate_mod.wasmBlockTypeFromType(bt)
                 else
                     null;
                 try lower_legacy.lowerLegacyOp(.{ .try_ = block_type });
             },
             .catch_ => {
-                const tag_idx = parsed.info.tag_index orelse return error.UnsupportedOperator;
+                const tag_idx = op_info.tag_index orelse return error.UnsupportedOperator;
                 if (tag_idx >= tags.len) return error.InvalidTagIndex;
                 const tag_type_idx = tags[tag_idx].type_index;
                 const tag_func_type = try resolver.getFuncType(tag_type_idx);
@@ -1361,11 +1388,11 @@ fn compileFunctionBodyLegacy(
                 try lower_legacy.lowerLegacyOp(.catch_all);
             },
             .rethrow => {
-                const depth = parsed.info.relative_depth orelse 0;
+                const depth = op_info.relative_depth orelse 0;
                 try lower_legacy.lowerLegacyOp(.{ .rethrow = depth });
             },
             .delegate => {
-                const depth = parsed.info.relative_depth orelse 0;
+                const depth = op_info.relative_depth orelse 0;
                 try lower_legacy.lowerLegacyOp(.{ .delegate = depth });
             },
             .end => {
@@ -1373,8 +1400,24 @@ fn compileFunctionBodyLegacy(
                 try lower_legacy.lowerLegacyEnd();
             },
             else => {
-                const wasm_op = try buildWasmOp(parsed.info, resolver, tags, arena.allocator());
-                try lower_legacy.lowerLegacyOp(.{ .non_legacy = wasm_op });
+                const cs_before = lower_legacy.inner.control_stack.items.len;
+                if (!try lower_legacy.inner.lowerOpFromInfo(op_info)) {
+                    const wasm_op = try buildWasmOp(op_info, resolver, tags, arena.allocator());
+                    try lower_legacy.lowerLegacyOp(.{ .non_legacy = wasm_op });
+                } else {
+                    // Sync try_states with control stack changes (mirrors lowerLegacyOp).
+                    const cs_after = lower_legacy.inner.control_stack.items.len;
+                    if (cs_after > cs_before) {
+                        const added = cs_after - cs_before;
+                        var j: usize = 0;
+                        while (j < added) : (j += 1) {
+                            try lower_legacy.try_states.append(lower_legacy.allocator, null);
+                        }
+                    } else if (cs_after < cs_before) {
+                        const removed = cs_before - cs_after;
+                        lower_legacy.try_states.shrinkRetainingCapacity(lower_legacy.try_states.items.len -| removed);
+                    }
+                }
             },
         }
     }
@@ -1400,6 +1443,11 @@ fn compileFunctionBodyNewInto(
     resolver: FuncTypeResolver,
     tags: []const TagDef,
 ) ModuleCompileError!CompiledFunction {
+    var timer = profiling.ScopedTimer.start();
+    profiling.compile_prof.functions_compiled += 1;
+    const start_total = timer.read();
+
+    timer.lap(&profiling.compile_prof.ns_lower_init);
     ta.resetNew(reserved_slots, locals_count);
     const lower = &ta.lower;
     lower.composite_types = resolver.composite_types;
@@ -1407,29 +1455,42 @@ fn compileFunctionBodyNewInto(
     try lower.pushFunctionFrame(n_results);
 
     const scratch = ta.scratch.allocator();
-    var cursor: usize = 0;
-    while (cursor < body.len) {
-        const parsed = try parser_mod.readNextOperator(scratch, body[cursor..]);
-        cursor += parsed.consumed;
+    var fbp = parser_mod.FunctionBodyParser.init(scratch, body);
+    while (!fbp.done()) {
+        const before_read = timer.read();
+        const op_info = try fbp.next();
+        profiling.compile_prof.ns_read_operator += timer.read() - before_read;
+        profiling.compile_prof.opcodes_processed += 1;
 
-        if (simd.isSimdOpcode(parsed.info.code)) {
+        if (simd.isSimdOpcode(op_info.code)) {
             if (!config.simd) return error.DisabledSimd;
-            if (simd.isRelaxedSimdOpcode(parsed.info.code) and !config.relaxed_simd) {
+            if (simd.isRelaxedSimdOpcode(op_info.code) and !config.relaxed_simd) {
                 return error.DisabledRelaxedSimd;
             }
         }
 
-        const wasm_op = try buildWasmOp(parsed.info, resolver, tags, scratch);
-        lower.lowerOp(wasm_op) catch |err| return err;
+        const before_lower = timer.read();
+        if (!try lower.lowerOpFromInfo(op_info)) {
+            const before_build = timer.read();
+            const wasm_op = try buildWasmOp(op_info, resolver, tags, scratch);
+            profiling.compile_prof.ns_build_wasm_op += timer.read() - before_build;
+
+            lower.lowerOp(wasm_op) catch |err| return err;
+        }
+        profiling.compile_prof.ns_lower_op += timer.read() - before_lower;
     }
 
     // Transfer ownership of the compiled lists out of the reusable Lower.
     // Null the originals so the next reset() does not double-free them.
+    const before_encode = timer.read();
     const compiled = lower.finish();
     lower.compiled.ops = .empty;
     lower.compiled.call_args = .empty;
     lower.compiled.br_table_targets = .empty;
     lower.compiled.catch_handler_tables = .empty;
+    profiling.compile_prof.ns_encode += timer.read() - before_encode;
+
+    profiling.compile_prof.ns_total += timer.read() - start_total;
     return compiled;
 }
 
@@ -1451,28 +1512,27 @@ fn compileFunctionBodyLegacyInto(
     try lower_legacy.pushFunctionFrame(n_results);
 
     const scratch = ta.scratch.allocator();
-    var cursor: usize = 0;
-    while (cursor < body.len) {
-        const parsed = try parser_mod.readNextOperator(scratch, body[cursor..]);
-        cursor += parsed.consumed;
+    var fbp_legacy = parser_mod.FunctionBodyParser.init(scratch, body);
+    while (!fbp_legacy.done()) {
+        const op_info = try fbp_legacy.next();
 
-        if (simd.isSimdOpcode(parsed.info.code)) {
+        if (simd.isSimdOpcode(op_info.code)) {
             if (!config.simd) return error.DisabledSimd;
-            if (simd.isRelaxedSimdOpcode(parsed.info.code) and !config.relaxed_simd) {
+            if (simd.isRelaxedSimdOpcode(op_info.code) and !config.relaxed_simd) {
                 return error.DisabledRelaxedSimd;
             }
         }
 
-        switch (parsed.info.code) {
+        switch (op_info.code) {
             .try_ => {
-                const block_type: ?lower_mod.BlockType = if (parsed.info.block_type) |bt|
+                const block_type: ?lower_mod.BlockType = if (op_info.block_type) |bt|
                     try translate_mod.wasmBlockTypeFromType(bt)
                 else
                     null;
                 try lower_legacy.lowerLegacyOp(.{ .try_ = block_type });
             },
             .catch_ => {
-                const tag_idx = parsed.info.tag_index orelse return error.UnsupportedOperator;
+                const tag_idx = op_info.tag_index orelse return error.UnsupportedOperator;
                 if (tag_idx >= tags.len) return error.InvalidTagIndex;
                 const tag_type_idx = tags[tag_idx].type_index;
                 const tag_func_type = try resolver.getFuncType(tag_type_idx);
@@ -1486,19 +1546,35 @@ fn compileFunctionBodyLegacyInto(
                 try lower_legacy.lowerLegacyOp(.catch_all);
             },
             .rethrow => {
-                const depth = parsed.info.relative_depth orelse 0;
+                const depth = op_info.relative_depth orelse 0;
                 try lower_legacy.lowerLegacyOp(.{ .rethrow = depth });
             },
             .delegate => {
-                const depth = parsed.info.relative_depth orelse 0;
+                const depth = op_info.relative_depth orelse 0;
                 try lower_legacy.lowerLegacyOp(.{ .delegate = depth });
             },
             .end => {
                 try lower_legacy.lowerLegacyEnd();
             },
             else => {
-                const wasm_op = try buildWasmOp(parsed.info, resolver, tags, scratch);
-                try lower_legacy.lowerLegacyOp(.{ .non_legacy = wasm_op });
+                const cs_before = lower_legacy.inner.control_stack.items.len;
+                if (!try lower_legacy.inner.lowerOpFromInfo(op_info)) {
+                    const wasm_op = try buildWasmOp(op_info, resolver, tags, scratch);
+                    try lower_legacy.lowerLegacyOp(.{ .non_legacy = wasm_op });
+                } else {
+                    // Sync try_states with control stack changes (mirrors lowerLegacyOp).
+                    const cs_after = lower_legacy.inner.control_stack.items.len;
+                    if (cs_after > cs_before) {
+                        const added = cs_after - cs_before;
+                        var j: usize = 0;
+                        while (j < added) : (j += 1) {
+                            try lower_legacy.try_states.append(lower_legacy.allocator, null);
+                        }
+                    } else if (cs_after < cs_before) {
+                        const removed = cs_before - cs_after;
+                        lower_legacy.try_states.shrinkRetainingCapacity(lower_legacy.try_states.items.len -| removed);
+                    }
+                }
             },
         }
     }
