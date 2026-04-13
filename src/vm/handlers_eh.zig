@@ -120,7 +120,7 @@ fn dispatchException(
                 .catch_tag => {
                     const n = h.dst_slots_len;
                     const dst_start = h.dst_slots_start;
-                    const dst_slots = tgt_func.call_args[dst_start .. dst_start + n];
+                    const dst_slots = tgt_func.eh_dst_slots[dst_start .. dst_start + n];
                     var i: u32 = 0;
                     while (i < n) : (i += 1) {
                         tgt_slots[dst_slots[i]] = store.gc_heap.exceptionArg(exn_ref, i);
@@ -129,7 +129,7 @@ fn dispatchException(
                 .catch_tag_ref => {
                     const n = h.dst_slots_len;
                     const dst_start = h.dst_slots_start;
-                    const dst_slots = tgt_func.call_args[dst_start .. dst_start + n];
+                    const dst_slots = tgt_func.eh_dst_slots[dst_start .. dst_start + n];
                     var i: u32 = 0;
                     while (i < n) : (i += 1) {
                         tgt_slots[dst_slots[i]] = store.gc_heap.exceptionArg(exn_ref, i);
@@ -159,8 +159,8 @@ fn dispatchException(
 pub fn handle_throw(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsThrow, ip);
 
-    const caller_func = frame.callStackTop().func;
-    const arg_slots = caller_func.call_args[ops.args_start .. ops.args_start + ops.args_len];
+    // Read inline arg slots directly from the bytecode stream (zero pointer chasing)
+    const arg_slots = encode.readInlineArgs(encode.OpsThrow, ip, ops.args_len);
 
     const exc_args = frame.allocator.alloc(RawVal, arg_slots.len) catch {
         trapReturn(frame, .OutOfMemory);

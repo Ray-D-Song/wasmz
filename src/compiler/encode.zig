@@ -136,23 +136,23 @@ pub const OpsMemoryCopy = extern struct { dst_addr: u32, src_addr: u32, len: u32
 /// memory_fill
 pub const OpsMemoryFill = extern struct { dst_addr: u32, value: u32, len: u32 };
 
-/// call
-pub const OpsCall = extern struct { dst_valid: u32, dst: u32, func_idx: u32, args_start: u32, args_len: u32 };
+/// call — args_len inline u32 arg slots follow immediately after this struct
+pub const OpsCall = extern struct { dst_valid: u32, dst: u32, func_idx: u32, args_len: u32 };
 
-/// call_indirect
-pub const OpsCallIndirect = extern struct { dst_valid: u32, dst: u32, index: u32, type_index: u32, table_index: u32, args_start: u32, args_len: u32 };
+/// call_indirect — args_len inline u32 arg slots follow immediately after this struct
+pub const OpsCallIndirect = extern struct { dst_valid: u32, dst: u32, index: u32, type_index: u32, table_index: u32, args_len: u32 };
 
-/// return_call
-pub const OpsReturnCall = extern struct { func_idx: u32, args_start: u32, args_len: u32 };
+/// return_call — args_len inline u32 arg slots follow immediately after this struct
+pub const OpsReturnCall = extern struct { func_idx: u32, args_len: u32 };
 
-/// return_call_indirect
-pub const OpsReturnCallIndirect = extern struct { index: u32, type_index: u32, table_index: u32, args_start: u32, args_len: u32 };
+/// return_call_indirect — args_len inline u32 arg slots follow immediately after this struct
+pub const OpsReturnCallIndirect = extern struct { index: u32, type_index: u32, table_index: u32, args_len: u32 };
 
-/// call_ref
-pub const OpsCallRef = extern struct { dst_valid: u32, dst: u32, ref: u32, type_idx: u32, args_start: u32, args_len: u32 };
+/// call_ref — args_len inline u32 arg slots follow immediately after this struct
+pub const OpsCallRef = extern struct { dst_valid: u32, dst: u32, ref: u32, type_idx: u32, args_len: u32 };
 
-/// return_call_ref
-pub const OpsReturnCallRef = extern struct { ref: u32, type_idx: u32, args_start: u32, args_len: u32 };
+/// return_call_ref — args_len inline u32 arg slots follow immediately after this struct
+pub const OpsReturnCallRef = extern struct { ref: u32, type_idx: u32, args_len: u32 };
 
 /// Atomic load/store
 pub const OpsAtomicLoad = extern struct { dst: u32, addr: u32, offset: u32, width: u8, ty: u8, _pad: u16 = 0 };
@@ -173,8 +173,8 @@ pub const OpsTableCopy = extern struct { dst_table: u32, src_table: u32, dst_idx
 pub const OpsTableInit = extern struct { table_index: u32, segment_idx: u32, dst_idx: u32, src_offset: u32, len: u32 };
 pub const OpsElemDrop = extern struct { segment_idx: u32 };
 
-/// GC struct ops
-pub const OpsStructNew = extern struct { dst: u32, type_idx: u32, args_start: u32, args_len: u32 };
+/// GC struct ops — args_len inline u32 arg slots follow immediately after OpsStructNew
+pub const OpsStructNew = extern struct { dst: u32, type_idx: u32, args_len: u32 };
 pub const OpsStructNewDefault = extern struct { dst: u32, type_idx: u32 };
 pub const OpsStructGet = extern struct { dst: u32, ref: u32, type_idx: u32, field_idx: u32 };
 pub const OpsStructSet = extern struct { ref: u32, value: u32, type_idx: u32, field_idx: u32 };
@@ -182,7 +182,8 @@ pub const OpsStructSet = extern struct { ref: u32, value: u32, type_idx: u32, fi
 /// GC array ops
 pub const OpsArrayNew = extern struct { dst: u32, init: u32, len: u32, type_idx: u32 };
 pub const OpsArrayNewDefault = extern struct { dst: u32, len: u32, type_idx: u32 };
-pub const OpsArrayNewFixed = extern struct { dst: u32, type_idx: u32, args_start: u32, args_len: u32 };
+/// GC array ops — args_len inline u32 arg slots follow immediately after OpsArrayNewFixed
+pub const OpsArrayNewFixed = extern struct { dst: u32, type_idx: u32, args_len: u32 };
 pub const OpsArrayNewData = extern struct { dst: u32, offset: u32, len: u32, type_idx: u32, data_idx: u32 };
 pub const OpsArrayNewElem = extern struct { dst: u32, offset: u32, len: u32, type_idx: u32, elem_idx: u32 };
 pub const OpsArrayGet = extern struct { dst: u32, ref: u32, index: u32, type_idx: u32 };
@@ -196,8 +197,8 @@ pub const OpsArrayInitElem = extern struct { ref: u32, d: u32, s: u32, n: u32, t
 /// any_convert_extern / extern_convert_any
 pub const OpsConvertRef = extern struct { dst: u32, ref: u32 };
 
-/// EH ops
-pub const OpsThrow = extern struct { tag_index: u32, args_start: u32, args_len: u32 };
+/// EH ops — args_len inline u32 arg slots follow immediately after OpsThrow
+pub const OpsThrow = extern struct { tag_index: u32, args_len: u32 };
 pub const OpsThrowRef = extern struct { ref: u32 };
 pub const OpsTryTableEnter = extern struct { handlers_start: u32, handlers_len: u32, end_target: u32 };
 pub const OpsTryTableLeave = extern struct { rel_target: i32 };
@@ -213,6 +214,19 @@ pub const OpsSimdLoad = extern struct { dst: u32, opcode: u32, addr: u32, offset
 pub const OpsSimdStore = extern struct { opcode: u32, addr: u32, src: u32, offset: u32, lane_valid: u8, lane: u8, _pad: [2]u8 = [_]u8{0} ** 2 };
 
 // ── Instruction size helpers ──────────────────────────────────────────────────
+
+/// Read the inline arg slot array that follows a fixed-size ops struct in the bytecode stream.
+/// `ip` is the instruction pointer (pointing to the handler pointer).
+/// Returns a slice of u32 slot indices.
+pub inline fn readInlineArgs(comptime OpsT: type, ip: [*]align(8) u8, args_len: u32) []const u32 {
+    const base: [*]const u32 = @ptrCast(@alignCast(ip + HANDLER_SIZE + @sizeOf(OpsT)));
+    return base[0..args_len];
+}
+
+/// Compute the byte stride of a variable-length instruction (handler + ops + inline args).
+pub inline fn varStride(comptime OpsT: type, args_len: u32) usize {
+    return std.mem.alignForward(usize, HANDLER_SIZE + @sizeOf(OpsT) + @as(usize, args_len) * @sizeOf(u32), 8);
+}
 
 /// Returns the byte size of one encoded instruction (handler pointer + operands).
 pub fn instrSize(op: Op) usize {
@@ -427,12 +441,12 @@ pub fn instrSize(op: Op) usize {
         .memory_copy => @sizeOf(OpsMemoryCopy),
         .memory_fill => @sizeOf(OpsMemoryFill),
 
-        .call => @sizeOf(OpsCall),
-        .call_indirect => @sizeOf(OpsCallIndirect),
-        .return_call => @sizeOf(OpsReturnCall),
-        .return_call_indirect => @sizeOf(OpsReturnCallIndirect),
-        .call_ref => @sizeOf(OpsCallRef),
-        .return_call_ref => @sizeOf(OpsReturnCallRef),
+        .call => |inst| @sizeOf(OpsCall) + @as(usize, inst.args_len) * @sizeOf(u32),
+        .call_indirect => |inst| @sizeOf(OpsCallIndirect) + @as(usize, inst.args_len) * @sizeOf(u32),
+        .return_call => |inst| @sizeOf(OpsReturnCall) + @as(usize, inst.args_len) * @sizeOf(u32),
+        .return_call_indirect => |inst| @sizeOf(OpsReturnCallIndirect) + @as(usize, inst.args_len) * @sizeOf(u32),
+        .call_ref => |inst| @sizeOf(OpsCallRef) + @as(usize, inst.args_len) * @sizeOf(u32),
+        .return_call_ref => |inst| @sizeOf(OpsReturnCallRef) + @as(usize, inst.args_len) * @sizeOf(u32),
 
         .atomic_load => @sizeOf(OpsAtomicLoad),
         .atomic_store => @sizeOf(OpsAtomicStore),
@@ -452,14 +466,14 @@ pub fn instrSize(op: Op) usize {
         .table_init => @sizeOf(OpsTableInit),
         .elem_drop => @sizeOf(OpsElemDrop),
 
-        .struct_new => @sizeOf(OpsStructNew),
+        .struct_new => |inst| @sizeOf(OpsStructNew) + @as(usize, inst.args_len) * @sizeOf(u32),
         .struct_new_default => @sizeOf(OpsStructNewDefault),
         .struct_get, .struct_get_s, .struct_get_u => @sizeOf(OpsStructGet),
         .struct_set => @sizeOf(OpsStructSet),
 
         .array_new => @sizeOf(OpsArrayNew),
         .array_new_default => @sizeOf(OpsArrayNewDefault),
-        .array_new_fixed => @sizeOf(OpsArrayNewFixed),
+        .array_new_fixed => |inst| @sizeOf(OpsArrayNewFixed) + @as(usize, inst.args_len) * @sizeOf(u32),
         .array_new_data => @sizeOf(OpsArrayNewData),
         .array_new_elem => @sizeOf(OpsArrayNewElem),
         .array_get, .array_get_s, .array_get_u => @sizeOf(OpsArrayGet),
@@ -480,7 +494,7 @@ pub fn instrSize(op: Op) usize {
 
         .any_convert_extern, .extern_convert_any => @sizeOf(OpsConvertRef),
 
-        .throw => @sizeOf(OpsThrow),
+        .throw => |inst| @sizeOf(OpsThrow) + @as(usize, inst.args_len) * @sizeOf(u32),
         .throw_ref => @sizeOf(OpsThrowRef),
         .try_table_enter => @sizeOf(OpsTryTableEnter),
         .try_table_leave => @sizeOf(OpsTryTableLeave),
@@ -784,6 +798,19 @@ pub const HandlerTable = struct {
 };
 
 // ── Encode ────────────────────────────────────────────────────────────────────
+
+/// Write inline arg slots (u32[]) immediately after an ops struct in the code buffer.
+/// `ops_ptr` points to the start of the operands (after the handler pointer).
+/// `comptime OpsT` is the fixed-size operand struct type.
+/// `call_args` is the full call_args pool from the CompiledFunction.
+/// `args_start` is the starting index into call_args.
+/// `args_len` is the number of arg slots to write.
+fn writeInlineArgs(ops_ptr: [*]u8, comptime OpsT: type, call_args: []const Slot, args_start: u32, args_len: u32) void {
+    const inline_base: [*]u32 = @ptrCast(@alignCast(ops_ptr + @sizeOf(OpsT)));
+    for (0..args_len) |j| {
+        inline_base[j] = call_args[args_start + j];
+    }
+}
 
 /// Encode a `CompiledFunction` into an `EncodedFunction`.
 ///
@@ -1156,9 +1183,9 @@ pub fn encode(
                     .dst_valid = if (inst.dst != null) 1 else 0,
                     .dst = inst.dst orelse 0,
                     .func_idx = inst.func_idx,
-                    .args_start = inst.args_start,
                     .args_len = inst.args_len,
                 };
+                writeInlineArgs(ops_ptr, OpsCall, cf.call_args.items, inst.args_start, inst.args_len);
             },
             .call_indirect => |inst| {
                 @as(*OpsCallIndirect, @ptrCast(@alignCast(ops_ptr))).* = .{
@@ -1167,25 +1194,25 @@ pub fn encode(
                     .index = inst.index,
                     .type_index = inst.type_index,
                     .table_index = inst.table_index,
-                    .args_start = inst.args_start,
                     .args_len = inst.args_len,
                 };
+                writeInlineArgs(ops_ptr, OpsCallIndirect, cf.call_args.items, inst.args_start, inst.args_len);
             },
             .return_call => |inst| {
                 @as(*OpsReturnCall, @ptrCast(@alignCast(ops_ptr))).* = .{
                     .func_idx = inst.func_idx,
-                    .args_start = inst.args_start,
                     .args_len = inst.args_len,
                 };
+                writeInlineArgs(ops_ptr, OpsReturnCall, cf.call_args.items, inst.args_start, inst.args_len);
             },
             .return_call_indirect => |inst| {
                 @as(*OpsReturnCallIndirect, @ptrCast(@alignCast(ops_ptr))).* = .{
                     .index = inst.index,
                     .type_index = inst.type_index,
                     .table_index = inst.table_index,
-                    .args_start = inst.args_start,
                     .args_len = inst.args_len,
                 };
+                writeInlineArgs(ops_ptr, OpsReturnCallIndirect, cf.call_args.items, inst.args_start, inst.args_len);
             },
             .call_ref => |inst| {
                 @as(*OpsCallRef, @ptrCast(@alignCast(ops_ptr))).* = .{
@@ -1193,17 +1220,17 @@ pub fn encode(
                     .dst = inst.dst orelse 0,
                     .ref = inst.ref,
                     .type_idx = inst.type_idx,
-                    .args_start = inst.args_start,
                     .args_len = inst.args_len,
                 };
+                writeInlineArgs(ops_ptr, OpsCallRef, cf.call_args.items, inst.args_start, inst.args_len);
             },
             .return_call_ref => |inst| {
                 @as(*OpsReturnCallRef, @ptrCast(@alignCast(ops_ptr))).* = .{
                     .ref = inst.ref,
                     .type_idx = inst.type_idx,
-                    .args_start = inst.args_start,
                     .args_len = inst.args_len,
                 };
+                writeInlineArgs(ops_ptr, OpsReturnCallRef, cf.call_args.items, inst.args_start, inst.args_len);
             },
 
             // ── Atomics ───────────────────────────────────────────────────
@@ -1339,9 +1366,9 @@ pub fn encode(
                 @as(*OpsStructNew, @ptrCast(@alignCast(ops_ptr))).* = .{
                     .dst = inst.dst,
                     .type_idx = inst.type_idx,
-                    .args_start = inst.args_start,
                     .args_len = inst.args_len,
                 };
+                writeInlineArgs(ops_ptr, OpsStructNew, cf.call_args.items, inst.args_start, inst.args_len);
             },
             .struct_new_default => |inst| {
                 @as(*OpsStructNewDefault, @ptrCast(@alignCast(ops_ptr))).* = .{
@@ -1386,9 +1413,9 @@ pub fn encode(
                 @as(*OpsArrayNewFixed, @ptrCast(@alignCast(ops_ptr))).* = .{
                     .dst = inst.dst,
                     .type_idx = inst.type_idx,
-                    .args_start = inst.args_start,
                     .args_len = inst.args_len,
                 };
+                writeInlineArgs(ops_ptr, OpsArrayNewFixed, cf.call_args.items, inst.args_start, inst.args_len);
             },
             .array_new_data => |inst| {
                 @as(*OpsArrayNewData, @ptrCast(@alignCast(ops_ptr))).* = .{
@@ -1516,9 +1543,9 @@ pub fn encode(
             .throw => |inst| {
                 @as(*OpsThrow, @ptrCast(@alignCast(ops_ptr))).* = .{
                     .tag_index = inst.tag_index,
-                    .args_start = inst.args_start,
                     .args_len = inst.args_len,
                 };
+                writeInlineArgs(ops_ptr, OpsThrow, cf.call_args.items, inst.args_start, inst.args_len);
             },
             .throw_ref => |inst| {
                 @as(*OpsThrowRef, @ptrCast(@alignCast(ops_ptr))).* = .{ .ref = inst.ref };
@@ -1627,9 +1654,37 @@ pub fn encode(
     }
 
     // ── Migrate auxiliary tables ───────────────────────────────────────────
-    // call_args: copy verbatim
-    const call_args = try allocator.dupe(Slot, cf.call_args.items);
-    errdefer allocator.free(call_args);
+    // call_args are now inlined into the bytecode stream for call/throw/struct_new/array_new_fixed.
+    // The only remaining use of call_args is CatchHandlerEntry.dst_slots_start/dst_slots_len
+    // for exception handler payload destinations. We migrate those into a separate eh_dst_slots table.
+
+    // catch_handler_tables: copy entries, patch .target field, and migrate dst_slots to eh_dst_slots
+    const cht_src = cf.catch_handler_tables.items;
+    const catch_handler_tables = try allocator.dupe(CatchHandlerEntry, cht_src);
+    errdefer allocator.free(catch_handler_tables);
+
+    // Compute total eh_dst_slots needed
+    var eh_dst_total: u32 = 0;
+    for (cht_src) |e| {
+        eh_dst_total += e.dst_slots_len;
+    }
+
+    const eh_dst_slots = try allocator.alloc(Slot, eh_dst_total);
+    errdefer allocator.free(eh_dst_slots);
+
+    // Copy dst_slots from call_args into eh_dst_slots and update indices
+    {
+        var eh_off: u32 = 0;
+        for (catch_handler_tables) |*e| {
+            e.target = op_offset[e.target];
+            if (e.dst_slots_len > 0) {
+                const src_slots = cf.call_args.items[e.dst_slots_start .. e.dst_slots_start + e.dst_slots_len];
+                @memcpy(eh_dst_slots[eh_off .. eh_off + e.dst_slots_len], src_slots);
+                e.dst_slots_start = eh_off;
+                eh_off += e.dst_slots_len;
+            }
+        }
+    }
 
     // br_table_targets: convert op-index entries to byte offsets
     const br_targets_src = cf.br_table_targets.items;
@@ -1639,19 +1694,11 @@ pub fn encode(
         br_table_targets[j] = op_offset[t];
     }
 
-    // catch_handler_tables: copy entries, patch .target field
-    const cht_src = cf.catch_handler_tables.items;
-    const catch_handler_tables = try allocator.dupe(CatchHandlerEntry, cht_src);
-    errdefer allocator.free(catch_handler_tables);
-    for (catch_handler_tables) |*e| {
-        e.target = op_offset[e.target];
-    }
-
     return EncodedFunction{
         .code = code,
         .slots_len = cf.slots_len,
         .locals_count = cf.locals_count,
-        .call_args = call_args,
+        .eh_dst_slots = eh_dst_slots,
         .br_table_targets = br_table_targets,
         .catch_handler_tables = catch_handler_tables,
     };

@@ -1107,11 +1107,12 @@ pub const FunctionSlot = union(enum) {
 /// Layout of `code`:
 ///   For each instruction:
 ///     [ handler_ptr: *const fn (8 bytes, align 8) ] [ operands: packed bytes ]
+///     For call/throw/struct_new/array_new_fixed: operands include inline arg slot u32s.
 ///
 /// Jump targets stored inside `code` are byte offsets from the start of `code[]`.
 ///
-/// The three auxiliary tables (`call_args`, `br_table_targets`, `catch_handler_tables`)
-/// are owned slices migrated verbatim from CompiledFunction.
+/// The auxiliary tables (`eh_dst_slots`, `br_table_targets`, `catch_handler_tables`)
+/// are owned slices migrated from CompiledFunction during encoding.
 pub const EncodedFunction = struct {
     /// Flat bytecode stream; 8-byte aligned.
     code: []align(8) u8,
@@ -1120,9 +1121,9 @@ pub const EncodedFunction = struct {
     /// Number of local variable slots (excluding parameters).
     /// Used to limit @memset in allocCalleeSlots to only the locals range.
     locals_count: u16,
-    /// Argument/result slot lists for call / throw / struct_new / array_new_fixed.
-    /// Indexed by (args_start, args_len) embedded in each encoded instruction's operand bytes.
-    call_args: []Slot,
+    /// Destination slot lists for exception handler catch arms (catch_tag / catch_tag_ref).
+    /// CatchHandlerEntry.dst_slots_start/dst_slots_len index into this array.
+    eh_dst_slots: []Slot,
     /// Branch targets for jump_table (br_table) ops.
     /// Stored as byte offsets into `code`.
     /// Indexed by (targets_start, targets_len) embedded in the instruction's operand bytes.
@@ -1134,7 +1135,7 @@ pub const EncodedFunction = struct {
 
     pub fn deinit(self: *EncodedFunction, allocator: std.mem.Allocator) void {
         allocator.free(self.code);
-        allocator.free(self.call_args);
+        allocator.free(self.eh_dst_slots);
         allocator.free(self.br_table_targets);
         allocator.free(self.catch_handler_tables);
         self.* = undefined;
