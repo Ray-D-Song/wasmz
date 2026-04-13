@@ -322,11 +322,7 @@ pub const GcHeap = struct {
                 .I64 => RawVal.from(std.mem.readInt(i64, bytes[0..8], .little)),
                 .F32 => RawVal.from(std.mem.readInt(u32, bytes[0..4], .little)),
                 .F64 => RawVal.from(std.mem.readInt(u64, bytes[0..8], .little)),
-                .V128 => blk: {
-                    const low = std.mem.readInt(u64, bytes[0..8], .little);
-                    const high = std.mem.readInt(u64, bytes[8..16], .little);
-                    break :blk RawVal{ .low64 = low, .high64 = high };
-                },
+                .V128 => @panic("V128 not supported in no-simd build"),
                 .Ref => RawVal.fromGcRef(GcRef.encode(std.mem.readInt(u32, bytes[0..4], .little))),
             },
             .packed_type => |p| switch (p) {
@@ -386,10 +382,7 @@ pub const GcHeap = struct {
                 .I64 => std.mem.writeInt(i64, bytes[0..8], value.readAs(i64), .little),
                 .F32 => std.mem.writeInt(u32, bytes[0..4], value.readAs(u32), .little),
                 .F64 => std.mem.writeInt(u64, bytes[0..8], value.readAs(u64), .little),
-                .V128 => {
-                    std.mem.writeInt(u64, bytes[0..8], value.low64, .little);
-                    std.mem.writeInt(u64, bytes[8..16], value.high64, .little);
-                },
+                .V128 => @panic("V128 not supported in no-simd build"),
                 .Ref => std.mem.writeInt(u32, bytes[0..4], value.readAsGcRef().decode(), .little),
             },
             .packed_type => |p| switch (p) {
@@ -506,9 +499,9 @@ pub const GcHeap = struct {
 
         // Write arg values
         for (args, 0..) |val, i| {
+            // Write arg values (no-simd: only low64)
             const off = EXCEPTION_ARGS_OFFSET + @as(u32, @intCast(i)) * @sizeOf(RawVal);
             std.mem.writeInt(u64, self.bytes[base + off ..][0..8], val.low64, .little);
-            std.mem.writeInt(u64, self.bytes[base + off + 8 ..][0..8], val.high64, .little);
         }
 
         return ref;
@@ -530,8 +523,7 @@ pub const GcHeap = struct {
         const base = ref.asHeapIndex().?;
         const off = EXCEPTION_ARGS_OFFSET + i * @sizeOf(RawVal);
         const low = std.mem.readInt(u64, self.bytes[base + off ..][0..8], .little);
-        const high = std.mem.readInt(u64, self.bytes[base + off + 8 ..][0..8], .little);
-        return .{ .low64 = low, .high64 = high };
+        return .{ .low64 = low };
     }
 
     /// GC entry point - performs mark-and-sweep collection.

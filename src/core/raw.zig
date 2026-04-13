@@ -2,19 +2,9 @@ const vec = @import("./value/vec.zig");
 const GcRef = @import("./gc_ref.zig").GcRef;
 
 pub const RawVal = struct {
-    // The low 64-bits of an [`RawVal`].
-    //
-    // The low 64-bits are used to encode and decode all types that
-    // are convertible from and to an [`RawVal`] that fit into
-    // 64-bits such as `i32`, `i64`, `f32` and `f64`.
+    // no-simd branch: single 64-bit slot; V128 is not supported.
     low64: u64,
-    // The high 64-bits of an [`RawVal`].
-    //
-    // This is only used to encode or decode types which do not fit
-    // into the lower 64-bits part such as Wasm's `V128` or `i128`.
-    high64: u64,
 
-    // Reads native types like `i32`, `f64` or `V128` from the raw value.
     pub fn readAs(self: RawVal, comptime T: type) T {
         if (T == RawVal) return self;
         if (T == i8) return @as(i8, @bitCast(@as(u8, @truncate(self.low64))));
@@ -33,10 +23,7 @@ pub const RawVal = struct {
         }
         if (T == f64) return @as(f64, @bitCast(self.low64));
 
-        if (T == vec.V128) {
-            const bits = (@as(u128, self.high64) << 64) | @as(u128, self.low64);
-            return vec.V128.fromU128(bits);
-        }
+        if (T == vec.V128) @panic("V128 not supported in no-simd build");
 
         if (T == bool) return self.low64 != 0;
 
@@ -47,16 +34,12 @@ pub const RawVal = struct {
         @compileError("unsupported readAs type");
     }
 
-    // Cast a primitive value that fits into 64-bits into a `RawVal`.
     pub fn fromBits64(low64: u64) RawVal {
-        return .{
-            .low64 = low64,
-            .high64 = 0,
-        };
+        return .{ .low64 = low64 };
     }
 
     pub fn from(value: anytype) RawVal {
-        var raw = RawVal{ .low64 = 0, .high64 = 0 };
+        var raw = RawVal{ .low64 = 0 };
         raw.writeAs(value);
         return raw;
     }
@@ -114,10 +97,7 @@ pub const RawVal = struct {
         }
 
         if (T == vec.V128) {
-            const bits = value.asU128();
-            self.low64 = @as(u64, @truncate(bits));
-            self.high64 = @as(u64, @truncate(bits >> 64));
-            return;
+            @panic("V128 not supported in no-simd build");
         }
 
         if (T == GcRef) {

@@ -392,11 +392,7 @@ pub fn handle_array_new_data(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispa
                 .I64 => RawVal.from(std.mem.readInt(i64, seg.data[byte_offset..][0..8], .little)),
                 .F32 => RawVal.from(std.mem.readInt(u32, seg.data[byte_offset..][0..4], .little)),
                 .F64 => RawVal.from(std.mem.readInt(u64, seg.data[byte_offset..][0..8], .little)),
-                .V128 => blk: {
-                    const low = std.mem.readInt(u64, seg.data[byte_offset..][0..8], .little);
-                    const high = std.mem.readInt(u64, seg.data[byte_offset + 8 ..][0..8], .little);
-                    break :blk RawVal{ .low64 = low, .high64 = high };
-                },
+                .V128 => @panic("V128 not supported in no-simd build"),
                 .Ref => RawVal.fromGcRef(GcRef.encode(std.mem.readInt(u32, seg.data[byte_offset..][0..4], .little))),
             },
         };
@@ -738,11 +734,7 @@ pub fn handle_array_init_data(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Disp
                 .I64 => RawVal.from(std.mem.readInt(i64, seg.data[byte_offset..][0..8], .little)),
                 .F32 => RawVal.from(std.mem.readInt(u32, seg.data[byte_offset..][0..4], .little)),
                 .F64 => RawVal.from(std.mem.readInt(u64, seg.data[byte_offset..][0..8], .little)),
-                .V128 => blk: {
-                    const low = std.mem.readInt(u64, seg.data[byte_offset..][0..8], .little);
-                    const high = std.mem.readInt(u64, seg.data[byte_offset + 8 ..][0..8], .little);
-                    break :blk RawVal{ .low64 = low, .high64 = high };
-                },
+                .V128 => @panic("V128 not supported in no-simd build"),
                 .Ref => RawVal.fromGcRef(GcRef.encode(std.mem.readInt(u32, seg.data[byte_offset..][0..4], .little))),
             },
         };
