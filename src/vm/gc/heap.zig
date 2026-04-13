@@ -8,6 +8,7 @@ const core = @import("core");
 
 const GcRef = core.GcRef;
 const RawVal = core.RawVal;
+const SimdVal = core.SimdVal;
 const StorageType = core.StorageType;
 const StructType = core.StructType;
 const ArrayType = core.ArrayType;
@@ -252,7 +253,7 @@ pub const GcHeap = struct {
         struct_type: StructType,
         layout: StructLayout,
         field_idx: u32,
-    ) RawVal {
+    ) SimdVal {
         const offset = HEADER_SIZE + layout.field_offsets[field_idx];
         const storage_type = struct_type.fields[field_idx].storage_type;
         return self.readStorageType(base, offset, storage_type);
@@ -267,7 +268,7 @@ pub const GcHeap = struct {
         struct_type: StructType,
         layout: StructLayout,
         field_idx: u32,
-        value: RawVal,
+        value: SimdVal,
     ) void {
         const offset = HEADER_SIZE + layout.field_offsets[field_idx];
         const storage_type = struct_type.fields[field_idx].storage_type;
@@ -281,7 +282,7 @@ pub const GcHeap = struct {
         array_type: ArrayType,
         layout: ArrayLayout,
         index: u32,
-    ) RawVal {
+    ) SimdVal {
         const elem_offset = layout.base_size + index * layout.elem_size;
         const storage_type = array_type.field.storage_type;
         return self.readStorageType(base, elem_offset, storage_type);
@@ -294,7 +295,7 @@ pub const GcHeap = struct {
         array_type: ArrayType,
         layout: ArrayLayout,
         index: u32,
-        value: RawVal,
+        value: SimdVal,
     ) void {
         const elem_offset = layout.base_size + index * layout.elem_size;
         const storage_type = array_type.field.storage_type;
@@ -314,39 +315,41 @@ pub const GcHeap = struct {
     }
 
     /// Reads a value from heap based on storage type.
-    fn readStorageType(self: Self, base: GcRef, offset: u32, storage_type: StorageType) RawVal {
+    /// Returns a SimdVal; for non-V128 types the value is in the low 8 bytes.
+    fn readStorageType(self: Self, base: GcRef, offset: u32, storage_type: StorageType) SimdVal {
         const bytes = self.getBytesAt(base, offset);
         return switch (storage_type) {
             .valtype => |v| switch (v) {
-                .I32 => RawVal.from(std.mem.readInt(i32, bytes[0..4], .little)),
-                .I64 => RawVal.from(std.mem.readInt(i64, bytes[0..8], .little)),
-                .F32 => RawVal.from(std.mem.readInt(u32, bytes[0..4], .little)),
-                .F64 => RawVal.from(std.mem.readInt(u64, bytes[0..8], .little)),
+                .I32 => SimdVal.fromScalar(RawVal.from(std.mem.readInt(i32, bytes[0..4], .little))),
+                .I64 => SimdVal.fromScalar(RawVal.from(std.mem.readInt(i64, bytes[0..8], .little))),
+                .F32 => SimdVal.fromScalar(RawVal.from(std.mem.readInt(u32, bytes[0..4], .little))),
+                .F64 => SimdVal.fromScalar(RawVal.from(std.mem.readInt(u64, bytes[0..8], .little))),
                 .V128 => blk: {
-                    const low = std.mem.readInt(u64, bytes[0..8], .little);
-                    const high = std.mem.readInt(u64, bytes[8..16], .little);
-                    break :blk RawVal{ .low64 = low, .high64 = high };
+                    var sv: SimdVal = undefined;
+                    @memcpy(&sv.bytes, bytes[0..16]);
+                    break :blk sv;
                 },
-                .Ref => RawVal.fromGcRef(GcRef.encode(std.mem.readInt(u32, bytes[0..4], .little))),
+                .Ref => SimdVal.fromScalar(RawVal.fromGcRef(GcRef.encode(std.mem.readInt(u32, bytes[0..4], .little)))),
             },
             .packed_type => |p| switch (p) {
-                .I8 => RawVal.from(@as(i32, @as(i8, @bitCast(bytes[0])))),
-                .I16 => RawVal.from(@as(i32, @as(i16, @bitCast(std.mem.readInt(u16, bytes[0..2], .little))))),
+                .I8 => SimdVal.fromScalar(RawVal.from(@as(i32, @as(i8, @bitCast(bytes[0]))))),
+                .I16 => SimdVal.fromScalar(RawVal.from(@as(i32, @as(i16, @bitCast(std.mem.readInt(u16, bytes[0..2], .little)))))),
             },
         };
     }
 
     /// Reads a value from heap based on storage type, zero-extending packed types.
     /// Used by struct.get_u and array.get_u instructions.
-    fn readStorageTypeUnsigned(self: Self, base: GcRef, offset: u32, storage_type: StorageType) RawVal {
+    /// Returns a SimdVal; for non-V128 types the value is in the low 8 bytes.
+    fn readStorageTypeUnsigned(self: Self, base: GcRef, offset: u32, storage_type: StorageType) SimdVal {
         const bytes = self.getBytesAt(base, offset);
         return switch (storage_type) {
             // Non-packed types: same as signed read (zero-extension doesn't apply).
             .valtype => self.readStorageType(base, offset, storage_type),
             // Packed types: zero-extend (treat as unsigned u8/u16).
             .packed_type => |p| switch (p) {
-                .I8 => RawVal.from(@as(i32, @as(u8, bytes[0]))),
-                .I16 => RawVal.from(@as(i32, @as(u16, std.mem.readInt(u16, bytes[0..2], .little)))),
+                .I8 => SimdVal.fromScalar(RawVal.from(@as(i32, @as(u8, bytes[0])))),
+                .I16 => SimdVal.fromScalar(RawVal.from(@as(i32, @as(u16, std.mem.readInt(u16, bytes[0..2], .little))))),
             },
         };
     }
@@ -358,7 +361,7 @@ pub const GcHeap = struct {
         struct_type: StructType,
         layout: StructLayout,
         field_idx: u32,
-    ) RawVal {
+    ) SimdVal {
         const offset = HEADER_SIZE + layout.field_offsets[field_idx];
         const storage_type = struct_type.fields[field_idx].storage_type;
         return self.readStorageTypeUnsigned(base, offset, storage_type);
@@ -371,30 +374,28 @@ pub const GcHeap = struct {
         array_type: ArrayType,
         layout: ArrayLayout,
         index: u32,
-    ) RawVal {
+    ) SimdVal {
         const elem_offset = layout.base_size + index * layout.elem_size;
         const storage_type = array_type.field.storage_type;
         return self.readStorageTypeUnsigned(base, elem_offset, storage_type);
     }
 
     /// Writes a value to heap based on storage type.
-    fn writeStorageType(self: Self, base: GcRef, offset: u32, storage_type: StorageType, value: RawVal) void {
+    fn writeStorageType(self: Self, base: GcRef, offset: u32, storage_type: StorageType, value: SimdVal) void {
         const bytes = self.getBytesAt(base, offset);
+        const scalar = value.toScalar();
         switch (storage_type) {
             .valtype => |v| switch (v) {
-                .I32 => std.mem.writeInt(i32, bytes[0..4], value.readAs(i32), .little),
-                .I64 => std.mem.writeInt(i64, bytes[0..8], value.readAs(i64), .little),
-                .F32 => std.mem.writeInt(u32, bytes[0..4], value.readAs(u32), .little),
-                .F64 => std.mem.writeInt(u64, bytes[0..8], value.readAs(u64), .little),
-                .V128 => {
-                    std.mem.writeInt(u64, bytes[0..8], value.low64, .little);
-                    std.mem.writeInt(u64, bytes[8..16], value.high64, .little);
-                },
-                .Ref => std.mem.writeInt(u32, bytes[0..4], value.readAsGcRef().decode(), .little),
+                .I32 => std.mem.writeInt(i32, bytes[0..4], scalar.readAs(i32), .little),
+                .I64 => std.mem.writeInt(i64, bytes[0..8], scalar.readAs(i64), .little),
+                .F32 => std.mem.writeInt(u32, bytes[0..4], scalar.readAs(u32), .little),
+                .F64 => std.mem.writeInt(u64, bytes[0..8], scalar.readAs(u64), .little),
+                .V128 => @memcpy(bytes[0..16], &value.bytes),
+                .Ref => std.mem.writeInt(u32, bytes[0..4], scalar.readAsGcRef().decode(), .little),
             },
             .packed_type => |p| switch (p) {
-                .I8 => bytes[0] = @truncate(@as(u32, @bitCast(value.readAs(i32)))),
-                .I16 => std.mem.writeInt(u16, bytes[0..2], @truncate(@as(u32, @bitCast(value.readAs(i32)))), .little),
+                .I8 => bytes[0] = @truncate(@as(u32, @bitCast(scalar.readAs(i32)))),
+                .I16 => std.mem.writeInt(u16, bytes[0..2], @truncate(@as(u32, @bitCast(scalar.readAs(i32)))), .little),
             },
         }
     }
@@ -508,7 +509,6 @@ pub const GcHeap = struct {
         for (args, 0..) |val, i| {
             const off = EXCEPTION_ARGS_OFFSET + @as(u32, @intCast(i)) * @sizeOf(RawVal);
             std.mem.writeInt(u64, self.bytes[base + off ..][0..8], val.low64, .little);
-            std.mem.writeInt(u64, self.bytes[base + off + 8 ..][0..8], val.high64, .little);
         }
 
         return ref;
@@ -530,8 +530,7 @@ pub const GcHeap = struct {
         const base = ref.asHeapIndex().?;
         const off = EXCEPTION_ARGS_OFFSET + i * @sizeOf(RawVal);
         const low = std.mem.readInt(u64, self.bytes[base + off ..][0..8], .little);
-        const high = std.mem.readInt(u64, self.bytes[base + off + 8 ..][0..8], .little);
-        return .{ .low64 = low, .high64 = high };
+        return .{ .low64 = low };
     }
 
     /// GC entry point - performs mark-and-sweep collection.

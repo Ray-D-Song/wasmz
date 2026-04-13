@@ -889,6 +889,18 @@ pub const Lower = struct {
         return slot;
     }
 
+    /// Allocates two consecutive slots for a V128 value.
+    /// Returns the index of the first (low) slot; the caller uses slot and slot+1.
+    /// Never reuses free-list entries because those are not guaranteed to be consecutive.
+    pub fn alloc_simd_slot(self: *Lower) Slot {
+        const slot = self.next_slot;
+        self.next_slot += 2;
+        if (self.compiled.slots_len < self.next_slot) {
+            self.compiled.slots_len = self.next_slot;
+        }
+        return slot;
+    }
+
     pub fn emit(self: *Lower, op: Op) !void {
         try self.compiled.ops.append(self.allocator, op);
     }
@@ -1094,7 +1106,13 @@ pub const Lower = struct {
 
     fn lower_simd_unary(self: *Lower, opcode: SimdOpcode) !void {
         const src = try self.pop_slot();
-        const dst = self.alloc_slot();
+        // Splat: scalar src → V128 dst (two slots)
+        // Scalar-result (any_true/all_true/bitmask): V128 src → scalar dst (one slot)
+        // All other unary: V128 src → V128 dst (two slots)
+        const dst = if (!simd.isVectorResultOpcode(opcode))
+            self.alloc_slot() // scalar result
+        else
+            self.alloc_simd_slot(); // V128 result
         try self.emit(.{ .simd_unary = .{ .dst = dst, .opcode = opcode, .src = src } });
         try self.stack.push(self.allocator, dst);
     }
@@ -1102,7 +1120,7 @@ pub const Lower = struct {
     fn lower_simd_binary(self: *Lower, opcode: SimdOpcode) !void {
         const rhs = try self.pop_slot();
         const lhs = try self.pop_slot();
-        const dst = self.alloc_slot();
+        const dst = self.alloc_simd_slot();
         try self.emit(.{ .simd_binary = .{ .dst = dst, .opcode = opcode, .lhs = lhs, .rhs = rhs } });
         try self.stack.push(self.allocator, dst);
     }
@@ -1111,7 +1129,7 @@ pub const Lower = struct {
         const third = try self.pop_slot();
         const second = try self.pop_slot();
         const first = try self.pop_slot();
-        const dst = self.alloc_slot();
+        const dst = self.alloc_simd_slot();
         try self.emit(.{ .simd_ternary = .{
             .dst = dst,
             .opcode = opcode,
@@ -1625,7 +1643,7 @@ pub const Lower = struct {
                 try self.stack.push(self.allocator, dst);
             },
             .v128_const => |value| {
-                const dst = self.alloc_slot();
+                const dst = self.alloc_simd_slot();
                 try self.emit(.{ .const_v128 = .{ .dst = dst, .value = value } });
                 try self.stack.push(self.allocator, dst);
             },
@@ -1813,20 +1831,20 @@ pub const Lower = struct {
             .simd_compare => |opcode| {
                 const rhs = try self.pop_slot();
                 const lhs = try self.pop_slot();
-                const dst = self.alloc_slot();
+                const dst = self.alloc_simd_slot();
                 try self.emit(.{ .simd_compare = .{ .dst = dst, .opcode = opcode, .lhs = lhs, .rhs = rhs } });
                 try self.stack.push(self.allocator, dst);
             },
             .simd_shift_scalar => |opcode| {
                 const rhs = try self.pop_slot();
                 const lhs = try self.pop_slot();
-                const dst = self.alloc_slot();
+                const dst = self.alloc_simd_slot();
                 try self.emit(.{ .simd_shift_scalar = .{ .dst = dst, .opcode = opcode, .lhs = lhs, .rhs = rhs } });
                 try self.stack.push(self.allocator, dst);
             },
             .simd_extract_lane => |inst| {
                 const src = try self.pop_slot();
-                const dst = self.alloc_slot();
+                const dst = self.alloc_slot(); // scalar result
                 try self.emit(.{ .simd_extract_lane = .{
                     .dst = dst,
                     .opcode = inst.opcode,
@@ -1838,7 +1856,7 @@ pub const Lower = struct {
             .simd_replace_lane => |inst| {
                 const src_lane = try self.pop_slot();
                 const src_vec = try self.pop_slot();
-                const dst = self.alloc_slot();
+                const dst = self.alloc_simd_slot();
                 try self.emit(.{ .simd_replace_lane = .{
                     .dst = dst,
                     .opcode = inst.opcode,
@@ -1851,14 +1869,14 @@ pub const Lower = struct {
             .simd_shuffle => |lanes| {
                 const rhs = try self.pop_slot();
                 const lhs = try self.pop_slot();
-                const dst = self.alloc_slot();
+                const dst = self.alloc_simd_slot();
                 try self.emit(.{ .simd_shuffle = .{ .dst = dst, .lhs = lhs, .rhs = rhs, .lanes = lanes } });
                 try self.stack.push(self.allocator, dst);
             },
             .simd_load => |inst| {
                 const src_vec: ?Slot = if (simd.isLaneLoadOpcode(inst.opcode)) try self.pop_slot() else null;
                 const addr = try self.pop_slot();
-                const dst = self.alloc_slot();
+                const dst = self.alloc_simd_slot();
                 try self.emit(.{ .simd_load = .{
                     .dst = dst,
                     .opcode = inst.opcode,

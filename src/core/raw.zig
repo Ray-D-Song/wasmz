@@ -1,20 +1,18 @@
+const std = @import("std");
 const vec = @import("./value/vec.zig");
 const GcRef = @import("./gc_ref.zig").GcRef;
 
+/// A single 64-bit value slot used for all non-SIMD Wasm value types:
+/// i32, i64, f32, f64, funcref/externref (GcRef).
+///
+/// Size: 8 bytes.  The value stack (`val_stack`) is an array of `RawVal`.
+/// V128 values use two consecutive `RawVal` slots — access them via `SimdVal`.
 pub const RawVal = struct {
-    // The low 64-bits of an [`RawVal`].
-    //
-    // The low 64-bits are used to encode and decode all types that
-    // are convertible from and to an [`RawVal`] that fit into
+    // The 64-bits used to encode and decode all types that fit into
     // 64-bits such as `i32`, `i64`, `f32` and `f64`.
     low64: u64,
-    // The high 64-bits of an [`RawVal`].
-    //
-    // This is only used to encode or decode types which do not fit
-    // into the lower 64-bits part such as Wasm's `V128` or `i128`.
-    high64: u64,
 
-    // Reads native types like `i32`, `f64` or `V128` from the raw value.
+    // Reads native types like `i32`, `f64` from the raw value.
     pub fn readAs(self: RawVal, comptime T: type) T {
         if (T == RawVal) return self;
         if (T == i8) return @as(i8, @bitCast(@as(u8, @truncate(self.low64))));
@@ -33,10 +31,7 @@ pub const RawVal = struct {
         }
         if (T == f64) return @as(f64, @bitCast(self.low64));
 
-        if (T == vec.V128) {
-            const bits = (@as(u128, self.high64) << 64) | @as(u128, self.low64);
-            return vec.V128.fromU128(bits);
-        }
+        if (T == vec.V128) @compileError("V128 cannot be stored in RawVal; use SimdVal instead");
 
         if (T == bool) return self.low64 != 0;
 
@@ -49,14 +44,11 @@ pub const RawVal = struct {
 
     // Cast a primitive value that fits into 64-bits into a `RawVal`.
     pub fn fromBits64(low64: u64) RawVal {
-        return .{
-            .low64 = low64,
-            .high64 = 0,
-        };
+        return .{ .low64 = low64 };
     }
 
     pub fn from(value: anytype) RawVal {
-        var raw = RawVal{ .low64 = 0, .high64 = 0 };
+        var raw = RawVal{ .low64 = 0 };
         raw.writeAs(value);
         return raw;
     }
@@ -114,10 +106,7 @@ pub const RawVal = struct {
         }
 
         if (T == vec.V128) {
-            const bits = value.asU128();
-            self.low64 = @as(u64, @truncate(bits));
-            self.high64 = @as(u64, @truncate(bits >> 64));
-            return;
+            @compileError("V128 cannot be stored in RawVal; use SimdVal instead");
         }
 
         if (T == GcRef) {
@@ -138,5 +127,66 @@ pub const RawVal = struct {
 
     pub fn readAsGcRef(self: RawVal) GcRef {
         return GcRef.encode(@as(u32, @truncate(self.low64)));
+    }
+};
+
+/// A 128-bit SIMD value slot for Wasm V128.
+///
+/// Size: 16 bytes, align: 8.
+/// In the value stack a V128 occupies two consecutive `RawVal` slots.
+/// SIMD handlers obtain a `*SimdVal` by pointer-casting the first slot:
+///   `@as(*SimdVal, @ptrCast(@alignCast(&slots[ops.dst])))`
+///
+/// `@sizeOf(SimdVal) == 2 * @sizeOf(RawVal)` is asserted at compile time.
+pub const SimdVal = extern struct {
+    bytes: [16]u8,
+
+    comptime {
+        // Must exactly cover two consecutive RawVal slots.
+        if (@sizeOf(SimdVal) != 2 * @sizeOf(RawVal)) @compileError("SimdVal size mismatch");
+        if (@alignOf(SimdVal) > @alignOf(RawVal)) @compileError("SimdVal alignment exceeds RawVal alignment");
+    }
+
+    pub fn fromV128(v: vec.V128) SimdVal {
+        return .{ .bytes = v.bytes };
+    }
+
+    pub fn toV128(self: SimdVal) vec.V128 {
+        return .{ .bytes = self.bytes };
+    }
+
+    pub fn fromU128(value: u128) SimdVal {
+        return fromV128(vec.V128.fromU128(value));
+    }
+
+    pub fn asU128(self: SimdVal) u128 {
+        return self.toV128().asU128();
+    }
+
+    /// Read from a pair of consecutive RawVal slots (slot[0] and slot[1]).
+    pub fn fromSlots(lo: RawVal, hi: RawVal) SimdVal {
+        var s: SimdVal = undefined;
+        @memcpy(s.bytes[0..8], @as(*const [8]u8, @ptrCast(&lo.low64)));
+        @memcpy(s.bytes[8..16], @as(*const [8]u8, @ptrCast(&hi.low64)));
+        return s;
+    }
+
+    /// Write this SimdVal into a pair of consecutive RawVal slots.
+    pub fn toSlots(self: SimdVal, lo: *RawVal, hi: *RawVal) void {
+        lo.low64 = @as(u64, @bitCast(self.bytes[0..8].*));
+        hi.low64 = @as(u64, @bitCast(self.bytes[8..16].*));
+    }
+
+    /// Wrap a scalar RawVal as a SimdVal (high 8 bytes zeroed).
+    /// Used for splat sources and bitmask/any_true scalar results.
+    pub fn fromScalar(r: RawVal) SimdVal {
+        var s: SimdVal = std.mem.zeroes(SimdVal);
+        @memcpy(s.bytes[0..8], @as(*const [8]u8, @ptrCast(&r.low64)));
+        return s;
+    }
+
+    /// Extract the low 8 bytes as a scalar RawVal.
+    pub fn toScalar(self: SimdVal) RawVal {
+        return .{ .low64 = @as(u64, @bitCast(self.bytes[0..8].*)) };
     }
 };
