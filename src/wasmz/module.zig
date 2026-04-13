@@ -423,30 +423,20 @@ pub const Module = struct {
         var tags_list: std.ArrayListUnmanaged(TagDef) = .empty;
         defer tags_list.deinit(allocator);
 
+        // Collect function_info entries during the main loop for deferred
+        // pending-slot creation (avoids a separate pass over all payloads).
+        var function_infos: std.ArrayListUnmanaged(payload_mod.FunctionInformation) = .empty;
+        defer function_infos.deinit(arena.allocator());
+
         // EH mode detection: scan operator payloads for EH-specific opcodes.
         // Precedence: legacy indicators (delegate, rethrow-with-depth) override new;
         // new indicators (try_table, throw_ref, catch_ref, catch_all_ref) set new;
         // If no EH opcodes are seen, mode stays .none.
         var detected_eh_mode: EHMode = .none;
 
-        // Pre-scan: collect tag definitions in Wasm tag index order:
-        //   [imported tags (Import Section)]  then  [locally defined tags (Tag Section)]
-        // Both sections may come before or after the Code Section, so we gather
-        // everything here before the main compile loop.
-        for (payloads) |pre_payload| {
-            switch (pre_payload) {
-                .import_entry => |entry| {
-                    if (entry.kind == .tag) {
-                        const tt = if (entry.typ) |t| t.tag else return error.InvalidTagImport;
-                        try tags_list.append(allocator, .{ .type_index = tt.type_index });
-                    }
-                },
-                .tag_type => |tt| {
-                    try tags_list.append(allocator, .{ .type_index = tt.type_index });
-                },
-                else => {},
-            }
-        }
+        // All metadata collection is done in a single pass over payloads.
+        // Tags from both Import Section and Tag Section are collected inline;
+        // Wasm spec guarantees both appear before the Code Section.
 
         for (payloads) |payload| {
             switch (payload) {
@@ -532,6 +522,9 @@ pub const Module = struct {
                             .val_type = val_type,
                             .mutability = mutability,
                         });
+                    } else if (entry.kind == .tag) {
+                        const tt = if (entry.typ) |t| t.tag else return error.InvalidTagImport;
+                        try tags_list.append(allocator, .{ .type_index = tt.type_index });
                     }
                 },
                 .function_entry => |entry| {
@@ -643,32 +636,26 @@ pub const Module = struct {
                     };
                     try data_segments_list.append(allocator, compiled);
                 },
-                // Tag section: handled in pre-scan above; skip here to avoid duplicates.
-                .tag_type => {},
+                // Tag section: collect tag definitions inline.
+                .tag_type => |tt| {
+                    try tags_list.append(allocator, .{ .type_index = tt.type_index });
+                },
                 // EH mode detection: scan function bodies for EH-specific opcodes.
+                // Skipped entirely when no tags are defined (no EH possible) or
+                // when --legacy-exceptions forces legacy mode.
                 .function_info => |info| {
-                    if (detected_eh_mode != .legacy) {
-                        var cursor: usize = 0;
-                        while (cursor < info.body.len) {
-                            const parsed_op = parser_mod.readNextOperator(arena.allocator(), info.body[cursor..]) catch break;
-                            cursor += parsed_op.consumed;
-                            switch (parsed_op.info.code) {
+                    if (tags_list.items.len > 0 and detected_eh_mode != .legacy and !engine.config().legacy_exceptions) {
+                        var fbp = parser_mod.FunctionBodyParser.init(arena.allocator(), info.body);
+                        while (!fbp.done()) {
+                            const op_info = fbp.next() catch break;
+                            switch (op_info.code) {
                                 // Legacy-only opcodes → force legacy mode
-                                .delegate, .try_ => {
-                                    detected_eh_mode = .legacy;
-                                    break;
-                                },
-                                .rethrow => {
+                                .delegate, .try_, .rethrow => {
                                     detected_eh_mode = .legacy;
                                     break;
                                 },
                                 // New-proposal opcodes → set new (unless already legacy)
-                                .try_table, .throw_ref => {
-                                    if (detected_eh_mode == .none) {
-                                        detected_eh_mode = .new;
-                                    }
-                                },
-                                .throw => {
+                                .try_table, .throw_ref, .throw => {
                                     if (detected_eh_mode == .none) {
                                         detected_eh_mode = .new;
                                     }
@@ -677,6 +664,8 @@ pub const Module = struct {
                             }
                         }
                     }
+                    // Collect for deferred pending-slot creation.
+                    try function_infos.append(arena.allocator(), info);
                 },
                 else => {},
             }
@@ -710,43 +699,38 @@ pub const Module = struct {
             try import_type_indices_list.append(allocator, def.type_index);
         }
 
-        var local_function_index: usize = 0;
-        for (payloads) |payload| {
-            switch (payload) {
-                .function_info => |info| {
-                    if (local_function_index >= function_type_indices.items.len) {
-                        return error.MismatchedFunctionCount;
-                    }
-
-                    const type_index = function_type_indices.items[local_function_index];
-                    // Validate against the unified type index space (composite_types_list).
-                    if (type_index >= composite_types_list.items.len) {
-                        return error.InvalidFunctionTypeIndex;
-                    }
-                    const func_type = switch (composite_types_list.items[type_index]) {
-                        .func_type => |ft| ft,
-                        else => return error.InvalidFunctionTypeIndex,
-                    };
-
-                    const reserved_slots = try compute_reserved_slots(func_type, info);
-                    const params_count = func_type.params().len;
-                    const locals_count: u16 = @intCast(reserved_slots - params_count);
-                    const function_index = imported_function_count + local_function_index;
-
-                    // Lazy compilation: store the raw bytecode and pre-computed metadata.
-                    // The actual IR compilation + encoding happens on first call.
-                    functions[function_index] = .{ .pending = .{
-                        .body = info.body,
-                        .type_index = type_index,
-                        .reserved_slots = reserved_slots,
-                        .locals_count = locals_count,
-                    } };
-                    local_function_index += 1;
-                },
-                else => {},
+        // Build pending function slots from the function_infos collected in the
+        // main loop above — no extra pass over all payloads needed.
+        for (function_infos.items, 0..) |info, local_func_idx| {
+            if (local_func_idx >= function_type_indices.items.len) {
+                return error.MismatchedFunctionCount;
             }
+
+            const type_index = function_type_indices.items[local_func_idx];
+            // Validate against the unified type index space (composite_types_list).
+            if (type_index >= composite_types_list.items.len) {
+                return error.InvalidFunctionTypeIndex;
+            }
+            const func_type = switch (composite_types_list.items[type_index]) {
+                .func_type => |ft| ft,
+                else => return error.InvalidFunctionTypeIndex,
+            };
+
+            const reserved_slots = try compute_reserved_slots(func_type, info);
+            const params_count = func_type.params().len;
+            const locals_count: u16 = @intCast(reserved_slots - params_count);
+            const function_index = imported_function_count + local_func_idx;
+
+            // Lazy compilation: store the raw bytecode and pre-computed metadata.
+            // The actual IR compilation + encoding happens on first call.
+            functions[function_index] = .{ .pending = .{
+                .body = info.body,
+                .type_index = type_index,
+                .reserved_slots = reserved_slots,
+                .locals_count = locals_count,
+            } };
         }
-        if (local_function_index != function_type_indices.items.len) {
+        if (function_infos.items.len != function_type_indices.items.len) {
             return error.MismatchedFunctionCount;
         }
 
@@ -831,7 +815,7 @@ pub const Module = struct {
             }
         }
 
-        return .{
+        var module = Module{
             .allocator = allocator,
             .functions = functions,
             .wasm_bytes = bytes,
@@ -853,6 +837,13 @@ pub const Module = struct {
             .config = .{ .eh_mode = detected_eh_mode },
             .translator = null,
         };
+
+        // Eagerly compile all local functions if configured.
+        if (engine.config().eager_compile) {
+            try module.compileAll(engine);
+        }
+
+        return module;
     }
 
     /// Compile and wrap the module in an `ArcModule`.
@@ -944,6 +935,20 @@ pub const Module = struct {
         );
         profiling.call_prof.ns_encode_ir += encode_timer.read();
         slot.* = .{ .encoded = encoded };
+    }
+
+    /// Eagerly compile all pending local functions.
+    ///
+    /// This avoids lazy-compilation overhead at first call by compiling
+    /// every `.pending` function slot up front. Imports (`.import`) and
+    /// already-compiled (`.encoded`) slots are skipped.
+    pub fn compileAll(self: *Module, engine: Engine) ModuleCompileError!void {
+        for (self.functions, 0..) |*slot, i| {
+            switch (slot.*) {
+                .pending => try self.compileFunctionAt(engine, @intCast(i)),
+                .encoded, .import => {},
+            }
+        }
     }
 
     pub fn deinit(self: *Module) void {

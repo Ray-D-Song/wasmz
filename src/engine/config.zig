@@ -7,4 +7,8 @@ pub const Config = struct {
     /// Maximum total memory allowed (linear + GC heap + shared), in bytes.
     /// null means unlimited.
     mem_limit_bytes: ?u64 = null,
+    /// When true, all local functions are compiled up front during Module.compile()
+    /// instead of lazily on first call.  This trades higher startup cost for
+    /// zero lazy-compilation overhead at runtime.
+    eager_compile: bool = false,
 };
