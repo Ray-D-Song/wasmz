@@ -8,6 +8,7 @@ const dispatch = @import("dispatch.zig");
 const core = @import("core");
 const store_mod = @import("../wasmz/store.zig");
 const host_mod = @import("../wasmz/host.zig");
+const module_mod = @import("../wasmz/module.zig");
 
 const Allocator = std.mem.Allocator;
 const RawVal = dispatch.RawVal;
@@ -17,6 +18,7 @@ const DispatchState = dispatch.DispatchState;
 const ExecEnv = dispatch.ExecEnv;
 const CallFrame = dispatch.CallFrame;
 const EncodedFunction = ir.EncodedFunction;
+const FunctionSlot = ir.FunctionSlot;
 const Store = store_mod.Store;
 const HostFunc = host_mod.HostFunc;
 const HostContext = host_mod.HostContext;
@@ -38,6 +40,24 @@ inline fn stride(comptime OpsT: type) usize {
 
 inline fn trapReturn(frame: *DispatchState, code: core.TrapCode) void {
     frame.result = .{ .trap = Trap.fromTrapCode(code) };
+}
+
+/// Ensure a local function slot is compiled, triggering lazy compilation if needed.
+/// Returns a pointer to the EncodedFunction on success, or writes a trap and returns null.
+/// `func_idx` is in the full Wasm function index space (including imports).
+inline fn ensureLocalCompiled(func_idx: u32, env: *const ExecEnv, frame: *DispatchState) ?*const EncodedFunction {
+    const slot = &env.functions[func_idx];
+    switch (slot.*) {
+        .encoded => |*ef| return ef,
+        .pending => {
+            env.module.compileFunctionAt(env.engine, func_idx) catch {
+                trapReturn(frame, .OutOfMemory);
+                return null;
+            };
+            return &env.functions[func_idx].encoded;
+        },
+        .import => unreachable, // imports are dispatched via host_funcs
+    }
 }
 
 /// Allocate callee slots from the value stack.
@@ -183,7 +203,7 @@ pub fn handle_call(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, 
         t.lap(&profiling.call_prof.ns_read_ops);
 
         // ── Phase 1: allocate + zero callee slots ──────────────────────────────
-        const callee = &env.functions[ops.func_idx - env.host_funcs.len];
+        const callee = ensureLocalCompiled(ops.func_idx, env, frame) orelse return;
         const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
         const sp_base = frame.val_sp;
         const callee_slots = allocCalleeSlots(frame, callee_slots_len, arg_slots.len, callee.locals_count) orelse return;
@@ -277,7 +297,7 @@ pub fn handle_call_indirect(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispat
         }
         dispatch.next(ip, stride(encode.OpsCallIndirect), slots, frame, env);
     } else {
-        const callee = &env.functions[callee_func_idx - env.host_funcs.len];
+        const callee = ensureLocalCompiled(callee_func_idx, env, frame) orelse return;
         const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
 
         const sp_base = frame.val_sp;
@@ -349,7 +369,7 @@ pub fn handle_return_call(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispatch
         dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env);
     } else {
         // Tail call to local function: replace current frame
-        const callee = &env.functions[ops.func_idx - env.host_funcs.len];
+        const callee = ensureLocalCompiled(ops.func_idx, env, frame) orelse return;
         const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
 
         // Allocate new slots before freeing old ones (copy args from old slots)
@@ -451,7 +471,7 @@ pub fn handle_return_call_indirect(ip: [*]align(8) u8, slots: [*]RawVal, frame: 
         const caller = frame.callStackAt(caller_idx);
         dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env);
     } else {
-        const callee = &env.functions[callee_func_idx - env.host_funcs.len];
+        const callee = ensureLocalCompiled(callee_func_idx, env, frame) orelse return;
         const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
 
         const old_sp_base = frame.callStackAt(frame_idx).slots_sp_base;
@@ -524,7 +544,7 @@ pub fn handle_call_ref(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchSta
         }
         dispatch.next(ip, stride(encode.OpsCallRef), slots, frame, env);
     } else {
-        const callee = &env.functions[callee_func_idx - env.host_funcs.len];
+        const callee = ensureLocalCompiled(callee_func_idx, env, frame) orelse return;
         const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
 
         const sp_base = frame.val_sp;
@@ -609,7 +629,7 @@ pub fn handle_return_call_ref(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Disp
         const caller = frame.callStackAt(caller_idx);
         dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env);
     } else {
-        const callee = &env.functions[callee_func_idx - env.host_funcs.len];
+        const callee = ensureLocalCompiled(callee_func_idx, env, frame) orelse return;
         const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
 
         const old_sp_base = frame.callStackAt(frame_idx).slots_sp_base;

@@ -36,6 +36,8 @@ const ExternalKind = payload_mod.ExternalKind;
 const OperatorInformation = payload_mod.OperatorInformation;
 const CompiledFunction = ir.CompiledFunction;
 const EncodedFunction = ir.EncodedFunction;
+const PendingFunction = ir.PendingFunction;
+pub const FunctionSlot = ir.FunctionSlot;
 const FuncType = func_type_mod.FuncType;
 const Mutability = global_mod.Mutability;
 const Global = core.Global;
@@ -186,7 +188,11 @@ pub const ModuleCompileError = Allocator.Error ||
 /// Compiled WebAssembly module, holding all data required for runtime execution.
 ///
 /// Field descriptions:
-///   - functions:        List of compiled functions, indexed according to the Wasm function index space (imported functions come first).
+///   - functions:        List of function slots indexed by Wasm function index space (imports first).
+///                       Each slot is `.import` for host imports, `.pending` for uncompiled locals,
+///                       or `.encoded` for compiled locals.  Slots are compiled on first call (lazy).
+///   - wasm_bytes:       Borrowed slice of the original Wasm binary.  Must outlive the Module.
+///                       Used to re-access function bodies during lazy compilation.
 ///   - exports:          Mapping from export names to ExportEntry, currently only function exports are supported.
 ///   - globals:          List of global variables, each containing mutability and the initial value evaluated from constant expressions.
 ///   - memory:           Linear memory definition (optional), currently supports at most one memory segment.
@@ -202,7 +208,12 @@ pub const ModuleCompileError = Allocator.Error ||
 ///   - array_layouts:    Precomputed memory layouts for array types (index matches composite_types).
 pub const Module = struct {
     allocator: Allocator,
-    functions: []EncodedFunction,
+    /// Function slots in Wasm function index space (imports first, then locals).
+    /// Slot variants: `.import` (host import), `.pending` (uncompiled), `.encoded` (compiled).
+    functions: []FunctionSlot,
+    /// Borrowed slice of the original Wasm binary bytes.
+    /// Must remain valid for the entire lifetime of the Module.
+    wasm_bytes: []const u8,
     exports: std.StringHashMapUnmanaged(ExportEntry),
     globals: []GlobalInit,
     memory: ?MemoryDef,
@@ -624,16 +635,17 @@ pub const Module = struct {
 
         const imported_function_count = imported_funcs_list.items.len;
         const function_count = imported_function_count + function_type_indices.items.len;
-        const functions = try allocator.alloc(EncodedFunction, function_count);
+        const functions = try allocator.alloc(FunctionSlot, function_count);
         errdefer {
             deinit_functions(allocator, functions);
             allocator.free(functions);
         }
-        // Initialize all slots to empty (imported functions are never executed via M3;
-        // their slots remain empty as host dispatch goes through host_funcs[]).
-        // code.len == 0 marks an import slot so deinit_functions skips it.
-        for (functions) |*f| {
-            f.* = std.mem.zeroes(EncodedFunction);
+        // Initialize import slots; local function slots will be filled as `.pending` below.
+        for (functions[0..imported_function_count]) |*f| {
+            f.* = .import;
+        }
+        for (functions[imported_function_count..]) |*f| {
+            f.* = .import; // temporary; overwritten per-function below
         }
 
         // Build the import type index slice for FuncTypeResolver:
@@ -667,45 +679,14 @@ pub const Module = struct {
                     const locals_count: u16 = @intCast(reserved_slots - params_count);
                     const function_index = imported_function_count + local_function_index;
 
-                    // Build function type resolver for looking up callee signatures when translating call instructions.
-                    // import_type_indices allows the resolver to return signatures for imported functions too.
-                    const resolver = FuncTypeResolver{
-                        .composite_types = composite_types_list.items,
-                        .type_indices = function_type_indices.items,
-                        .import_type_indices = import_type_indices_list.items,
-                        .import_count = imported_function_count,
-                    };
-
-                    functions[function_index] = blk: {
-                        var compiled = compileFunctionBody(
-                            allocator,
-                            reserved_slots,
-                            locals_count,
-                            func_type.results().len,
-                            info.body,
-                            engine.config().*,
-                            resolver,
-                            tags_list.items,
-                            detected_eh_mode,
-                        ) catch |err| {
-                            return err;
-                        };
-                        // encode() duplicates the auxiliary tables; we must free the
-                        // original CompiledFunction data regardless of success or failure.
-                        defer {
-                            compiled.ops.deinit(allocator);
-                            compiled.call_args.deinit(allocator);
-                            compiled.br_table_targets.deinit(allocator);
-                            compiled.catch_handler_tables.deinit(allocator);
-                        }
-                        break :blk encode_mod.encode(
-                            allocator,
-                            &compiled,
-                            &handler_table_mod.handler_table,
-                        ) catch |err| {
-                            return err;
-                        };
-                    };
+                    // Lazy compilation: store the raw bytecode and pre-computed metadata.
+                    // The actual IR compilation + encoding happens on first call.
+                    functions[function_index] = .{ .pending = .{
+                        .body = info.body,
+                        .type_index = type_index,
+                        .reserved_slots = reserved_slots,
+                        .locals_count = locals_count,
+                    } };
                     local_function_index += 1;
                 },
                 else => {},
@@ -799,6 +780,7 @@ pub const Module = struct {
         return .{
             .allocator = allocator,
             .functions = functions,
+            .wasm_bytes = bytes,
             .exports = exports,
             .globals = globals,
             .memory = memory,
@@ -828,6 +810,64 @@ pub const Module = struct {
         var m = try compile(engine, bytes);
         errdefer m.deinit();
         return ArcModule.init(engine.allocator(), m);
+    }
+
+    /// Lazily compile a single function by its Wasm function index.
+    ///
+    /// If the slot is already `.encoded` or `.import`, this is a no-op.
+    /// If the slot is `.pending`, the function body is compiled and the slot is
+    /// updated to `.encoded` in place.
+    ///
+    /// This is called on the first invocation of any local function, either from
+    /// `Instance.call()` (top-level export) or from `handlers_call` (call/call_indirect
+    /// inside the VM).
+    pub fn compileFunctionAt(self: *Module, engine: Engine, func_index: u32) ModuleCompileError!void {
+        const slot = &self.functions[func_index];
+        const pending = switch (slot.*) {
+            .encoded, .import => return, // already compiled or an import
+            .pending => |p| p,
+        };
+
+        const import_count = self.imported_funcs.len;
+
+        // Build the FuncTypeResolver from module-level metadata.
+        // The import_type_indices are stored in func_type_indices[0..import_count].
+        const resolver = FuncTypeResolver{
+            .composite_types = self.composite_types,
+            .type_indices = self.func_type_indices[import_count..],
+            .import_type_indices = self.func_type_indices[0..import_count],
+            .import_count = import_count,
+        };
+
+        const func_type = switch (self.composite_types[pending.type_index]) {
+            .func_type => |ft| ft,
+            else => return error.InvalidFunctionTypeIndex,
+        };
+
+        var compiled = try compileFunctionBody(
+            self.allocator,
+            pending.reserved_slots,
+            pending.locals_count,
+            func_type.results().len,
+            pending.body,
+            engine.config().*,
+            resolver,
+            self.tags,
+            self.config.eh_mode,
+        );
+        defer {
+            compiled.ops.deinit(self.allocator);
+            compiled.call_args.deinit(self.allocator);
+            compiled.br_table_targets.deinit(self.allocator);
+            compiled.catch_handler_tables.deinit(self.allocator);
+        }
+
+        const encoded = try encode_mod.encode(
+            self.allocator,
+            &compiled,
+            &handler_table_mod.handler_table,
+        );
+        slot.* = .{ .encoded = encoded };
     }
 
     pub fn deinit(self: *Module) void {
@@ -895,13 +935,13 @@ pub const Module = struct {
 
     // ── deinit helpers ───────────────────────────────────────────────────────────
 
-    /// Free the encoded bytecode and auxiliary tables held by each EncodedFunction.
-    /// Imported function slots have empty (zero-length) code and are skipped.
-    fn deinit_functions(allocator: Allocator, functions: []EncodedFunction) void {
-        for (functions) |*function| {
-            // Imported functions have zero-length code (never heap-allocated); skip them.
-            if (function.code.len > 0) {
-                function.deinit(allocator);
+    /// Free heap memory held by each FunctionSlot.
+    /// Only `.encoded` variants own memory; `.import` and `.pending` do not.
+    fn deinit_functions(allocator: Allocator, functions: []FunctionSlot) void {
+        for (functions) |*slot| {
+            switch (slot.*) {
+                .encoded => |*ef| ef.deinit(allocator),
+                .import, .pending => {},
             }
         }
     }

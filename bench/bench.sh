@@ -5,9 +5,11 @@ set -euo pipefail
 BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$BENCH_DIR")"
 
+PROJECTS_DIR="$BENCH_DIR/projects"
 WASMZ="$REPO_DIR/zig-out/bin/wasmz"
-WASM3="$BENCH_DIR/wasm3"
-WASMI="$(which wasmi_cli)"
+WASM3="$PROJECTS_DIR/wasm3/build/wasm3"
+WASMI="$PROJECTS_DIR/wasmi/target/release/wasmi"
+BUILD_SCRIPT="$BENCH_DIR/build.sh"
 
 FIB_WASM="$BENCH_DIR/workloads/fib30.wasm"
 QJS_WASM="$REPO_DIR/tests/quickjs/package/qjs-wasi.wasm"
@@ -60,13 +62,21 @@ for r in data['results']:
 
 # ─── preflight ────────────────────────────────────────────────────────────────
 info "Checking prerequisites..."
-[[ -x "$WASMZ" ]]   || die "wasmz not found — run: make release"
-[[ -x "$WASM3" ]]   || die "wasm3 not found at $WASM3"
-[[ -n "$WASMI" ]]   || die "wasmi_cli not in PATH — run: cargo install wasmi_cli"
 command -v hyperfine >/dev/null || die "hyperfine not found — run: brew install hyperfine"
 [[ -f "$FIB_WASM" ]]     || die "fib.wasm not found"
 [[ -f "$QJS_WASM" ]]     || die "qjs-wasi.wasm not found"
 [[ -f "$ESBUILD_WASM" ]] || die "esbuild.wasm not found"
+
+need_build=""
+[[ -x "$WASMZ" ]] || need_build="wasmz"
+[[ -x "$WASM3" ]] || need_build="${need_build:+$need_build }wasm3"
+[[ -x "$WASMI" ]] || need_build="${need_build:+$need_build }wasmi"
+
+if [[ -n "$need_build" ]]; then
+    info "Missing binaries: $need_build"
+    info "Running build script..."
+    "$BUILD_SCRIPT" all
+fi
 
 mkdir -p "$HYPERFINE_DIR"
 
@@ -102,7 +112,7 @@ hyperfine --style none --warmup "$WARMUP" --runs "$RUNS" \
   --export-json "$HYPERFINE_DIR/quickjs.json" \
   --command-name "wasmz" "$WASMZ $QJS_WASM --args \"-e '$QJS_SCRIPT'\"" \
   --command-name "wasm3"  "$WASM3 $QJS_WASM -e '$QJS_SCRIPT'" \
-  --command-name "wasmi"  "$WASMI $QJS_WASM -- -e '$QJS_SCRIPT'"
+  --command-name "wasmi"  "$WASMI $QJS_WASM -e '$QJS_SCRIPT'"
 
 # ─── 4. esbuild bundling ──────────────────────────────────────────────────────
 info "Benchmarking esbuild [19MB WASM, JS bundler]..."
@@ -113,7 +123,7 @@ hyperfine --style none --warmup "$WARMUP" --runs "$RUNS" \
   --command-name "wasm3" \
     "sh -c '$WASM3 $ESBUILD_WASM --bundle --platform=node --sourcefile=source.js < $ESBUILD_SOURCE > /dev/null'" \
   --command-name "wasmi" \
-    "sh -c '$WASMI $ESBUILD_WASM -- --bundle --platform=node --sourcefile=source.js < $ESBUILD_SOURCE > /dev/null'"
+    "sh -c '$WASMI $ESBUILD_WASM --bundle --platform=node --sourcefile=source.js < $ESBUILD_SOURCE > /dev/null'"
 
 # ─── 5. peak RSS ──────────────────────────────────────────────────────────────
 info "Measuring peak RSS for fib(30)..."
@@ -125,7 +135,7 @@ QJS_SCRIPT="function fib(n){return n<=1?n:fib(n-1)+fib(n-2)} print(fib(25))"
 info "Measuring peak RSS for QuickJS fib(25)..."
 RSS_QJS_WASMZ=$(measure_rss sh -c "\"$WASMZ\" \"$QJS_WASM\" --args \"-e 'function fib(n){return n<=1?n:fib(n-1)+fib(n-2)} print(fib(25))'\"")
 RSS_QJS_WASM3=$(measure_rss sh -c "\"$WASM3\" \"$QJS_WASM\" -e 'function fib(n){return n<=1?n:fib(n-1)+fib(n-2)} print(fib(25))'")
-RSS_QJS_WASMI=$(measure_rss sh -c "\"$WASMI\" \"$QJS_WASM\" -- -e 'function fib(n){return n<=1?n:fib(n-1)+fib(n-2)} print(fib(25))'")
+RSS_QJS_WASMI=$(measure_rss sh -c "\"$WASMI\" \"$QJS_WASM\" -e 'function fib(n){return n<=1?n:fib(n-1)+fib(n-2)} print(fib(25))'")
 
 info "Measuring peak RSS for esbuild..."
 RSS_ESBUILD_WASMZ=$(measure_rss sh -c \
@@ -133,7 +143,7 @@ RSS_ESBUILD_WASMZ=$(measure_rss sh -c \
 RSS_ESBUILD_WASM3=$(measure_rss sh -c \
   "\"$WASM3\" \"$ESBUILD_WASM\" --bundle --platform=node --sourcefile=source.js < \"$ESBUILD_SOURCE\" > /dev/null")
 RSS_ESBUILD_WASMI=$(measure_rss sh -c \
-  "\"$WASMI\" \"$ESBUILD_WASM\" -- --bundle --platform=node --sourcefile=source.js < \"$ESBUILD_SOURCE\" > /dev/null")
+  "\"$WASMI\" \"$ESBUILD_WASM\" --bundle --platform=node --sourcefile=source.js < \"$ESBUILD_SOURCE\" > /dev/null")
 
 # ─── 6. parse medians ─────────────────────────────────────────────────────────
 MED_FIB_WASMZ=$(parse_median_ms "$HYPERFINE_DIR/fib.json" "wasmz")

@@ -32,4 +32,4 @@ bench/results/*.trace
 bench/results/hyperfine/
 
 # Binary file for benchmarking and testing
-wasm3
+/wasm3

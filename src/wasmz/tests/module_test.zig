@@ -63,12 +63,16 @@ test "module.compile builds exported function bodies" {
     };
     var data_segments_dropped = [_]bool{};
     var elem_segments_dropped = [_]bool{};
+    try module.compileFunctionAt(engine, @intCast(func_index));
+    const encoded_func = module.functions[@intCast(func_index)].getEncoded() orelse return error.FunctionNotCompiled;
     const exec_env = ExecEnv{
         .store = &store,
         .host_instance = &host_instance,
         .globals = globals[0..],
         .memory = &mem,
-        .functions = &.{},
+        .functions = module.functions,
+        .engine = engine,
+        .module = &module,
         .host_funcs = &.{},
         .tables = tables[0..],
         .func_type_indices = &.{},
@@ -83,7 +87,7 @@ test "module.compile builds exported function bodies" {
         .memory_budget = null,
     };
     const result = (try vm.execute(
-        &module.functions[@intCast(func_index)],
+        encoded_func,
         &.{},
         exec_env,
     )).ok orelse {
