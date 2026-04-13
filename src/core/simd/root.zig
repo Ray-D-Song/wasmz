@@ -23,6 +23,7 @@ pub const SimdLoadInfo = classify.SimdLoadInfo;
 pub const SimdStoreInfo = classify.SimdStoreInfo;
 pub const V128 = ops.V128;
 pub const RawVal = exec.RawVal;
+pub const SimdVal = exec.SimdVal;
 
 pub const isSimdOpcode = classify.isSimdOpcode;
 pub const isRelaxedSimdOpcode = classify.isRelaxedSimdOpcode;
@@ -33,6 +34,7 @@ pub const laneByteWidth = classify.laneByteWidth;
 pub const isLaneLoadOpcode = classify.isLaneLoadOpcode;
 pub const isLaneStoreOpcode = classify.isLaneStoreOpcode;
 pub const isVectorResultOpcode = classify.isVectorResultOpcode;
+pub const isSplatOpcode = classify.isSplatOpcode;
 pub const laneImmediateFromOpcode = classify.laneImmediateFromOpcode;
 
 pub const v128FromBytes = ops.v128FromBytes;

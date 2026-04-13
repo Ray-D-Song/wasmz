@@ -372,6 +372,15 @@ pub fn isVectorResultOpcode(opcode: SimdOpcode) bool {
     };
 }
 
+/// Returns true if the opcode is a splat (scalar → V128) operation.
+/// Splat instructions take a *scalar* src slot, not a V128 pair.
+pub fn isSplatOpcode(opcode: SimdOpcode) bool {
+    return switch (opcode) {
+        .i8x16_splat, .i16x8_splat, .i32x4_splat, .i64x2_splat, .f32x4_splat, .f64x2_splat => true,
+        else => false,
+    };
+}
+
 /// Returns the byte width of the memory access for lane load/store opcodes.
 pub fn laneImmediateFromOpcode(opcode: SimdOpcode) usize {
     return switch (opcode) {

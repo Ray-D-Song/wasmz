@@ -162,8 +162,8 @@ pub fn handle_const_f64(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchSt
 
 pub fn handle_const_v128(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsConstV128, ip);
-    const v: core.simd.V128 = .{ .bytes = ops.value };
-    slots[ops.dst] = RawVal.from(v);
+    const sv = core.SimdVal.fromV128(.{ .bytes = ops.value });
+    sv.toSlots(&slots[ops.dst], &slots[ops.dst + 1]);
     dispatch.next(ip, stride(encode.OpsConstV128), slots, frame, env);
 }
 

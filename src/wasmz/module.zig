@@ -732,8 +732,10 @@ pub const Module = struct {
             };
 
             const reserved_slots = try compute_reserved_slots(func_type, info);
-            const params_count = func_type.params().len;
-            const locals_count: u16 = @intCast(reserved_slots - params_count);
+            // Count param slots (V128 params occupy 2 slots each).
+            var params_slots: usize = 0;
+            for (func_type.params()) |p| params_slots += if (p == .V128) 2 else 1;
+            const locals_count: u16 = @intCast(reserved_slots - params_slots);
             const function_index = imported_function_count + local_func_idx;
 
             // Lazy compilation: store the raw bytecode and pre-computed metadata.
@@ -1198,12 +1200,20 @@ pub const Module = struct {
 
     /// Compute the total number of value slots needed for executing a function,
     /// including both parameters and all local variables declared in the function body.
+    ///
+    /// V128 (SIMD) values occupy two consecutive slots; all other types occupy one slot.
     fn compute_reserved_slots(func_type: FuncType, function_info: payload_mod.FunctionInformation) ModuleCompileError!u32 {
-        var locals_count: usize = func_type.params().len;
-        for (function_info.locals) |local_group| {
-            locals_count += local_group.count;
+        var params_slots: usize = 0;
+        for (func_type.params()) |param| {
+            params_slots += if (param == .V128) 2 else 1;
         }
-        return std.math.cast(u32, locals_count) orelse error.InvalidLocalCount;
+        var locals_slots: usize = 0;
+        for (function_info.locals) |local_group| {
+            const is_v128 = (local_group.typ == .kind and local_group.typ.kind == .v128);
+            locals_slots += local_group.count * (if (is_v128) @as(usize, 2) else @as(usize, 1));
+        }
+        const total = params_slots + locals_slots;
+        return std.math.cast(u32, total) orelse error.InvalidLocalCount;
     }
 };
 

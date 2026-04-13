@@ -15,6 +15,7 @@ const store_mod = @import("../wasmz/store.zig");
 
 const Allocator = std.mem.Allocator;
 const RawVal = dispatch.RawVal;
+const SimdVal = core.SimdVal;
 const Trap = dispatch.Trap;
 const Handler = dispatch.Handler;
 const DispatchState = dispatch.DispatchState;
@@ -30,6 +31,7 @@ const GcRefKind = core.GcRefKind;
 const StructLayout = gc_mod.StructLayout;
 const ArrayLayout = gc_mod.ArrayLayout;
 const CompositeType = core.CompositeType;
+const StorageType = core.StorageType;
 const storageTypeSize = gc_mod.storageTypeSize;
 const heap_type = core.heap_type;
 const gcRefKindFromHeapType = heap_type.gcRefKindFromHeapType;
@@ -41,6 +43,28 @@ const HANDLER_SIZE = dispatch.HANDLER_SIZE;
 inline fn readOps(comptime T: type, ip: [*]align(8) u8) T {
     if (@sizeOf(T) == 0) return .{};
     return @as(*const T, @ptrCast(@alignCast(ip + HANDLER_SIZE))).*;
+}
+
+/// Returns true if the storage type is a V128 (SIMD) value.
+inline fn storageIsV128(st: StorageType) bool {
+    return st == .valtype and st.valtype == .V128;
+}
+
+/// Build a SimdVal from a slot (or two slots for V128).
+inline fn simdValFromSlots(slots: [*]RawVal, idx: u32, st: StorageType) SimdVal {
+    if (storageIsV128(st)) {
+        return SimdVal.fromSlots(slots[idx], slots[idx + 1]);
+    }
+    return SimdVal.fromScalar(slots[idx]);
+}
+
+/// Write a SimdVal into slot(s). V128 writes two consecutive slots.
+inline fn writeSimdValToSlots(slots: [*]RawVal, idx: u32, sv: SimdVal, st: StorageType) void {
+    if (storageIsV128(st)) {
+        sv.toSlots(&slots[idx], &slots[idx + 1]);
+    } else {
+        slots[idx] = sv.toScalar();
+    }
 }
 
 inline fn stride(comptime OpsT: type) usize {
@@ -124,7 +148,8 @@ pub fn handle_struct_new(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchS
     const arg_slots = encode.readInlineArgs(encode.OpsStructNew, ip, ops.args_len);
 
     for (arg_slots, 0..) |arg_slot, i| {
-        env.store.gc_heap.writeField(gc_ref, struct_type, layout, @intCast(i), slots[arg_slot]);
+        const field_st = struct_type.fields[i].storage_type;
+        env.store.gc_heap.writeField(gc_ref, struct_type, layout, @intCast(i), simdValFromSlots(slots, arg_slot, field_st));
     }
 
     slots[ops.dst] = RawVal.fromGcRef(gc_ref);
@@ -174,7 +199,8 @@ pub fn handle_struct_get(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchS
         return;
     };
 
-    slots[ops.dst] = env.store.gc_heap.readField(gc_ref, struct_type, layout, ops.field_idx);
+    const field_st_get = struct_type.fields[ops.field_idx].storage_type;
+    writeSimdValToSlots(slots, ops.dst, env.store.gc_heap.readField(gc_ref, struct_type, layout, ops.field_idx), field_st_get);
     dispatch.next(ip, stride(encode.OpsStructGet), slots, frame, env);
 }
 
@@ -195,7 +221,8 @@ pub fn handle_struct_get_s(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispatc
         return;
     };
 
-    slots[ops.dst] = env.store.gc_heap.readField(gc_ref, struct_type, layout, ops.field_idx);
+    const field_st_gets = struct_type.fields[ops.field_idx].storage_type;
+    writeSimdValToSlots(slots, ops.dst, env.store.gc_heap.readField(gc_ref, struct_type, layout, ops.field_idx), field_st_gets);
     dispatch.next(ip, stride(encode.OpsStructGet), slots, frame, env);
 }
 
@@ -216,7 +243,8 @@ pub fn handle_struct_get_u(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispatc
         return;
     };
 
-    slots[ops.dst] = env.store.gc_heap.readFieldUnsigned(gc_ref, struct_type, layout, ops.field_idx);
+    const field_st_getu = struct_type.fields[ops.field_idx].storage_type;
+    writeSimdValToSlots(slots, ops.dst, env.store.gc_heap.readFieldUnsigned(gc_ref, struct_type, layout, ops.field_idx), field_st_getu);
     dispatch.next(ip, stride(encode.OpsStructGet), slots, frame, env);
 }
 
@@ -237,7 +265,8 @@ pub fn handle_struct_set(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchS
         return;
     };
 
-    env.store.gc_heap.writeField(gc_ref, struct_type, layout, ops.field_idx, slots[ops.value]);
+    const field_st = struct_type.fields[ops.field_idx].storage_type;
+    env.store.gc_heap.writeField(gc_ref, struct_type, layout, ops.field_idx, simdValFromSlots(slots, ops.value, field_st));
     dispatch.next(ip, stride(encode.OpsStructSet), slots, frame, env);
 }
 
@@ -264,9 +293,10 @@ pub fn handle_array_new(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchSt
 
     env.store.gc_heap.setLength(gc_ref, len);
 
-    const init_val = slots[ops.init];
+    const elem_st_new = array_type.field.storage_type;
+    const init_sv = simdValFromSlots(slots, ops.init, elem_st_new);
     for (0..len) |i| {
-        env.store.gc_heap.writeElem(gc_ref, array_type, layout, @intCast(i), init_val);
+        env.store.gc_heap.writeElem(gc_ref, array_type, layout, @intCast(i), init_sv);
     }
 
     slots[ops.dst] = RawVal.fromGcRef(gc_ref);
@@ -329,7 +359,8 @@ pub fn handle_array_new_fixed(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Disp
     const arg_slots = encode.readInlineArgs(encode.OpsArrayNewFixed, ip, ops.args_len);
 
     for (arg_slots, 0..) |arg_slot, i| {
-        env.store.gc_heap.writeElem(gc_ref, array_type, layout, @intCast(i), slots[arg_slot]);
+        const elem_st_fixed = array_type.field.storage_type;
+        env.store.gc_heap.writeElem(gc_ref, array_type, layout, @intCast(i), simdValFromSlots(slots, arg_slot, elem_st_fixed));
     }
 
     slots[ops.dst] = RawVal.fromGcRef(gc_ref);
@@ -382,25 +413,25 @@ pub fn handle_array_new_data(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispa
     // Read each element from the data segment using the element storage type.
     for (0..len) |i| {
         const byte_offset = src_offset + @as(u32, @intCast(i)) * elem_byte_size;
-        const raw_val = switch (array_type.field.storage_type) {
+        const sv = switch (array_type.field.storage_type) {
             .packed_type => |p| switch (p) {
-                .I8 => RawVal.from(@as(i32, @as(i8, @bitCast(seg.data[byte_offset])))),
-                .I16 => RawVal.from(@as(i32, @as(i16, @bitCast(std.mem.readInt(u16, seg.data[byte_offset..][0..2], .little))))),
+                .I8 => SimdVal.fromScalar(RawVal.from(@as(i32, @as(i8, @bitCast(seg.data[byte_offset]))))),
+                .I16 => SimdVal.fromScalar(RawVal.from(@as(i32, @as(i16, @bitCast(std.mem.readInt(u16, seg.data[byte_offset..][0..2], .little)))))),
             },
             .valtype => |v| switch (v) {
-                .I32 => RawVal.from(std.mem.readInt(i32, seg.data[byte_offset..][0..4], .little)),
-                .I64 => RawVal.from(std.mem.readInt(i64, seg.data[byte_offset..][0..8], .little)),
-                .F32 => RawVal.from(std.mem.readInt(u32, seg.data[byte_offset..][0..4], .little)),
-                .F64 => RawVal.from(std.mem.readInt(u64, seg.data[byte_offset..][0..8], .little)),
+                .I32 => SimdVal.fromScalar(RawVal.from(std.mem.readInt(i32, seg.data[byte_offset..][0..4], .little))),
+                .I64 => SimdVal.fromScalar(RawVal.from(std.mem.readInt(i64, seg.data[byte_offset..][0..8], .little))),
+                .F32 => SimdVal.fromScalar(RawVal.from(std.mem.readInt(u32, seg.data[byte_offset..][0..4], .little))),
+                .F64 => SimdVal.fromScalar(RawVal.from(std.mem.readInt(u64, seg.data[byte_offset..][0..8], .little))),
                 .V128 => blk: {
-                    const low = std.mem.readInt(u64, seg.data[byte_offset..][0..8], .little);
-                    const high = std.mem.readInt(u64, seg.data[byte_offset + 8 ..][0..8], .little);
-                    break :blk RawVal{ .low64 = low, .high64 = high };
+                    var sv128: SimdVal = undefined;
+                    @memcpy(&sv128.bytes, seg.data[byte_offset..][0..16]);
+                    break :blk sv128;
                 },
-                .Ref => RawVal.fromGcRef(GcRef.encode(std.mem.readInt(u32, seg.data[byte_offset..][0..4], .little))),
+                .Ref => SimdVal.fromScalar(RawVal.fromGcRef(GcRef.encode(std.mem.readInt(u32, seg.data[byte_offset..][0..4], .little)))),
             },
         };
-        env.store.gc_heap.writeElem(gc_ref, array_type, layout, @intCast(i), raw_val);
+        env.store.gc_heap.writeElem(gc_ref, array_type, layout, @intCast(i), sv);
     }
 
     slots[ops.dst] = RawVal.fromGcRef(gc_ref);
@@ -452,7 +483,7 @@ pub fn handle_array_new_elem(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispa
     for (0..len) |i| {
         const func_idx = seg.func_indices[src_offset + i];
         const ref_val: u64 = if (func_idx == std.math.maxInt(u32)) 0 else @as(u64, func_idx) + 1;
-        env.store.gc_heap.writeElem(gc_ref, array_type, layout, @intCast(i), RawVal.fromBits64(ref_val));
+        env.store.gc_heap.writeElem(gc_ref, array_type, layout, @intCast(i), SimdVal.fromScalar(RawVal.fromBits64(ref_val)));
     }
 
     slots[ops.dst] = RawVal.fromGcRef(gc_ref);
@@ -483,7 +514,8 @@ pub fn handle_array_get(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchSt
         return;
     };
 
-    slots[ops.dst] = env.store.gc_heap.readElem(gc_ref, array_type, layout, index);
+    const elem_st_ag = array_type.field.storage_type;
+    writeSimdValToSlots(slots, ops.dst, env.store.gc_heap.readElem(gc_ref, array_type, layout, index), elem_st_ag);
     dispatch.next(ip, stride(encode.OpsArrayGet), slots, frame, env);
 }
 
@@ -511,7 +543,8 @@ pub fn handle_array_get_s(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispatch
         return;
     };
 
-    slots[ops.dst] = env.store.gc_heap.readElem(gc_ref, array_type, layout, index);
+    const elem_st_ags = array_type.field.storage_type;
+    writeSimdValToSlots(slots, ops.dst, env.store.gc_heap.readElem(gc_ref, array_type, layout, index), elem_st_ags);
     dispatch.next(ip, stride(encode.OpsArrayGet), slots, frame, env);
 }
 
@@ -540,7 +573,8 @@ pub fn handle_array_get_u(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispatch
     };
 
     // Use unsigned (zero-extending) read for packed types.
-    slots[ops.dst] = env.store.gc_heap.readElemUnsigned(gc_ref, array_type, layout, index);
+    const elem_st_agu = array_type.field.storage_type;
+    writeSimdValToSlots(slots, ops.dst, env.store.gc_heap.readElemUnsigned(gc_ref, array_type, layout, index), elem_st_agu);
     dispatch.next(ip, stride(encode.OpsArrayGet), slots, frame, env);
 }
 
@@ -568,7 +602,8 @@ pub fn handle_array_set(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchSt
         return;
     };
 
-    env.store.gc_heap.writeElem(gc_ref, array_type, layout, index, slots[ops.value]);
+    const elem_st_as = array_type.field.storage_type;
+    env.store.gc_heap.writeElem(gc_ref, array_type, layout, index, simdValFromSlots(slots, ops.value, elem_st_as));
     dispatch.next(ip, stride(encode.OpsArraySet), slots, frame, env);
 }
 
@@ -614,9 +649,10 @@ pub fn handle_array_fill(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchS
         return;
     };
 
-    const value = slots[ops.value];
+    const elem_st_fill = array_type.field.storage_type;
+    const fill_sv = simdValFromSlots(slots, ops.value, elem_st_fill);
     for (offset..end) |i| {
-        env.store.gc_heap.writeElem(gc_ref, array_type, layout, @intCast(i), value);
+        env.store.gc_heap.writeElem(gc_ref, array_type, layout, @intCast(i), fill_sv);
     }
     dispatch.next(ip, stride(encode.OpsArrayFill), slots, frame, env);
 }
@@ -728,25 +764,25 @@ pub fn handle_array_init_data(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Disp
 
     for (0..n) |i| {
         const byte_offset = src_offset + @as(u32, @intCast(i)) * elem_byte_size;
-        const raw_val = switch (array_type.field.storage_type) {
+        const sv_id = switch (array_type.field.storage_type) {
             .packed_type => |p| switch (p) {
-                .I8 => RawVal.from(@as(i32, @as(i8, @bitCast(seg.data[byte_offset])))),
-                .I16 => RawVal.from(@as(i32, @as(i16, @bitCast(std.mem.readInt(u16, seg.data[byte_offset..][0..2], .little))))),
+                .I8 => SimdVal.fromScalar(RawVal.from(@as(i32, @as(i8, @bitCast(seg.data[byte_offset]))))),
+                .I16 => SimdVal.fromScalar(RawVal.from(@as(i32, @as(i16, @bitCast(std.mem.readInt(u16, seg.data[byte_offset..][0..2], .little)))))),
             },
             .valtype => |v| switch (v) {
-                .I32 => RawVal.from(std.mem.readInt(i32, seg.data[byte_offset..][0..4], .little)),
-                .I64 => RawVal.from(std.mem.readInt(i64, seg.data[byte_offset..][0..8], .little)),
-                .F32 => RawVal.from(std.mem.readInt(u32, seg.data[byte_offset..][0..4], .little)),
-                .F64 => RawVal.from(std.mem.readInt(u64, seg.data[byte_offset..][0..8], .little)),
+                .I32 => SimdVal.fromScalar(RawVal.from(std.mem.readInt(i32, seg.data[byte_offset..][0..4], .little))),
+                .I64 => SimdVal.fromScalar(RawVal.from(std.mem.readInt(i64, seg.data[byte_offset..][0..8], .little))),
+                .F32 => SimdVal.fromScalar(RawVal.from(std.mem.readInt(u32, seg.data[byte_offset..][0..4], .little))),
+                .F64 => SimdVal.fromScalar(RawVal.from(std.mem.readInt(u64, seg.data[byte_offset..][0..8], .little))),
                 .V128 => blk: {
-                    const low = std.mem.readInt(u64, seg.data[byte_offset..][0..8], .little);
-                    const high = std.mem.readInt(u64, seg.data[byte_offset + 8 ..][0..8], .little);
-                    break :blk RawVal{ .low64 = low, .high64 = high };
+                    var sv128: SimdVal = undefined;
+                    @memcpy(&sv128.bytes, seg.data[byte_offset..][0..16]);
+                    break :blk sv128;
                 },
-                .Ref => RawVal.fromGcRef(GcRef.encode(std.mem.readInt(u32, seg.data[byte_offset..][0..4], .little))),
+                .Ref => SimdVal.fromScalar(RawVal.fromGcRef(GcRef.encode(std.mem.readInt(u32, seg.data[byte_offset..][0..4], .little)))),
             },
         };
-        env.store.gc_heap.writeElem(gc_ref, array_type, layout, dst_offset + @as(u32, @intCast(i)), raw_val);
+        env.store.gc_heap.writeElem(gc_ref, array_type, layout, dst_offset + @as(u32, @intCast(i)), sv_id);
     }
     dispatch.next(ip, stride(encode.OpsArrayInitData), slots, frame, env);
 }
@@ -800,7 +836,7 @@ pub fn handle_array_init_elem(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Disp
     for (0..n) |i| {
         const func_idx = seg.func_indices[src_offset + i];
         const ref_val: u64 = if (func_idx == std.math.maxInt(u32)) 0 else @as(u64, func_idx) + 1;
-        env.store.gc_heap.writeElem(gc_ref, array_type, layout, dst_offset + @as(u32, @intCast(i)), RawVal.fromBits64(ref_val));
+        env.store.gc_heap.writeElem(gc_ref, array_type, layout, dst_offset + @as(u32, @intCast(i)), SimdVal.fromScalar(RawVal.fromBits64(ref_val)));
     }
     dispatch.next(ip, stride(encode.OpsArrayInitElem), slots, frame, env);
 }

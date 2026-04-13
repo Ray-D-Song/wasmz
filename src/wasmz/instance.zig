@@ -30,6 +30,7 @@ const VM = vm_mod.VM;
 const ExecEnv = vm_mod.ExecEnv;
 const HostInstance = host_mod.HostInstance;
 pub const RawVal = vm_mod.RawVal;
+const SimdVal = core.SimdVal;
 /// Wasm runtime trap, carrying TrapCode and optional description
 pub const Trap = vm_mod.Trap;
 /// TrapCode enumeration, used to determine the type of trap in ExecResult.trap
@@ -593,7 +594,7 @@ fn evaluateGcConstExpr(
                 while (fi > 0) {
                     fi -= 1;
                     sp -= 1;
-                    gc_heap.writeField(gc_ref, struct_type, layout, @intCast(fi), stack[sp]);
+                    gc_heap.writeField(gc_ref, struct_type, layout, @intCast(fi), SimdVal.fromScalar(stack[sp]));
                 }
 
                 stack[sp] = RawVal.fromGcRef(gc_ref);
@@ -683,7 +684,7 @@ fn evaluateGcConstExpr(
                 while (ei > 0) {
                     ei -= 1;
                     sp -= 1;
-                    gc_heap.writeElem(gc_ref, array_type, layout, @intCast(ei), stack[sp]);
+                    gc_heap.writeElem(gc_ref, array_type, layout, @intCast(ei), SimdVal.fromScalar(stack[sp]));
                 }
 
                 if (sp >= stack.len) return error.StackUnderflow;

@@ -18,6 +18,7 @@ pub const Global = global.Global;
 pub const GlobalType = global.GlobalType;
 pub const Mutability = global.Mutability;
 pub const RawVal = raw.RawVal;
+pub const SimdVal = raw.SimdVal;
 pub const Simd = simd;
 pub const TypedRawVal = typed.TypedRawVal;
 pub const Trap = trap.Trap;
