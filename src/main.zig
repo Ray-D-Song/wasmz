@@ -14,6 +14,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const wasmz = @import("wasmz");
 const wasi_preview1 = @import("wasi").preview1;
+const profiling = wasmz.profiling;
 
 /// Release builds use a minimal panic handler to avoid pulling in DWARF stack-unwinding
 /// code (~127 KB).  Debug/ReleaseSafe builds use the default handler for readable backtraces.
@@ -238,22 +239,34 @@ const CliArgs = struct {
 };
 
 pub fn main() void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    defer wasmz.profiling.printReport();
-
-    var out_buf: [8192]u8 = undefined;
-    var bw = std.fs.File.stdout().writer(&out_buf);
-    const stdout = &bw.interface;
-
-    run(allocator, stdout) catch |err| {
-        std.debug.print("fatal: {s}\n", .{@errorName(err)});
-        std.process.exit(1);
-    };
-
-    bw.interface.flush() catch {};
+    // Debug builds use GeneralPurposeAllocator for leak/corruption detection.
+    // Release builds use smp_allocator (lock-free, low-overhead) to avoid the
+    // mmap-per-allocation cost of DebugAllocator (GPA alias in Zig 0.15).
+    if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+        const allocator = gpa.allocator();
+        defer wasmz.profiling.printReport();
+        var out_buf: [8192]u8 = undefined;
+        var bw = std.fs.File.stdout().writer(&out_buf);
+        const stdout = &bw.interface;
+        run(allocator, stdout) catch |err| {
+            std.debug.print("fatal: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
+        bw.interface.flush() catch {};
+    } else {
+        const allocator = std.heap.smp_allocator;
+        defer wasmz.profiling.printReport();
+        var out_buf: [8192]u8 = undefined;
+        var bw = std.fs.File.stdout().writer(&out_buf);
+        const stdout = &bw.interface;
+        run(allocator, stdout) catch |err| {
+            std.debug.print("fatal: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
+        bw.interface.flush() catch {};
+    }
 }
 
 fn host_print_i32(_: ?*anyopaque, _: *HostContext, params: []const RawVal, _: []RawVal) wasmz.HostError!void {
@@ -274,6 +287,10 @@ fn onExitMemStats(_: u32, data: ?*anyopaque) void {
             printMemStats(ctx.store.?, ctx.instance.?);
         }
     }
+}
+
+fn onExitProfiling(_: u32, _: ?*anyopaque) void {
+    profiling.printReport();
 }
 
 /// Print memory usage stats to stderr.
@@ -387,6 +404,11 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
         wasi_host.setOnExit(onExitMemStats, &mem_stats_ctx);
     }
 
+    // Register profiling callback (if enabled at compile time).
+    if (profiling.enabled) {
+        wasi_host.setOnExit(onExitProfiling, null);
+    }
+
     var linker = Linker.empty;
     try wasi_host.addToLinker(&linker, allocator);
     try linker.define(allocator, "env", "host_print_i32", HostFunc.init(
@@ -434,6 +456,7 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     // Defer deinit last so we can print stats before it runs.
     defer {
         if (cli_args.mem_stats) printMemStats(&store, &instance);
+        profiling.printReport();
         instance.deinit();
     }
 

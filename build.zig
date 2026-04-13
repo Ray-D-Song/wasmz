@@ -121,6 +121,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "wasmz", .module = mod },
                 .{ .name = "wasi", .module = wasi_mod },
+                .{ .name = "build_options", .module = build_options.createModule() },
             },
             // strip when Release mode
             .strip = switch (optimize) {

@@ -202,12 +202,21 @@ pub fn handle_call(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, 
         var t = profiling.ScopedTimer.start();
         t.lap(&profiling.call_prof.ns_read_ops);
 
-        // ── Phase 1: allocate + zero callee slots ──────────────────────────────
+        // ── Phase 1a: ensure compiled (lazy JIT) ──────────────────────────────
+        const was_pending = if (profiling.enabled) switch (env.functions[ops.func_idx]) {
+            .pending => true,
+            else => false,
+        } else false;
         const callee = ensureLocalCompiled(ops.func_idx, env, frame) orelse return;
+        t.lap(&profiling.call_prof.ns_ensure_compiled);
+        if (profiling.enabled and was_pending) profiling.call_prof.lazy_compiles += 1;
+
+        // ── Phase 1b: allocate + zero callee slots ─────────────────────────────
         const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
         const sp_base = frame.val_sp;
         const callee_slots = allocCalleeSlots(frame, callee_slots_len, arg_slots.len, callee.locals_count) orelse return;
         t.lap(&profiling.call_prof.ns_alloc_slots);
+        if (profiling.enabled) profiling.call_prof.slots_len_sum += callee_slots_len;
 
         // ── Phase 2: copy args ─────────────────────────────────────────────────
         for (arg_slots, 0..) |arg_slot, i| {

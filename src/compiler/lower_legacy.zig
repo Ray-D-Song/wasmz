@@ -320,12 +320,12 @@ pub const LowerLegacy = struct {
         if (!legacy_ts.in_catch_body) {
             // Copy block results from stack into result slots (end of try body).
             {
-                const n = frame.result_slots.items.len;
+                const n = frame.result_slots.items().len;
                 var ri: usize = n;
                 while (ri > 0) {
                     ri -= 1;
                     if (self.inner.stack.peek()) |src| {
-                        try self.emit(.{ .copy = .{ .dst = frame.result_slots.items[ri], .src = src } });
+                        try self.emit(.{ .copy = .{ .dst = frame.result_slots.items()[ri], .src = src } });
                         _ = self.inner.stack.pop();
                     }
                 }
@@ -580,12 +580,12 @@ pub const LowerLegacy = struct {
         if (legacy_ts.in_catch_body) {
             // Close the last catch arm body with a copy + jump to AFTER_CATCHES.
             {
-                const n = frame.result_slots.items.len;
+                const n = frame.result_slots.items().len;
                 var ri: usize = n;
                 while (ri > 0) {
                     ri -= 1;
                     if (self.inner.stack.peek()) |src| {
-                        try self.emit(.{ .copy = .{ .dst = frame.result_slots.items[ri], .src = src } });
+                        try self.emit(.{ .copy = .{ .dst = frame.result_slots.items()[ri], .src = src } });
                         _ = self.inner.stack.pop();
                     }
                 }
@@ -596,12 +596,12 @@ pub const LowerLegacy = struct {
         } else {
             // No catch arms seen: close the try body normally (like a plain block).
             {
-                const n = frame.result_slots.items.len;
+                const n = frame.result_slots.items().len;
                 var ri: usize = n;
                 while (ri > 0) {
                     ri -= 1;
                     if (self.inner.stack.peek()) |src| {
-                        try self.emit(.{ .copy = .{ .dst = frame.result_slots.items[ri], .src = src } });
+                        try self.emit(.{ .copy = .{ .dst = frame.result_slots.items()[ri], .src = src } });
                         _ = self.inner.stack.pop();
                     }
                 }
