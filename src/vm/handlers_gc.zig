@@ -120,15 +120,15 @@ pub fn handle_struct_new(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchS
     const header_ptr = env.store.gc_heap.getHeader(gc_ref);
     header_ptr.* = GcHeader.initFromRefKind(GcRefKind.init(GcRefKind.Struct), ops.type_idx);
 
-    const caller_func = frame.callStackTop().func;
-    const arg_slots = caller_func.call_args[ops.args_start .. ops.args_start + ops.args_len];
+    // Read inline arg slots directly from the bytecode stream (zero pointer chasing)
+    const arg_slots = encode.readInlineArgs(encode.OpsStructNew, ip, ops.args_len);
 
     for (arg_slots, 0..) |arg_slot, i| {
         env.store.gc_heap.writeField(gc_ref, struct_type, layout, @intCast(i), slots[arg_slot]);
     }
 
     slots[ops.dst] = RawVal.fromGcRef(gc_ref);
-    dispatch.next(ip, stride(encode.OpsStructNew), slots, frame, env);
+    dispatch.next(ip, encode.varStride(encode.OpsStructNew, ops.args_len), slots, frame, env);
 }
 
 // ── struct_new_default ───────────────────────────────────────────────────────
@@ -325,15 +325,15 @@ pub fn handle_array_new_fixed(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Disp
 
     env.store.gc_heap.setLength(gc_ref, @intCast(len));
 
-    const caller_func = frame.callStackTop().func;
-    const arg_slots = caller_func.call_args[ops.args_start .. ops.args_start + ops.args_len];
+    // Read inline arg slots directly from the bytecode stream (zero pointer chasing)
+    const arg_slots = encode.readInlineArgs(encode.OpsArrayNewFixed, ip, ops.args_len);
 
     for (arg_slots, 0..) |arg_slot, i| {
         env.store.gc_heap.writeElem(gc_ref, array_type, layout, @intCast(i), slots[arg_slot]);
     }
 
     slots[ops.dst] = RawVal.fromGcRef(gc_ref);
-    dispatch.next(ip, stride(encode.OpsArrayNewFixed), slots, frame, env);
+    dispatch.next(ip, encode.varStride(encode.OpsArrayNewFixed, ops.args_len), slots, frame, env);
 }
 
 // ── array_new_data ───────────────────────────────────────────────────────────

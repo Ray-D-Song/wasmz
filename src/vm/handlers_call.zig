@@ -171,10 +171,9 @@ fn invokeHostCallInline(
 pub fn handle_call(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsCall, ip);
 
-    // Get current func to access call_args
-    const cur = frame.callStackTop();
-    const caller_func = cur.func;
-    const arg_slots = caller_func.call_args[ops.args_start .. ops.args_start + ops.args_len];
+    // Read inline arg slots directly from the bytecode stream (zero pointer chasing)
+    const arg_slots = encode.readInlineArgs(encode.OpsCall, ip, ops.args_len);
+    const instr_stride = encode.varStride(encode.OpsCall, ops.args_len);
 
     if (ops.func_idx < env.host_funcs.len) {
         // Host function call
@@ -196,9 +195,9 @@ pub fn handle_call(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, 
                 slots[ops.dst] = rv;
             }
         }
-        dispatch.next(ip, stride(encode.OpsCall), slots, frame, env);
+        dispatch.next(ip, instr_stride, slots, frame, env);
     } else {
-        // ── Phase 0: already done above (readOps + callStackTop + arg_slots slice) ──
+        // ── Phase 0: already done above (readOps + inline args) ──
         var t = profiling.ScopedTimer.start();
         t.lap(&profiling.call_prof.ns_read_ops);
 
@@ -225,7 +224,8 @@ pub fn handle_call(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, 
         t.lap(&profiling.call_prof.ns_copy_args);
 
         // ── Phase 3: save ip, push frame, dispatch ────────────────────────────
-        cur.ip = @alignCast(ip + stride(encode.OpsCall));
+        const cur = frame.callStackTop();
+        cur.ip = @alignCast(ip + instr_stride);
         const callee_dst: ?ir.Slot = if (ops.dst_valid != 0) @intCast(ops.dst) else null;
         frame.callStackPush(.{
             .ip = callee.code.ptr,
@@ -250,9 +250,9 @@ pub fn handle_call(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, 
 pub fn handle_call_indirect(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsCallIndirect, ip);
 
-    const cur = frame.callStackTop();
-    const caller_func = cur.func;
-    const arg_slots = caller_func.call_args[ops.args_start .. ops.args_start + ops.args_len];
+    // Read inline arg slots directly from the bytecode stream
+    const arg_slots = encode.readInlineArgs(encode.OpsCallIndirect, ip, ops.args_len);
+    const instr_stride = encode.varStride(encode.OpsCallIndirect, ops.args_len);
 
     // 1. Read runtime table index from slot
     const raw_index = slots[ops.index].readAs(u32);
@@ -304,7 +304,7 @@ pub fn handle_call_indirect(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispat
                 slots[ops.dst] = rv;
             }
         }
-        dispatch.next(ip, stride(encode.OpsCallIndirect), slots, frame, env);
+        dispatch.next(ip, instr_stride, slots, frame, env);
     } else {
         const callee = ensureLocalCompiled(callee_func_idx, env, frame) orelse return;
         const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
@@ -316,7 +316,8 @@ pub fn handle_call_indirect(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispat
             callee_slots[i] = slots[arg_slot];
         }
 
-        cur.ip = @alignCast(ip + stride(encode.OpsCallIndirect));
+        const cur = frame.callStackTop();
+        cur.ip = @alignCast(ip + instr_stride);
 
         const callee_dst: ?ir.Slot = if (ops.dst_valid != 0) @intCast(ops.dst) else null;
 
@@ -341,9 +342,10 @@ pub fn handle_call_indirect(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispat
 pub fn handle_return_call(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsReturnCall, ip);
 
+    // Read inline arg slots directly from the bytecode stream
+    const arg_slots = encode.readInlineArgs(encode.OpsReturnCall, ip, ops.args_len);
+
     const frame_idx = frame.call_depth - 1;
-    const caller_func = frame.callStackAt(frame_idx).func;
-    const arg_slots = caller_func.call_args[ops.args_start .. ops.args_start + ops.args_len];
 
     if (ops.func_idx < env.host_funcs.len) {
         // Tail call to host function
@@ -413,9 +415,10 @@ pub fn handle_return_call(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispatch
 pub fn handle_return_call_indirect(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsReturnCallIndirect, ip);
 
+    // Read inline arg slots directly from the bytecode stream
+    const arg_slots = encode.readInlineArgs(encode.OpsReturnCallIndirect, ip, ops.args_len);
+
     const frame_idx = frame.call_depth - 1;
-    const caller_func = frame.callStackAt(frame_idx).func;
-    const arg_slots = caller_func.call_args[ops.args_start .. ops.args_start + ops.args_len];
 
     // 1. Read runtime table index
     const raw_index = slots[ops.index].readAs(u32);
@@ -521,9 +524,9 @@ pub fn handle_call_ref(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchSta
     }
     const callee_func_idx: u32 = @intCast(ref_bits - 1);
 
-    const cur = frame.callStackTop();
-    const caller_func = cur.func;
-    const arg_slots = caller_func.call_args[ops.args_start .. ops.args_start + ops.args_len];
+    // Read inline arg slots directly from the bytecode stream
+    const arg_slots = encode.readInlineArgs(encode.OpsCallRef, ip, ops.args_len);
+    const instr_stride = encode.varStride(encode.OpsCallRef, ops.args_len);
 
     // Signature check
     if (callee_func_idx >= env.func_type_indices.len) {
@@ -551,7 +554,7 @@ pub fn handle_call_ref(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchSta
                 slots[ops.dst] = rv;
             }
         }
-        dispatch.next(ip, stride(encode.OpsCallRef), slots, frame, env);
+        dispatch.next(ip, instr_stride, slots, frame, env);
     } else {
         const callee = ensureLocalCompiled(callee_func_idx, env, frame) orelse return;
         const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
@@ -563,7 +566,8 @@ pub fn handle_call_ref(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchSta
             callee_slots[i] = slots[arg_slot];
         }
 
-        cur.ip = @alignCast(ip + stride(encode.OpsCallRef));
+        const cur = frame.callStackTop();
+        cur.ip = @alignCast(ip + instr_stride);
 
         const callee_dst: ?ir.Slot = if (ops.dst_valid != 0) @intCast(ops.dst) else null;
 
@@ -595,9 +599,10 @@ pub fn handle_return_call_ref(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Disp
     }
     const callee_func_idx: u32 = @intCast(ref_bits - 1);
 
+    // Read inline arg slots directly from the bytecode stream
+    const arg_slots = encode.readInlineArgs(encode.OpsReturnCallRef, ip, ops.args_len);
+
     const frame_idx = frame.call_depth - 1;
-    const caller_func = frame.callStackAt(frame_idx).func;
-    const arg_slots = caller_func.call_args[ops.args_start .. ops.args_start + ops.args_len];
 
     // Signature check
     if (callee_func_idx >= env.func_type_indices.len) {
