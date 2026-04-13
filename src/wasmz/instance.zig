@@ -75,6 +75,9 @@ pub const Instance = struct {
     /// Tracks which element segments have been dropped via elem.drop instruction.
     /// elem_segments_dropped[i] == true means segment i cannot be used by table.init.
     elem_segments_dropped: []bool,
+    /// Persistent VM state (val_stack + call_stack) reused across all calls.
+    /// Eliminates the per-call 16 MiB val_stack allocation.
+    vm: VM,
 
     /// Instantiate a Module.
     ///
@@ -214,6 +217,7 @@ pub const Instance = struct {
             .host_view = host_view,
             .data_segments_dropped = data_segments_dropped,
             .elem_segments_dropped = elem_segments_dropped,
+            .vm = VM.init(allocator),
         };
     }
 
@@ -353,6 +357,7 @@ pub const Instance = struct {
             .host_view = host_view,
             .data_segments_dropped = data_segments_dropped,
             .elem_segments_dropped = elem_segments_dropped,
+            .vm = VM.init(allocator),
         };
     }
 
@@ -363,6 +368,7 @@ pub const Instance = struct {
         allocator.free(self.host_funcs);
         allocator.free(self.data_segments_dropped);
         allocator.free(self.elem_segments_dropped);
+        self.vm.deinit();
         self.store.unregisterInstance();
         // Release our strong reference; call Module.deinit() if we were the last holder.
         if (self.module.releaseUnwrap()) |m| {
@@ -387,7 +393,7 @@ pub const Instance = struct {
             .host_instance = &self.host_view,
             .globals = self.globals,
             .memory = &self.memory,
-            .functions = m.functions,
+            .functions = m.functions[m.imported_funcs.len..],
             .host_funcs = self.host_funcs,
             .tables = m.tables,
             .func_type_indices = m.func_type_indices,
@@ -421,9 +427,7 @@ pub const Instance = struct {
             .function_index => |idx| idx,
             else => return error.ExportNotCallable,
         };
-        const func = m.functions[func_index];
-        var vm = VM.init(self.store.allocator);
-        return vm.execute(func, args, self.execEnv());
+        return self.vm.execute(&m.functions[func_index], args, self.execEnv());
     }
 
     /// Execute the module's start function (WebAssembly spec §4.5.4).
@@ -434,9 +438,7 @@ pub const Instance = struct {
     pub fn runStartFunction(self: *Instance) Allocator.Error!?ExecResult {
         const m = self.module.value;
         const start_idx = m.start_function orelse return null;
-        const func = m.functions[start_idx];
-        var vm = VM.init(self.store.allocator);
-        return try vm.execute(func, &.{}, self.execEnv());
+        return try self.vm.execute(&m.functions[start_idx], &.{}, self.execEnv());
     }
 
     /// Initialize a Reactor module by calling its `_initialize` export (if present).

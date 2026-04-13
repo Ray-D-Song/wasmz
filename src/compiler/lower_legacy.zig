@@ -92,9 +92,9 @@ pub const LowerLegacy = struct {
         };
     }
 
-    pub fn initWithReservedSlots(allocator: Allocator, reserved_slots: u32) LowerLegacy {
+    pub fn initWithReservedSlots(allocator: Allocator, reserved_slots: u32, locals_count: u16) LowerLegacy {
         return .{
-            .inner = Lower.initWithReservedSlots(allocator, reserved_slots),
+            .inner = Lower.initWithReservedSlots(allocator, reserved_slots, locals_count),
             .allocator = allocator,
         };
     }

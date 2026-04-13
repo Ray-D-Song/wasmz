@@ -63,6 +63,10 @@ pub const ControlFrame = struct {
     /// a continuation jump, mirroring the special-case that was previously
     /// triggered by `control_stack.len == 0`.
     is_function_frame: bool = false,
+    /// True when an `else_` branch was seen for this `if_` block.
+    /// Used at `end` to decide whether the false path needs explicit
+    /// zero-init of result slots (for if-without-else with results).
+    has_else: bool = false,
 };
 
 // ── Input op enum ─────────────────────────────────────────────────────────────
@@ -546,6 +550,7 @@ pub const Lower = struct {
     allocator: Allocator,
     compiled: CompiledFunction = .{
         .slots_len = 0,
+        .locals_count = 0,
         .ops = .empty,
         .call_args = .empty,
         .br_table_targets = .empty,
@@ -567,11 +572,12 @@ pub const Lower = struct {
         return .{ .allocator = allocator };
     }
 
-    pub fn initWithReservedSlots(allocator: Allocator, reserved_slots: u32) Lower {
+    pub fn initWithReservedSlots(allocator: Allocator, reserved_slots: u32, locals_count: u16) Lower {
         return .{
             .allocator = allocator,
             .compiled = .{
                 .slots_len = reserved_slots,
+                .locals_count = locals_count,
                 .ops = .empty,
                 .call_args = .empty,
                 .br_table_targets = .empty,
@@ -1048,6 +1054,7 @@ pub const Lower = struct {
                 const len = self.control_stack.items.len;
                 if (len == 0) return error.MismatchedEnd;
                 const frame = &self.control_stack.items[len - 1];
+                frame.has_else = true;
 
                 // Copy the then-branch results into the result slots before leaving the then-body.
                 // The stack top holds the last result; result_slots[N-1] is the last result slot.
@@ -1089,6 +1096,10 @@ pub const Lower = struct {
                     if (!was_unreachable) {
                         const value = self.stack.pop();
                         try self.emit(.{ .ret = .{ .value = value } });
+                    } else {
+                        // Even for unreachable code, emit a sentinel ret so the M3 code
+                        // buffer always ends with a valid terminator (never actually executed).
+                        try self.emit(.{ .ret = .{ .value = null } });
                     }
                     return;
                 }
@@ -1112,6 +1123,10 @@ pub const Lower = struct {
                     if (!was_unreachable) {
                         const value = self.stack.pop();
                         try self.emit(.{ .ret = .{ .value = value } });
+                    } else {
+                        // Emit a sentinel ret so the M3 code buffer always ends with a
+                        // valid terminator (this ret is never actually executed).
+                        try self.emit(.{ .ret = .{ .value = null } });
                     }
                     return;
                 }
@@ -1130,6 +1145,44 @@ pub const Lower = struct {
                             _ = self.stack.pop();
                         }
                     }
+                }
+
+                // ── If-without-else zero-init ────────────────────────────────
+                // When an `if` block has result types but no `else` branch, the
+                // false path (jump_if_z) lands directly at `end`.  The result
+                // slots were never written on the false path and must be
+                // explicitly zero-initialised (the Wasm spec says the implicit
+                // else produces default zero values).
+                //
+                // Layout:
+                //   [then-body result copies]
+                //   jump → continuation         ← skip false-path zeroing
+                // false_path:
+                //   const_i64 0 → result_slots[0..N]
+                // continuation:                 ← both paths merge here
+                if (frame.kind == .if_ and !frame.has_else and frame.result_slots.items.len > 0) {
+                    // Emit a jump from the then-path over the false-path zeroing.
+                    const then_skip_pc = self.current_pc();
+                    try self.emit(.{ .jump = .{ .target = 0 } }); // placeholder, patched below
+
+                    // Patch jump_if_z (and any other forward jumps) to land here.
+                    const false_path_pc = self.current_pc();
+                    self.patch_forward_jumps(&frame, false_path_pc);
+
+                    // Emit explicit zero-init for each result slot.
+                    for (frame.result_slots.items) |rs| {
+                        try self.emit(.{ .const_i64 = .{ .dst = rs, .value = 0 } });
+                    }
+
+                    // Patch the then-skip jump to land here (continuation).
+                    const continuation_pc = self.current_pc();
+                    switch (self.compiled.ops.items[then_skip_pc]) {
+                        .jump => |*j| j.target = continuation_pc,
+                        else => unreachable,
+                    }
+
+                    // Clear patch_sites so the normal patch_forward_jumps below is a no-op.
+                    frame.patch_sites.clearRetainingCapacity();
                 }
 
                 // For try_table: emit try_table_leave (normal-exit jump) and

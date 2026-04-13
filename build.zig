@@ -16,6 +16,12 @@ pub fn build(b: *std.Build) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
+
+    const profiling = b.option(bool, "profiling", "Enable call-phase profiling instrumentation") orelse false;
+
+    // Build options module shared by wasmz (so that profiling.zig can query the flag).
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "profiling", profiling);
     // It's also possible to define more custom flags to toggle optional features
     // of this build script using `b.option()`. All defined flags (including
     // target and optimize options) will be listed when running `zig build --help`
@@ -73,6 +79,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "parser", .module = parser_mod_dep },
             .{ .name = "payload", .module = payload_mod_dep },
             .{ .name = "core", .module = core_mod },
+            .{ .name = "build_options", .module = build_options.createModule() },
         },
     });
 

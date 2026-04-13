@@ -26,3 +26,10 @@ tests/sqlite/fixtures/sqlite_wasm/lib/sqlite3.*
 
 # mdbook build output
 docs/book/
+
+# Profiling results
+bench/results/*.trace
+bench/results/hyperfine/
+
+# Binary file for benchmarking and testing
+wasm3
