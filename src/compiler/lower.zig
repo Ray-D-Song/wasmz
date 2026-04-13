@@ -910,7 +910,7 @@ pub const Lower = struct {
         return @intCast(self.compiled.ops.items.len);
     }
 
-    fn pop_slot(self: *Lower) LowerError!Slot {
+    pub fn pop_slot(self: *Lower) LowerError!Slot {
         const slot = self.stack.pop() orelse return error.StackUnderflow;
         // Recycle SSA temporaries (slots >= reserved_slots) back into the free-list.
         // Params and locals ([0..reserved_slots)) live for the full function and must not be recycled.
@@ -920,7 +920,7 @@ pub const Lower = struct {
         return slot;
     }
 
-    fn local_to_slot(_: *Lower, local: u32) Slot {
+    pub fn local_to_slot(_: *Lower, local: u32) Slot {
         return local;
     }
 
@@ -1037,7 +1037,7 @@ pub const Lower = struct {
 
     /// Handle binary operations: pop two operands, allocate result slot, emit, push result.
     /// The op_tag parameter is a string literal representing the Op field name.
-    fn lower_binary_op(
+    pub fn lower_binary_op(
         self: *Lower,
         comptime op_tag: []const u8,
     ) !void {
@@ -1055,7 +1055,7 @@ pub const Lower = struct {
     }
 
     /// Handle unary operations: pop one operand, allocate result slot, emit, push result.
-    fn lower_unary_op(
+    pub fn lower_unary_op(
         self: *Lower,
         comptime op_tag: []const u8,
     ) !void {
@@ -1071,7 +1071,7 @@ pub const Lower = struct {
     }
 
     /// Handle conversion operations: pop one operand, allocate result slot, emit, push result.
-    fn lower_convert_op(
+    pub fn lower_convert_op(
         self: *Lower,
         comptime op_tag: []const u8,
     ) !void {
@@ -1087,7 +1087,7 @@ pub const Lower = struct {
     }
 
     /// Handle comparison operations: pop two operands, allocate result slot (i32), emit, push result.
-    fn lower_compare_op(
+    pub fn lower_compare_op(
         self: *Lower,
         comptime op_tag: []const u8,
     ) !void {
@@ -3792,7 +3792,7 @@ pub const Lower = struct {
     /// This is needed because lowerOp's `end` case relies on `was_unreachable`
     /// being computed in the same function scope. lowerOpFromInfo computes it
     /// in its own scope and then needs to delegate just the `end` logic.
-    fn lowerOpEnd(self: *Lower, was_unreachable: bool) !void {
+    pub fn lowerOpEnd(self: *Lower, was_unreachable: bool) !void {
         if (self.control_stack.items.len == 0) {
             if (!was_unreachable) {
                 const value = self.stack.pop();
