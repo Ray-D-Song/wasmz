@@ -1000,8 +1000,7 @@ pub fn handle_br_on_null(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchS
 
     const gc_ref = slots[ops.ref].readAsGcRef();
     if (gc_ref.isNull()) {
-        const func = frame.callStackTop().func;
-        const target_ip: [*]align(8) u8 = @alignCast(func.code.ptr + ops.target);
+        const target_ip: [*]align(8) u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
         dispatch.dispatch(target_ip, slots, frame, env);
     } else {
         dispatch.next(ip, stride(encode.OpsBrOnNull), slots, frame, env);
@@ -1015,8 +1014,7 @@ pub fn handle_br_on_non_null(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispa
 
     const gc_ref = slots[ops.ref].readAsGcRef();
     if (!gc_ref.isNull()) {
-        const func = frame.callStackTop().func;
-        const target_ip: [*]align(8) u8 = @alignCast(func.code.ptr + ops.target);
+        const target_ip: [*]align(8) u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
         dispatch.dispatch(target_ip, slots, frame, env);
     } else {
         dispatch.next(ip, stride(encode.OpsBrOnNull), slots, frame, env);
@@ -1062,8 +1060,7 @@ pub fn handle_br_on_cast(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchS
     }
 
     if (should_branch) {
-        const func = frame.callStackTop().func;
-        const target_ip: [*]align(8) u8 = @alignCast(func.code.ptr + ops.target);
+        const target_ip: [*]align(8) u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
         dispatch.dispatch(target_ip, slots, frame, env);
     } else {
         dispatch.next(ip, stride(encode.OpsBrOnCast), slots, frame, env);
@@ -1114,8 +1111,7 @@ pub fn handle_br_on_cast_fail(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Disp
     }
 
     if (should_branch) {
-        const func = frame.callStackTop().func;
-        const target_ip: [*]align(8) u8 = @alignCast(func.code.ptr + ops.target);
+        const target_ip: [*]align(8) u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
         dispatch.dispatch(target_ip, slots, frame, env);
     } else {
         dispatch.next(ip, stride(encode.OpsBrOnCast), slots, frame, env);

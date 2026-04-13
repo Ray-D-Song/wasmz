@@ -58,6 +58,8 @@ const CliArgs = struct {
     mem_limit_mb: ?u64,
     /// When true, call _initialize before --func (reactor mode).
     reactor: bool,
+    /// When true, compile all functions eagerly at module load time.
+    eager_compile: bool,
     /// Kept alive so that string slices in the fields above remain valid.
     _args_alloc: [][:0]u8,
     _args_allocator: std.mem.Allocator,
@@ -103,6 +105,7 @@ const CliArgs = struct {
         return result.toOwnedSlice(allocator);
     }
 
+    // TODO: impl structure arg parse like go-cobra
     fn parse(allocator: std.mem.Allocator) !CliArgs {
         const args = try std.process.argsAlloc(allocator);
 
@@ -112,6 +115,7 @@ const CliArgs = struct {
         var args_flag_value: ?[]const u8 = null; // value of --args
         var func_flag_value: ?[]const u8 = null; // value of --func
         var reactor = false;
+        var eager_compile = false;
 
         // Collect wasmz-side positional args (everything that is not a known flag).
         var positional_buf: [16][]const u8 = undefined;
@@ -126,6 +130,8 @@ const CliArgs = struct {
                 mem_stats = true;
             } else if (std.mem.eql(u8, arg, "--reactor")) {
                 reactor = true;
+            } else if (std.mem.eql(u8, arg, "--eager-compile")) {
+                eager_compile = true;
             } else if (std.mem.eql(u8, arg, "--mem-limit")) {
                 idx += 1;
                 if (idx >= args.len) {
@@ -220,6 +226,7 @@ const CliArgs = struct {
             .mem_stats = mem_stats,
             .mem_limit_mb = mem_limit_mb,
             .reactor = reactor,
+            .eager_compile = eager_compile,
             .wasi_args = wasi_args,
             .passthrough = passthrough,
             ._args_alloc = args,
@@ -373,6 +380,7 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     var engine = Engine.init(allocator, Config{
         .legacy_exceptions = cli_args.legacy_exceptions,
         .mem_limit_bytes = if (cli_args.mem_limit_mb) |mb| mb * 1024 * 1024 else null,
+        .eager_compile = cli_args.eager_compile,
     }) catch |err| {
         std.debug.print("error: Failed to initialize engine: {s}\n", .{@errorName(err)});
         std.process.exit(1);

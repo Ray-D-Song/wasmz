@@ -1,4 +1,4 @@
-// TODO: Validator implementation is not planned.
+// TODO: Validator implementation currently is not planned.
 //
 // wasmz focuses on runtime execution. For validation, use external tools:
 // - wasm-tools: https://github.com/bytecodealliance/wasm-tools

@@ -245,7 +245,6 @@ pub fn handle_try_table_leave(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Disp
 
     _ = frame.eh_stack.pop();
 
-    const func = frame.callStackTop().func;
-    const target_ip: [*]align(8) u8 = @alignCast(func.code.ptr + ops.target);
+    const target_ip: [*]align(8) u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
     dispatch.dispatch(target_ip, slots, frame, env);
 }

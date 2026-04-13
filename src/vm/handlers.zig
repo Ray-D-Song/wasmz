@@ -231,17 +231,15 @@ pub fn handle_copy(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, 
 
 pub fn handle_jump(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsJump, ip);
-    // ops.target is a byte offset into code[]
-    const func = frame.callStackTop().func;
-    const target_ip: [*]align(8) u8 = @alignCast(func.code.ptr + ops.target);
+    // rel_target is a signed byte offset from instruction start
+    const target_ip: [*]align(8) u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
     dispatch.dispatch(target_ip, slots, frame, env);
 }
 
 pub fn handle_jump_if_z(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsJumpIfZ, ip);
     if (slots[ops.cond].readAs(i32) == 0) {
-        const func = frame.callStackTop().func;
-        const target_ip: [*]align(8) u8 = @alignCast(func.code.ptr + ops.target);
+        const target_ip: [*]align(8) u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
         dispatch.dispatch(target_ip, slots, frame, env);
     } else {
         dispatch.next(ip, stride(encode.OpsJumpIfZ), slots, frame, env);

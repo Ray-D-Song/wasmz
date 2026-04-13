@@ -74,11 +74,11 @@ pub const OpsGlobalSet = extern struct { src: u32, global_idx: u32 };
 /// copy
 pub const OpsCopy = extern struct { dst: u32, src: u32 };
 
-/// jump: byte offset target
-pub const OpsJump = extern struct { target: u32 };
+/// jump: signed byte offset relative to instruction start
+pub const OpsJump = extern struct { rel_target: i32 };
 
-/// jump_if_z
-pub const OpsJumpIfZ = extern struct { cond: u32, target: u32 };
+/// jump_if_z: signed byte offset relative to instruction start
+pub const OpsJumpIfZ = extern struct { cond: u32, rel_target: i32 };
 
 /// jump_table
 pub const OpsJumpTable = extern struct { index: u32, targets_start: u32, targets_len: u32 };
@@ -102,11 +102,11 @@ pub const OpsRefTest = extern struct { dst: u32, ref: u32, type_idx: u32, nullab
 /// ref_as_non_null
 pub const OpsRefAsNonNull = extern struct { dst: u32, ref: u32 };
 
-/// br_on_null / br_on_non_null
-pub const OpsBrOnNull = extern struct { ref: u32, target: u32 };
+/// br_on_null / br_on_non_null: signed byte offset relative to instruction start
+pub const OpsBrOnNull = extern struct { ref: u32, rel_target: i32 };
 
-/// br_on_cast / br_on_cast_fail
-pub const OpsBrOnCast = extern struct { ref: u32, target: u32, from_type_idx: u32, to_type_idx: u32, to_nullable: u32 };
+/// br_on_cast / br_on_cast_fail: signed byte offset relative to instruction start
+pub const OpsBrOnCast = extern struct { ref: u32, rel_target: i32, from_type_idx: u32, to_type_idx: u32, to_nullable: u32 };
 
 /// ref_i31 / i31_get_s / i31_get_u
 pub const OpsRefI31 = extern struct { dst: u32, value: u32 };
@@ -200,7 +200,7 @@ pub const OpsConvertRef = extern struct { dst: u32, ref: u32 };
 pub const OpsThrow = extern struct { tag_index: u32, args_start: u32, args_len: u32 };
 pub const OpsThrowRef = extern struct { ref: u32 };
 pub const OpsTryTableEnter = extern struct { handlers_start: u32, handlers_len: u32, end_target: u32 };
-pub const OpsTryTableLeave = extern struct { target: u32 };
+pub const OpsTryTableLeave = extern struct { rel_target: i32 };
 
 /// SIMD unary/binary/ternary/compare/shift
 pub const OpsSimdUnary = extern struct { dst: u32, opcode: u32, src: u32 };
@@ -894,13 +894,13 @@ pub fn encode(
             },
             .jump => |inst| {
                 @as(*OpsJump, @ptrCast(@alignCast(ops_ptr))).* = .{
-                    .target = op_offset[inst.target],
+                    .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
                 };
             },
             .jump_if_z => |inst| {
                 @as(*OpsJumpIfZ, @ptrCast(@alignCast(ops_ptr))).* = .{
                     .cond = inst.cond,
-                    .target = op_offset[inst.target],
+                    .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
                 };
             },
             .jump_table => |inst| {
@@ -1494,13 +1494,13 @@ pub fn encode(
             inline .br_on_null, .br_on_non_null => |inst| {
                 @as(*OpsBrOnNull, @ptrCast(@alignCast(ops_ptr))).* = .{
                     .ref = inst.ref,
-                    .target = op_offset[inst.target],
+                    .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
                 };
             },
             inline .br_on_cast, .br_on_cast_fail => |inst| {
                 @as(*OpsBrOnCast, @ptrCast(@alignCast(ops_ptr))).* = .{
                     .ref = inst.ref,
-                    .target = op_offset[inst.target],
+                    .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
                     .from_type_idx = inst.from_type_idx,
                     .to_type_idx = inst.to_type_idx,
                     .to_nullable = if (inst.to_nullable) 1 else 0,
@@ -1532,7 +1532,7 @@ pub fn encode(
             },
             .try_table_leave => |inst| {
                 @as(*OpsTryTableLeave, @ptrCast(@alignCast(ops_ptr))).* = .{
-                    .target = op_offset[inst.target],
+                    .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
                 };
             },
 
