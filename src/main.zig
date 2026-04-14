@@ -98,6 +98,7 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     };
 
     var store = try Store.init(allocator, engine);
+    if (cli_args.mem_limit_mb != null) store.linkBudget();
     defer store.deinit();
 
     // Lazy WASI initialization (plan A): only allocate and register the WASI
@@ -118,42 +119,10 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     }
 
     var instance = Instance.init(&store, arc_module.retain(), linker) catch |err| {
-        switch (err) {
-            error.ImportNotSatisfied => {
-                std.debug.print("error: Failed to instantiate module: the following imports are not satisfied:\n", .{});
-                for (arc_module.value.imported_funcs) |def| {
-                    if (linker.get(def.module_name, def.func_name) == null) {
-                        std.debug.print("  - {s}::{s}\n", .{ def.module_name, def.func_name });
-                    }
-                }
-            },
-            error.ImportSignatureMismatch => {
-                std.debug.print("error: Failed to instantiate module: import signature mismatch\n", .{});
-                for (arc_module.value.imported_funcs) |def| {
-                    const hf = linker.get(def.module_name, def.func_name);
-                    if (hf == null) continue;
-
-                    const func_type = switch (arc_module.value.composite_types[def.type_index]) {
-                        .func_type => |ft| ft,
-                        else => continue,
-                    };
-
-                    if (!hf.?.matches(func_type)) {
-                        std.debug.print(
-                            \\  - {s}::{s}
-                            \\    expected: {any} -> {any}
-                            \\    provided: {any} -> {any}
-                            \\
-                        , .{ def.module_name, def.func_name, func_type.params(), func_type.results(), hf.?.param_types, hf.?.result_types });
-                    }
-                }
-            },
-            else => std.debug.print("error: Failed to instantiate module: {s}\n", .{@errorName(err)}),
-        }
+        wasmz.printInitError(arc_module, linker, err);
         std.process.exit(1);
     };
     if (cli_args.mem_stats) {
-        store.linkBudget();
         var mem_stats_ctx = stats.MemStatsCtx{};
         mem_stats_ctx.store = &store;
         mem_stats_ctx.instance = &instance;

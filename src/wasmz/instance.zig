@@ -59,6 +59,38 @@ pub const InstanceError = Allocator.Error || error{
     DataSegmentOutOfBounds,
 };
 
+pub fn printInitError(arc: ArcModule, imports: Linker, err: InstanceError) void {
+    switch (err) {
+        error.ImportNotSatisfied => {
+            std.debug.print("error: Failed to instantiate module: the following imports are not satisfied:\n", .{});
+            for (arc.value.imported_funcs) |def| {
+                if (imports.get(def.module_name, def.func_name) == null) {
+                    std.debug.print("  - {s}::{s}\n", .{ def.module_name, def.func_name });
+                }
+            }
+        },
+        error.ImportSignatureMismatch => {
+            std.debug.print("error: Failed to instantiate module: import signature mismatch\n", .{});
+            for (arc.value.imported_funcs) |def| {
+                const hf = imports.get(def.module_name, def.func_name) orelse continue;
+                const func_type = switch (arc.value.composite_types[def.type_index]) {
+                    .func_type => |ft| ft,
+                    else => continue,
+                };
+                if (!hf.matches(func_type)) {
+                    std.debug.print(
+                        \\  - {s}::{s}
+                        \\    expected: {any} -> {any}
+                        \\    provided: {any} -> {any}
+                        \\
+                    , .{ def.module_name, def.func_name, func_type.params(), func_type.results(), hf.param_types, hf.result_types });
+                }
+            }
+        },
+        else => std.debug.print("error: Failed to instantiate module: {s}\n", .{@errorName(err)}),
+    }
+}
+
 pub const Instance = struct {
     store: *Store,
     /// Reference-counted module handle; the Instance owns one strong reference.
