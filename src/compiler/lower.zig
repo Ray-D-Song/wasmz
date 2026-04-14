@@ -1000,6 +1000,18 @@ pub const Lower = struct {
                     .i32_ge_s_jump_if_false => |*j| j.target = target_pc,
                     .i32_ge_u_jump_if_false => |*j| j.target = target_pc,
                     .i32_eqz_jump_if_false => |*j| j.target = target_pc,
+                    // Fused i64 compare-jump ops (Peephole F, i64)
+                    .i64_eq_jump_if_false => |*j| j.target = target_pc,
+                    .i64_ne_jump_if_false => |*j| j.target = target_pc,
+                    .i64_lt_s_jump_if_false => |*j| j.target = target_pc,
+                    .i64_lt_u_jump_if_false => |*j| j.target = target_pc,
+                    .i64_gt_s_jump_if_false => |*j| j.target = target_pc,
+                    .i64_gt_u_jump_if_false => |*j| j.target = target_pc,
+                    .i64_le_s_jump_if_false => |*j| j.target = target_pc,
+                    .i64_le_u_jump_if_false => |*j| j.target = target_pc,
+                    .i64_ge_s_jump_if_false => |*j| j.target = target_pc,
+                    .i64_ge_u_jump_if_false => |*j| j.target = target_pc,
+                    .i64_eqz_jump_if_false => |*j| j.target = target_pc,
                     else => unreachable,
                 }
             }
@@ -1126,6 +1138,62 @@ pub const Lower = struct {
                 try self.emit(.{ .i32_eqz_jump_if_false = .{ .src = c.src, .target = target } });
                 return true;
             },
+            // ── i64 compare-jump variants ─────────────────────────────────────
+            .i64_eq => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_eq_jump_if_false = .{ .lhs = c.lhs, .rhs = c.rhs, .target = target } });
+                return true;
+            },
+            .i64_ne => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_ne_jump_if_false = .{ .lhs = c.lhs, .rhs = c.rhs, .target = target } });
+                return true;
+            },
+            .i64_lt_s => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_lt_s_jump_if_false = .{ .lhs = c.lhs, .rhs = c.rhs, .target = target } });
+                return true;
+            },
+            .i64_lt_u => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_lt_u_jump_if_false = .{ .lhs = c.lhs, .rhs = c.rhs, .target = target } });
+                return true;
+            },
+            .i64_gt_s => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_gt_s_jump_if_false = .{ .lhs = c.lhs, .rhs = c.rhs, .target = target } });
+                return true;
+            },
+            .i64_gt_u => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_gt_u_jump_if_false = .{ .lhs = c.lhs, .rhs = c.rhs, .target = target } });
+                return true;
+            },
+            .i64_le_s => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_le_s_jump_if_false = .{ .lhs = c.lhs, .rhs = c.rhs, .target = target } });
+                return true;
+            },
+            .i64_le_u => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_le_u_jump_if_false = .{ .lhs = c.lhs, .rhs = c.rhs, .target = target } });
+                return true;
+            },
+            .i64_ge_s => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_ge_s_jump_if_false = .{ .lhs = c.lhs, .rhs = c.rhs, .target = target } });
+                return true;
+            },
+            .i64_ge_u => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_ge_u_jump_if_false = .{ .lhs = c.lhs, .rhs = c.rhs, .target = target } });
+                return true;
+            },
+            .i64_eqz => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_eqz_jump_if_false = .{ .src = c.src, .target = target } });
+                return true;
+            },
             else => {},
         }
         return false;
@@ -1181,6 +1249,43 @@ pub const Lower = struct {
                 if (b.dst != src) return false;
                 last.* = .{ .i32_shr_u_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
             },
+            // ── i64 binop-to-local variants ───────────────────────────────────
+            .i64_add => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_add_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_sub => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_sub_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_mul => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_mul_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_and => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_and_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_or => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_or_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_xor => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_xor_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_shl => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_shl_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_shr_s => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_shr_s_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_shr_u => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_shr_u_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
             else => return false,
         }
         return true;
@@ -1196,16 +1301,28 @@ pub const Lower = struct {
         const lhs = try self.pop_slot();
         const dst = self.alloc_slot();
 
-        // ── Peephole C: const_i32 + i32_xxx → i32_xxx_imm ────────────────────
+        // ── Peephole C: const_i32/i64 + xxx → xxx_imm ────────────────────────
         // If there is a fused _imm variant for this op AND the previous emitted
-        // op is `const_i32` whose dst matches rhs, fold it into an immediate.
+        // op is `const_i32`/`const_i64` whose dst matches rhs, fold it into an immediate.
         const imm_tag = op_tag ++ "_imm";
         if (comptime @hasField(Op, imm_tag)) {
+            // Determine imm type from the fused op's struct field at compile time.
+            const ImmType = @TypeOf(@field(@as(std.meta.TagPayload(Op, @field(Op, imm_tag)), undefined), "imm"));
             const ops = self.compiled.ops.items;
             if (ops.len > 0) {
                 switch (ops[ops.len - 1]) {
-                    .const_i32 => |c| if (c.dst == rhs) {
+                    .const_i32 => |c| if (ImmType == i32 and c.dst == rhs) {
                         // Remove the const_i32 and emit the fused imm op instead.
+                        _ = self.compiled.ops.pop();
+                        try self.emit(@unionInit(Op, imm_tag, .{
+                            .dst = dst,
+                            .lhs = lhs,
+                            .imm = c.value,
+                        }));
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                    .const_i64 => |c| if (ImmType == i64 and c.dst == rhs) {
                         _ = self.compiled.ops.pop();
                         try self.emit(@unionInit(Op, imm_tag, .{
                             .dst = dst,
@@ -1270,13 +1387,24 @@ pub const Lower = struct {
         const lhs = try self.pop_slot();
         const dst = self.alloc_slot();
 
-        // ── Peephole C (compare variant): const_i32 + i32_xxx_cmp → i32_xxx_cmp_imm ──
+        // ── Peephole C (compare variant): const_i32/i64 + xxx_cmp → xxx_cmp_imm ──
         const imm_tag = op_tag ++ "_imm";
         if (comptime @hasField(Op, imm_tag)) {
+            const ImmType = @TypeOf(@field(@as(std.meta.TagPayload(Op, @field(Op, imm_tag)), undefined), "imm"));
             const ops = self.compiled.ops.items;
             if (ops.len > 0) {
                 switch (ops[ops.len - 1]) {
-                    .const_i32 => |c| if (c.dst == rhs) {
+                    .const_i32 => |c| if (ImmType == i32 and c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(@unionInit(Op, imm_tag, .{
+                            .dst = dst,
+                            .lhs = lhs,
+                            .imm = c.value,
+                        }));
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                    .const_i64 => |c| if (ImmType == i64 and c.dst == rhs) {
                         _ = self.compiled.ops.pop();
                         try self.emit(@unionInit(Op, imm_tag, .{
                             .dst = dst,
@@ -1733,6 +1861,17 @@ pub const Lower = struct {
                     .i32_ge_s_jump_if_false => |*j| j.target = continue_pc,
                     .i32_ge_u_jump_if_false => |*j| j.target = continue_pc,
                     .i32_eqz_jump_if_false => |*j| j.target = continue_pc,
+                    .i64_eq_jump_if_false => |*j| j.target = continue_pc,
+                    .i64_ne_jump_if_false => |*j| j.target = continue_pc,
+                    .i64_lt_s_jump_if_false => |*j| j.target = continue_pc,
+                    .i64_lt_u_jump_if_false => |*j| j.target = continue_pc,
+                    .i64_gt_s_jump_if_false => |*j| j.target = continue_pc,
+                    .i64_gt_u_jump_if_false => |*j| j.target = continue_pc,
+                    .i64_le_s_jump_if_false => |*j| j.target = continue_pc,
+                    .i64_le_u_jump_if_false => |*j| j.target = continue_pc,
+                    .i64_ge_s_jump_if_false => |*j| j.target = continue_pc,
+                    .i64_ge_u_jump_if_false => |*j| j.target = continue_pc,
+                    .i64_eqz_jump_if_false => |*j| j.target = continue_pc,
                     else => unreachable,
                 }
             },
