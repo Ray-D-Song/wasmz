@@ -96,6 +96,46 @@ pub fn BinaryOpToLocal(comptime T: type) type {
     };
 }
 
+/// Fused: const + binop + local_set → binop_imm_to_local (Candidate E).
+/// i32: `{ local: Slot, lhs: Slot, imm: i32 }` — 12 bytes → stride 24.
+/// i64: `{ local: Slot, lhs: Slot, imm: i64 }` (encoder adds padding) → stride 32.
+pub fn BinaryOpImmToLocal(comptime T: type) type {
+    return struct {
+        local: Slot,
+        lhs: Slot,
+        imm: T,
+
+        pub const ValueType = T;
+    };
+}
+
+/// Fused: local_get + binop_imm + local_set where dst local == src local (Candidate H).
+/// i32: `{ local: Slot, imm: i32 }` — 8 bytes → stride 16.
+/// i64: `{ local: Slot, imm: i64 }` (encoder adds padding) → stride 24.
+pub fn LocalInplace(comptime T: type) type {
+    return struct {
+        local: Slot,
+        imm: T,
+
+        pub const ValueType = T;
+    };
+}
+
+/// Fused: const + compare + br_if → compare_imm_jump_if_false (Candidate G).
+/// Jumps to `target` when comparison is FALSE.
+/// i32: `{ lhs: Slot, imm: i32, target: u32 }`.
+/// i64: `{ lhs: Slot, imm: i64, target: u32 }` (encoder adds padding).
+pub fn CompareImmJumpOp(comptime InputT: type) type {
+    return struct {
+        lhs: Slot,
+        imm: InputT,
+        /// Op-index of the jump target (converted to relative byte offset by encoder).
+        target: u32,
+
+        pub const InputType = InputT;
+    };
+}
+
 pub const SimdUnaryOp = struct {
     dst: Slot,
     opcode: SimdOpcode,
@@ -485,6 +525,74 @@ pub const Op = union(enum) {
     i64_shl_to_local: BinaryOpToLocal(i64),
     i64_shr_s_to_local: BinaryOpToLocal(i64),
     i64_shr_u_to_local: BinaryOpToLocal(i64),
+
+    // ── Fused: binop-imm-to-local (E: const + binop + local_set → binop_imm_to_local) ──
+    // i32 arithmetic-imm-to-local
+    i32_add_imm_to_local: BinaryOpImmToLocal(i32),
+    i32_sub_imm_to_local: BinaryOpImmToLocal(i32),
+    i32_mul_imm_to_local: BinaryOpImmToLocal(i32),
+    i32_and_imm_to_local: BinaryOpImmToLocal(i32),
+    i32_or_imm_to_local: BinaryOpImmToLocal(i32),
+    i32_xor_imm_to_local: BinaryOpImmToLocal(i32),
+    i32_shl_imm_to_local: BinaryOpImmToLocal(i32),
+    i32_shr_s_imm_to_local: BinaryOpImmToLocal(i32),
+    i32_shr_u_imm_to_local: BinaryOpImmToLocal(i32),
+    // i64 arithmetic-imm-to-local
+    i64_add_imm_to_local: BinaryOpImmToLocal(i64),
+    i64_sub_imm_to_local: BinaryOpImmToLocal(i64),
+    i64_mul_imm_to_local: BinaryOpImmToLocal(i64),
+    i64_and_imm_to_local: BinaryOpImmToLocal(i64),
+    i64_or_imm_to_local: BinaryOpImmToLocal(i64),
+    i64_xor_imm_to_local: BinaryOpImmToLocal(i64),
+    i64_shl_imm_to_local: BinaryOpImmToLocal(i64),
+    i64_shr_s_imm_to_local: BinaryOpImmToLocal(i64),
+    i64_shr_u_imm_to_local: BinaryOpImmToLocal(i64),
+
+    // ── Fused: local inplace (H: local_get + binop_imm + local_set, same local) ──
+    // i32 local-inplace
+    i32_add_local_inplace: LocalInplace(i32),
+    i32_sub_local_inplace: LocalInplace(i32),
+    i32_mul_local_inplace: LocalInplace(i32),
+    i32_and_local_inplace: LocalInplace(i32),
+    i32_or_local_inplace: LocalInplace(i32),
+    i32_xor_local_inplace: LocalInplace(i32),
+    i32_shl_local_inplace: LocalInplace(i32),
+    i32_shr_s_local_inplace: LocalInplace(i32),
+    i32_shr_u_local_inplace: LocalInplace(i32),
+    // i64 local-inplace
+    i64_add_local_inplace: LocalInplace(i64),
+    i64_sub_local_inplace: LocalInplace(i64),
+    i64_mul_local_inplace: LocalInplace(i64),
+    i64_and_local_inplace: LocalInplace(i64),
+    i64_or_local_inplace: LocalInplace(i64),
+    i64_xor_local_inplace: LocalInplace(i64),
+    i64_shl_local_inplace: LocalInplace(i64),
+    i64_shr_s_local_inplace: LocalInplace(i64),
+    i64_shr_u_local_inplace: LocalInplace(i64),
+
+    // ── Fused: compare-imm + jump_if_false (G: const + compare + br_if) ─────
+    // i32 compare-imm-jump
+    i32_eq_imm_jump_if_false: CompareImmJumpOp(i32),
+    i32_ne_imm_jump_if_false: CompareImmJumpOp(i32),
+    i32_lt_s_imm_jump_if_false: CompareImmJumpOp(i32),
+    i32_lt_u_imm_jump_if_false: CompareImmJumpOp(i32),
+    i32_gt_s_imm_jump_if_false: CompareImmJumpOp(i32),
+    i32_gt_u_imm_jump_if_false: CompareImmJumpOp(i32),
+    i32_le_s_imm_jump_if_false: CompareImmJumpOp(i32),
+    i32_le_u_imm_jump_if_false: CompareImmJumpOp(i32),
+    i32_ge_s_imm_jump_if_false: CompareImmJumpOp(i32),
+    i32_ge_u_imm_jump_if_false: CompareImmJumpOp(i32),
+    // i64 compare-imm-jump
+    i64_eq_imm_jump_if_false: CompareImmJumpOp(i64),
+    i64_ne_imm_jump_if_false: CompareImmJumpOp(i64),
+    i64_lt_s_imm_jump_if_false: CompareImmJumpOp(i64),
+    i64_lt_u_imm_jump_if_false: CompareImmJumpOp(i64),
+    i64_gt_s_imm_jump_if_false: CompareImmJumpOp(i64),
+    i64_gt_u_imm_jump_if_false: CompareImmJumpOp(i64),
+    i64_le_s_imm_jump_if_false: CompareImmJumpOp(i64),
+    i64_le_u_imm_jump_if_false: CompareImmJumpOp(i64),
+    i64_ge_s_imm_jump_if_false: CompareImmJumpOp(i64),
+    i64_ge_u_imm_jump_if_false: CompareImmJumpOp(i64),
 
     // ── SIMD operations ───────────────────────────────────────────────────────
     simd_unary: SimdUnaryOp,

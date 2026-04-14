@@ -1012,6 +1012,27 @@ pub const Lower = struct {
                     .i64_ge_s_jump_if_false => |*j| j.target = target_pc,
                     .i64_ge_u_jump_if_false => |*j| j.target = target_pc,
                     .i64_eqz_jump_if_false => |*j| j.target = target_pc,
+                    // Fused compare-imm-jump ops (Peephole G)
+                    .i32_eq_imm_jump_if_false => |*j| j.target = target_pc,
+                    .i32_ne_imm_jump_if_false => |*j| j.target = target_pc,
+                    .i32_lt_s_imm_jump_if_false => |*j| j.target = target_pc,
+                    .i32_lt_u_imm_jump_if_false => |*j| j.target = target_pc,
+                    .i32_gt_s_imm_jump_if_false => |*j| j.target = target_pc,
+                    .i32_gt_u_imm_jump_if_false => |*j| j.target = target_pc,
+                    .i32_le_s_imm_jump_if_false => |*j| j.target = target_pc,
+                    .i32_le_u_imm_jump_if_false => |*j| j.target = target_pc,
+                    .i32_ge_s_imm_jump_if_false => |*j| j.target = target_pc,
+                    .i32_ge_u_imm_jump_if_false => |*j| j.target = target_pc,
+                    .i64_eq_imm_jump_if_false => |*j| j.target = target_pc,
+                    .i64_ne_imm_jump_if_false => |*j| j.target = target_pc,
+                    .i64_lt_s_imm_jump_if_false => |*j| j.target = target_pc,
+                    .i64_lt_u_imm_jump_if_false => |*j| j.target = target_pc,
+                    .i64_gt_s_imm_jump_if_false => |*j| j.target = target_pc,
+                    .i64_gt_u_imm_jump_if_false => |*j| j.target = target_pc,
+                    .i64_le_s_imm_jump_if_false => |*j| j.target = target_pc,
+                    .i64_le_u_imm_jump_if_false => |*j| j.target = target_pc,
+                    .i64_ge_s_imm_jump_if_false => |*j| j.target = target_pc,
+                    .i64_ge_u_imm_jump_if_false => |*j| j.target = target_pc,
                     else => unreachable,
                 }
             }
@@ -1194,6 +1215,107 @@ pub const Lower = struct {
                 try self.emit(.{ .i64_eqz_jump_if_false = .{ .src = c.src, .target = target } });
                 return true;
             },
+            // ── Candidate G: fuse _imm compare + jump → _imm_jump_if_false ──────
+            .i32_eq_imm => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_eq_imm_jump_if_false = .{ .lhs = c.lhs, .imm = c.imm, .target = target } });
+                return true;
+            },
+            .i32_ne_imm => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_ne_imm_jump_if_false = .{ .lhs = c.lhs, .imm = c.imm, .target = target } });
+                return true;
+            },
+            .i32_lt_s_imm => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_lt_s_imm_jump_if_false = .{ .lhs = c.lhs, .imm = c.imm, .target = target } });
+                return true;
+            },
+            .i32_lt_u_imm => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_lt_u_imm_jump_if_false = .{ .lhs = c.lhs, .imm = c.imm, .target = target } });
+                return true;
+            },
+            .i32_gt_s_imm => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_gt_s_imm_jump_if_false = .{ .lhs = c.lhs, .imm = c.imm, .target = target } });
+                return true;
+            },
+            .i32_gt_u_imm => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_gt_u_imm_jump_if_false = .{ .lhs = c.lhs, .imm = c.imm, .target = target } });
+                return true;
+            },
+            .i32_le_s_imm => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_le_s_imm_jump_if_false = .{ .lhs = c.lhs, .imm = c.imm, .target = target } });
+                return true;
+            },
+            .i32_le_u_imm => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_le_u_imm_jump_if_false = .{ .lhs = c.lhs, .imm = c.imm, .target = target } });
+                return true;
+            },
+            .i32_ge_s_imm => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_ge_s_imm_jump_if_false = .{ .lhs = c.lhs, .imm = c.imm, .target = target } });
+                return true;
+            },
+            .i32_ge_u_imm => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_ge_u_imm_jump_if_false = .{ .lhs = c.lhs, .imm = c.imm, .target = target } });
+                return true;
+            },
+            .i64_eq_imm => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_eq_imm_jump_if_false = .{ .lhs = c.lhs, .imm = c.imm, .target = target } });
+                return true;
+            },
+            .i64_ne_imm => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_ne_imm_jump_if_false = .{ .lhs = c.lhs, .imm = c.imm, .target = target } });
+                return true;
+            },
+            .i64_lt_s_imm => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_lt_s_imm_jump_if_false = .{ .lhs = c.lhs, .imm = c.imm, .target = target } });
+                return true;
+            },
+            .i64_lt_u_imm => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_lt_u_imm_jump_if_false = .{ .lhs = c.lhs, .imm = c.imm, .target = target } });
+                return true;
+            },
+            .i64_gt_s_imm => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_gt_s_imm_jump_if_false = .{ .lhs = c.lhs, .imm = c.imm, .target = target } });
+                return true;
+            },
+            .i64_gt_u_imm => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_gt_u_imm_jump_if_false = .{ .lhs = c.lhs, .imm = c.imm, .target = target } });
+                return true;
+            },
+            .i64_le_s_imm => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_le_s_imm_jump_if_false = .{ .lhs = c.lhs, .imm = c.imm, .target = target } });
+                return true;
+            },
+            .i64_le_u_imm => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_le_u_imm_jump_if_false = .{ .lhs = c.lhs, .imm = c.imm, .target = target } });
+                return true;
+            },
+            .i64_ge_s_imm => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_ge_s_imm_jump_if_false = .{ .lhs = c.lhs, .imm = c.imm, .target = target } });
+                return true;
+            },
+            .i64_ge_u_imm => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_ge_u_imm_jump_if_false = .{ .lhs = c.lhs, .imm = c.imm, .target = target } });
+                return true;
+            },
             else => {},
         }
         return false;
@@ -1285,6 +1407,155 @@ pub const Lower = struct {
             .i64_shr_u => |b| {
                 if (b.dst != src) return false;
                 last.* = .{ .i64_shr_u_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            // ── Candidate H/E: _imm variants → local_inplace or imm_to_local ─────
+            // H has higher priority: if the lhs slot IS the same local being set,
+            // fuse into local_inplace (local op= imm pattern).
+            // Otherwise fall through to E: fuse into imm_to_local.
+            .i32_add_imm => |b| {
+                if (b.dst != src) return false;
+                if (b.lhs == self.local_to_slot(local)) {
+                    last.* = .{ .i32_add_local_inplace = .{ .local = local, .imm = b.imm } };
+                } else {
+                    last.* = .{ .i32_add_imm_to_local = .{ .local = local, .lhs = b.lhs, .imm = b.imm } };
+                }
+            },
+            .i32_sub_imm => |b| {
+                if (b.dst != src) return false;
+                if (b.lhs == self.local_to_slot(local)) {
+                    last.* = .{ .i32_sub_local_inplace = .{ .local = local, .imm = b.imm } };
+                } else {
+                    last.* = .{ .i32_sub_imm_to_local = .{ .local = local, .lhs = b.lhs, .imm = b.imm } };
+                }
+            },
+            .i32_mul_imm => |b| {
+                if (b.dst != src) return false;
+                if (b.lhs == self.local_to_slot(local)) {
+                    last.* = .{ .i32_mul_local_inplace = .{ .local = local, .imm = b.imm } };
+                } else {
+                    last.* = .{ .i32_mul_imm_to_local = .{ .local = local, .lhs = b.lhs, .imm = b.imm } };
+                }
+            },
+            .i32_and_imm => |b| {
+                if (b.dst != src) return false;
+                if (b.lhs == self.local_to_slot(local)) {
+                    last.* = .{ .i32_and_local_inplace = .{ .local = local, .imm = b.imm } };
+                } else {
+                    last.* = .{ .i32_and_imm_to_local = .{ .local = local, .lhs = b.lhs, .imm = b.imm } };
+                }
+            },
+            .i32_or_imm => |b| {
+                if (b.dst != src) return false;
+                if (b.lhs == self.local_to_slot(local)) {
+                    last.* = .{ .i32_or_local_inplace = .{ .local = local, .imm = b.imm } };
+                } else {
+                    last.* = .{ .i32_or_imm_to_local = .{ .local = local, .lhs = b.lhs, .imm = b.imm } };
+                }
+            },
+            .i32_xor_imm => |b| {
+                if (b.dst != src) return false;
+                if (b.lhs == self.local_to_slot(local)) {
+                    last.* = .{ .i32_xor_local_inplace = .{ .local = local, .imm = b.imm } };
+                } else {
+                    last.* = .{ .i32_xor_imm_to_local = .{ .local = local, .lhs = b.lhs, .imm = b.imm } };
+                }
+            },
+            .i32_shl_imm => |b| {
+                if (b.dst != src) return false;
+                if (b.lhs == self.local_to_slot(local)) {
+                    last.* = .{ .i32_shl_local_inplace = .{ .local = local, .imm = b.imm } };
+                } else {
+                    last.* = .{ .i32_shl_imm_to_local = .{ .local = local, .lhs = b.lhs, .imm = b.imm } };
+                }
+            },
+            .i32_shr_s_imm => |b| {
+                if (b.dst != src) return false;
+                if (b.lhs == self.local_to_slot(local)) {
+                    last.* = .{ .i32_shr_s_local_inplace = .{ .local = local, .imm = b.imm } };
+                } else {
+                    last.* = .{ .i32_shr_s_imm_to_local = .{ .local = local, .lhs = b.lhs, .imm = b.imm } };
+                }
+            },
+            .i32_shr_u_imm => |b| {
+                if (b.dst != src) return false;
+                if (b.lhs == self.local_to_slot(local)) {
+                    last.* = .{ .i32_shr_u_local_inplace = .{ .local = local, .imm = b.imm } };
+                } else {
+                    last.* = .{ .i32_shr_u_imm_to_local = .{ .local = local, .lhs = b.lhs, .imm = b.imm } };
+                }
+            },
+            // ── i64 _imm variants ─────────────────────────────────────────────────
+            .i64_add_imm => |b| {
+                if (b.dst != src) return false;
+                if (b.lhs == self.local_to_slot(local)) {
+                    last.* = .{ .i64_add_local_inplace = .{ .local = local, .imm = b.imm } };
+                } else {
+                    last.* = .{ .i64_add_imm_to_local = .{ .local = local, .lhs = b.lhs, .imm = b.imm } };
+                }
+            },
+            .i64_sub_imm => |b| {
+                if (b.dst != src) return false;
+                if (b.lhs == self.local_to_slot(local)) {
+                    last.* = .{ .i64_sub_local_inplace = .{ .local = local, .imm = b.imm } };
+                } else {
+                    last.* = .{ .i64_sub_imm_to_local = .{ .local = local, .lhs = b.lhs, .imm = b.imm } };
+                }
+            },
+            .i64_mul_imm => |b| {
+                if (b.dst != src) return false;
+                if (b.lhs == self.local_to_slot(local)) {
+                    last.* = .{ .i64_mul_local_inplace = .{ .local = local, .imm = b.imm } };
+                } else {
+                    last.* = .{ .i64_mul_imm_to_local = .{ .local = local, .lhs = b.lhs, .imm = b.imm } };
+                }
+            },
+            .i64_and_imm => |b| {
+                if (b.dst != src) return false;
+                if (b.lhs == self.local_to_slot(local)) {
+                    last.* = .{ .i64_and_local_inplace = .{ .local = local, .imm = b.imm } };
+                } else {
+                    last.* = .{ .i64_and_imm_to_local = .{ .local = local, .lhs = b.lhs, .imm = b.imm } };
+                }
+            },
+            .i64_or_imm => |b| {
+                if (b.dst != src) return false;
+                if (b.lhs == self.local_to_slot(local)) {
+                    last.* = .{ .i64_or_local_inplace = .{ .local = local, .imm = b.imm } };
+                } else {
+                    last.* = .{ .i64_or_imm_to_local = .{ .local = local, .lhs = b.lhs, .imm = b.imm } };
+                }
+            },
+            .i64_xor_imm => |b| {
+                if (b.dst != src) return false;
+                if (b.lhs == self.local_to_slot(local)) {
+                    last.* = .{ .i64_xor_local_inplace = .{ .local = local, .imm = b.imm } };
+                } else {
+                    last.* = .{ .i64_xor_imm_to_local = .{ .local = local, .lhs = b.lhs, .imm = b.imm } };
+                }
+            },
+            .i64_shl_imm => |b| {
+                if (b.dst != src) return false;
+                if (b.lhs == self.local_to_slot(local)) {
+                    last.* = .{ .i64_shl_local_inplace = .{ .local = local, .imm = b.imm } };
+                } else {
+                    last.* = .{ .i64_shl_imm_to_local = .{ .local = local, .lhs = b.lhs, .imm = b.imm } };
+                }
+            },
+            .i64_shr_s_imm => |b| {
+                if (b.dst != src) return false;
+                if (b.lhs == self.local_to_slot(local)) {
+                    last.* = .{ .i64_shr_s_local_inplace = .{ .local = local, .imm = b.imm } };
+                } else {
+                    last.* = .{ .i64_shr_s_imm_to_local = .{ .local = local, .lhs = b.lhs, .imm = b.imm } };
+                }
+            },
+            .i64_shr_u_imm => |b| {
+                if (b.dst != src) return false;
+                if (b.lhs == self.local_to_slot(local)) {
+                    last.* = .{ .i64_shr_u_local_inplace = .{ .local = local, .imm = b.imm } };
+                } else {
+                    last.* = .{ .i64_shr_u_imm_to_local = .{ .local = local, .lhs = b.lhs, .imm = b.imm } };
+                }
             },
             else => return false,
         }
@@ -1872,6 +2143,27 @@ pub const Lower = struct {
                     .i64_ge_s_jump_if_false => |*j| j.target = continue_pc,
                     .i64_ge_u_jump_if_false => |*j| j.target = continue_pc,
                     .i64_eqz_jump_if_false => |*j| j.target = continue_pc,
+                    // Fused compare-imm-jump ops (Peephole G)
+                    .i32_eq_imm_jump_if_false => |*j| j.target = continue_pc,
+                    .i32_ne_imm_jump_if_false => |*j| j.target = continue_pc,
+                    .i32_lt_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                    .i32_lt_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                    .i32_gt_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                    .i32_gt_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                    .i32_le_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                    .i32_le_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                    .i32_ge_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                    .i32_ge_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                    .i64_eq_imm_jump_if_false => |*j| j.target = continue_pc,
+                    .i64_ne_imm_jump_if_false => |*j| j.target = continue_pc,
+                    .i64_lt_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                    .i64_lt_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                    .i64_gt_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                    .i64_gt_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                    .i64_le_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                    .i64_le_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                    .i64_ge_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                    .i64_ge_u_imm_jump_if_false => |*j| j.target = continue_pc,
                     else => unreachable,
                 }
             },
