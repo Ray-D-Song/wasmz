@@ -70,6 +70,18 @@ pub fn BinaryOpImm(comptime T: type) type {
     };
 }
 
+/// r0 variant of BinaryOpImm: lhs is read from the r0 accumulator register,
+/// so no `lhs` slot field is needed.  Saves one 16-bit field per instruction
+/// and one memory load per execution.
+pub fn BinaryOpImmR0(comptime T: type) type {
+    return struct {
+        dst: Slot,
+        imm: T,
+
+        pub const ValueType = T;
+    };
+}
+
 /// Fused: compare + jump_if_z — replaces `i32_xxx_cmp { dst=C, lhs=A, rhs=B }` + `jump_if_z { cond=C, rel=R }`.
 /// Jumps to `target` (op-index, converted to relative byte offset at encode time)
 /// when the comparison is FALSE (i.e. jump when compare result == 0).
@@ -476,6 +488,28 @@ pub const Op = union(enum) {
     i64_ge_s_imm: BinaryOpImm(i64),
     i64_ge_u_imm: BinaryOpImm(i64),
 
+    // ── r0 variants: lhs comes from r0 accumulator, no lhs slot in encoding ──
+    // i32 arithmetic-imm r0: lhs = r0
+    i32_add_imm_r: BinaryOpImmR0(i32),
+    i32_sub_imm_r: BinaryOpImmR0(i32),
+    i32_mul_imm_r: BinaryOpImmR0(i32),
+    i32_and_imm_r: BinaryOpImmR0(i32),
+    i32_or_imm_r: BinaryOpImmR0(i32),
+    i32_xor_imm_r: BinaryOpImmR0(i32),
+    i32_shl_imm_r: BinaryOpImmR0(i32),
+    i32_shr_s_imm_r: BinaryOpImmR0(i32),
+    i32_shr_u_imm_r: BinaryOpImmR0(i32),
+    // i64 arithmetic-imm r0: lhs = r0
+    i64_add_imm_r: BinaryOpImmR0(i64),
+    i64_sub_imm_r: BinaryOpImmR0(i64),
+    i64_mul_imm_r: BinaryOpImmR0(i64),
+    i64_and_imm_r: BinaryOpImmR0(i64),
+    i64_or_imm_r: BinaryOpImmR0(i64),
+    i64_xor_imm_r: BinaryOpImmR0(i64),
+    i64_shl_imm_r: BinaryOpImmR0(i64),
+    i64_shr_s_imm_r: BinaryOpImmR0(i64),
+    i64_shr_u_imm_r: BinaryOpImmR0(i64),
+
     // ── Fused: compare + jump_if_z (F: cmp + branch → cmp_jump) ─────────────
     // Jumps to rel_target (from instruction start) when the comparison is FALSE.
     // i32 compare-jump variants
@@ -504,6 +538,38 @@ pub const Op = union(enum) {
     i64_ge_u_jump_if_false: CompareJumpOp(i64),
     // i64 eqz-jump (unary: jumps when src != 0, i.e. when eqz is false)
     i64_eqz_jump_if_false: struct { src: Slot, target: u32 },
+
+    // ── Fused: compare + jump_if_true (J: cmp + br_if → cmp_jump_if_true) ────
+    // Peephole J: replaces the 2-op pattern:
+    //   compare_jump_if_false → continue_pc
+    //   jump → target
+    // with a single op that jumps to `target` when the comparison is TRUE.
+    // i32 compare-jump-if-true variants
+    i32_eq_jump_if_true: CompareJumpOp(i32),
+    i32_ne_jump_if_true: CompareJumpOp(i32),
+    i32_lt_s_jump_if_true: CompareJumpOp(i32),
+    i32_lt_u_jump_if_true: CompareJumpOp(i32),
+    i32_gt_s_jump_if_true: CompareJumpOp(i32),
+    i32_gt_u_jump_if_true: CompareJumpOp(i32),
+    i32_le_s_jump_if_true: CompareJumpOp(i32),
+    i32_le_u_jump_if_true: CompareJumpOp(i32),
+    i32_ge_s_jump_if_true: CompareJumpOp(i32),
+    i32_ge_u_jump_if_true: CompareJumpOp(i32),
+    // i32 eqz-jump-if-true (unary: jumps when src == 0, i.e. when eqz is true)
+    i32_eqz_jump_if_true: struct { src: Slot, target: u32 },
+    // i64 compare-jump-if-true variants
+    i64_eq_jump_if_true: CompareJumpOp(i64),
+    i64_ne_jump_if_true: CompareJumpOp(i64),
+    i64_lt_s_jump_if_true: CompareJumpOp(i64),
+    i64_lt_u_jump_if_true: CompareJumpOp(i64),
+    i64_gt_s_jump_if_true: CompareJumpOp(i64),
+    i64_gt_u_jump_if_true: CompareJumpOp(i64),
+    i64_le_s_jump_if_true: CompareJumpOp(i64),
+    i64_le_u_jump_if_true: CompareJumpOp(i64),
+    i64_ge_s_jump_if_true: CompareJumpOp(i64),
+    i64_ge_u_jump_if_true: CompareJumpOp(i64),
+    // i64 eqz-jump-if-true (unary: jumps when src == 0, i.e. when eqz is true)
+    i64_eqz_jump_if_true: struct { src: Slot, target: u32 },
 
     // ── Fused: binop result to local (D: binop + local_set → binop_to_local) ─
     i32_add_to_local: BinaryOpToLocal(i32),
@@ -594,6 +660,30 @@ pub const Op = union(enum) {
     i64_ge_s_imm_jump_if_false: CompareImmJumpOp(i64),
     i64_ge_u_imm_jump_if_false: CompareImmJumpOp(i64),
 
+    // ── Fused: compare-imm + jump_if_true (J-imm: const + compare + br_if, true branch) ─
+    // i32 compare-imm-jump, true-branch
+    i32_eq_imm_jump_if_true: CompareImmJumpOp(i32),
+    i32_ne_imm_jump_if_true: CompareImmJumpOp(i32),
+    i32_lt_s_imm_jump_if_true: CompareImmJumpOp(i32),
+    i32_lt_u_imm_jump_if_true: CompareImmJumpOp(i32),
+    i32_gt_s_imm_jump_if_true: CompareImmJumpOp(i32),
+    i32_gt_u_imm_jump_if_true: CompareImmJumpOp(i32),
+    i32_le_s_imm_jump_if_true: CompareImmJumpOp(i32),
+    i32_le_u_imm_jump_if_true: CompareImmJumpOp(i32),
+    i32_ge_s_imm_jump_if_true: CompareImmJumpOp(i32),
+    i32_ge_u_imm_jump_if_true: CompareImmJumpOp(i32),
+    // i64 compare-imm-jump, true-branch
+    i64_eq_imm_jump_if_true: CompareImmJumpOp(i64),
+    i64_ne_imm_jump_if_true: CompareImmJumpOp(i64),
+    i64_lt_s_imm_jump_if_true: CompareImmJumpOp(i64),
+    i64_lt_u_imm_jump_if_true: CompareImmJumpOp(i64),
+    i64_gt_s_imm_jump_if_true: CompareImmJumpOp(i64),
+    i64_gt_u_imm_jump_if_true: CompareImmJumpOp(i64),
+    i64_le_s_imm_jump_if_true: CompareImmJumpOp(i64),
+    i64_le_u_imm_jump_if_true: CompareImmJumpOp(i64),
+    i64_ge_s_imm_jump_if_true: CompareImmJumpOp(i64),
+    i64_ge_u_imm_jump_if_true: CompareImmJumpOp(i64),
+
     // ── SIMD operations ───────────────────────────────────────────────────────
     simd_unary: SimdUnaryOp,
     simd_binary: SimdBinaryOp,
@@ -643,6 +733,12 @@ pub const Op = union(enum) {
         cond: Slot,
         target: u32,
     },
+    /// Jump if `cond` slot holds a non-zero i32. `target` is an op index.
+    /// Peephole J: replaces `jump_if_z cond → skip` + `jump → target`.
+    jump_if_nz: struct {
+        cond: Slot,
+        target: u32,
+    },
     /// Copy `src` slot into `dst` slot (used to write block results).
     copy: struct {
         dst: Slot,
@@ -661,6 +757,14 @@ pub const Op = union(enum) {
     ret: struct {
         value: ?Slot,
     },
+
+    // ── Fused binop+ret: compute result and return immediately ─────────────────
+    // Peephole I: final binop whose result is immediately returned.
+    // Saves one dispatch event per non-base recursive call.
+    i32_add_ret: struct { lhs: Slot, rhs: Slot },
+    i32_sub_ret: struct { lhs: Slot, rhs: Slot },
+    i64_add_ret: struct { lhs: Slot, rhs: Slot },
+    i64_sub_ret: struct { lhs: Slot, rhs: Slot },
 
     // ── Memory load/store instructions ──────────────────────────────────────────
     // All load/store instructions share the same memory immediate: (align, offset).

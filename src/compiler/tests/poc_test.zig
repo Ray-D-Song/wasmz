@@ -71,20 +71,12 @@ test "lower simple add function into slot IR" {
     }
 
     try testing.expectEqual(@as(u32, 3), lower.compiled.slots_len);
-    try testing.expectEqual(@as(usize, 2), lower.compiled.ops.items.len);
+    try testing.expectEqual(@as(usize, 1), lower.compiled.ops.items.len);
 
     switch (lower.compiled.ops.items[0]) {
-        .i32_add => |got| {
-            try testing.expectEqual(@as(u32, 2), got.dst);
+        .i32_add_ret => |got| {
             try testing.expectEqual(@as(u32, 0), got.lhs);
             try testing.expectEqual(@as(u32, 1), got.rhs);
-        },
-        else => return error.UnexpectedOpTag,
-    }
-
-    switch (lower.compiled.ops.items[1]) {
-        .ret => |got| {
-            try testing.expectEqual(@as(?u16, 2), got.value);
         },
         else => return error.UnexpectedOpTag,
     }
@@ -279,20 +271,12 @@ test "lower i32_sub into slot IR" {
     }
 
     try testing.expectEqual(@as(u32, 3), lower.compiled.slots_len);
-    try testing.expectEqual(@as(usize, 2), lower.compiled.ops.items.len);
+    try testing.expectEqual(@as(usize, 1), lower.compiled.ops.items.len);
 
     switch (lower.compiled.ops.items[0]) {
-        .i32_sub => |got| {
-            try testing.expectEqual(@as(u32, 2), got.dst);
+        .i32_sub_ret => |got| {
             try testing.expectEqual(@as(u32, 0), got.lhs);
             try testing.expectEqual(@as(u32, 1), got.rhs);
-        },
-        else => return error.UnexpectedOpTag,
-    }
-
-    switch (lower.compiled.ops.items[1]) {
-        .ret => |got| {
-            try testing.expectEqual(@as(?u16, 2), got.value);
         },
         else => return error.UnexpectedOpTag,
     }

@@ -2086,6 +2086,10 @@ fn decodeAndLower(
     }
 
     // ── Main dispatch: decode operands inline + lower directly ────────────────
+    // Capture and clear r0 accumulator state before dispatch.
+    const saved_r0 = lower.r0_slot;
+    lower.r0_slot = null;
+
     switch (code) {
         // ── No-operand simple ops ────────────────────────────────────────────
         .unreachable_ => {
@@ -2194,56 +2198,56 @@ fn decodeAndLower(
         },
 
         // ── i32 binary ───────────────────────────────────────────────────────
-        .i32_add => try lower.lower_binary_op("i32_add"),
-        .i32_sub => try lower.lower_binary_op("i32_sub"),
-        .i32_mul => try lower.lower_binary_op("i32_mul"),
-        .i32_div_s => try lower.lower_binary_op("i32_div_s"),
-        .i32_div_u => try lower.lower_binary_op("i32_div_u"),
-        .i32_rem_s => try lower.lower_binary_op("i32_rem_s"),
-        .i32_rem_u => try lower.lower_binary_op("i32_rem_u"),
-        .i32_and => try lower.lower_binary_op("i32_and"),
-        .i32_or => try lower.lower_binary_op("i32_or"),
-        .i32_xor => try lower.lower_binary_op("i32_xor"),
-        .i32_shl => try lower.lower_binary_op("i32_shl"),
-        .i32_shr_s => try lower.lower_binary_op("i32_shr_s"),
-        .i32_shr_u => try lower.lower_binary_op("i32_shr_u"),
-        .i32_rotl => try lower.lower_binary_op("i32_rotl"),
-        .i32_rotr => try lower.lower_binary_op("i32_rotr"),
+        .i32_add => try lower.lower_binary_op("i32_add", saved_r0),
+        .i32_sub => try lower.lower_binary_op("i32_sub", saved_r0),
+        .i32_mul => try lower.lower_binary_op("i32_mul", saved_r0),
+        .i32_div_s => try lower.lower_binary_op("i32_div_s", saved_r0),
+        .i32_div_u => try lower.lower_binary_op("i32_div_u", saved_r0),
+        .i32_rem_s => try lower.lower_binary_op("i32_rem_s", saved_r0),
+        .i32_rem_u => try lower.lower_binary_op("i32_rem_u", saved_r0),
+        .i32_and => try lower.lower_binary_op("i32_and", saved_r0),
+        .i32_or => try lower.lower_binary_op("i32_or", saved_r0),
+        .i32_xor => try lower.lower_binary_op("i32_xor", saved_r0),
+        .i32_shl => try lower.lower_binary_op("i32_shl", saved_r0),
+        .i32_shr_s => try lower.lower_binary_op("i32_shr_s", saved_r0),
+        .i32_shr_u => try lower.lower_binary_op("i32_shr_u", saved_r0),
+        .i32_rotl => try lower.lower_binary_op("i32_rotl", saved_r0),
+        .i32_rotr => try lower.lower_binary_op("i32_rotr", saved_r0),
 
         // ── i64 binary ───────────────────────────────────────────────────────
-        .i64_add => try lower.lower_binary_op("i64_add"),
-        .i64_sub => try lower.lower_binary_op("i64_sub"),
-        .i64_mul => try lower.lower_binary_op("i64_mul"),
-        .i64_div_s => try lower.lower_binary_op("i64_div_s"),
-        .i64_div_u => try lower.lower_binary_op("i64_div_u"),
-        .i64_rem_s => try lower.lower_binary_op("i64_rem_s"),
-        .i64_rem_u => try lower.lower_binary_op("i64_rem_u"),
-        .i64_and => try lower.lower_binary_op("i64_and"),
-        .i64_or => try lower.lower_binary_op("i64_or"),
-        .i64_xor => try lower.lower_binary_op("i64_xor"),
-        .i64_shl => try lower.lower_binary_op("i64_shl"),
-        .i64_shr_s => try lower.lower_binary_op("i64_shr_s"),
-        .i64_shr_u => try lower.lower_binary_op("i64_shr_u"),
-        .i64_rotl => try lower.lower_binary_op("i64_rotl"),
-        .i64_rotr => try lower.lower_binary_op("i64_rotr"),
+        .i64_add => try lower.lower_binary_op("i64_add", saved_r0),
+        .i64_sub => try lower.lower_binary_op("i64_sub", saved_r0),
+        .i64_mul => try lower.lower_binary_op("i64_mul", saved_r0),
+        .i64_div_s => try lower.lower_binary_op("i64_div_s", saved_r0),
+        .i64_div_u => try lower.lower_binary_op("i64_div_u", saved_r0),
+        .i64_rem_s => try lower.lower_binary_op("i64_rem_s", saved_r0),
+        .i64_rem_u => try lower.lower_binary_op("i64_rem_u", saved_r0),
+        .i64_and => try lower.lower_binary_op("i64_and", saved_r0),
+        .i64_or => try lower.lower_binary_op("i64_or", saved_r0),
+        .i64_xor => try lower.lower_binary_op("i64_xor", saved_r0),
+        .i64_shl => try lower.lower_binary_op("i64_shl", saved_r0),
+        .i64_shr_s => try lower.lower_binary_op("i64_shr_s", saved_r0),
+        .i64_shr_u => try lower.lower_binary_op("i64_shr_u", saved_r0),
+        .i64_rotl => try lower.lower_binary_op("i64_rotl", saved_r0),
+        .i64_rotr => try lower.lower_binary_op("i64_rotr", saved_r0),
 
         // ── f32 binary ───────────────────────────────────────────────────────
-        .f32_add => try lower.lower_binary_op("f32_add"),
-        .f32_sub => try lower.lower_binary_op("f32_sub"),
-        .f32_mul => try lower.lower_binary_op("f32_mul"),
-        .f32_div => try lower.lower_binary_op("f32_div"),
-        .f32_min => try lower.lower_binary_op("f32_min"),
-        .f32_max => try lower.lower_binary_op("f32_max"),
-        .f32_copysign => try lower.lower_binary_op("f32_copysign"),
+        .f32_add => try lower.lower_binary_op("f32_add", saved_r0),
+        .f32_sub => try lower.lower_binary_op("f32_sub", saved_r0),
+        .f32_mul => try lower.lower_binary_op("f32_mul", saved_r0),
+        .f32_div => try lower.lower_binary_op("f32_div", saved_r0),
+        .f32_min => try lower.lower_binary_op("f32_min", saved_r0),
+        .f32_max => try lower.lower_binary_op("f32_max", saved_r0),
+        .f32_copysign => try lower.lower_binary_op("f32_copysign", saved_r0),
 
         // ── f64 binary ───────────────────────────────────────────────────────
-        .f64_add => try lower.lower_binary_op("f64_add"),
-        .f64_sub => try lower.lower_binary_op("f64_sub"),
-        .f64_mul => try lower.lower_binary_op("f64_mul"),
-        .f64_div => try lower.lower_binary_op("f64_div"),
-        .f64_min => try lower.lower_binary_op("f64_min"),
-        .f64_max => try lower.lower_binary_op("f64_max"),
-        .f64_copysign => try lower.lower_binary_op("f64_copysign"),
+        .f64_add => try lower.lower_binary_op("f64_add", saved_r0),
+        .f64_sub => try lower.lower_binary_op("f64_sub", saved_r0),
+        .f64_mul => try lower.lower_binary_op("f64_mul", saved_r0),
+        .f64_div => try lower.lower_binary_op("f64_div", saved_r0),
+        .f64_min => try lower.lower_binary_op("f64_min", saved_r0),
+        .f64_max => try lower.lower_binary_op("f64_max", saved_r0),
+        .f64_copysign => try lower.lower_binary_op("f64_copysign", saved_r0),
 
         // ── i32 unary ────────────────────────────────────────────────────────
         .i32_clz => try lower.lower_unary_op("i32_clz"),
