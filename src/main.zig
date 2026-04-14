@@ -23,7 +23,6 @@ const arg_parse = @import("utils/arg-parse.zig");
 const stats = @import("utils/stats.zig");
 
 const Engine = wasmz.Engine;
-const Config = wasmz.Config;
 const Module = wasmz.Module;
 const Store = wasmz.Store;
 const Instance = wasmz.Instance;
@@ -31,45 +30,28 @@ const RawVal = wasmz.RawVal;
 const Linker = wasmz.Linker;
 
 pub fn main() void {
-    // Debug builds use GeneralPurposeAllocator for leak/corruption detection.
-    // Release builds use smp_allocator (lock-free, low-overhead) to avoid the
-    // mmap-per-allocation cost of DebugAllocator (GPA alias in Zig 0.15).
     if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
         var gpa = std.heap.GeneralPurposeAllocator(.{}){};
         defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
-        defer wasmz.profiling.printReport();
-        var out_buf: [8192]u8 = undefined;
-        var bw = std.fs.File.stdout().writer(&out_buf);
-        const stdout = &bw.interface;
-        run(allocator, stdout) catch |err| {
-            std.debug.print("fatal: {s}\n", .{@errorName(err)});
-            std.process.exit(1);
-        };
-        bw.interface.flush() catch {};
+        run(gpa.allocator());
     } else {
-        const allocator = std.heap.smp_allocator;
-        defer wasmz.profiling.printReport();
-        var out_buf: [8192]u8 = undefined;
-        var bw = std.fs.File.stdout().writer(&out_buf);
-        const stdout = &bw.interface;
-        run(allocator, stdout) catch |err| {
-            std.debug.print("fatal: {s}\n", .{@errorName(err)});
-            std.process.exit(1);
-        };
-        bw.interface.flush() catch {};
+        run(std.heap.smp_allocator);
     }
 }
 
-fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
-    var cli_args = CliArgs.parse(allocator) catch |err| {
-        switch (err) {
-            error.MissingFilePath => {
-                CliArgs.command.printUsage();
-                std.process.exit(1);
-            },
-            else => return err,
-        }
+fn run(allocator: std.mem.Allocator) void {
+    defer profiling.printReport();
+    var out_buf: [8192]u8 = undefined;
+    var bw = std.fs.File.stdout().writer(&out_buf);
+    const stdout = &bw.interface;
+    defer bw.interface.flush() catch {};
+
+    var cli_args = CliArgs.parse(allocator) catch |err| switch (err) {
+        error.MissingFilePath => {
+            CliArgs.command.printUsage();
+            std.process.exit(1);
+        },
+        else => fatal("Failed to parse args: {s}", .{@errorName(err)}),
     };
     defer cli_args.deinit(allocator);
 
@@ -83,7 +65,7 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
         fatal("Unable to read {s}: {s}", .{ file_path, @errorName(err) });
     defer allocator.free(bytes);
 
-    var engine = Engine.init(allocator, Config{
+    var engine = Engine.init(allocator, .{
         .legacy_exceptions = cli_args.legacy_exceptions,
         .mem_limit_bytes = if (cli_args.mem_limit_mb) |mb| mb * 1024 * 1024 else null,
         .eager_compile = cli_args.eager_compile,
@@ -97,14 +79,11 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
         mod.deinit();
     };
 
-    var store = try Store.init(allocator, engine);
+    var store = Store.init(allocator, engine) catch |err|
+        fatal("Failed to init store: {s}", .{@errorName(err)});
     if (cli_args.mem_limit_mb != null) store.linkBudget();
     defer store.deinit();
 
-    // Lazy WASI initialization (plan A): only allocate and register the WASI
-    // host when the module actually imports wasi_snapshot_preview1 symbols.
-    // For pure-compute modules with no WASI imports this avoids all FdIO /
-    // Clock / EnvArgs heap allocations.
     var wasi_host: ?wasi_preview1.Host = null;
     defer if (wasi_host) |*h| h.deinit();
 
@@ -113,9 +92,11 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
 
     if (moduleNeedsWasi(arc_module.value)) {
         wasi_host = wasi_preview1.Host.init(allocator);
-        try wasi_host.?.setArgs(cli_args.wasi_args);
+        wasi_host.?.setArgs(cli_args.wasi_args) catch |err|
+            fatal("Failed to set WASI args: {s}", .{@errorName(err)});
         if (profiling.enabled) wasi_host.?.setOnExit(stats.onExitProfiling, null);
-        try wasi_host.?.addToLinker(&linker, allocator);
+        wasi_host.?.addToLinker(&linker, allocator) catch |err|
+            fatal("Failed to add WASI to linker: {s}", .{@errorName(err)});
     }
 
     var instance = Instance.init(&store, arc_module.retain(), linker) catch |err| {
@@ -123,14 +104,14 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
         std.process.exit(1);
     };
     if (cli_args.mem_stats) {
-        var mem_stats_ctx = stats.MemStatsCtx{};
-        mem_stats_ctx.store = &store;
-        mem_stats_ctx.instance = &instance;
+        var mem_stats_ctx = stats.MemStatsCtx{
+            .store = &store,
+            .instance = &instance,
+        };
         if (wasi_host) |*h| h.setOnExit(stats.onExitMemStats, &mem_stats_ctx);
     }
     defer {
         if (cli_args.mem_stats) stats.printMemStats(&store, &instance);
-        profiling.printReport();
         instance.deinit();
     }
 
@@ -157,13 +138,13 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
         }
 
         if (arc_module.value.exports.count() == 0) {
-            try stdout.writeAll("(module has no exported functions)\n");
+            stdout.writeAll("(module has no exported functions)\n") catch {};
             return;
         }
-        try stdout.writeAll("Exported functions:\n");
+        stdout.writeAll("Exported functions:\n") catch {};
         var iter = arc_module.value.exports.iterator();
         while (iter.next()) |entry| {
-            try stdout.print("  {s}\n", .{entry.key_ptr.*});
+            stdout.print("  {s}\n", .{entry.key_ptr.*}) catch {};
         }
         return;
     }
@@ -176,14 +157,15 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     for (cli_args.i32_args) |arg| {
         const val = std.fmt.parseInt(i32, arg, 10) catch
             fatal("Argument \"{s}\" is not a valid i32", .{arg});
-        try call_args.append(allocator, RawVal.from(val));
+        call_args.append(allocator, RawVal.from(val)) catch |err|
+            fatal("Failed to append arg: {s}", .{@errorName(err)});
     }
 
     const result = instance.call(func_name, call_args.items) catch |err|
         fatal("Failed to call \"{s}\": {s}", .{ func_name, @errorName(err) });
 
     switch (result) {
-        .ok => |val| if (val) |v| try stdout.print("{d}\n", .{v.readAs(i32)}),
+        .ok => |val| if (val) |v| stdout.print("{d}\n", .{v.readAs(i32)}) catch {},
         .trap => |t| fatalTrap(t, allocator, "trap"),
     }
 }
