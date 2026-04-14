@@ -53,7 +53,7 @@ inline fn writeSimd(slots: [*]RawVal, idx: u32, sv: SimdVal) void {
 
 // ── simd_unary ───────────────────────────────────────────────────────────────
 
-pub fn handle_simd_unary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_simd_unary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops_val = readOps(encode.OpsSimdUnary, ip);
     const opcode: core.simd.SimdOpcode = @enumFromInt(ops_val.opcode);
     // splat: src is a scalar slot; all others: src is a V128 (two slots)
@@ -68,83 +68,83 @@ pub fn handle_simd_unary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
     } else {
         writeSimd(slots, ops_val.dst, result);
     }
-    dispatch.next(ip, stride(encode.OpsSimdUnary), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.OpsSimdUnary), slots, frame, env);
 }
 
 // ── simd_binary ──────────────────────────────────────────────────────────────
 
-pub fn handle_simd_binary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_simd_binary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops_val = readOps(encode.OpsSimdBinary, ip);
     const opcode: core.simd.SimdOpcode = @enumFromInt(ops_val.opcode);
     const result = simd.executeBinary(opcode, readSimd(slots, ops_val.lhs), readSimd(slots, ops_val.rhs));
     writeSimd(slots, ops_val.dst, result);
-    dispatch.next(ip, stride(encode.OpsSimdBinary), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.OpsSimdBinary), slots, frame, env);
 }
 
 // ── simd_ternary ─────────────────────────────────────────────────────────────
 
-pub fn handle_simd_ternary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_simd_ternary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops_val = readOps(encode.OpsSimdTernary, ip);
     const opcode: core.simd.SimdOpcode = @enumFromInt(ops_val.opcode);
     const result = simd.executeTernary(opcode, readSimd(slots, ops_val.first), readSimd(slots, ops_val.second), readSimd(slots, ops_val.third));
     writeSimd(slots, ops_val.dst, result);
-    dispatch.next(ip, stride(encode.OpsSimdTernary), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.OpsSimdTernary), slots, frame, env);
 }
 
 // ── simd_compare ─────────────────────────────────────────────────────────────
 
-pub fn handle_simd_compare(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_simd_compare(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops_val = readOps(encode.OpsSimdBinary, ip);
     const opcode: core.simd.SimdOpcode = @enumFromInt(ops_val.opcode);
     const result = simd.executeCompare(opcode, readSimd(slots, ops_val.lhs), readSimd(slots, ops_val.rhs));
     writeSimd(slots, ops_val.dst, result);
-    dispatch.next(ip, stride(encode.OpsSimdBinary), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.OpsSimdBinary), slots, frame, env);
 }
 
 // ── simd_shift_scalar ────────────────────────────────────────────────────────
 
-pub fn handle_simd_shift_scalar(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_simd_shift_scalar(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops_val = readOps(encode.OpsSimdBinary, ip);
     const opcode: core.simd.SimdOpcode = @enumFromInt(ops_val.opcode);
     // lhs is V128 (two slots), rhs is scalar (one slot)
     const result = simd.executeShift(opcode, readSimd(slots, ops_val.lhs), slots[ops_val.rhs]);
     writeSimd(slots, ops_val.dst, result);
-    dispatch.next(ip, stride(encode.OpsSimdBinary), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.OpsSimdBinary), slots, frame, env);
 }
 
 // ── simd_extract_lane ────────────────────────────────────────────────────────
 
-pub fn handle_simd_extract_lane(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_simd_extract_lane(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops_val = readOps(encode.OpsSimdExtractLane, ip);
     const opcode: core.simd.SimdOpcode = @enumFromInt(ops_val.opcode);
     // src is V128 (two slots), dst is scalar
     slots[ops_val.dst] = simd.extractLane(opcode, readSimd(slots, ops_val.src), ops_val.lane);
-    dispatch.next(ip, stride(encode.OpsSimdExtractLane), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.OpsSimdExtractLane), slots, frame, env);
 }
 
 // ── simd_replace_lane ────────────────────────────────────────────────────────
 
-pub fn handle_simd_replace_lane(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_simd_replace_lane(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops_val = readOps(encode.OpsSimdReplaceLane, ip);
     const opcode: core.simd.SimdOpcode = @enumFromInt(ops_val.opcode);
     // src_vec is V128 (two slots), src_lane is scalar (one slot)
     const result = simd.replaceLane(opcode, readSimd(slots, ops_val.src_vec), slots[ops_val.src_lane], ops_val.lane);
     writeSimd(slots, ops_val.dst, result);
-    dispatch.next(ip, stride(encode.OpsSimdReplaceLane), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.OpsSimdReplaceLane), slots, frame, env);
 }
 
 // ── simd_shuffle ─────────────────────────────────────────────────────────────
 
-pub fn handle_simd_shuffle(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_simd_shuffle(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops_val = readOps(encode.OpsSimdShuffle, ip);
     const result = simd.shuffleVectors(readSimd(slots, ops_val.lhs), readSimd(slots, ops_val.rhs), ops_val.lanes);
     writeSimd(slots, ops_val.dst, result);
-    dispatch.next(ip, stride(encode.OpsSimdShuffle), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.OpsSimdShuffle), slots, frame, env);
 }
 
 // ── simd_load ────────────────────────────────────────────────────────────────
 
-pub fn handle_simd_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_simd_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops_val = readOps(encode.OpsSimdLoad, ip);
     const opcode: core.simd.SimdOpcode = @enumFromInt(ops_val.opcode);
     const memory = env.memory.bytes();
@@ -179,12 +179,12 @@ pub fn handle_simd_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
         src_vec,
     );
     writeSimd(slots, ops_val.dst, result);
-    dispatch.next(ip, stride(encode.OpsSimdLoad), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.OpsSimdLoad), slots, frame, env);
 }
 
 // ── simd_store ───────────────────────────────────────────────────────────────
 
-pub fn handle_simd_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_simd_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops_val = readOps(encode.OpsSimdStore, ip);
     const opcode: core.simd.SimdOpcode = @enumFromInt(ops_val.opcode);
     const memory = env.memory.bytes();
@@ -202,5 +202,5 @@ pub fn handle_simd_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
     };
 
     simd.store(opcode, memory, slots[ops_val.addr].readAs(u32), ops_val.offset, ops_val.lane, readSimd(slots, ops_val.src));
-    dispatch.next(ip, stride(encode.OpsSimdStore), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.OpsSimdStore), slots, frame, env);
 }

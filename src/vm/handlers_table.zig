@@ -33,7 +33,7 @@ inline fn trapReturn(frame: *DispatchState, code: core.TrapCode) void {
 
 // ── table_get ────────────────────────────────────────────────────────────────
 
-pub fn handle_table_get(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_table_get(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsTableGet, ip);
     if (ops.table_index >= env.tables.len) {
         trapReturn(frame, .TableOutOfBounds);
@@ -51,12 +51,12 @@ pub fn handle_table_get(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
     // Non-null: func_idx -> func_idx+1.
     const ref: u64 = if (func_idx == std.math.maxInt(u32)) 0 else @as(u64, func_idx) + 1;
     slots[ops.dst] = RawVal.fromBits64(ref);
-    dispatch.next(ip, stride(encode.OpsTableGet), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.OpsTableGet), slots, frame, env);
 }
 
 // ── table_set ────────────────────────────────────────────────────────────────
 
-pub fn handle_table_set(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_table_set(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsTableSet, ip);
     if (ops.table_index >= env.tables.len) {
         trapReturn(frame, .TableOutOfBounds);
@@ -73,12 +73,12 @@ pub fn handle_table_set(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
     // Slot null (0) -> table null sentinel (maxInt(u32)).
     // Non-null: slot value is func_idx+1 -> table stores func_idx.
     env.tables[ops.table_index][idx] = if (ref == 0) std.math.maxInt(u32) else @as(u32, @intCast(ref - 1));
-    dispatch.next(ip, stride(encode.OpsTableSet), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.OpsTableSet), slots, frame, env);
 }
 
 // ── table_size ───────────────────────────────────────────────────────────────
 
-pub fn handle_table_size(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_table_size(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsTableSize, ip);
     if (ops.table_index >= env.tables.len) {
         trapReturn(frame, .TableOutOfBounds);
@@ -86,12 +86,12 @@ pub fn handle_table_size(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
     }
     const size: i32 = @intCast(env.tables[ops.table_index].len);
     slots[ops.dst] = RawVal.from(size);
-    dispatch.next(ip, stride(encode.OpsTableSize), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.OpsTableSize), slots, frame, env);
 }
 
 // ── table_grow ───────────────────────────────────────────────────────────────
 
-pub fn handle_table_grow(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_table_grow(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsTableGrow, ip);
 
     const result: i32 = blk: {
@@ -107,12 +107,12 @@ pub fn handle_table_grow(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
         break :blk @intCast(old_len);
     };
     slots[ops.dst] = RawVal.from(result);
-    dispatch.next(ip, stride(encode.OpsTableGrow), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.OpsTableGrow), slots, frame, env);
 }
 
 // ── table_fill ───────────────────────────────────────────────────────────────
 
-pub fn handle_table_fill(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_table_fill(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsTableFill, ip);
     if (ops.table_index >= env.tables.len) {
         trapReturn(frame, .TableOutOfBounds);
@@ -129,12 +129,12 @@ pub fn handle_table_fill(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
     const ref = slots[ops.value].readAs(u64);
     const val: u32 = if (ref == 0) std.math.maxInt(u32) else @as(u32, @intCast(ref - 1));
     @memset(env.tables[ops.table_index][dst_idx..][0..len], val);
-    dispatch.next(ip, stride(encode.OpsTableFill), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.OpsTableFill), slots, frame, env);
 }
 
 // ── table_copy ───────────────────────────────────────────────────────────────
 
-pub fn handle_table_copy(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_table_copy(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsTableCopy, ip);
     if (ops.dst_table >= env.tables.len or ops.src_table >= env.tables.len) {
         trapReturn(frame, .TableOutOfBounds);
@@ -166,12 +166,12 @@ pub fn handle_table_copy(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
             @memcpy(env.tables[ops.dst_table][dst_idx..][0..len], env.tables[ops.src_table][src_idx..][0..len]);
         }
     }
-    dispatch.next(ip, stride(encode.OpsTableCopy), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.OpsTableCopy), slots, frame, env);
 }
 
 // ── table_init ───────────────────────────────────────────────────────────────
 
-pub fn handle_table_init(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_table_init(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsTableInit, ip);
     if (ops.table_index >= env.tables.len) {
         trapReturn(frame, .TableOutOfBounds);
@@ -198,17 +198,17 @@ pub fn handle_table_init(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
     for (0..len) |i| {
         env.tables[ops.table_index][dst_idx + i] = seg.func_indices[src_offset + i];
     }
-    dispatch.next(ip, stride(encode.OpsTableInit), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.OpsTableInit), slots, frame, env);
 }
 
 // ── elem_drop ────────────────────────────────────────────────────────────────
 
-pub fn handle_elem_drop(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_elem_drop(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsElemDrop, ip);
     if (ops.segment_idx >= env.elem_segments.len) {
         trapReturn(frame, .TableOutOfBounds);
         return;
     }
     env.elem_segments_dropped[ops.segment_idx] = true;
-    dispatch.next(ip, stride(encode.OpsElemDrop), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.OpsElemDrop), slots, frame, env);
 }

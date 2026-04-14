@@ -62,30 +62,15 @@ const CompiledElemSegment = module_mod.CompiledElemSegment;
 ///   slots — base pointer of the *current* call frame's register file.
 ///   frame — mutable shared dispatch state (call stack, EH stack, result).
 ///   env   — read-only execution environment (globals, memory, functions …).
-///   r0    — integer accumulator: holds the most recent i32/i64 result.
-///            Handlers that produce an integer result write it here AND into
-///            the destination slot so that the next handler can read either.
-///            Handlers that do not produce an integer result pass through the
-///            incoming r0 unchanged.
-///   fp0   — float accumulator: holds the most recent f32/f64 result
-///            (f32 values are bit-cast to f64 for uniform storage).
-///            Same write-both semantics as r0.
 ///
 /// Calling convention: `.C` + `@call(.always_tail, …)` produces true TCO.
 /// Because C calling convention is used the function must return `void`; the
 /// execution result is communicated through `frame.result`.
-///
-/// The r0/fp0 accumulators mirror the wasm3 M3 model: they allow the CPU to
-/// keep the top-of-stack integer/float value in a hardware register across
-/// instruction boundaries, avoiding a slot load on every back-to-back
-/// arithmetic instruction.
 pub const Handler = *const fn (
     ip: [*]u8,
     slots: [*]RawVal,
     frame: *DispatchState,
     env: *const ExecEnv,
-    r0: u64,
-    fp0: f64,
 ) callconv(.c) void;
 
 // ── Execution environment (read-only) ─────────────────────────────────────────
@@ -320,12 +305,10 @@ pub inline fn next(
     slots: [*]RawVal,
     frame: *DispatchState,
     env: *const ExecEnv,
-    r0: u64,
-    fp0: f64,
 ) void {
     const next_ip = ip + stride;
     const h: Handler = std.mem.bytesAsValue(Handler, next_ip[0..@sizeOf(Handler)]).*;
-    @call(.always_tail, h, .{ next_ip, slots, frame, env, r0, fp0 });
+    @call(.always_tail, h, .{ next_ip, slots, frame, env });
 }
 
 /// Convenience: read the handler pointer embedded at `ip` and tail-call it
@@ -337,11 +320,9 @@ pub inline fn dispatch(
     slots: [*]RawVal,
     frame: *DispatchState,
     env: *const ExecEnv,
-    r0: u64,
-    fp0: f64,
 ) void {
     const h: Handler = std.mem.bytesAsValue(Handler, ip[0..@sizeOf(Handler)]).*;
-    @call(.always_tail, h, .{ ip, slots, frame, env, r0, fp0 });
+    @call(.always_tail, h, .{ ip, slots, frame, env });
 }
 
 // ── Instruction operand sizes ─────────────────────────────────────────────────
