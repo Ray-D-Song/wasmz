@@ -6,15 +6,20 @@
 ///   wasmz <file.wasm> --args "<wasm_arg...>"                 Run _start, forwarding args to the WASM module
 ///
 /// Flags:
+///   --help                Show this help message
 ///   --legacy-exceptions   Force the legacy exception-handling proposal (try/catch/rethrow/delegate)
 ///   --args <string>       Arguments to pass to the WASM module (space-separated, shell-quoted)
 ///   --func <name>         Name of the exported function to call (reactor/library mode)
 ///   --reactor             Initialize the module as a reactor (_initialize) before calling --func
+///   --mem-stats           Print memory usage stats to stderr after execution
+///   --mem-limit <MB>      Memory limit in megabytes
+///   --eager-compile       Compile all functions eagerly at module load time
 const std = @import("std");
 const builtin = @import("builtin");
 const wasmz = @import("wasmz");
 const wasi_preview1 = @import("wasi").preview1;
 const profiling = wasmz.profiling;
+const arg_parse = @import("utils/arg-parse.zig");
 
 /// Release builds use a minimal panic handler to avoid pulling in DWARF stack-unwinding
 /// code (~127 KB).  Debug/ReleaseSafe builds use the default handler for readable backtraces.
@@ -47,137 +52,54 @@ const CliArgs = struct {
     func_name: ?[]const u8,
     i32_args: []const []const u8,
     legacy_exceptions: bool,
-    /// argv passed to the WASI module: [file_path, wasm_args...]
-    /// Populated from the value of --args "<wasm_arg...>" (shell-word-split).
     wasi_args: []const []const u8,
-    /// When true, --args was provided and _start is the target.
     passthrough: bool,
-    /// When true, print memory usage stats to stderr after execution.
     mem_stats: bool,
-    /// Memory limit in MB, null means unlimited.
     mem_limit_mb: ?u64,
-    /// When true, call _initialize before --func (reactor mode).
     reactor: bool,
-    /// When true, compile all functions eagerly at module load time.
     eager_compile: bool,
-    /// Kept alive so that string slices in the fields above remain valid.
-    _args_alloc: [][:0]u8,
-    _args_allocator: std.mem.Allocator,
-    /// Storage for wasm args parsed from --args string (owned by allocator).
+    _parsed: arg_parse.Parsed,
     _wasm_args_parsed: [][]const u8,
-    /// The positional argument slice (owned by allocator).
     _positional: []const []const u8,
 
-    /// Simple shell-word split: split `s` on whitespace, respecting
-    /// single- and double-quoted spans.  Returns a slice owned by `allocator`.
-    fn splitArgs(allocator: std.mem.Allocator, s: []const u8) ![][]const u8 {
-        var result: std.ArrayList([]const u8) = .empty;
-        errdefer result.deinit(allocator);
+    const flags = [_]arg_parse.Flag{
+        arg_parse.Flag.boolFlag("help", "Show this help message"),
+        arg_parse.Flag.boolFlag("legacy-exceptions", "Force legacy exception handling"),
+        arg_parse.Flag.boolFlag("mem-stats", "Print memory usage stats after execution"),
+        arg_parse.Flag.boolFlag("reactor", "Initialize as reactor before calling --func"),
+        arg_parse.Flag.boolFlag("eager-compile", "Compile all functions eagerly"),
+        arg_parse.Flag.stringFlag("args", "Arguments to pass to the WASM module"),
+        arg_parse.Flag.stringFlag("func", "Name of exported function to call"),
+        arg_parse.Flag.intFlag("mem-limit", "Memory limit in MB"),
+    };
 
-        var i: usize = 0;
-        while (i < s.len) {
-            // skip whitespace
-            while (i < s.len and (s[i] == ' ' or s[i] == '\t')) : (i += 1) {}
-            if (i >= s.len) break;
+    const args = [_]arg_parse.Arg{
+        .{ .name = "file", .help = "Path to .wasm file", .required = true },
+        .{ .name = "func", .help = "Function name (optional)" },
+        .{ .name = "args", .help = "Function arguments (i32 values)" },
+    };
 
-            var token: std.ArrayList(u8) = .empty;
-            errdefer token.deinit(allocator);
+    const command = arg_parse.Command{
+        .name = "wasmz",
+        .help = "WebAssembly runtime CLI",
+        .flags = &flags,
+        .args = &args,
+    };
 
-            while (i < s.len and s[i] != ' ' and s[i] != '\t') {
-                const ch = s[i];
-                if (ch == '\'' or ch == '"') {
-                    // consume everything until matching closing quote
-                    const quote = ch;
-                    i += 1;
-                    while (i < s.len and s[i] != quote) : (i += 1) {
-                        try token.append(allocator, s[i]);
-                    }
-                    if (i < s.len) i += 1; // skip closing quote
-                } else {
-                    try token.append(allocator, ch);
-                    i += 1;
-                }
-            }
-
-            try result.append(allocator, try token.toOwnedSlice(allocator));
-        }
-
-        return result.toOwnedSlice(allocator);
-    }
-
-    // TODO: impl structure arg parse like go-cobra
     fn parse(allocator: std.mem.Allocator) !CliArgs {
-        const args = try std.process.argsAlloc(allocator);
-
-        var legacy_exceptions = false;
-        var mem_stats = false;
-        var mem_limit_mb: ?u64 = null;
-        var args_flag_value: ?[]const u8 = null; // value of --args
-        var func_flag_value: ?[]const u8 = null; // value of --func
-        var reactor = false;
-        var eager_compile = false;
-
-        // Collect wasmz-side positional args (everything that is not a known flag).
-        var positional_buf: [16][]const u8 = undefined;
-        var positional_count: usize = 0;
-
-        var idx: usize = 1;
-        while (idx < args.len) : (idx += 1) {
-            const arg = args[idx];
-            if (std.mem.eql(u8, arg, "--legacy-exceptions")) {
-                legacy_exceptions = true;
-            } else if (std.mem.eql(u8, arg, "--mem-stats")) {
-                mem_stats = true;
-            } else if (std.mem.eql(u8, arg, "--reactor")) {
-                reactor = true;
-            } else if (std.mem.eql(u8, arg, "--eager-compile")) {
-                eager_compile = true;
-            } else if (std.mem.eql(u8, arg, "--mem-limit")) {
-                idx += 1;
-                if (idx >= args.len) {
-                    std.debug.print("error: --mem-limit requires a value (MB)\n", .{});
-                    std.process.exit(1);
-                }
-                mem_limit_mb = std.fmt.parseInt(u64, args[idx], 10) catch {
-                    std.debug.print("error: --mem-limit value must be a positive integer (MB)\n", .{});
-                    std.process.exit(1);
-                };
-            } else if (std.mem.eql(u8, arg, "--args")) {
-                idx += 1;
-                if (idx >= args.len) {
-                    std.debug.print("error: --args requires a value\n", .{});
-                    std.process.exit(1);
-                }
-                args_flag_value = args[idx];
-            } else if (std.mem.startsWith(u8, arg, "--args=")) {
-                args_flag_value = arg["--args=".len..];
-            } else if (std.mem.eql(u8, arg, "--func")) {
-                idx += 1;
-                if (idx >= args.len) {
-                    std.debug.print("error: --func requires a function name\n", .{});
-                    std.process.exit(1);
-                }
-                func_flag_value = args[idx];
-            } else if (std.mem.startsWith(u8, arg, "--func=")) {
-                func_flag_value = arg["--func=".len..];
-            } else {
-                if (positional_count >= positional_buf.len) {
-                    std.debug.print("error: too many arguments\n", .{});
-                    std.process.exit(1);
-                }
-                positional_buf[positional_count] = arg;
-                positional_count += 1;
-            }
-        }
-
-        const positional = allocator.dupe([]const u8, positional_buf[0..positional_count]) catch {
-            std.debug.print("error: out of memory\n", .{});
+        var parser = arg_parse.Parser.init(&command, allocator);
+        var parsed = parser.parse() catch {
             std.process.exit(1);
         };
 
+        if (parsed.getBool("help")) {
+            command.printUsage();
+            std.process.exit(0);
+        }
+
+        const positional = parsed.positional;
         if (positional.len < 1) {
-            allocator.free(positional);
-            std.process.argsFree(allocator, args);
+            parsed.deinit();
             return error.MissingFilePath;
         }
 
@@ -187,50 +109,48 @@ const CliArgs = struct {
             std.process.exit(1);
         }
 
-        // --args mode: forward split tokens to the WASM module.
+        const args_flag_value = parsed.getString("args");
         const passthrough = args_flag_value != null;
         const wasm_args_parsed: [][]const u8 = if (args_flag_value) |val|
-            splitArgs(allocator, val) catch &.{}
+            arg_parse.splitShellArgs(allocator, val) catch &.{}
         else
             try allocator.alloc([]const u8, 0);
 
-        // wasi_args = [file_path] ++ wasm_args_parsed
         const wasi_args = try allocator.alloc([]const u8, 1 + wasm_args_parsed.len);
         wasi_args[0] = file_path;
         @memcpy(wasi_args[1..], wasm_args_parsed);
 
-        // --func flag takes priority over positional func name
+        const func_flag_value = parsed.getString("func");
         const func_name: ?[]const u8 = if (func_flag_value) |f|
             f
         else if (!passthrough and positional.len >= 2)
             positional[1]
         else
             null;
-        // i32_args: when --func is used, all remaining positionals (after file) are args.
-        // When positional func name is used, positionals after the func name are args.
+
         const i32_args: []const []const u8 = if (!passthrough) blk: {
             if (func_flag_value != null) {
-                // --func <name> used: positional[1..] are all i32 args (no func name in positionals)
                 break :blk if (positional.len >= 2) positional[1..] else &.{};
             } else {
-                // positional[0]=file, positional[1]=func, positional[2..]=args
                 break :blk if (positional.len >= 3) positional[2..] else &.{};
             }
         } else &.{};
+
+        const mem_limit_int = parsed.getInt("mem-limit");
+        const mem_limit_mb: ?u64 = if (mem_limit_int) |m| @intCast(m) else null;
 
         return .{
             .file_path = file_path,
             .func_name = func_name,
             .i32_args = i32_args,
-            .legacy_exceptions = legacy_exceptions,
-            .mem_stats = mem_stats,
+            .legacy_exceptions = parsed.getBool("legacy-exceptions"),
+            .mem_stats = parsed.getBool("mem-stats"),
             .mem_limit_mb = mem_limit_mb,
-            .reactor = reactor,
-            .eager_compile = eager_compile,
+            .reactor = parsed.getBool("reactor"),
+            .eager_compile = parsed.getBool("eager-compile"),
             .wasi_args = wasi_args,
             .passthrough = passthrough,
-            ._args_alloc = args,
-            ._args_allocator = allocator,
+            ._parsed = parsed,
             ._wasm_args_parsed = wasm_args_parsed,
             ._positional = positional,
         };
@@ -241,7 +161,7 @@ const CliArgs = struct {
         for (self._wasm_args_parsed) |tok| allocator.free(tok);
         allocator.free(self._wasm_args_parsed);
         allocator.free(self._positional);
-        std.process.argsFree(self._args_allocator, self._args_alloc);
+        self._parsed.deinit();
     }
 };
 
@@ -346,16 +266,7 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     var cli_args = CliArgs.parse(allocator) catch |err| {
         switch (err) {
             error.MissingFilePath => {
-                try stdout.writeAll(
-                    \\Usage:
-                    \\  wasmz [--legacy-exceptions] <file.wasm>                                List exported functions
-                    \\  wasmz [--legacy-exceptions] <file.wasm> <func> [i32_arg...]            Call the specified function and print the return value
-                    \\  wasmz [--legacy-exceptions] <file.wasm> --args "<wasm_arg...>"         Run _start, forwarding args to the WASM module
-                    \\  wasmz [--legacy-exceptions] <file.wasm> --func <name> [i32_arg...]     Call exported function (reactor mode)
-                    \\  wasmz [--legacy-exceptions] <file.wasm> --reactor --func <name> [i32_arg...]
-                    \\                                                                          Run _initialize then call function
-                    \\
-                );
+                CliArgs.command.printUsage();
                 std.process.exit(1);
             },
             else => return err,
