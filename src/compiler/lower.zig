@@ -988,6 +988,18 @@ pub const Lower = struct {
                     .br_on_cast => |*j| j.target = target_pc,
                     .br_on_cast_fail => |*j| j.target = target_pc,
                     .try_table_leave => |*j| j.target = target_pc,
+                    // Fused compare-jump ops (Peephole F)
+                    .i32_eq_jump_if_false => |*j| j.target = target_pc,
+                    .i32_ne_jump_if_false => |*j| j.target = target_pc,
+                    .i32_lt_s_jump_if_false => |*j| j.target = target_pc,
+                    .i32_lt_u_jump_if_false => |*j| j.target = target_pc,
+                    .i32_gt_s_jump_if_false => |*j| j.target = target_pc,
+                    .i32_gt_u_jump_if_false => |*j| j.target = target_pc,
+                    .i32_le_s_jump_if_false => |*j| j.target = target_pc,
+                    .i32_le_u_jump_if_false => |*j| j.target = target_pc,
+                    .i32_ge_s_jump_if_false => |*j| j.target = target_pc,
+                    .i32_ge_u_jump_if_false => |*j| j.target = target_pc,
+                    .i32_eqz_jump_if_false => |*j| j.target = target_pc,
                     else => unreachable,
                 }
             }
@@ -1035,6 +1047,145 @@ pub const Lower = struct {
 
     // ── Generic operation helpers ─────────────────────────────────────────────
 
+    /// Peephole F helper: attempts to fuse the last emitted compare op with
+    /// an upcoming jump_if_z whose condition slot is `cond`.
+    ///
+    /// If the last op is one of the i32 binary compare ops (i32_eq … i32_ge_u)
+    /// or i32_eqz, and its `dst` field equals `cond`, the compare op is removed
+    /// and replaced with a fused `i32_xxx_jump_if_false` / `i32_eqz_jump_if_false`
+    /// that jumps when the comparison is FALSE.
+    ///
+    /// Returns `true` if the fusion was performed (caller should NOT emit
+    /// jump_if_z in that case), `false` otherwise.
+    ///
+    /// The `target` argument is the op-index of the branch destination.
+    /// For forward jumps that haven't been patched yet, pass 0 — the caller
+    /// must patch the target afterward using the returned op index.
+    ///
+    /// After a successful fusion the emitted fused op occupies
+    /// `self.compiled.ops.items.len - 1`; the caller can patch its target via:
+    ///   switch (self.compiled.ops.items[fused_pc]) {
+    ///       .i32_eq_jump_if_false => |*j| j.target = real_target, ...
+    ///   }
+    fn try_fuse_compare_jump(self: *Lower, cond: Slot, target: u32) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len == 0) return false;
+        switch (ops[ops.len - 1]) {
+            .i32_eq => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_eq_jump_if_false = .{ .lhs = c.lhs, .rhs = c.rhs, .target = target } });
+                return true;
+            },
+            .i32_ne => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_ne_jump_if_false = .{ .lhs = c.lhs, .rhs = c.rhs, .target = target } });
+                return true;
+            },
+            .i32_lt_s => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_lt_s_jump_if_false = .{ .lhs = c.lhs, .rhs = c.rhs, .target = target } });
+                return true;
+            },
+            .i32_lt_u => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_lt_u_jump_if_false = .{ .lhs = c.lhs, .rhs = c.rhs, .target = target } });
+                return true;
+            },
+            .i32_gt_s => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_gt_s_jump_if_false = .{ .lhs = c.lhs, .rhs = c.rhs, .target = target } });
+                return true;
+            },
+            .i32_gt_u => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_gt_u_jump_if_false = .{ .lhs = c.lhs, .rhs = c.rhs, .target = target } });
+                return true;
+            },
+            .i32_le_s => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_le_s_jump_if_false = .{ .lhs = c.lhs, .rhs = c.rhs, .target = target } });
+                return true;
+            },
+            .i32_le_u => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_le_u_jump_if_false = .{ .lhs = c.lhs, .rhs = c.rhs, .target = target } });
+                return true;
+            },
+            .i32_ge_s => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_ge_s_jump_if_false = .{ .lhs = c.lhs, .rhs = c.rhs, .target = target } });
+                return true;
+            },
+            .i32_ge_u => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_ge_u_jump_if_false = .{ .lhs = c.lhs, .rhs = c.rhs, .target = target } });
+                return true;
+            },
+            .i32_eqz => |c| if (c.dst == cond) {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_eqz_jump_if_false = .{ .src = c.src, .target = target } });
+                return true;
+            },
+            else => {},
+        }
+        return false;
+    }
+
+    /// Peephole D helper: attempts to fuse the last emitted i32 binop with an
+    /// upcoming `local_set` whose source slot is `src`, writing the result
+    /// directly into `local` instead of a temporary.
+    ///
+    /// Returns `true` if the fusion was performed (caller should NOT emit
+    /// `local_set`); `false` otherwise.
+    ///
+    /// NOTE: Do NOT call this for `local_tee` because the value must also
+    /// remain on the stack.
+    fn try_fuse_local_set(self: *Lower, local: u32, src: Slot) bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len == 0) return false;
+        const last = &ops[ops.len - 1];
+        switch (last.*) {
+            .i32_add => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_add_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_sub => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_sub_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_mul => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_mul_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_and => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_and_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_or => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_or_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_xor => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_xor_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_shl => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_shl_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_shr_s => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_shr_s_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_shr_u => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_shr_u_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            else => return false,
+        }
+        return true;
+    }
+
     /// Handle binary operations: pop two operands, allocate result slot, emit, push result.
     /// The op_tag parameter is a string literal representing the Op field name.
     pub fn lower_binary_op(
@@ -1044,6 +1195,30 @@ pub const Lower = struct {
         const rhs = try self.pop_slot();
         const lhs = try self.pop_slot();
         const dst = self.alloc_slot();
+
+        // ── Peephole C: const_i32 + i32_xxx → i32_xxx_imm ────────────────────
+        // If there is a fused _imm variant for this op AND the previous emitted
+        // op is `const_i32` whose dst matches rhs, fold it into an immediate.
+        const imm_tag = op_tag ++ "_imm";
+        if (comptime @hasField(Op, imm_tag)) {
+            const ops = self.compiled.ops.items;
+            if (ops.len > 0) {
+                switch (ops[ops.len - 1]) {
+                    .const_i32 => |c| if (c.dst == rhs) {
+                        // Remove the const_i32 and emit the fused imm op instead.
+                        _ = self.compiled.ops.pop();
+                        try self.emit(@unionInit(Op, imm_tag, .{
+                            .dst = dst,
+                            .lhs = lhs,
+                            .imm = c.value,
+                        }));
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                    else => {},
+                }
+            }
+        }
 
         try self.emit(@unionInit(Op, op_tag, .{
             .dst = dst,
@@ -1094,6 +1269,27 @@ pub const Lower = struct {
         const rhs = try self.pop_slot();
         const lhs = try self.pop_slot();
         const dst = self.alloc_slot();
+
+        // ── Peephole C (compare variant): const_i32 + i32_xxx_cmp → i32_xxx_cmp_imm ──
+        const imm_tag = op_tag ++ "_imm";
+        if (comptime @hasField(Op, imm_tag)) {
+            const ops = self.compiled.ops.items;
+            if (ops.len > 0) {
+                switch (ops[ops.len - 1]) {
+                    .const_i32 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(@unionInit(Op, imm_tag, .{
+                            .dst = dst,
+                            .lhs = lhs,
+                            .imm = c.value,
+                        }));
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                    else => {},
+                }
+            }
+        }
 
         try self.emit(@unionInit(Op, op_tag, .{
             .dst = dst,
@@ -1282,8 +1478,11 @@ pub const Lower = struct {
 
                 // Emit a conditional jump that skips the then-body if cond==0.
                 // Target is patched at else_ or end.
-                const jiz_pc = self.current_pc();
-                try self.emit(.{ .jump_if_z = .{ .cond = cond, .target = 0 } });
+                // ── Peephole F: fuse preceding compare + jump_if_z ────────────
+                if (!try self.try_fuse_compare_jump(cond, 0)) {
+                    try self.emit(.{ .jump_if_z = .{ .cond = cond, .target = 0 } });
+                }
+                const jiz_pc = self.current_pc() - 1; // index of the jump_if_z or fused op
 
                 try self.control_stack.append(self.allocator, .{
                     .kind = .if_,
@@ -1504,8 +1703,11 @@ pub const Lower = struct {
                 //   jump_if_z cond → skip_jump
                 //   jump → target
                 //   skip_jump: (fall-through, continue)
-                const jiz_pc = self.current_pc();
-                try self.emit(.{ .jump_if_z = .{ .cond = cond, .target = 0 } }); // skip the jump below if cond==0
+                // ── Peephole F: fuse preceding compare + jump_if_z ────────────
+                if (!try self.try_fuse_compare_jump(cond, 0)) {
+                    try self.emit(.{ .jump_if_z = .{ .cond = cond, .target = 0 } }); // skip the jump below if cond==0
+                }
+                const jiz_pc = self.current_pc() - 1; // index of the jump_if_z or fused op
 
                 // Now emit the actual branch to the target frame.
                 const branch_jump_pc = self.current_pc();
@@ -1516,10 +1718,21 @@ pub const Lower = struct {
                     try self.add_patch_site(frame, branch_jump_pc);
                 }
 
-                // Patch the jump_if_z to skip just past the unconditional jump.
+                // Patch the jump_if_z (or fused compare-jump) to skip just past the unconditional jump.
                 const continue_pc = self.current_pc();
                 switch (self.compiled.ops.items[jiz_pc]) {
                     .jump_if_z => |*j| j.target = continue_pc,
+                    .i32_eq_jump_if_false => |*j| j.target = continue_pc,
+                    .i32_ne_jump_if_false => |*j| j.target = continue_pc,
+                    .i32_lt_s_jump_if_false => |*j| j.target = continue_pc,
+                    .i32_lt_u_jump_if_false => |*j| j.target = continue_pc,
+                    .i32_gt_s_jump_if_false => |*j| j.target = continue_pc,
+                    .i32_gt_u_jump_if_false => |*j| j.target = continue_pc,
+                    .i32_le_s_jump_if_false => |*j| j.target = continue_pc,
+                    .i32_le_u_jump_if_false => |*j| j.target = continue_pc,
+                    .i32_ge_s_jump_if_false => |*j| j.target = continue_pc,
+                    .i32_ge_u_jump_if_false => |*j| j.target = continue_pc,
+                    .i32_eqz_jump_if_false => |*j| j.target = continue_pc,
                     else => unreachable,
                 }
             },
@@ -1603,7 +1816,10 @@ pub const Lower = struct {
             },
             .local_set => |local| {
                 const src = try self.pop_slot();
-                try self.emit(.{ .local_set = .{ .local = local, .src = src } });
+                // ── Peephole D: i32_xxx + local_set → i32_xxx_to_local ────────
+                if (!self.try_fuse_local_set(local, src)) {
+                    try self.emit(.{ .local_set = .{ .local = local, .src = src } });
+                }
             },
             .local_tee => |local| {
                 const src = self.stack.peek() orelse return error.StackUnderflow;
@@ -3266,7 +3482,10 @@ pub const Lower = struct {
             .local_set => {
                 const local = info.local_index orelse return error.UnsupportedOperator;
                 const src = try self.pop_slot();
-                try self.emit(.{ .local_set = .{ .local = local, .src = src } });
+                // ── Peephole D: i32_xxx + local_set → i32_xxx_to_local ────────
+                if (!self.try_fuse_local_set(local, src)) {
+                    try self.emit(.{ .local_set = .{ .local = local, .src = src } });
+                }
             },
             .local_tee => {
                 const local = info.local_index orelse return error.UnsupportedOperator;

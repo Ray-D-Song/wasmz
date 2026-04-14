@@ -80,6 +80,18 @@ pub const OpsJump = extern struct { rel_target: i32 };
 /// jump_if_z: signed byte offset relative to instruction start
 pub const OpsJumpIfZ = extern struct { cond: u32, rel_target: i32 };
 
+/// i32_xxx_imm: fused binop/compare with immediate rhs. @sizeOf = 12 → stride 24.
+pub const OpsBinopImm = extern struct { dst: u32, lhs: u32, imm: i32 };
+
+/// i32_xxx_jump_if_false: fused compare+branch. @sizeOf = 12 → stride 24.
+pub const OpsCompareJump = extern struct { lhs: u32, rhs: u32, rel_target: i32 };
+
+/// i32_eqz_jump_if_false: fused eqz+branch. @sizeOf = 8 → stride 16.
+pub const OpsEqzJump = extern struct { src: u32, rel_target: i32 };
+
+/// i32_xxx_to_local: fused binop→local_set. @sizeOf = 12 → stride 24.
+pub const OpsBinopToLocal = extern struct { local: u32, lhs: u32, rhs: u32 };
+
 /// jump_table
 pub const OpsJumpTable = extern struct { index: u32, targets_start: u32, targets_len: u32 };
 
@@ -404,6 +416,55 @@ pub fn instrSize(op: Op) usize {
         .i64_extend16_s,
         .i64_extend32_s,
         => @sizeOf(OpsDstSrc),
+
+        // fused binop-imm (Candidate C)
+        .i32_add_imm,
+        .i32_sub_imm,
+        .i32_mul_imm,
+        .i32_and_imm,
+        .i32_or_imm,
+        .i32_xor_imm,
+        .i32_shl_imm,
+        .i32_shr_s_imm,
+        .i32_shr_u_imm,
+        .i32_eq_imm,
+        .i32_ne_imm,
+        .i32_lt_s_imm,
+        .i32_lt_u_imm,
+        .i32_gt_s_imm,
+        .i32_gt_u_imm,
+        .i32_le_s_imm,
+        .i32_le_u_imm,
+        .i32_ge_s_imm,
+        .i32_ge_u_imm,
+        => @sizeOf(OpsBinopImm),
+
+        // fused compare-jump (Candidate F)
+        .i32_eq_jump_if_false,
+        .i32_ne_jump_if_false,
+        .i32_lt_s_jump_if_false,
+        .i32_lt_u_jump_if_false,
+        .i32_gt_s_jump_if_false,
+        .i32_gt_u_jump_if_false,
+        .i32_le_s_jump_if_false,
+        .i32_le_u_jump_if_false,
+        .i32_ge_s_jump_if_false,
+        .i32_ge_u_jump_if_false,
+        => @sizeOf(OpsCompareJump),
+
+        .i32_eqz_jump_if_false => @sizeOf(OpsEqzJump),
+
+        // fused binop-to-local (Candidate D)
+        .i32_add_to_local,
+        .i32_sub_to_local,
+        .i32_mul_to_local,
+        .i32_and_to_local,
+        .i32_or_to_local,
+        .i32_xor_to_local,
+        .i32_shl_to_local,
+        .i32_shr_s_to_local,
+        .i32_shr_u_to_local,
+        => @sizeOf(OpsBinopToLocal),
 
         // memory loads
         .i32_load,
@@ -784,6 +845,48 @@ pub const HandlerTable = struct {
     throw_ref: Handler,
     try_table_enter: Handler,
     try_table_leave: Handler,
+    // Fused: binop-imm (Candidate C)
+    i32_add_imm: Handler,
+    i32_sub_imm: Handler,
+    i32_mul_imm: Handler,
+    i32_and_imm: Handler,
+    i32_or_imm: Handler,
+    i32_xor_imm: Handler,
+    i32_shl_imm: Handler,
+    i32_shr_s_imm: Handler,
+    i32_shr_u_imm: Handler,
+    i32_eq_imm: Handler,
+    i32_ne_imm: Handler,
+    i32_lt_s_imm: Handler,
+    i32_lt_u_imm: Handler,
+    i32_gt_s_imm: Handler,
+    i32_gt_u_imm: Handler,
+    i32_le_s_imm: Handler,
+    i32_le_u_imm: Handler,
+    i32_ge_s_imm: Handler,
+    i32_ge_u_imm: Handler,
+    // Fused: compare-jump (Candidate F)
+    i32_eq_jump_if_false: Handler,
+    i32_ne_jump_if_false: Handler,
+    i32_lt_s_jump_if_false: Handler,
+    i32_lt_u_jump_if_false: Handler,
+    i32_gt_s_jump_if_false: Handler,
+    i32_gt_u_jump_if_false: Handler,
+    i32_le_s_jump_if_false: Handler,
+    i32_le_u_jump_if_false: Handler,
+    i32_ge_s_jump_if_false: Handler,
+    i32_ge_u_jump_if_false: Handler,
+    i32_eqz_jump_if_false: Handler,
+    // Fused: binop-to-local (Candidate D)
+    i32_add_to_local: Handler,
+    i32_sub_to_local: Handler,
+    i32_mul_to_local: Handler,
+    i32_and_to_local: Handler,
+    i32_or_to_local: Handler,
+    i32_xor_to_local: Handler,
+    i32_shl_to_local: Handler,
+    i32_shr_s_to_local: Handler,
+    i32_shr_u_to_local: Handler,
     // SIMD
     simd_unary: Handler,
     simd_binary: Handler,
@@ -1563,6 +1666,77 @@ pub fn encode(
                 };
             },
 
+            // ── Fused: binop-imm (Candidate C) ────────────────────────────
+            .i32_add_imm,
+            .i32_sub_imm,
+            .i32_mul_imm,
+            .i32_and_imm,
+            .i32_or_imm,
+            .i32_xor_imm,
+            .i32_shl_imm,
+            .i32_shr_s_imm,
+            .i32_shr_u_imm,
+            .i32_eq_imm,
+            .i32_ne_imm,
+            .i32_lt_s_imm,
+            .i32_lt_u_imm,
+            .i32_gt_s_imm,
+            .i32_gt_u_imm,
+            .i32_le_s_imm,
+            .i32_le_u_imm,
+            .i32_ge_s_imm,
+            .i32_ge_u_imm,
+            => |inst| {
+                @as(*OpsBinopImm, @ptrCast(@alignCast(ops_ptr))).* = .{
+                    .dst = inst.dst,
+                    .lhs = inst.lhs,
+                    .imm = inst.imm,
+                };
+            },
+
+            // ── Fused: compare-jump (Candidate F) ─────────────────────────
+            .i32_eq_jump_if_false,
+            .i32_ne_jump_if_false,
+            .i32_lt_s_jump_if_false,
+            .i32_lt_u_jump_if_false,
+            .i32_gt_s_jump_if_false,
+            .i32_gt_u_jump_if_false,
+            .i32_le_s_jump_if_false,
+            .i32_le_u_jump_if_false,
+            .i32_ge_s_jump_if_false,
+            .i32_ge_u_jump_if_false,
+            => |inst| {
+                @as(*OpsCompareJump, @ptrCast(@alignCast(ops_ptr))).* = .{
+                    .lhs = inst.lhs,
+                    .rhs = inst.rhs,
+                    .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
+                };
+            },
+            .i32_eqz_jump_if_false => |inst| {
+                @as(*OpsEqzJump, @ptrCast(@alignCast(ops_ptr))).* = .{
+                    .src = inst.src,
+                    .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
+                };
+            },
+
+            // ── Fused: binop-to-local (Candidate D) ───────────────────────
+            .i32_add_to_local,
+            .i32_sub_to_local,
+            .i32_mul_to_local,
+            .i32_and_to_local,
+            .i32_or_to_local,
+            .i32_xor_to_local,
+            .i32_shl_to_local,
+            .i32_shr_s_to_local,
+            .i32_shr_u_to_local,
+            => |inst| {
+                @as(*OpsBinopToLocal, @ptrCast(@alignCast(ops_ptr))).* = .{
+                    .local = inst.local,
+                    .lhs = inst.lhs,
+                    .rhs = inst.rhs,
+                };
+            },
+
             // ── SIMD ───────────────────────────────────────────────────────
             .simd_unary => |inst| {
                 @as(*OpsSimdUnary, @ptrCast(@alignCast(ops_ptr))).* = .{
@@ -1961,5 +2135,47 @@ fn handlerFor(op: Op, t: *const HandlerTable) Handler {
         .simd_shuffle => t.simd_shuffle,
         .simd_load => t.simd_load,
         .simd_store => t.simd_store,
+        // fused binop-imm (C)
+        .i32_add_imm => t.i32_add_imm,
+        .i32_sub_imm => t.i32_sub_imm,
+        .i32_mul_imm => t.i32_mul_imm,
+        .i32_and_imm => t.i32_and_imm,
+        .i32_or_imm => t.i32_or_imm,
+        .i32_xor_imm => t.i32_xor_imm,
+        .i32_shl_imm => t.i32_shl_imm,
+        .i32_shr_s_imm => t.i32_shr_s_imm,
+        .i32_shr_u_imm => t.i32_shr_u_imm,
+        .i32_eq_imm => t.i32_eq_imm,
+        .i32_ne_imm => t.i32_ne_imm,
+        .i32_lt_s_imm => t.i32_lt_s_imm,
+        .i32_lt_u_imm => t.i32_lt_u_imm,
+        .i32_gt_s_imm => t.i32_gt_s_imm,
+        .i32_gt_u_imm => t.i32_gt_u_imm,
+        .i32_le_s_imm => t.i32_le_s_imm,
+        .i32_le_u_imm => t.i32_le_u_imm,
+        .i32_ge_s_imm => t.i32_ge_s_imm,
+        .i32_ge_u_imm => t.i32_ge_u_imm,
+        // fused compare-jump (F)
+        .i32_eq_jump_if_false => t.i32_eq_jump_if_false,
+        .i32_ne_jump_if_false => t.i32_ne_jump_if_false,
+        .i32_lt_s_jump_if_false => t.i32_lt_s_jump_if_false,
+        .i32_lt_u_jump_if_false => t.i32_lt_u_jump_if_false,
+        .i32_gt_s_jump_if_false => t.i32_gt_s_jump_if_false,
+        .i32_gt_u_jump_if_false => t.i32_gt_u_jump_if_false,
+        .i32_le_s_jump_if_false => t.i32_le_s_jump_if_false,
+        .i32_le_u_jump_if_false => t.i32_le_u_jump_if_false,
+        .i32_ge_s_jump_if_false => t.i32_ge_s_jump_if_false,
+        .i32_ge_u_jump_if_false => t.i32_ge_u_jump_if_false,
+        .i32_eqz_jump_if_false => t.i32_eqz_jump_if_false,
+        // fused binop-to-local (D)
+        .i32_add_to_local => t.i32_add_to_local,
+        .i32_sub_to_local => t.i32_sub_to_local,
+        .i32_mul_to_local => t.i32_mul_to_local,
+        .i32_and_to_local => t.i32_and_to_local,
+        .i32_or_to_local => t.i32_or_to_local,
+        .i32_xor_to_local => t.i32_xor_to_local,
+        .i32_shl_to_local => t.i32_shl_to_local,
+        .i32_shr_s_to_local => t.i32_shr_s_to_local,
+        .i32_shr_u_to_local => t.i32_shr_u_to_local,
     };
 }
