@@ -98,26 +98,24 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     };
 
     var store = try Store.init(allocator, engine);
-    store.linkBudget();
     defer store.deinit();
 
-    var wasi_host = wasi_preview1.Host.init(allocator);
-    defer wasi_host.deinit();
-    try wasi_host.setArgs(cli_args.wasi_args);
-
-    var mem_stats_ctx = stats.MemStatsCtx{};
-    mem_stats_ctx.store = &store;
-    if (cli_args.mem_stats) {
-        wasi_host.setOnExit(stats.onExitMemStats, &mem_stats_ctx);
-    }
-
-    if (profiling.enabled) {
-        wasi_host.setOnExit(stats.onExitProfiling, null);
-    }
+    // Lazy WASI initialization (plan A): only allocate and register the WASI
+    // host when the module actually imports wasi_snapshot_preview1 symbols.
+    // For pure-compute modules with no WASI imports this avoids all FdIO /
+    // Clock / EnvArgs heap allocations.
+    var wasi_host: ?wasi_preview1.Host = null;
+    defer if (wasi_host) |*h| h.deinit();
 
     var linker = Linker.empty;
-    try wasi_host.addToLinker(&linker, allocator);
     defer linker.deinit(allocator);
+
+    if (moduleNeedsWasi(arc_module.value)) {
+        wasi_host = wasi_preview1.Host.init(allocator);
+        try wasi_host.?.setArgs(cli_args.wasi_args);
+        if (profiling.enabled) wasi_host.?.setOnExit(stats.onExitProfiling, null);
+        try wasi_host.?.addToLinker(&linker, allocator);
+    }
 
     var instance = Instance.init(&store, arc_module.retain(), linker) catch |err| {
         switch (err) {
@@ -141,9 +139,12 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
                     };
 
                     if (!hf.?.matches(func_type)) {
-                        std.debug.print("  - {s}::{s}\n", .{ def.module_name, def.func_name });
-                        std.debug.print("    expected: {any} -> {any}\n", .{ func_type.params(), func_type.results() });
-                        std.debug.print("    provided: {any} -> {any}\n", .{ hf.?.param_types, hf.?.result_types });
+                        std.debug.print(
+                            \\  - {s}::{s}
+                            \\    expected: {any} -> {any}
+                            \\    provided: {any} -> {any}
+                            \\
+                        , .{ def.module_name, def.func_name, func_type.params(), func_type.results(), hf.?.param_types, hf.?.result_types });
                     }
                 }
             },
@@ -151,7 +152,13 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
         }
         std.process.exit(1);
     };
-    mem_stats_ctx.instance = &instance;
+    if (cli_args.mem_stats) {
+        store.linkBudget();
+        var mem_stats_ctx = stats.MemStatsCtx{};
+        mem_stats_ctx.store = &store;
+        mem_stats_ctx.instance = &instance;
+        if (wasi_host) |*h| h.setOnExit(stats.onExitMemStats, &mem_stats_ctx);
+    }
     defer {
         if (cli_args.mem_stats) stats.printMemStats(&store, &instance);
         profiling.printReport();
@@ -354,4 +361,15 @@ fn fatalTrap(trap: wasmz.Trap, allocator: std.mem.Allocator, comptime context: [
     const msg = trap.allocPrint(allocator) catch "?";
     std.debug.print("error: {s}: {s}\n", .{ context, msg });
     std.process.exit(1);
+}
+
+/// Returns true when the compiled module imports at least one symbol from the
+/// "wasi_snapshot_preview1" namespace, meaning it needs a live WASI host.
+/// Used for lazy WASI initialization: modules with no WASI imports skip Host
+/// allocation entirely.
+fn moduleNeedsWasi(module: *const Module) bool {
+    for (module.imported_funcs) |def| {
+        if (std.mem.eql(u8, def.module_name, "wasi_snapshot_preview1")) return true;
+    }
+    return false;
 }
