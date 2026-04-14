@@ -75,17 +75,17 @@ pub const FreeList = struct {
 pub const GcHeap = struct {
     /// The raw byte buffer backing the heap.
     bytes: []u8,
-    /// Linked list of free blocks available for reuse.
-    free_list: FreeList,
     /// Allocator used to grow the buffer when needed.
     allocator: std.mem.Allocator,
-    /// Total bytes currently in use (for statistics).
-    used: u32,
     /// Tracks all live allocations for GC traversal.
     live_objects: std.ArrayListUnmanaged(AllocationInfo),
     /// Optional pointer to the store's MemoryBudget for limit enforcement.
     /// null when no budget is configured (unlimited mode).
     budget: ?*MemoryBudget,
+    /// Linked list of free blocks available for reuse.
+    free_list: FreeList,
+    /// Total bytes currently in use (for statistics).
+    used: u32,
 
     const Self = @This();
 

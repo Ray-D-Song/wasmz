@@ -169,7 +169,6 @@ pub const SmallPatchList = struct {
 
 /// A single entry on the control stack, created when we enter a block/loop/if.
 pub const ControlFrame = struct {
-    kind: BlockKind,
     /// Number of values on the value stack at the time this block was entered
     /// (after consuming any block parameters for multi-value blocks).
     /// Used to restore the stack when we branch out of the block.
@@ -185,11 +184,6 @@ pub const ControlFrame = struct {
     /// so param_slots is only needed to track their slot numbers.
     /// Data: 100% of frames have 0 param slots in practice → stored inline.
     param_slots: SmallSlotList = .empty,
-    /// For block/if: the op-index of the start of the continuation (filled in
-    /// when we see `end`).  For loop: the op-index of the loop header (filled
-    /// in immediately at open time, since `br` goes back to the top).
-    /// While still open, forward-jump sites are stored in `patch_sites`.
-    target_pc: u32,
     /// Indices into compiled.ops that hold `jump` / `jump_if_z` ops whose
     /// target needs to be patched when we know where `end` lands.
     /// Data: 97% of frames have ≤4 patch sites → stored inline.
@@ -197,6 +191,12 @@ pub const ControlFrame = struct {
     /// For try_table frames: the op-index of the `try_table_enter` op.
     /// We need it to backpatch the `end_target` field once we see `end`.
     try_table_enter_pc: ?u32 = null,
+    /// For block/if: the op-index of the start of the continuation (filled in
+    /// when we see `end`).  For loop: the op-index of the loop header (filled
+    /// in immediately at open time, since `br` goes back to the top).
+    /// While still open, forward-jump sites are stored in `patch_sites`.
+    target_pc: u32,
+    kind: BlockKind,
     /// True for the implicit function-level frame pushed at the start of each
     /// function body.  When `end` pops this frame it emits a `ret` instead of
     /// a continuation jump, mirroring the special-case that was previously
