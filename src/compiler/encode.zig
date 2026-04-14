@@ -251,14 +251,16 @@ pub const OpsSimdStore = extern struct { opcode: u32, addr: u32, src: u32, offse
 /// Read the inline arg slot array that follows a fixed-size ops struct in the bytecode stream.
 /// `ip` is the instruction pointer (pointing to the handler pointer).
 /// Returns a slice of u32 slot indices.
-pub inline fn readInlineArgs(comptime OpsT: type, ip: [*]align(8) u8, args_len: u32) []const u32 {
-    const base: [*]const u32 = @ptrCast(@alignCast(ip + HANDLER_SIZE + @sizeOf(OpsT)));
-    return base[0..args_len];
+/// Note: May read unaligned u32 values due to compact encoding (safe on x86_64).
+pub inline fn readInlineArgs(comptime OpsT: type, ip: [*]u8, args_len: u32) []align(1) const u32 {
+    const offset = HANDLER_SIZE + @sizeOf(OpsT);
+    const ptr: [*]align(1) const u32 = @ptrCast(ip + offset);
+    return ptr[0..args_len];
 }
 
 /// Compute the byte stride of a variable-length instruction (handler + ops + inline args).
 pub inline fn varStride(comptime OpsT: type, args_len: u32) usize {
-    return std.mem.alignForward(usize, HANDLER_SIZE + @sizeOf(OpsT) + @as(usize, args_len) * @sizeOf(u32), 8);
+    return HANDLER_SIZE + @sizeOf(OpsT) + @as(usize, args_len) * @sizeOf(u32);
 }
 
 /// Returns the byte size of one encoded instruction (handler pointer + operands).
@@ -713,7 +715,7 @@ pub fn instrSize(op: Op) usize {
         .simd_load => @sizeOf(OpsSimdLoad),
         .simd_store => @sizeOf(OpsSimdStore),
     };
-    return std.mem.alignForward(usize, HANDLER_SIZE + ops_size, 8);
+    return HANDLER_SIZE + ops_size;
 }
 
 // ── Handler table ─────────────────────────────────────────────────────────────

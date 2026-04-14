@@ -151,10 +151,6 @@ fn run(allocator: std.mem.Allocator) void {
         if (cli_args.mem_stats) stats.printMemStats(&store, &instance);
         instance.deinit();
     }
-    defer {
-        if (cli_args.mem_stats) stats.printMemStats(&store, &instance);
-        instance.deinit();
-    }
 
     if (instance.runStartFunction() catch |err|
         fatal("Failed to run start function: {s}", .{@errorName(err)})) |result|
