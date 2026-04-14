@@ -22,65 +22,92 @@ pub const ClockSource = clock.ClockSource;
 
 pub const Host = struct {
     allocator: Allocator,
-    fd_io: *FdIO,
-    clock: *Clock,
-    env_args: *EnvArgs,
+    /// Lazily initialized on first fd_* or path_* call.
+    fd_io: ?*FdIO = null,
+    /// Lazily initialized on first clock_* call.
+    clock: ?*Clock = null,
+    /// Lazily initialized on first args_* / environ_* call.
+    env_args: ?*EnvArgs = null,
     /// Optional callback invoked just before process exit.
     /// Signature: fn(exit_code: u32, data: ?*anyopaque) void
     on_exit: ?*const fn (u32, ?*anyopaque) void = null,
     on_exit_data: ?*anyopaque = null,
 
     pub fn init(allocator: Allocator) Host {
-        const fd_io_ptr = allocator.create(FdIO) catch @panic("OOM");
-        fd_io_ptr.* = FdIO.init(allocator);
-
-        const clock_ptr = allocator.create(Clock) catch @panic("OOM");
-        clock_ptr.* = Clock.init();
-
-        const env_args_ptr = allocator.create(EnvArgs) catch @panic("OOM");
-        env_args_ptr.* = EnvArgs.init(allocator);
-
-        return .{
-            .allocator = allocator,
-            .fd_io = fd_io_ptr,
-            .clock = clock_ptr,
-            .env_args = env_args_ptr,
-        };
+        return .{ .allocator = allocator };
     }
 
     pub fn deinit(self: *Host) void {
-        self.fd_io.deinit();
-        self.allocator.destroy(self.fd_io);
-
-        self.env_args.deinit();
-        self.allocator.destroy(self.env_args);
-
-        self.allocator.destroy(self.clock);
+        if (self.fd_io) |p| {
+            p.deinit();
+            self.allocator.destroy(p);
+        }
+        if (self.env_args) |p| {
+            p.deinit();
+            self.allocator.destroy(p);
+        }
+        if (self.clock) |p| {
+            self.allocator.destroy(p);
+        }
         self.* = undefined;
     }
 
+    // ── Lazy accessor helpers ─────────────────────────────────────────────
+
+    /// Returns a pointer to the FdIO subsystem, initializing it on first access.
+    fn getFdIO(self: *Host) *FdIO {
+        if (self.fd_io == null) {
+            const p = self.allocator.create(FdIO) catch @panic("OOM");
+            p.* = FdIO.init(self.allocator);
+            self.fd_io = p;
+        }
+        return self.fd_io.?;
+    }
+
+    /// Returns a pointer to the Clock subsystem, initializing it on first access.
+    fn getClock(self: *Host) *Clock {
+        if (self.clock == null) {
+            const p = self.allocator.create(Clock) catch @panic("OOM");
+            p.* = Clock.init();
+            self.clock = p;
+        }
+        return self.clock.?;
+    }
+
+    /// Returns a pointer to the EnvArgs subsystem, initializing it on first access.
+    fn getEnvArgs(self: *Host) *EnvArgs {
+        if (self.env_args == null) {
+            const p = self.allocator.create(EnvArgs) catch @panic("OOM");
+            p.* = EnvArgs.init(self.allocator);
+            self.env_args = p;
+        }
+        return self.env_args.?;
+    }
+
+    // ── Public configuration API ──────────────────────────────────────────
+
     pub fn setArgs(self: *Host, args: []const []const u8) Allocator.Error!void {
-        try self.env_args.setArgs(args);
+        try self.getEnvArgs().setArgs(args);
     }
 
     pub fn setEnv(self: *Host, env: []const EnvVar) Allocator.Error!void {
-        try self.env_args.setEnv(env);
+        try self.getEnvArgs().setEnv(env);
     }
 
     pub fn setStdout(self: *Host, output: Output) void {
-        self.fd_io.setStdout(output);
+        self.getFdIO().setStdout(output);
     }
 
     pub fn setStderr(self: *Host, output: Output) void {
-        self.fd_io.setStderr(output);
+        self.getFdIO().setStderr(output);
     }
 
     pub fn setRealtimeClock(self: *Host, source: ClockSource) void {
-        self.clock.setRealtime(source);
+        self.getClock().setRealtime(source);
     }
 
     pub fn setMonotonicClock(self: *Host, source: ClockSource) void {
-        self.clock.setMonotonic(source);
+        self.getClock().setMonotonic(source);
     }
 
     /// Register a callback that will be invoked (with the exit code) just
@@ -92,7 +119,7 @@ pub const Host = struct {
     }
 
     pub fn addPreopen(self: *Host, path: []const u8) !types.Fd {
-        return self.fd_io.addPreopen(path);
+        return self.getFdIO().addPreopen(path);
     }
 
     pub fn addToLinker(self: *Host, linker: *Linker, allocator: Allocator) Allocator.Error!void {
@@ -161,187 +188,187 @@ pub const Host = struct {
 
 fn args_sizes_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.env_args.argsSizesGet(ctx, params, results);
+    return host.getEnvArgs().argsSizesGet(ctx, params, results);
 }
 
 fn args_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.env_args.argsGet(ctx, params, results);
+    return host.getEnvArgs().argsGet(ctx, params, results);
 }
 
 fn environ_sizes_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.env_args.environSizesGet(ctx, params, results);
+    return host.getEnvArgs().environSizesGet(ctx, params, results);
 }
 
 fn environ_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.env_args.environGet(ctx, params, results);
+    return host.getEnvArgs().environGet(ctx, params, results);
 }
 
 fn clock_res_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.clock.clockResGet(ctx, params, results);
+    return host.getClock().clockResGet(ctx, params, results);
 }
 
 fn clock_time_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.clock.clockTimeGet(ctx, params, results);
+    return host.getClock().clockTimeGet(ctx, params, results);
 }
 
 fn fd_write(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.fdWrite(ctx, params, results);
+    return host.getFdIO().fdWrite(ctx, params, results);
 }
 
 fn fd_seek(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.fdSeek(ctx, params, results);
+    return host.getFdIO().fdSeek(ctx, params, results);
 }
 
 fn fd_filestat_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.fdFilestatGet(ctx, params, results);
+    return host.getFdIO().fdFilestatGet(ctx, params, results);
 }
 
 fn fd_read(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.fdRead(ctx, params, results);
+    return host.getFdIO().fdRead(ctx, params, results);
 }
 
 fn fd_pwrite(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.fdPwrite(ctx, params, results);
+    return host.getFdIO().fdPwrite(ctx, params, results);
 }
 
 fn fd_pread(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.fdPread(ctx, params, results);
+    return host.getFdIO().fdPread(ctx, params, results);
 }
 
 fn path_open(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.pathOpen(ctx, params, results);
+    return host.getFdIO().pathOpen(ctx, params, results);
 }
 
 fn fd_close(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.fdClose(ctx, params, results);
+    return host.getFdIO().fdClose(ctx, params, results);
 }
 
 fn fd_fdstat_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.fdFdstatGet(ctx, params, results);
+    return host.getFdIO().fdFdstatGet(ctx, params, results);
 }
 
 fn fd_prestat_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.fdPrestatGet(ctx, params, results);
+    return host.getFdIO().fdPrestatGet(ctx, params, results);
 }
 
 fn fd_prestat_dir_name(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.fdPrestatDirName(ctx, params, results);
+    return host.getFdIO().fdPrestatDirName(ctx, params, results);
 }
 
 fn fd_advise(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.fdAdvise(ctx, params, results);
+    return host.getFdIO().fdAdvise(ctx, params, results);
 }
 
 fn fd_allocate(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.fdAllocate(ctx, params, results);
+    return host.getFdIO().fdAllocate(ctx, params, results);
 }
 
 fn fd_datasync(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.fdDatasync(ctx, params, results);
+    return host.getFdIO().fdDatasync(ctx, params, results);
 }
 
 fn fd_fdstat_set_flags(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.fdFdstatSetFlags(ctx, params, results);
+    return host.getFdIO().fdFdstatSetFlags(ctx, params, results);
 }
 
 fn fd_fdstat_set_rights(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.fdFdstatSetRights(ctx, params, results);
+    return host.getFdIO().fdFdstatSetRights(ctx, params, results);
 }
 
 fn fd_filestat_set_size(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.fdFilestatSetSize(ctx, params, results);
+    return host.getFdIO().fdFilestatSetSize(ctx, params, results);
 }
 
 fn fd_filestat_set_times(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.fdFilestatSetTimes(ctx, params, results);
+    return host.getFdIO().fdFilestatSetTimes(ctx, params, results);
 }
 
 fn fd_readdir(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.fdReaddir(ctx, params, results);
+    return host.getFdIO().fdReaddir(ctx, params, results);
 }
 
 fn fd_renumber(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.fdRenumber(ctx, params, results);
+    return host.getFdIO().fdRenumber(ctx, params, results);
 }
 
 fn fd_sync(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.fdSync(ctx, params, results);
+    return host.getFdIO().fdSync(ctx, params, results);
 }
 
 fn fd_tell(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.fdTell(ctx, params, results);
+    return host.getFdIO().fdTell(ctx, params, results);
 }
 
 fn path_create_directory(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.pathCreateDirectory(ctx, params, results);
+    return host.getFdIO().pathCreateDirectory(ctx, params, results);
 }
 
 fn path_filestat_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.pathFilestatGet(ctx, params, results);
+    return host.getFdIO().pathFilestatGet(ctx, params, results);
 }
 
 fn path_filestat_set_times(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.pathFilestatSetTimes(ctx, params, results);
+    return host.getFdIO().pathFilestatSetTimes(ctx, params, results);
 }
 
 fn path_link(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.pathLink(ctx, params, results);
+    return host.getFdIO().pathLink(ctx, params, results);
 }
 
 fn path_readlink(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.pathReadlink(ctx, params, results);
+    return host.getFdIO().pathReadlink(ctx, params, results);
 }
 
 fn path_remove_directory(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.pathRemoveDirectory(ctx, params, results);
+    return host.getFdIO().pathRemoveDirectory(ctx, params, results);
 }
 
 fn path_rename(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.pathRename(ctx, params, results);
+    return host.getFdIO().pathRename(ctx, params, results);
 }
 
 fn path_symlink(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.pathSymlink(ctx, params, results);
+    return host.getFdIO().pathSymlink(ctx, params, results);
 }
 
 fn path_unlink_file(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    return host.fd_io.pathUnlinkFile(ctx, params, results);
+    return host.getFdIO().pathUnlinkFile(ctx, params, results);
 }
 
 /// sock_accept: stub — sockets not supported
