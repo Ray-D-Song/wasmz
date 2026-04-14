@@ -44,9 +44,6 @@ const Store = wasmz.Store;
 const Instance = wasmz.Instance;
 const RawVal = wasmz.RawVal;
 const Linker = wasmz.Linker;
-const HostFunc = wasmz.HostFunc;
-const HostContext = wasmz.HostContext;
-const ValType = wasmz.ValType;
 
 const CliArgs = struct {
     file_path: []const u8,
@@ -197,11 +194,6 @@ pub fn main() void {
     }
 }
 
-fn host_print_i32(_: ?*anyopaque, _: *HostContext, params: []const RawVal, _: []RawVal) wasmz.HostError!void {
-    const val = params[0].readAs(i32);
-    std.debug.print("host_print_i32: {d}\n", .{val});
-}
-
 fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     var cli_args = CliArgs.parse(allocator) catch |err| {
         switch (err) {
@@ -270,12 +262,6 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
 
     var linker = Linker.empty;
     try wasi_host.addToLinker(&linker, allocator);
-    try linker.define(allocator, "env", "host_print_i32", HostFunc.init(
-        null,
-        host_print_i32,
-        &[_]ValType{.I32},
-        &[_]ValType{},
-    ));
     defer linker.deinit(allocator);
 
     var instance = Instance.init(&store, arc_module.retain(), linker) catch |err| {
