@@ -20,6 +20,7 @@ const wasmz = @import("wasmz");
 const wasi_preview1 = @import("wasi").preview1;
 const profiling = wasmz.profiling;
 const arg_parse = @import("utils/arg-parse.zig");
+const stats = @import("utils/stats.zig");
 
 /// Release builds use a minimal panic handler to avoid pulling in DWARF stack-unwinding
 /// code (~127 KB).  Debug/ReleaseSafe builds use the default handler for readable backtraces.
@@ -201,67 +202,6 @@ fn host_print_i32(_: ?*anyopaque, _: *HostContext, params: []const RawVal, _: []
     std.debug.print("host_print_i32: {d}\n", .{val});
 }
 
-/// Context used for the proc_exit callback when --mem-stats is active.
-const MemStatsCtx = struct {
-    store: ?*Store = null,
-    instance: ?*Instance = null,
-};
-
-fn onExitMemStats(_: u32, data: ?*anyopaque) void {
-    if (data) |d| {
-        const ctx: *MemStatsCtx = @ptrCast(@alignCast(d));
-        if (ctx.store != null and ctx.instance != null) {
-            printMemStats(ctx.store.?, ctx.instance.?);
-        }
-    }
-}
-
-fn onExitProfiling(_: u32, _: ?*anyopaque) void {
-    profiling.printReport();
-}
-
-/// Print memory usage stats to stderr.
-fn printMemStats(store: *Store, instance: *Instance) void {
-    const linear_bytes = instance.memory.byteLen();
-    const linear_pages = instance.memory.pageCount();
-    const gc_used = store.gc_heap.usedSize();
-    const gc_cap = store.gc_heap.totalSize();
-    const shared_bytes = store.memory_budget.shared_bytes;
-    const total = linear_bytes + gc_cap + shared_bytes;
-
-    const linear_mb = @as(f64, @floatFromInt(linear_bytes)) / (1024.0 * 1024.0);
-    const gc_cap_mb = @as(f64, @floatFromInt(gc_cap)) / (1024.0 * 1024.0);
-    const gc_used_kb = @as(f64, @floatFromInt(gc_used)) / 1024.0;
-    const gc_cap_kb = @as(f64, @floatFromInt(gc_cap)) / 1024.0;
-    const shared_mb = @as(f64, @floatFromInt(shared_bytes)) / (1024.0 * 1024.0);
-    const total_mb = @as(f64, @floatFromInt(total)) / (1024.0 * 1024.0);
-
-    const shared_annotation: []const u8 = if (shared_bytes == 0) "(none)" else "";
-
-    var buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const w = fbs.writer();
-    w.print(
-        "Memory usage:\n" ++
-            "  Linear memory:  {d:.2} MB  ({d} pages)\n" ++
-            "  GC heap:        {d:.2} MB  (used {d:.1} KB / capacity {d:.1} KB)\n" ++
-            "  Shared memory:  {d:.2} MB  {s}\n" ++
-            "  \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n" ++
-            "  Total:          {d:.2} MB\n",
-        .{
-            linear_mb,
-            linear_pages,
-            gc_cap_mb,
-            gc_used_kb,
-            gc_cap_kb,
-            shared_mb,
-            shared_annotation,
-            total_mb,
-        },
-    ) catch {};
-    std.fs.File.stderr().writeAll(fbs.getWritten()) catch {};
-}
-
 fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     var cli_args = CliArgs.parse(allocator) catch |err| {
         switch (err) {
@@ -317,15 +257,15 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
 
     // If --mem-stats is set, register a proc_exit callback so that stats are
     // printed even when the WASM module calls proc_exit (which bypasses defer).
-    var mem_stats_ctx = MemStatsCtx{};
+    var mem_stats_ctx = stats.MemStatsCtx{};
     mem_stats_ctx.store = &store;
     if (cli_args.mem_stats) {
-        wasi_host.setOnExit(onExitMemStats, &mem_stats_ctx);
+        wasi_host.setOnExit(stats.onExitMemStats, &mem_stats_ctx);
     }
 
     // Register profiling callback (if enabled at compile time).
     if (profiling.enabled) {
-        wasi_host.setOnExit(onExitProfiling, null);
+        wasi_host.setOnExit(stats.onExitProfiling, null);
     }
 
     var linker = Linker.empty;
@@ -374,7 +314,7 @@ fn run(allocator: std.mem.Allocator, stdout: anytype) !void {
     mem_stats_ctx.instance = &instance;
     // Defer deinit last so we can print stats before it runs.
     defer {
-        if (cli_args.mem_stats) printMemStats(&store, &instance);
+        if (cli_args.mem_stats) stats.printMemStats(&store, &instance);
         profiling.printReport();
         instance.deinit();
     }
