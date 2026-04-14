@@ -95,7 +95,7 @@ fn invokeHostCallInline(
     store: *Store,
     host_instance: *dispatch.HostInstance,
     host_func: HostFunc,
-    arg_slots: []align(1) const u32,
+    arg_slots: []align(1) const ir.Slot,
     slots: [*]RawVal,
     result_len: usize,
     frame: *DispatchState,

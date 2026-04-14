@@ -86,7 +86,7 @@ const empty_runtime_module_wasm = [_]u8{
 const ParsedFunction = struct {
     params: []ValType,
     results: []ValType,
-    reserved_slots: u32,
+    reserved_slots: ir_mod.Slot,
     body_expr: []const u8,
 };
 
@@ -220,12 +220,12 @@ fn parse_single_function_module(allocator: std.mem.Allocator, wasm: []const u8) 
     return .{
         .params = params,
         .results = results,
-        .reserved_slots = @as(u32, @intCast(params.len)) + explicit_local_count,
+        .reserved_slots = @intCast(@as(u32, @intCast(params.len)) + explicit_local_count),
         .body_expr = body_expr,
     };
 }
 
-fn lowerParsedFunction(allocator: std.mem.Allocator, reserved_slots: u32, body_expr: []const u8) !CompiledFunction {
+fn lowerParsedFunction(allocator: std.mem.Allocator, reserved_slots: ir_mod.Slot, body_expr: []const u8) !CompiledFunction {
     return try compileFunctionBody(allocator, reserved_slots, 0, 0, body_expr, .{}, empty_resolver, &.{}, .none);
 }
 
@@ -329,7 +329,7 @@ test "simple_add fixture runs through parser lower ir vm" {
     const parsed = try parse_single_function_module(arena.allocator(), simple_add_wasm);
     try testing.expectEqual(@as(usize, 2), parsed.params.len);
     try testing.expectEqual(@as(usize, 1), parsed.results.len);
-    try testing.expectEqual(@as(u32, 2), parsed.reserved_slots);
+    try testing.expectEqual(@as(ir_mod.Slot, 2), parsed.reserved_slots);
     try testing.expectEqual(ValType.I32, parsed.params[0]);
     try testing.expectEqual(ValType.I32, parsed.params[1]);
     try testing.expectEqual(ValType.I32, parsed.results[0]);
@@ -356,7 +356,7 @@ test "local_tee module runs through parser lower ir vm" {
     const parsed = try parse_single_function_module(arena.allocator(), &local_tee_wasm);
     try testing.expectEqual(@as(usize, 1), parsed.params.len);
     try testing.expectEqual(@as(usize, 1), parsed.results.len);
-    try testing.expectEqual(@as(u32, 1), parsed.reserved_slots);
+    try testing.expectEqual(@as(ir_mod.Slot, 1), parsed.reserved_slots);
     try testing.expectEqual(ValType.I32, parsed.params[0]);
     try testing.expectEqual(ValType.I32, parsed.results[0]);
 
