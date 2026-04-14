@@ -131,6 +131,11 @@ pub const SmallPatchList = struct {
         return self.inline_buf[0..self.len];
     }
 
+    pub fn itemsMut(self: *SmallPatchList) []u32 {
+        if (self.overflow) |*ov| return ov.items;
+        return self.inline_buf[0..self.len];
+    }
+
     pub fn append(self: *SmallPatchList, allocator: Allocator, site: u32) !void {
         if (self.overflow) |*ov| {
             try ov.append(allocator, site);
@@ -711,6 +716,12 @@ pub const Lower = struct {
     is_unreachable: bool = false,
     /// Nesting depth of blocks opened while in unreachable state.
     unreachable_depth: u32 = 0,
+    /// r0 accumulator tracking: the slot whose value was most recently written into
+    /// the r0 register (i.e. the `dst` of the last _imm or _r instruction).
+    /// When the next _imm instruction's `lhs` equals this slot we emit the cheaper
+    /// `_r` variant which reads lhs from r0 instead of slots[lhs].
+    /// Set to null whenever r0 may have been clobbered (branches, calls, copies, etc.).
+    r0_slot: ?Slot = null,
 
     pub fn init(allocator: Allocator) Lower {
         return .{ .allocator = allocator };
@@ -806,6 +817,7 @@ pub const Lower = struct {
         self.composite_types = &.{};
         self.is_unreachable = false;
         self.unreachable_depth = 0;
+        self.r0_slot = null;
         // Recycle the free-list capacity but discard stale slot numbers.
         self.free_slots.clearRetainingCapacity();
     }
@@ -1012,6 +1024,30 @@ pub const Lower = struct {
                     .i64_ge_s_jump_if_false => |*j| j.target = target_pc,
                     .i64_ge_u_jump_if_false => |*j| j.target = target_pc,
                     .i64_eqz_jump_if_false => |*j| j.target = target_pc,
+                    // Fused compare-jump ops, true-branch variant (Peephole J)
+                    .jump_if_nz => |*j| j.target = target_pc,
+                    .i32_eq_jump_if_true => |*j| j.target = target_pc,
+                    .i32_ne_jump_if_true => |*j| j.target = target_pc,
+                    .i32_lt_s_jump_if_true => |*j| j.target = target_pc,
+                    .i32_lt_u_jump_if_true => |*j| j.target = target_pc,
+                    .i32_gt_s_jump_if_true => |*j| j.target = target_pc,
+                    .i32_gt_u_jump_if_true => |*j| j.target = target_pc,
+                    .i32_le_s_jump_if_true => |*j| j.target = target_pc,
+                    .i32_le_u_jump_if_true => |*j| j.target = target_pc,
+                    .i32_ge_s_jump_if_true => |*j| j.target = target_pc,
+                    .i32_ge_u_jump_if_true => |*j| j.target = target_pc,
+                    .i32_eqz_jump_if_true => |*j| j.target = target_pc,
+                    .i64_eq_jump_if_true => |*j| j.target = target_pc,
+                    .i64_ne_jump_if_true => |*j| j.target = target_pc,
+                    .i64_lt_s_jump_if_true => |*j| j.target = target_pc,
+                    .i64_lt_u_jump_if_true => |*j| j.target = target_pc,
+                    .i64_gt_s_jump_if_true => |*j| j.target = target_pc,
+                    .i64_gt_u_jump_if_true => |*j| j.target = target_pc,
+                    .i64_le_s_jump_if_true => |*j| j.target = target_pc,
+                    .i64_le_u_jump_if_true => |*j| j.target = target_pc,
+                    .i64_ge_s_jump_if_true => |*j| j.target = target_pc,
+                    .i64_ge_u_jump_if_true => |*j| j.target = target_pc,
+                    .i64_eqz_jump_if_true => |*j| j.target = target_pc,
                     // Fused compare-imm-jump ops (Peephole G)
                     .i32_eq_imm_jump_if_false => |*j| j.target = target_pc,
                     .i32_ne_imm_jump_if_false => |*j| j.target = target_pc,
@@ -1033,6 +1069,27 @@ pub const Lower = struct {
                     .i64_le_u_imm_jump_if_false => |*j| j.target = target_pc,
                     .i64_ge_s_imm_jump_if_false => |*j| j.target = target_pc,
                     .i64_ge_u_imm_jump_if_false => |*j| j.target = target_pc,
+                    // Fused compare-imm-jump ops, true-branch variant (Peephole J-imm)
+                    .i32_eq_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i32_ne_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i32_lt_s_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i32_lt_u_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i32_gt_s_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i32_gt_u_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i32_le_s_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i32_le_u_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i32_ge_s_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i32_ge_u_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i64_eq_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i64_ne_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i64_lt_s_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i64_lt_u_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i64_gt_s_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i64_gt_u_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i64_le_s_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i64_le_u_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i64_ge_s_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i64_ge_u_imm_jump_if_true => |*j| j.target = target_pc,
                     else => unreachable,
                 }
             }
@@ -2123,7 +2180,13 @@ pub const Lower = struct {
     pub fn lower_binary_op(
         self: *Lower,
         comptime op_tag: []const u8,
+        prev_r0: ?Slot,
     ) !void {
+        // Clear now so all exit paths (const folding, simplification, fallthrough)
+        // leave r0_slot in the correct state unless we explicitly set it below.
+        // (lowerOp already cleared self.r0_slot before calling us; this is a no-op
+        // but kept for clarity.)
+        self.r0_slot = null;
         const rhs = try self.pop_slot();
         const lhs = try self.pop_slot();
         const dst = self.alloc_slot();
@@ -2149,27 +2212,63 @@ pub const Lower = struct {
                 switch (ops[ops.len - 1]) {
                     .const_i32 => |c| if (ImmType == i32 and c.dst == rhs) {
                         // ── Algebraic simplification & strength reduction ──
-                        if (try self.try_simplify_imm_i32(op_tag, lhs, c.value, dst))
+                        if (try self.try_simplify_imm_i32(op_tag, lhs, c.value, dst)) {
+                            self.r0_slot = null;
                             return;
+                        }
                         // Remove the const_i32 and emit the fused imm op instead.
                         _ = self.compiled.ops.pop();
+                        // ── r0 variant: if lhs is already in r0, skip the lhs slot ──
+                        const r_tag = imm_tag ++ "_r";
+                        if (comptime @hasField(Op, r_tag)) {
+                            if (prev_r0) |r0| {
+                                if (r0 == lhs) {
+                                    try self.emit(@unionInit(Op, r_tag, .{
+                                        .dst = dst,
+                                        .imm = c.value,
+                                    }));
+                                    self.r0_slot = dst;
+                                    try self.stack.push(self.allocator, dst);
+                                    return;
+                                }
+                            }
+                        }
                         try self.emit(@unionInit(Op, imm_tag, .{
                             .dst = dst,
                             .lhs = lhs,
                             .imm = c.value,
                         }));
+                        self.r0_slot = dst;
                         try self.stack.push(self.allocator, dst);
                         return;
                     },
                     .const_i64 => |c| if (ImmType == i64 and c.dst == rhs) {
-                        if (try self.try_simplify_imm_i64(op_tag, lhs, c.value, dst))
+                        if (try self.try_simplify_imm_i64(op_tag, lhs, c.value, dst)) {
+                            self.r0_slot = null;
                             return;
+                        }
                         _ = self.compiled.ops.pop();
+                        // ── r0 variant: if lhs is already in r0, skip the lhs slot ──
+                        const r_tag = imm_tag ++ "_r";
+                        if (comptime @hasField(Op, r_tag)) {
+                            if (prev_r0) |r0| {
+                                if (r0 == lhs) {
+                                    try self.emit(@unionInit(Op, r_tag, .{
+                                        .dst = dst,
+                                        .imm = c.value,
+                                    }));
+                                    self.r0_slot = dst;
+                                    try self.stack.push(self.allocator, dst);
+                                    return;
+                                }
+                            }
+                        }
                         try self.emit(@unionInit(Op, imm_tag, .{
                             .dst = dst,
                             .lhs = lhs,
                             .imm = c.value,
                         }));
+                        self.r0_slot = dst;
                         try self.stack.push(self.allocator, dst);
                         return;
                     },
@@ -2178,6 +2277,7 @@ pub const Lower = struct {
             }
         }
 
+        self.r0_slot = null;
         try self.emit(@unionInit(Op, op_tag, .{
             .dst = dst,
             .lhs = lhs,
@@ -2357,6 +2457,12 @@ pub const Lower = struct {
             }
         }
 
+        // Capture and clear r0 accumulator state.
+        // lower_binary_op will receive it as prev_r0 and may set self.r0_slot again
+        // if it emits an _imm or _r instruction.  All other op arms leave r0_slot=null.
+        const saved_r0 = self.r0_slot;
+        self.r0_slot = null;
+
         switch (op) {
             .unreachable_ => {
                 try self.emit(.unreachable_);
@@ -2369,6 +2475,7 @@ pub const Lower = struct {
 
             .drop => {
                 _ = try self.pop_slot();
+                self.r0_slot = null;
             },
 
             // ── Structured control flow ───────────────────────────────────────
@@ -2692,6 +2799,7 @@ pub const Lower = struct {
 
                 // Now emit the actual branch to the target frame.
                 const branch_jump_pc = self.current_pc();
+                const is_forward = frame.kind != .loop;
                 if (frame.kind == .loop) {
                     try self.emit(.{ .jump = .{ .target = frame.target_pc } });
                 } else {
@@ -2699,54 +2807,136 @@ pub const Lower = struct {
                     try self.add_patch_site(frame, branch_jump_pc);
                 }
 
-                // Patch the jump_if_z (or fused compare-jump) to skip just past the unconditional jump.
-                const continue_pc = self.current_pc();
-                switch (self.compiled.ops.items[jiz_pc]) {
-                    .jump_if_z => |*j| j.target = continue_pc,
-                    .i32_eq_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_ne_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_lt_s_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_lt_u_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_gt_s_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_gt_u_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_le_s_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_le_u_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_ge_s_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_ge_u_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_eqz_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_eq_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_ne_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_lt_s_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_lt_u_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_gt_s_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_gt_u_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_le_s_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_le_u_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_ge_s_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_ge_u_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_eqz_jump_if_false => |*j| j.target = continue_pc,
-                    // Fused compare-imm-jump ops (Peephole G)
-                    .i32_eq_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_ne_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_lt_s_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_lt_u_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_gt_s_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_gt_u_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_le_s_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_le_u_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_ge_s_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_ge_u_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_eq_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_ne_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_lt_s_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_lt_u_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_gt_s_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_gt_u_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_le_s_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_le_u_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_ge_s_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_ge_u_imm_jump_if_false => |*j| j.target = continue_pc,
-                    else => unreachable,
+                // ── Peephole J: fuse jump_if_false + jump → jump_if_true ──────
+                // When no value copies were emitted between jiz_pc and branch_jump_pc
+                // (they are exactly adjacent), fold the two ops into one jump_if_true.
+                const peephole_j_fused = fused: {
+                    if (branch_jump_pc != jiz_pc + 1) break :fused false;
+                    const branch_target = self.compiled.ops.items[branch_jump_pc].jump.target;
+                    _ = self.compiled.ops.pop(); // remove the jump at branch_jump_pc
+
+                    // Replace jiz_pc op with the _jump_if_true equivalent.
+                    const jiz_op = self.compiled.ops.items[jiz_pc];
+                    const fused_op: Op = switch (jiz_op) {
+                        .jump_if_z => |j| .{ .jump_if_nz = .{ .cond = j.cond, .target = branch_target } },
+                        .i32_eq_jump_if_false => |j| .{ .i32_eq_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i32_ne_jump_if_false => |j| .{ .i32_ne_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i32_lt_s_jump_if_false => |j| .{ .i32_lt_s_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i32_lt_u_jump_if_false => |j| .{ .i32_lt_u_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i32_gt_s_jump_if_false => |j| .{ .i32_gt_s_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i32_gt_u_jump_if_false => |j| .{ .i32_gt_u_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i32_le_s_jump_if_false => |j| .{ .i32_le_s_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i32_le_u_jump_if_false => |j| .{ .i32_le_u_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i32_ge_s_jump_if_false => |j| .{ .i32_ge_s_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i32_ge_u_jump_if_false => |j| .{ .i32_ge_u_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i32_eqz_jump_if_false => |j| .{ .i32_eqz_jump_if_true = .{ .src = j.src, .target = branch_target } },
+                        .i64_eq_jump_if_false => |j| .{ .i64_eq_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i64_ne_jump_if_false => |j| .{ .i64_ne_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i64_lt_s_jump_if_false => |j| .{ .i64_lt_s_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i64_lt_u_jump_if_false => |j| .{ .i64_lt_u_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i64_gt_s_jump_if_false => |j| .{ .i64_gt_s_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i64_gt_u_jump_if_false => |j| .{ .i64_gt_u_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i64_le_s_jump_if_false => |j| .{ .i64_le_s_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i64_le_u_jump_if_false => |j| .{ .i64_le_u_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i64_ge_s_jump_if_false => |j| .{ .i64_ge_s_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i64_ge_u_jump_if_false => |j| .{ .i64_ge_u_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i64_eqz_jump_if_false => |j| .{ .i64_eqz_jump_if_true = .{ .src = j.src, .target = branch_target } },
+                        // Fused compare-imm-jump, true-branch (Peephole J-imm, i32)
+                        .i32_eq_imm_jump_if_false => |j| .{ .i32_eq_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i32_ne_imm_jump_if_false => |j| .{ .i32_ne_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i32_lt_s_imm_jump_if_false => |j| .{ .i32_lt_s_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i32_lt_u_imm_jump_if_false => |j| .{ .i32_lt_u_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i32_gt_s_imm_jump_if_false => |j| .{ .i32_gt_s_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i32_gt_u_imm_jump_if_false => |j| .{ .i32_gt_u_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i32_le_s_imm_jump_if_false => |j| .{ .i32_le_s_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i32_le_u_imm_jump_if_false => |j| .{ .i32_le_u_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i32_ge_s_imm_jump_if_false => |j| .{ .i32_ge_s_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i32_ge_u_imm_jump_if_false => |j| .{ .i32_ge_u_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        // Fused compare-imm-jump, true-branch (Peephole J-imm, i64)
+                        .i64_eq_imm_jump_if_false => |j| .{ .i64_eq_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i64_ne_imm_jump_if_false => |j| .{ .i64_ne_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i64_lt_s_imm_jump_if_false => |j| .{ .i64_lt_s_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i64_lt_u_imm_jump_if_false => |j| .{ .i64_lt_u_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i64_gt_s_imm_jump_if_false => |j| .{ .i64_gt_s_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i64_gt_u_imm_jump_if_false => |j| .{ .i64_gt_u_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i64_le_s_imm_jump_if_false => |j| .{ .i64_le_s_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i64_le_u_imm_jump_if_false => |j| .{ .i64_le_u_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i64_ge_s_imm_jump_if_false => |j| .{ .i64_ge_s_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i64_ge_u_imm_jump_if_false => |j| .{ .i64_ge_u_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        else => {
+                            // Can't fuse (e.g. imm variant) — undo the pop and fall through.
+                            try self.compiled.ops.append(self.allocator, .{ .jump = .{ .target = branch_target } });
+                            break :fused false;
+                        },
+                    };
+                    self.compiled.ops.items[jiz_pc] = fused_op;
+
+                    // For forward jumps: the patch site currently points to branch_jump_pc
+                    // (which we just popped). Replace it with jiz_pc so the resolver
+                    // patches the fused op's target instead.
+                    if (is_forward) {
+                        const sites = frame.patch_sites.itemsMut();
+                        for (sites) |*site| {
+                            if (site.* == branch_jump_pc) {
+                                site.* = jiz_pc;
+                                break;
+                            }
+                        }
+                    }
+                    break :fused true; // fusion succeeded — no need for the normal patching below
+                };
+
+                if (!peephole_j_fused) {
+                    // Patch the jump_if_z (or fused compare-jump) to skip just past the unconditional jump.
+                    const continue_pc = self.current_pc();
+
+                    switch (self.compiled.ops.items[jiz_pc]) {
+                        .jump_if_z => |*j| j.target = continue_pc,
+                        .i32_eq_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_ne_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_lt_s_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_lt_u_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_gt_s_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_gt_u_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_le_s_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_le_u_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_ge_s_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_ge_u_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_eqz_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_eq_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_ne_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_lt_s_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_lt_u_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_gt_s_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_gt_u_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_le_s_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_le_u_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_ge_s_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_ge_u_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_eqz_jump_if_false => |*j| j.target = continue_pc,
+                        // Fused compare-imm-jump ops (Peephole G)
+                        .i32_eq_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_ne_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_lt_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_lt_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_gt_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_gt_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_le_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_le_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_ge_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_ge_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_eq_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_ne_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_lt_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_lt_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_gt_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_gt_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_le_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_le_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_ge_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_ge_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                        else => unreachable,
+                    }
                 }
             },
 
@@ -2881,59 +3071,59 @@ pub const Lower = struct {
             // ── i32 arithmetic operations (binary) ──────────────────────────────
             // Using helper function to reduce boilerplate
 
-            .i32_add => try self.lower_binary_op("i32_add"),
-            .i32_sub => try self.lower_binary_op("i32_sub"),
-            .i32_mul => try self.lower_binary_op("i32_mul"),
-            .i32_div_s => try self.lower_binary_op("i32_div_s"),
-            .i32_div_u => try self.lower_binary_op("i32_div_u"),
-            .i32_rem_s => try self.lower_binary_op("i32_rem_s"),
-            .i32_rem_u => try self.lower_binary_op("i32_rem_u"),
-            .i32_and => try self.lower_binary_op("i32_and"),
-            .i32_or => try self.lower_binary_op("i32_or"),
-            .i32_xor => try self.lower_binary_op("i32_xor"),
-            .i32_shl => try self.lower_binary_op("i32_shl"),
-            .i32_shr_s => try self.lower_binary_op("i32_shr_s"),
-            .i32_shr_u => try self.lower_binary_op("i32_shr_u"),
-            .i32_rotl => try self.lower_binary_op("i32_rotl"),
-            .i32_rotr => try self.lower_binary_op("i32_rotr"),
+            .i32_add => try self.lower_binary_op("i32_add", saved_r0),
+            .i32_sub => try self.lower_binary_op("i32_sub", saved_r0),
+            .i32_mul => try self.lower_binary_op("i32_mul", saved_r0),
+            .i32_div_s => try self.lower_binary_op("i32_div_s", saved_r0),
+            .i32_div_u => try self.lower_binary_op("i32_div_u", saved_r0),
+            .i32_rem_s => try self.lower_binary_op("i32_rem_s", saved_r0),
+            .i32_rem_u => try self.lower_binary_op("i32_rem_u", saved_r0),
+            .i32_and => try self.lower_binary_op("i32_and", saved_r0),
+            .i32_or => try self.lower_binary_op("i32_or", saved_r0),
+            .i32_xor => try self.lower_binary_op("i32_xor", saved_r0),
+            .i32_shl => try self.lower_binary_op("i32_shl", saved_r0),
+            .i32_shr_s => try self.lower_binary_op("i32_shr_s", saved_r0),
+            .i32_shr_u => try self.lower_binary_op("i32_shr_u", saved_r0),
+            .i32_rotl => try self.lower_binary_op("i32_rotl", saved_r0),
+            .i32_rotr => try self.lower_binary_op("i32_rotr", saved_r0),
 
             // ── i64 arithmetic operations (binary) ──────────────────────────────
 
-            .i64_add => try self.lower_binary_op("i64_add"),
-            .i64_sub => try self.lower_binary_op("i64_sub"),
-            .i64_mul => try self.lower_binary_op("i64_mul"),
-            .i64_div_s => try self.lower_binary_op("i64_div_s"),
-            .i64_div_u => try self.lower_binary_op("i64_div_u"),
-            .i64_rem_s => try self.lower_binary_op("i64_rem_s"),
-            .i64_rem_u => try self.lower_binary_op("i64_rem_u"),
-            .i64_and => try self.lower_binary_op("i64_and"),
-            .i64_or => try self.lower_binary_op("i64_or"),
-            .i64_xor => try self.lower_binary_op("i64_xor"),
-            .i64_shl => try self.lower_binary_op("i64_shl"),
-            .i64_shr_s => try self.lower_binary_op("i64_shr_s"),
-            .i64_shr_u => try self.lower_binary_op("i64_shr_u"),
-            .i64_rotl => try self.lower_binary_op("i64_rotl"),
-            .i64_rotr => try self.lower_binary_op("i64_rotr"),
+            .i64_add => try self.lower_binary_op("i64_add", saved_r0),
+            .i64_sub => try self.lower_binary_op("i64_sub", saved_r0),
+            .i64_mul => try self.lower_binary_op("i64_mul", saved_r0),
+            .i64_div_s => try self.lower_binary_op("i64_div_s", saved_r0),
+            .i64_div_u => try self.lower_binary_op("i64_div_u", saved_r0),
+            .i64_rem_s => try self.lower_binary_op("i64_rem_s", saved_r0),
+            .i64_rem_u => try self.lower_binary_op("i64_rem_u", saved_r0),
+            .i64_and => try self.lower_binary_op("i64_and", saved_r0),
+            .i64_or => try self.lower_binary_op("i64_or", saved_r0),
+            .i64_xor => try self.lower_binary_op("i64_xor", saved_r0),
+            .i64_shl => try self.lower_binary_op("i64_shl", saved_r0),
+            .i64_shr_s => try self.lower_binary_op("i64_shr_s", saved_r0),
+            .i64_shr_u => try self.lower_binary_op("i64_shr_u", saved_r0),
+            .i64_rotl => try self.lower_binary_op("i64_rotl", saved_r0),
+            .i64_rotr => try self.lower_binary_op("i64_rotr", saved_r0),
 
             // ── f32 arithmetic operations (binary) ──────────────────────────────
 
-            .f32_add => try self.lower_binary_op("f32_add"),
-            .f32_sub => try self.lower_binary_op("f32_sub"),
-            .f32_mul => try self.lower_binary_op("f32_mul"),
-            .f32_div => try self.lower_binary_op("f32_div"),
-            .f32_min => try self.lower_binary_op("f32_min"),
-            .f32_max => try self.lower_binary_op("f32_max"),
-            .f32_copysign => try self.lower_binary_op("f32_copysign"),
+            .f32_add => try self.lower_binary_op("f32_add", saved_r0),
+            .f32_sub => try self.lower_binary_op("f32_sub", saved_r0),
+            .f32_mul => try self.lower_binary_op("f32_mul", saved_r0),
+            .f32_div => try self.lower_binary_op("f32_div", saved_r0),
+            .f32_min => try self.lower_binary_op("f32_min", saved_r0),
+            .f32_max => try self.lower_binary_op("f32_max", saved_r0),
+            .f32_copysign => try self.lower_binary_op("f32_copysign", saved_r0),
 
             // ── f64 arithmetic operations (binary) ──────────────────────────────
 
-            .f64_add => try self.lower_binary_op("f64_add"),
-            .f64_sub => try self.lower_binary_op("f64_sub"),
-            .f64_mul => try self.lower_binary_op("f64_mul"),
-            .f64_div => try self.lower_binary_op("f64_div"),
-            .f64_min => try self.lower_binary_op("f64_min"),
-            .f64_max => try self.lower_binary_op("f64_max"),
-            .f64_copysign => try self.lower_binary_op("f64_copysign"),
+            .f64_add => try self.lower_binary_op("f64_add", saved_r0),
+            .f64_sub => try self.lower_binary_op("f64_sub", saved_r0),
+            .f64_mul => try self.lower_binary_op("f64_mul", saved_r0),
+            .f64_div => try self.lower_binary_op("f64_div", saved_r0),
+            .f64_min => try self.lower_binary_op("f64_min", saved_r0),
+            .f64_max => try self.lower_binary_op("f64_max", saved_r0),
+            .f64_copysign => try self.lower_binary_op("f64_copysign", saved_r0),
 
             // ── i32 unary operations ────────────────────────────────────────────
 
@@ -3131,6 +3321,40 @@ pub const Lower = struct {
 
             .ret => {
                 const value = self.stack.pop();
+                // Peephole I: if the last emitted op is a fusable binop whose
+                // dst is the value being returned, fold binop+ret into a single
+                // _ret superinstruction, saving one dispatch event.
+                if (value) |v| fuse: {
+                    const ops = self.compiled.ops.items;
+                    if (ops.len == 0) break :fuse;
+                    switch (ops[ops.len - 1]) {
+                        .i32_add => |c| if (c.dst == v) {
+                            _ = self.compiled.ops.pop();
+                            try self.emit(.{ .i32_add_ret = .{ .lhs = c.lhs, .rhs = c.rhs } });
+                            self.is_unreachable = true;
+                            return;
+                        },
+                        .i32_sub => |c| if (c.dst == v) {
+                            _ = self.compiled.ops.pop();
+                            try self.emit(.{ .i32_sub_ret = .{ .lhs = c.lhs, .rhs = c.rhs } });
+                            self.is_unreachable = true;
+                            return;
+                        },
+                        .i64_add => |c| if (c.dst == v) {
+                            _ = self.compiled.ops.pop();
+                            try self.emit(.{ .i64_add_ret = .{ .lhs = c.lhs, .rhs = c.rhs } });
+                            self.is_unreachable = true;
+                            return;
+                        },
+                        .i64_sub => |c| if (c.dst == v) {
+                            _ = self.compiled.ops.pop();
+                            try self.emit(.{ .i64_sub_ret = .{ .lhs = c.lhs, .rhs = c.rhs } });
+                            self.is_unreachable = true;
+                            return;
+                        },
+                        else => {},
+                    }
+                }
                 try self.emit(.{ .ret = .{ .value = value } });
                 self.is_unreachable = true;
             },
@@ -4442,6 +4666,10 @@ pub const Lower = struct {
             else => {},
         }
 
+        // Capture and clear r0 accumulator state (mirrors lowerOp).
+        const saved_r0 = self.r0_slot;
+        self.r0_slot = null;
+
         // ── Dispatch directly from OperatorCode ──────────────────────────────
         switch (info.code) {
             .unreachable_ => {
@@ -4543,56 +4771,56 @@ pub const Lower = struct {
             },
 
             // ── i32 binary ───────────────────────────────────────────────────
-            .i32_add => try self.lower_binary_op("i32_add"),
-            .i32_sub => try self.lower_binary_op("i32_sub"),
-            .i32_mul => try self.lower_binary_op("i32_mul"),
-            .i32_div_s => try self.lower_binary_op("i32_div_s"),
-            .i32_div_u => try self.lower_binary_op("i32_div_u"),
-            .i32_rem_s => try self.lower_binary_op("i32_rem_s"),
-            .i32_rem_u => try self.lower_binary_op("i32_rem_u"),
-            .i32_and => try self.lower_binary_op("i32_and"),
-            .i32_or => try self.lower_binary_op("i32_or"),
-            .i32_xor => try self.lower_binary_op("i32_xor"),
-            .i32_shl => try self.lower_binary_op("i32_shl"),
-            .i32_shr_s => try self.lower_binary_op("i32_shr_s"),
-            .i32_shr_u => try self.lower_binary_op("i32_shr_u"),
-            .i32_rotl => try self.lower_binary_op("i32_rotl"),
-            .i32_rotr => try self.lower_binary_op("i32_rotr"),
+            .i32_add => try self.lower_binary_op("i32_add", saved_r0),
+            .i32_sub => try self.lower_binary_op("i32_sub", saved_r0),
+            .i32_mul => try self.lower_binary_op("i32_mul", saved_r0),
+            .i32_div_s => try self.lower_binary_op("i32_div_s", saved_r0),
+            .i32_div_u => try self.lower_binary_op("i32_div_u", saved_r0),
+            .i32_rem_s => try self.lower_binary_op("i32_rem_s", saved_r0),
+            .i32_rem_u => try self.lower_binary_op("i32_rem_u", saved_r0),
+            .i32_and => try self.lower_binary_op("i32_and", saved_r0),
+            .i32_or => try self.lower_binary_op("i32_or", saved_r0),
+            .i32_xor => try self.lower_binary_op("i32_xor", saved_r0),
+            .i32_shl => try self.lower_binary_op("i32_shl", saved_r0),
+            .i32_shr_s => try self.lower_binary_op("i32_shr_s", saved_r0),
+            .i32_shr_u => try self.lower_binary_op("i32_shr_u", saved_r0),
+            .i32_rotl => try self.lower_binary_op("i32_rotl", saved_r0),
+            .i32_rotr => try self.lower_binary_op("i32_rotr", saved_r0),
 
             // ── i64 binary ───────────────────────────────────────────────────
-            .i64_add => try self.lower_binary_op("i64_add"),
-            .i64_sub => try self.lower_binary_op("i64_sub"),
-            .i64_mul => try self.lower_binary_op("i64_mul"),
-            .i64_div_s => try self.lower_binary_op("i64_div_s"),
-            .i64_div_u => try self.lower_binary_op("i64_div_u"),
-            .i64_rem_s => try self.lower_binary_op("i64_rem_s"),
-            .i64_rem_u => try self.lower_binary_op("i64_rem_u"),
-            .i64_and => try self.lower_binary_op("i64_and"),
-            .i64_or => try self.lower_binary_op("i64_or"),
-            .i64_xor => try self.lower_binary_op("i64_xor"),
-            .i64_shl => try self.lower_binary_op("i64_shl"),
-            .i64_shr_s => try self.lower_binary_op("i64_shr_s"),
-            .i64_shr_u => try self.lower_binary_op("i64_shr_u"),
-            .i64_rotl => try self.lower_binary_op("i64_rotl"),
-            .i64_rotr => try self.lower_binary_op("i64_rotr"),
+            .i64_add => try self.lower_binary_op("i64_add", saved_r0),
+            .i64_sub => try self.lower_binary_op("i64_sub", saved_r0),
+            .i64_mul => try self.lower_binary_op("i64_mul", saved_r0),
+            .i64_div_s => try self.lower_binary_op("i64_div_s", saved_r0),
+            .i64_div_u => try self.lower_binary_op("i64_div_u", saved_r0),
+            .i64_rem_s => try self.lower_binary_op("i64_rem_s", saved_r0),
+            .i64_rem_u => try self.lower_binary_op("i64_rem_u", saved_r0),
+            .i64_and => try self.lower_binary_op("i64_and", saved_r0),
+            .i64_or => try self.lower_binary_op("i64_or", saved_r0),
+            .i64_xor => try self.lower_binary_op("i64_xor", saved_r0),
+            .i64_shl => try self.lower_binary_op("i64_shl", saved_r0),
+            .i64_shr_s => try self.lower_binary_op("i64_shr_s", saved_r0),
+            .i64_shr_u => try self.lower_binary_op("i64_shr_u", saved_r0),
+            .i64_rotl => try self.lower_binary_op("i64_rotl", saved_r0),
+            .i64_rotr => try self.lower_binary_op("i64_rotr", saved_r0),
 
             // ── f32 binary ───────────────────────────────────────────────────
-            .f32_add => try self.lower_binary_op("f32_add"),
-            .f32_sub => try self.lower_binary_op("f32_sub"),
-            .f32_mul => try self.lower_binary_op("f32_mul"),
-            .f32_div => try self.lower_binary_op("f32_div"),
-            .f32_min => try self.lower_binary_op("f32_min"),
-            .f32_max => try self.lower_binary_op("f32_max"),
-            .f32_copysign => try self.lower_binary_op("f32_copysign"),
+            .f32_add => try self.lower_binary_op("f32_add", saved_r0),
+            .f32_sub => try self.lower_binary_op("f32_sub", saved_r0),
+            .f32_mul => try self.lower_binary_op("f32_mul", saved_r0),
+            .f32_div => try self.lower_binary_op("f32_div", saved_r0),
+            .f32_min => try self.lower_binary_op("f32_min", saved_r0),
+            .f32_max => try self.lower_binary_op("f32_max", saved_r0),
+            .f32_copysign => try self.lower_binary_op("f32_copysign", saved_r0),
 
             // ── f64 binary ───────────────────────────────────────────────────
-            .f64_add => try self.lower_binary_op("f64_add"),
-            .f64_sub => try self.lower_binary_op("f64_sub"),
-            .f64_mul => try self.lower_binary_op("f64_mul"),
-            .f64_div => try self.lower_binary_op("f64_div"),
-            .f64_min => try self.lower_binary_op("f64_min"),
-            .f64_max => try self.lower_binary_op("f64_max"),
-            .f64_copysign => try self.lower_binary_op("f64_copysign"),
+            .f64_add => try self.lower_binary_op("f64_add", saved_r0),
+            .f64_sub => try self.lower_binary_op("f64_sub", saved_r0),
+            .f64_mul => try self.lower_binary_op("f64_mul", saved_r0),
+            .f64_div => try self.lower_binary_op("f64_div", saved_r0),
+            .f64_min => try self.lower_binary_op("f64_min", saved_r0),
+            .f64_max => try self.lower_binary_op("f64_max", saved_r0),
+            .f64_copysign => try self.lower_binary_op("f64_copysign", saved_r0),
 
             // ── i32 unary ────────────────────────────────────────────────────
             .i32_clz => try self.lower_unary_op("i32_clz"),

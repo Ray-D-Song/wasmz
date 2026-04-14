@@ -88,6 +88,12 @@ pub const OpsBinopImm = extern struct { dst: Slot, lhs: Slot, imm: i32 };
 /// i64_xxx_imm: fused i64 binop with immediate rhs.
 pub const OpsBinopImm64 = extern struct { dst: Slot, lhs: Slot, _pad: u32 = 0, imm: i64 };
 
+/// i32_xxx_imm_r: r0 variant — lhs comes from r0 accumulator register.
+pub const OpsBinopImmR0 = extern struct { dst: Slot, _pad: u16 = 0, imm: i32 };
+
+/// i64_xxx_imm_r: r0 variant — lhs comes from r0 accumulator register.
+pub const OpsBinopImmR064 = extern struct { dst: Slot, _pad: [6]u8 = [_]u8{0} ** 6, imm: i64 };
+
 /// i32_xxx_jump_if_false: fused compare+branch.
 pub const OpsCompareJump = extern struct { lhs: Slot, rhs: Slot, rel_target: i32 };
 
@@ -127,6 +133,9 @@ pub const OpsRet = extern struct {
     has_value: u16,
     value: Slot,
 };
+
+/// binop_ret: fused binary op + return (Peephole I)
+pub const OpsLhsRhs = extern struct { lhs: Slot, rhs: Slot };
 
 /// ref_func
 pub const OpsRefFunc = extern struct { dst: Slot, _pad: u16 = 0, func_idx: u32 };
@@ -285,9 +294,12 @@ pub fn instrSize(op: Op) usize {
         .copy => @sizeOf(OpsCopy),
         .jump => @sizeOf(OpsJump),
         .jump_if_z => @sizeOf(OpsJumpIfZ),
+        .jump_if_nz => @sizeOf(OpsJumpIfZ),
         .jump_table => @sizeOf(OpsJumpTable),
         .select => @sizeOf(OpsSelect),
         .ret => @sizeOf(OpsRet),
+        // Fused binop+ret (Peephole I)
+        .i32_add_ret, .i32_sub_ret, .i64_add_ret, .i64_sub_ret => @sizeOf(OpsLhsRhs),
 
         // i32 binary
         .i32_add,
@@ -486,6 +498,30 @@ pub fn instrSize(op: Op) usize {
         .i64_ge_u_imm,
         => @sizeOf(OpsBinopImm64),
 
+        // r0 variants: i32 binop-imm-r (no lhs slot)
+        .i32_add_imm_r,
+        .i32_sub_imm_r,
+        .i32_mul_imm_r,
+        .i32_and_imm_r,
+        .i32_or_imm_r,
+        .i32_xor_imm_r,
+        .i32_shl_imm_r,
+        .i32_shr_s_imm_r,
+        .i32_shr_u_imm_r,
+        => @sizeOf(OpsBinopImmR0),
+
+        // r0 variants: i64 binop-imm-r (no lhs slot)
+        .i64_add_imm_r,
+        .i64_sub_imm_r,
+        .i64_mul_imm_r,
+        .i64_and_imm_r,
+        .i64_or_imm_r,
+        .i64_xor_imm_r,
+        .i64_shl_imm_r,
+        .i64_shr_s_imm_r,
+        .i64_shr_u_imm_r,
+        => @sizeOf(OpsBinopImmR064),
+
         // fused compare-jump (Candidate F)
         .i32_eq_jump_if_false,
         .i32_ne_jump_if_false,
@@ -515,6 +551,35 @@ pub fn instrSize(op: Op) usize {
         => @sizeOf(OpsCompareJump),
 
         .i64_eqz_jump_if_false => @sizeOf(OpsEqzJump),
+
+        // fused compare-jump-if-true (Peephole J)
+        .i32_eq_jump_if_true,
+        .i32_ne_jump_if_true,
+        .i32_lt_s_jump_if_true,
+        .i32_lt_u_jump_if_true,
+        .i32_gt_s_jump_if_true,
+        .i32_gt_u_jump_if_true,
+        .i32_le_s_jump_if_true,
+        .i32_le_u_jump_if_true,
+        .i32_ge_s_jump_if_true,
+        .i32_ge_u_jump_if_true,
+        => @sizeOf(OpsCompareJump),
+
+        .i32_eqz_jump_if_true => @sizeOf(OpsEqzJump),
+
+        .i64_eq_jump_if_true,
+        .i64_ne_jump_if_true,
+        .i64_lt_s_jump_if_true,
+        .i64_lt_u_jump_if_true,
+        .i64_gt_s_jump_if_true,
+        .i64_gt_u_jump_if_true,
+        .i64_le_s_jump_if_true,
+        .i64_le_u_jump_if_true,
+        .i64_ge_s_jump_if_true,
+        .i64_ge_u_jump_if_true,
+        => @sizeOf(OpsCompareJump),
+
+        .i64_eqz_jump_if_true => @sizeOf(OpsEqzJump),
 
         // fused binop-to-local (Candidate D)
         .i32_add_to_local,
@@ -612,6 +677,32 @@ pub fn instrSize(op: Op) usize {
         .i64_le_u_imm_jump_if_false,
         .i64_ge_s_imm_jump_if_false,
         .i64_ge_u_imm_jump_if_false,
+        => @sizeOf(OpsCompareImmJump64),
+
+        // fused i32 compare-imm-jump, true-branch (Candidate J-imm, i32)
+        .i32_eq_imm_jump_if_true,
+        .i32_ne_imm_jump_if_true,
+        .i32_lt_s_imm_jump_if_true,
+        .i32_lt_u_imm_jump_if_true,
+        .i32_gt_s_imm_jump_if_true,
+        .i32_gt_u_imm_jump_if_true,
+        .i32_le_s_imm_jump_if_true,
+        .i32_le_u_imm_jump_if_true,
+        .i32_ge_s_imm_jump_if_true,
+        .i32_ge_u_imm_jump_if_true,
+        => @sizeOf(OpsCompareImmJump),
+
+        // fused i64 compare-imm-jump, true-branch (Candidate J-imm, i64)
+        .i64_eq_imm_jump_if_true,
+        .i64_ne_imm_jump_if_true,
+        .i64_lt_s_imm_jump_if_true,
+        .i64_lt_u_imm_jump_if_true,
+        .i64_gt_s_imm_jump_if_true,
+        .i64_gt_u_imm_jump_if_true,
+        .i64_le_s_imm_jump_if_true,
+        .i64_le_u_imm_jump_if_true,
+        .i64_ge_s_imm_jump_if_true,
+        .i64_ge_u_imm_jump_if_true,
         => @sizeOf(OpsCompareImmJump64),
 
         // memory loads
@@ -742,9 +833,15 @@ pub const HandlerTable = struct {
     copy: Handler,
     jump: Handler,
     jump_if_z: Handler,
+    jump_if_nz: Handler,
     jump_table: Handler,
     select: Handler,
     ret: Handler,
+    // Fused binop+ret (Peephole I)
+    i32_add_ret: Handler,
+    i32_sub_ret: Handler,
+    i64_add_ret: Handler,
+    i64_sub_ret: Handler,
     // i32 binary
     i32_add: Handler,
     i32_sub: Handler,
@@ -1033,6 +1130,26 @@ pub const HandlerTable = struct {
     i64_le_u_imm: Handler,
     i64_ge_s_imm: Handler,
     i64_ge_u_imm: Handler,
+    // r0 variants: i32 binop-imm-r
+    i32_add_imm_r: Handler,
+    i32_sub_imm_r: Handler,
+    i32_mul_imm_r: Handler,
+    i32_and_imm_r: Handler,
+    i32_or_imm_r: Handler,
+    i32_xor_imm_r: Handler,
+    i32_shl_imm_r: Handler,
+    i32_shr_s_imm_r: Handler,
+    i32_shr_u_imm_r: Handler,
+    // r0 variants: i64 binop-imm-r
+    i64_add_imm_r: Handler,
+    i64_sub_imm_r: Handler,
+    i64_mul_imm_r: Handler,
+    i64_and_imm_r: Handler,
+    i64_or_imm_r: Handler,
+    i64_xor_imm_r: Handler,
+    i64_shl_imm_r: Handler,
+    i64_shr_s_imm_r: Handler,
+    i64_shr_u_imm_r: Handler,
     // Fused: compare-jump (Candidate F)
     i32_eq_jump_if_false: Handler,
     i32_ne_jump_if_false: Handler,
@@ -1057,6 +1174,29 @@ pub const HandlerTable = struct {
     i64_ge_s_jump_if_false: Handler,
     i64_ge_u_jump_if_false: Handler,
     i64_eqz_jump_if_false: Handler,
+    // Fused compare-jump-if-true (Peephole J)
+    i32_eq_jump_if_true: Handler,
+    i32_ne_jump_if_true: Handler,
+    i32_lt_s_jump_if_true: Handler,
+    i32_lt_u_jump_if_true: Handler,
+    i32_gt_s_jump_if_true: Handler,
+    i32_gt_u_jump_if_true: Handler,
+    i32_le_s_jump_if_true: Handler,
+    i32_le_u_jump_if_true: Handler,
+    i32_ge_s_jump_if_true: Handler,
+    i32_ge_u_jump_if_true: Handler,
+    i32_eqz_jump_if_true: Handler,
+    i64_eq_jump_if_true: Handler,
+    i64_ne_jump_if_true: Handler,
+    i64_lt_s_jump_if_true: Handler,
+    i64_lt_u_jump_if_true: Handler,
+    i64_gt_s_jump_if_true: Handler,
+    i64_gt_u_jump_if_true: Handler,
+    i64_le_s_jump_if_true: Handler,
+    i64_le_u_jump_if_true: Handler,
+    i64_ge_s_jump_if_true: Handler,
+    i64_ge_u_jump_if_true: Handler,
+    i64_eqz_jump_if_true: Handler,
     // Fused: binop-to-local (Candidate D)
     i32_add_to_local: Handler,
     i32_sub_to_local: Handler,
@@ -1136,6 +1276,27 @@ pub const HandlerTable = struct {
     i64_le_u_imm_jump_if_false: Handler,
     i64_ge_s_imm_jump_if_false: Handler,
     i64_ge_u_imm_jump_if_false: Handler,
+    // fused compare-imm-jump, true-branch (J-imm)
+    i32_eq_imm_jump_if_true: Handler,
+    i32_ne_imm_jump_if_true: Handler,
+    i32_lt_s_imm_jump_if_true: Handler,
+    i32_lt_u_imm_jump_if_true: Handler,
+    i32_gt_s_imm_jump_if_true: Handler,
+    i32_gt_u_imm_jump_if_true: Handler,
+    i32_le_s_imm_jump_if_true: Handler,
+    i32_le_u_imm_jump_if_true: Handler,
+    i32_ge_s_imm_jump_if_true: Handler,
+    i32_ge_u_imm_jump_if_true: Handler,
+    i64_eq_imm_jump_if_true: Handler,
+    i64_ne_imm_jump_if_true: Handler,
+    i64_lt_s_imm_jump_if_true: Handler,
+    i64_lt_u_imm_jump_if_true: Handler,
+    i64_gt_s_imm_jump_if_true: Handler,
+    i64_gt_u_imm_jump_if_true: Handler,
+    i64_le_s_imm_jump_if_true: Handler,
+    i64_le_u_imm_jump_if_true: Handler,
+    i64_ge_s_imm_jump_if_true: Handler,
+    i64_ge_u_imm_jump_if_true: Handler,
     // SIMD
     simd_unary: Handler,
     simd_binary: Handler,
@@ -1166,6 +1327,7 @@ fn writeInlineArgs(ops_ptr: [*]u8, comptime OpsT: type, call_args: []const Slot,
 
 /// Write an ops struct to an unaligned byte pointer (compact encoding).
 inline fn writeOps(comptime T: type, ptr: [*]u8, value: T) void {
+    @setEvalBranchQuota(4000);
     std.mem.bytesAsValue(T, ptr[0..@sizeOf(T)]).* = value;
 }
 
@@ -1287,6 +1449,12 @@ pub fn encode(
                     .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
                 });
             },
+            .jump_if_nz => |inst| {
+                writeOps(OpsJumpIfZ, ops_ptr, .{
+                    .cond = inst.cond,
+                    .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
+                });
+            },
             .jump_table => |inst| {
                 writeOps(OpsJumpTable, ops_ptr, .{
                     .index = inst.index,
@@ -1307,6 +1475,10 @@ pub fn encode(
                     .has_value = if (inst.value != null) 1 else 0,
                     .value = inst.value orelse 0,
                 });
+            },
+            // ── Fused binop+ret (Peephole I) ───────────────────────────────
+            inline .i32_add_ret, .i32_sub_ret, .i64_add_ret, .i64_sub_ret => |inst| {
+                writeOps(OpsLhsRhs, ops_ptr, .{ .lhs = inst.lhs, .rhs = inst.rhs });
             },
 
             // ── All binary ops sharing dst/lhs/rhs layout ──────────────────
@@ -1976,6 +2148,40 @@ pub fn encode(
                 });
             },
 
+            // ── r0 variants: i32 binop-imm-r ──────────────────────────────
+            .i32_add_imm_r,
+            .i32_sub_imm_r,
+            .i32_mul_imm_r,
+            .i32_and_imm_r,
+            .i32_or_imm_r,
+            .i32_xor_imm_r,
+            .i32_shl_imm_r,
+            .i32_shr_s_imm_r,
+            .i32_shr_u_imm_r,
+            => |inst| {
+                writeOps(OpsBinopImmR0, ops_ptr, .{
+                    .dst = inst.dst,
+                    .imm = inst.imm,
+                });
+            },
+
+            // ── r0 variants: i64 binop-imm-r ──────────────────────────────
+            .i64_add_imm_r,
+            .i64_sub_imm_r,
+            .i64_mul_imm_r,
+            .i64_and_imm_r,
+            .i64_or_imm_r,
+            .i64_xor_imm_r,
+            .i64_shl_imm_r,
+            .i64_shr_s_imm_r,
+            .i64_shr_u_imm_r,
+            => |inst| {
+                writeOps(OpsBinopImmR064, ops_ptr, .{
+                    .dst = inst.dst,
+                    .imm = inst.imm,
+                });
+            },
+
             // ── Fused: compare-jump (Candidate F) ─────────────────────────
             .i32_eq_jump_if_false,
             .i32_ne_jump_if_false,
@@ -2020,6 +2226,54 @@ pub fn encode(
                 });
             },
             .i64_eqz_jump_if_false => |inst| {
+                writeOps(OpsEqzJump, ops_ptr, .{
+                    .src = inst.src,
+                    .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
+                });
+            },
+
+            // ── Fused: compare-jump-if-true (Peephole J) ──────────────────
+            .i32_eq_jump_if_true,
+            .i32_ne_jump_if_true,
+            .i32_lt_s_jump_if_true,
+            .i32_lt_u_jump_if_true,
+            .i32_gt_s_jump_if_true,
+            .i32_gt_u_jump_if_true,
+            .i32_le_s_jump_if_true,
+            .i32_le_u_jump_if_true,
+            .i32_ge_s_jump_if_true,
+            .i32_ge_u_jump_if_true,
+            => |inst| {
+                writeOps(OpsCompareJump, ops_ptr, .{
+                    .lhs = inst.lhs,
+                    .rhs = inst.rhs,
+                    .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
+                });
+            },
+            .i32_eqz_jump_if_true => |inst| {
+                writeOps(OpsEqzJump, ops_ptr, .{
+                    .src = inst.src,
+                    .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
+                });
+            },
+            .i64_eq_jump_if_true,
+            .i64_ne_jump_if_true,
+            .i64_lt_s_jump_if_true,
+            .i64_lt_u_jump_if_true,
+            .i64_gt_s_jump_if_true,
+            .i64_gt_u_jump_if_true,
+            .i64_le_s_jump_if_true,
+            .i64_le_u_jump_if_true,
+            .i64_ge_s_jump_if_true,
+            .i64_ge_u_jump_if_true,
+            => |inst| {
+                writeOps(OpsCompareJump, ops_ptr, .{
+                    .lhs = inst.lhs,
+                    .rhs = inst.rhs,
+                    .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
+                });
+            },
+            .i64_eqz_jump_if_true => |inst| {
                 writeOps(OpsEqzJump, ops_ptr, .{
                     .src = inst.src,
                     .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
@@ -2162,6 +2416,44 @@ pub fn encode(
             .i64_le_u_imm_jump_if_false,
             .i64_ge_s_imm_jump_if_false,
             .i64_ge_u_imm_jump_if_false,
+            => |inst| {
+                writeOps(OpsCompareImmJump64, ops_ptr, .{
+                    .lhs = inst.lhs,
+                    .imm = inst.imm,
+                    .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
+                });
+            },
+
+            // ── Fused: compare-imm-jump, true-branch (J-imm, i32) ──────────
+            .i32_eq_imm_jump_if_true,
+            .i32_ne_imm_jump_if_true,
+            .i32_lt_s_imm_jump_if_true,
+            .i32_lt_u_imm_jump_if_true,
+            .i32_gt_s_imm_jump_if_true,
+            .i32_gt_u_imm_jump_if_true,
+            .i32_le_s_imm_jump_if_true,
+            .i32_le_u_imm_jump_if_true,
+            .i32_ge_s_imm_jump_if_true,
+            .i32_ge_u_imm_jump_if_true,
+            => |inst| {
+                writeOps(OpsCompareImmJump, ops_ptr, .{
+                    .lhs = inst.lhs,
+                    .imm = inst.imm,
+                    .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
+                });
+            },
+
+            // ── Fused: compare-imm-jump, true-branch (J-imm, i64) ──────────
+            .i64_eq_imm_jump_if_true,
+            .i64_ne_imm_jump_if_true,
+            .i64_lt_s_imm_jump_if_true,
+            .i64_lt_u_imm_jump_if_true,
+            .i64_gt_s_imm_jump_if_true,
+            .i64_gt_u_imm_jump_if_true,
+            .i64_le_s_imm_jump_if_true,
+            .i64_le_u_imm_jump_if_true,
+            .i64_ge_s_imm_jump_if_true,
+            .i64_ge_u_imm_jump_if_true,
             => |inst| {
                 writeOps(OpsCompareImmJump64, ops_ptr, .{
                     .lhs = inst.lhs,
@@ -2332,9 +2624,14 @@ fn handlerFor(op: Op, t: *const HandlerTable) Handler {
         .copy => t.copy,
         .jump => t.jump,
         .jump_if_z => t.jump_if_z,
+        .jump_if_nz => t.jump_if_nz,
         .jump_table => t.jump_table,
         .select => t.select,
         .ret => t.ret,
+        .i32_add_ret => t.i32_add_ret,
+        .i32_sub_ret => t.i32_sub_ret,
+        .i64_add_ret => t.i64_add_ret,
+        .i64_sub_ret => t.i64_sub_ret,
         .i32_add => t.i32_add,
         .i32_sub => t.i32_sub,
         .i32_mul => t.i32_mul,
@@ -2608,6 +2905,26 @@ fn handlerFor(op: Op, t: *const HandlerTable) Handler {
         .i64_le_u_imm => t.i64_le_u_imm,
         .i64_ge_s_imm => t.i64_ge_s_imm,
         .i64_ge_u_imm => t.i64_ge_u_imm,
+        // r0 variants: i32 binop-imm-r
+        .i32_add_imm_r => t.i32_add_imm_r,
+        .i32_sub_imm_r => t.i32_sub_imm_r,
+        .i32_mul_imm_r => t.i32_mul_imm_r,
+        .i32_and_imm_r => t.i32_and_imm_r,
+        .i32_or_imm_r => t.i32_or_imm_r,
+        .i32_xor_imm_r => t.i32_xor_imm_r,
+        .i32_shl_imm_r => t.i32_shl_imm_r,
+        .i32_shr_s_imm_r => t.i32_shr_s_imm_r,
+        .i32_shr_u_imm_r => t.i32_shr_u_imm_r,
+        // r0 variants: i64 binop-imm-r
+        .i64_add_imm_r => t.i64_add_imm_r,
+        .i64_sub_imm_r => t.i64_sub_imm_r,
+        .i64_mul_imm_r => t.i64_mul_imm_r,
+        .i64_and_imm_r => t.i64_and_imm_r,
+        .i64_or_imm_r => t.i64_or_imm_r,
+        .i64_xor_imm_r => t.i64_xor_imm_r,
+        .i64_shl_imm_r => t.i64_shl_imm_r,
+        .i64_shr_s_imm_r => t.i64_shr_s_imm_r,
+        .i64_shr_u_imm_r => t.i64_shr_u_imm_r,
         // fused compare-jump (F)
         .i32_eq_jump_if_false => t.i32_eq_jump_if_false,
         .i32_ne_jump_if_false => t.i32_ne_jump_if_false,
@@ -2632,6 +2949,29 @@ fn handlerFor(op: Op, t: *const HandlerTable) Handler {
         .i64_ge_s_jump_if_false => t.i64_ge_s_jump_if_false,
         .i64_ge_u_jump_if_false => t.i64_ge_u_jump_if_false,
         .i64_eqz_jump_if_false => t.i64_eqz_jump_if_false,
+        // fused compare-jump-if-true (Peephole J)
+        .i32_eq_jump_if_true => t.i32_eq_jump_if_true,
+        .i32_ne_jump_if_true => t.i32_ne_jump_if_true,
+        .i32_lt_s_jump_if_true => t.i32_lt_s_jump_if_true,
+        .i32_lt_u_jump_if_true => t.i32_lt_u_jump_if_true,
+        .i32_gt_s_jump_if_true => t.i32_gt_s_jump_if_true,
+        .i32_gt_u_jump_if_true => t.i32_gt_u_jump_if_true,
+        .i32_le_s_jump_if_true => t.i32_le_s_jump_if_true,
+        .i32_le_u_jump_if_true => t.i32_le_u_jump_if_true,
+        .i32_ge_s_jump_if_true => t.i32_ge_s_jump_if_true,
+        .i32_ge_u_jump_if_true => t.i32_ge_u_jump_if_true,
+        .i32_eqz_jump_if_true => t.i32_eqz_jump_if_true,
+        .i64_eq_jump_if_true => t.i64_eq_jump_if_true,
+        .i64_ne_jump_if_true => t.i64_ne_jump_if_true,
+        .i64_lt_s_jump_if_true => t.i64_lt_s_jump_if_true,
+        .i64_lt_u_jump_if_true => t.i64_lt_u_jump_if_true,
+        .i64_gt_s_jump_if_true => t.i64_gt_s_jump_if_true,
+        .i64_gt_u_jump_if_true => t.i64_gt_u_jump_if_true,
+        .i64_le_s_jump_if_true => t.i64_le_s_jump_if_true,
+        .i64_le_u_jump_if_true => t.i64_le_u_jump_if_true,
+        .i64_ge_s_jump_if_true => t.i64_ge_s_jump_if_true,
+        .i64_ge_u_jump_if_true => t.i64_ge_u_jump_if_true,
+        .i64_eqz_jump_if_true => t.i64_eqz_jump_if_true,
         // fused binop-to-local (D)
         .i32_add_to_local => t.i32_add_to_local,
         .i32_sub_to_local => t.i32_sub_to_local,
@@ -2711,5 +3051,26 @@ fn handlerFor(op: Op, t: *const HandlerTable) Handler {
         .i64_le_u_imm_jump_if_false => t.i64_le_u_imm_jump_if_false,
         .i64_ge_s_imm_jump_if_false => t.i64_ge_s_imm_jump_if_false,
         .i64_ge_u_imm_jump_if_false => t.i64_ge_u_imm_jump_if_false,
+        // fused compare-imm-jump, true-branch (J-imm)
+        .i32_eq_imm_jump_if_true => t.i32_eq_imm_jump_if_true,
+        .i32_ne_imm_jump_if_true => t.i32_ne_imm_jump_if_true,
+        .i32_lt_s_imm_jump_if_true => t.i32_lt_s_imm_jump_if_true,
+        .i32_lt_u_imm_jump_if_true => t.i32_lt_u_imm_jump_if_true,
+        .i32_gt_s_imm_jump_if_true => t.i32_gt_s_imm_jump_if_true,
+        .i32_gt_u_imm_jump_if_true => t.i32_gt_u_imm_jump_if_true,
+        .i32_le_s_imm_jump_if_true => t.i32_le_s_imm_jump_if_true,
+        .i32_le_u_imm_jump_if_true => t.i32_le_u_imm_jump_if_true,
+        .i32_ge_s_imm_jump_if_true => t.i32_ge_s_imm_jump_if_true,
+        .i32_ge_u_imm_jump_if_true => t.i32_ge_u_imm_jump_if_true,
+        .i64_eq_imm_jump_if_true => t.i64_eq_imm_jump_if_true,
+        .i64_ne_imm_jump_if_true => t.i64_ne_imm_jump_if_true,
+        .i64_lt_s_imm_jump_if_true => t.i64_lt_s_imm_jump_if_true,
+        .i64_lt_u_imm_jump_if_true => t.i64_lt_u_imm_jump_if_true,
+        .i64_gt_s_imm_jump_if_true => t.i64_gt_s_imm_jump_if_true,
+        .i64_gt_u_imm_jump_if_true => t.i64_gt_u_imm_jump_if_true,
+        .i64_le_s_imm_jump_if_true => t.i64_le_s_imm_jump_if_true,
+        .i64_le_u_imm_jump_if_true => t.i64_le_u_imm_jump_if_true,
+        .i64_ge_s_imm_jump_if_true => t.i64_ge_s_imm_jump_if_true,
+        .i64_ge_u_imm_jump_if_true => t.i64_ge_u_imm_jump_if_true,
     };
 }

@@ -226,6 +226,59 @@ pub fn handle_ret(
     dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env, 0, 0.0);
 }
 
+// ── Fused binop+ret handlers (Peephole I) ────────────────────────────────────
+// Compute result and return immediately, saving one dispatch event per call.
+
+inline fn doRetWithVal(
+    frame: *DispatchState,
+    env: *const ExecEnv,
+    ret_val: RawVal,
+) void {
+    const popped = frame.callStackPop();
+    frame.valStackFree(popped.slots_sp_base);
+    if (frame.call_depth == 0) {
+        frame.result = .{ .ok = ret_val };
+        return;
+    }
+    const caller_idx = frame.call_depth - 1;
+    if (popped.dst) |dst_slot| {
+        frame.callStackAt(caller_idx).slots[dst_slot] = ret_val;
+    }
+    const caller = frame.callStackAt(caller_idx);
+    dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env, 0, 0.0);
+}
+
+pub fn handle_i32_add_ret(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    _ = r0;
+    _ = fp0;
+    const ops = readOps(encode.OpsLhsRhs, ip);
+    const result = slots[ops.lhs].readAs(i32) +% slots[ops.rhs].readAs(i32);
+    doRetWithVal(frame, env, RawVal.from(result));
+}
+
+pub fn handle_i32_sub_ret(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    _ = r0;
+    _ = fp0;
+    const ops = readOps(encode.OpsLhsRhs, ip);
+    const result = slots[ops.lhs].readAs(i32) -% slots[ops.rhs].readAs(i32);
+    doRetWithVal(frame, env, RawVal.from(result));
+}
+
+pub fn handle_i64_add_ret(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    _ = r0;
+    _ = fp0;
+    const ops = readOps(encode.OpsLhsRhs, ip);
+    const result = slots[ops.lhs].readAs(i64) +% slots[ops.rhs].readAs(i64);
+    doRetWithVal(frame, env, RawVal.from(result));
+}
+
+pub fn handle_i64_sub_ret(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    _ = r0;
+    _ = fp0;
+    const ops = readOps(encode.OpsLhsRhs, ip);
+    const result = slots[ops.lhs].readAs(i64) -% slots[ops.rhs].readAs(i64);
+    doRetWithVal(frame, env, RawVal.from(result));
+}
 // ── Constants ────────────────────────────────────────────────────────────────
 
 pub fn handle_const_i32(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
@@ -338,6 +391,17 @@ pub fn handle_jump(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *con
 pub fn handle_jump_if_z(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsJumpIfZ, ip);
     if (slots[ops.cond].readAs(i32) == 0) {
+        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
+    } else {
+        dispatch.next(ip, stride(encode.OpsJumpIfZ), slots, frame, env, r0, fp0);
+    }
+}
+
+/// Peephole J: jump when cond != 0 (i.e. when br_if condition is true).
+pub fn handle_jump_if_nz(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsJumpIfZ, ip);
+    if (slots[ops.cond].readAs(i32) != 0) {
         const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
         dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
     } else {
@@ -1455,6 +1519,80 @@ pub fn handle_i32_eqz_jump_if_false(ip: [*]u8, slots: [*]RawVal, frame: *Dispatc
     }
 }
 
+// ── Fused: i32 compare-jump-if-true (Peephole J) ─────────────────────────────
+// Jumps to target when comparison is TRUE. Replaces jump_if_false+jump pattern.
+
+inline fn cmpJumpI32True(
+    comptime op: enum { eq, ne, lt_s, lt_u, gt_s, gt_u, le_s, le_u, ge_s, ge_u },
+    ip: [*]u8,
+    slots: [*]RawVal,
+    frame: *DispatchState,
+    env: *const ExecEnv,
+    r0: u64,
+    fp0: f64,
+) void {
+    const ops = readOps(encode.OpsCompareJump, ip);
+    const taken = switch (op) {
+        .eq => slots[ops.lhs].readAs(i32) == slots[ops.rhs].readAs(i32),
+        .ne => slots[ops.lhs].readAs(i32) != slots[ops.rhs].readAs(i32),
+        .lt_s => slots[ops.lhs].readAs(i32) < slots[ops.rhs].readAs(i32),
+        .lt_u => slots[ops.lhs].readAs(u32) < slots[ops.rhs].readAs(u32),
+        .gt_s => slots[ops.lhs].readAs(i32) > slots[ops.rhs].readAs(i32),
+        .gt_u => slots[ops.lhs].readAs(u32) > slots[ops.rhs].readAs(u32),
+        .le_s => slots[ops.lhs].readAs(i32) <= slots[ops.rhs].readAs(i32),
+        .le_u => slots[ops.lhs].readAs(u32) <= slots[ops.rhs].readAs(u32),
+        .ge_s => slots[ops.lhs].readAs(i32) >= slots[ops.rhs].readAs(i32),
+        .ge_u => slots[ops.lhs].readAs(u32) >= slots[ops.rhs].readAs(u32),
+    };
+    if (taken) {
+        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
+    } else {
+        dispatch.next(ip, stride(encode.OpsCompareJump), slots, frame, env, r0, fp0);
+    }
+}
+
+pub fn handle_i32_eq_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpJumpI32True(.eq, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_ne_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpJumpI32True(.ne, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_lt_s_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpJumpI32True(.lt_s, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_lt_u_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpJumpI32True(.lt_u, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_gt_s_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpJumpI32True(.gt_s, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_gt_u_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpJumpI32True(.gt_u, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_le_s_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpJumpI32True(.le_s, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_le_u_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpJumpI32True(.le_u, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_ge_s_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpJumpI32True(.ge_s, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_ge_u_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpJumpI32True(.ge_u, ip, slots, frame, env, r0, fp0);
+}
+/// Fused i32.eqz + br_if: jumps when src == 0 (i.e. eqz is true).
+pub fn handle_i32_eqz_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsEqzJump, ip);
+    if (slots[ops.src].readAs(i32) == 0) {
+        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
+    } else {
+        dispatch.next(ip, stride(encode.OpsEqzJump), slots, frame, env, r0, fp0);
+    }
+}
+
 // ── Fused: i32 binop-to-local (Candidate D) ─────────────────────────────────
 
 pub fn handle_i32_add_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
@@ -1602,6 +1740,123 @@ pub fn handle_i64_ge_u_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
     dispatch.next(ip, stride(encode.OpsBinopImm64), slots, frame, env, r0, fp0);
 }
 
+// ── r0 variants: i32 binop-imm-r (lhs from r0 accumulator) ─────────────────
+
+pub fn handle_i32_add_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsBinopImmR0, ip);
+    const result = @as(i32, @truncate(@as(i64, @bitCast(r0)))) +% ops.imm;
+    slots[ops.dst] = RawVal.from(result);
+    dispatch.next(ip, stride(encode.OpsBinopImmR0), slots, frame, env, @as(u64, @bitCast(@as(i64, result))), fp0);
+}
+pub fn handle_i32_sub_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsBinopImmR0, ip);
+    const result = @as(i32, @truncate(@as(i64, @bitCast(r0)))) -% ops.imm;
+    slots[ops.dst] = RawVal.from(result);
+    dispatch.next(ip, stride(encode.OpsBinopImmR0), slots, frame, env, @as(u64, @bitCast(@as(i64, result))), fp0);
+}
+pub fn handle_i32_mul_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsBinopImmR0, ip);
+    const result = @as(i32, @truncate(@as(i64, @bitCast(r0)))) *% ops.imm;
+    slots[ops.dst] = RawVal.from(result);
+    dispatch.next(ip, stride(encode.OpsBinopImmR0), slots, frame, env, @as(u64, @bitCast(@as(i64, result))), fp0);
+}
+pub fn handle_i32_and_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsBinopImmR0, ip);
+    const result = @as(i32, @truncate(@as(i64, @bitCast(r0)))) & ops.imm;
+    slots[ops.dst] = RawVal.from(result);
+    dispatch.next(ip, stride(encode.OpsBinopImmR0), slots, frame, env, @as(u64, @bitCast(@as(i64, result))), fp0);
+}
+pub fn handle_i32_or_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsBinopImmR0, ip);
+    const result = @as(i32, @truncate(@as(i64, @bitCast(r0)))) | ops.imm;
+    slots[ops.dst] = RawVal.from(result);
+    dispatch.next(ip, stride(encode.OpsBinopImmR0), slots, frame, env, @as(u64, @bitCast(@as(i64, result))), fp0);
+}
+pub fn handle_i32_xor_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsBinopImmR0, ip);
+    const result = @as(i32, @truncate(@as(i64, @bitCast(r0)))) ^ ops.imm;
+    slots[ops.dst] = RawVal.from(result);
+    dispatch.next(ip, stride(encode.OpsBinopImmR0), slots, frame, env, @as(u64, @bitCast(@as(i64, result))), fp0);
+}
+pub fn handle_i32_shl_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsBinopImmR0, ip);
+    const lhs = @as(i32, @truncate(@as(i64, @bitCast(r0))));
+    const result = helper.shl(lhs, ops.imm);
+    slots[ops.dst] = RawVal.from(result);
+    dispatch.next(ip, stride(encode.OpsBinopImmR0), slots, frame, env, @as(u64, @bitCast(@as(i64, result))), fp0);
+}
+pub fn handle_i32_shr_s_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsBinopImmR0, ip);
+    const lhs = @as(i32, @truncate(@as(i64, @bitCast(r0))));
+    const result = helper.shrS(lhs, ops.imm);
+    slots[ops.dst] = RawVal.from(result);
+    dispatch.next(ip, stride(encode.OpsBinopImmR0), slots, frame, env, @as(u64, @bitCast(@as(i64, result))), fp0);
+}
+pub fn handle_i32_shr_u_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsBinopImmR0, ip);
+    const lhs = @as(u32, @truncate(r0));
+    const result = @as(i32, @bitCast(helper.shrU(i32, lhs, @as(u32, @bitCast(ops.imm)))));
+    slots[ops.dst] = RawVal.from(result);
+    dispatch.next(ip, stride(encode.OpsBinopImmR0), slots, frame, env, @as(u64, @bitCast(@as(i64, result))), fp0);
+}
+
+// ── r0 variants: i64 binop-imm-r (lhs from r0 accumulator) ─────────────────
+
+pub fn handle_i64_add_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsBinopImmR064, ip);
+    const result = @as(i64, @bitCast(r0)) +% ops.imm;
+    slots[ops.dst] = RawVal.from(result);
+    dispatch.next(ip, stride(encode.OpsBinopImmR064), slots, frame, env, @as(u64, @bitCast(result)), fp0);
+}
+pub fn handle_i64_sub_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsBinopImmR064, ip);
+    const result = @as(i64, @bitCast(r0)) -% ops.imm;
+    slots[ops.dst] = RawVal.from(result);
+    dispatch.next(ip, stride(encode.OpsBinopImmR064), slots, frame, env, @as(u64, @bitCast(result)), fp0);
+}
+pub fn handle_i64_mul_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsBinopImmR064, ip);
+    const result = @as(i64, @bitCast(r0)) *% ops.imm;
+    slots[ops.dst] = RawVal.from(result);
+    dispatch.next(ip, stride(encode.OpsBinopImmR064), slots, frame, env, @as(u64, @bitCast(result)), fp0);
+}
+pub fn handle_i64_and_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsBinopImmR064, ip);
+    const result = @as(i64, @bitCast(r0)) & ops.imm;
+    slots[ops.dst] = RawVal.from(result);
+    dispatch.next(ip, stride(encode.OpsBinopImmR064), slots, frame, env, @as(u64, @bitCast(result)), fp0);
+}
+pub fn handle_i64_or_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsBinopImmR064, ip);
+    const result = @as(i64, @bitCast(r0)) | ops.imm;
+    slots[ops.dst] = RawVal.from(result);
+    dispatch.next(ip, stride(encode.OpsBinopImmR064), slots, frame, env, @as(u64, @bitCast(result)), fp0);
+}
+pub fn handle_i64_xor_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsBinopImmR064, ip);
+    const result = @as(i64, @bitCast(r0)) ^ ops.imm;
+    slots[ops.dst] = RawVal.from(result);
+    dispatch.next(ip, stride(encode.OpsBinopImmR064), slots, frame, env, @as(u64, @bitCast(result)), fp0);
+}
+pub fn handle_i64_shl_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsBinopImmR064, ip);
+    const result = helper.shl(@as(i64, @bitCast(r0)), ops.imm);
+    slots[ops.dst] = RawVal.from(result);
+    dispatch.next(ip, stride(encode.OpsBinopImmR064), slots, frame, env, @as(u64, @bitCast(result)), fp0);
+}
+pub fn handle_i64_shr_s_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsBinopImmR064, ip);
+    const result = helper.shrS(@as(i64, @bitCast(r0)), ops.imm);
+    slots[ops.dst] = RawVal.from(result);
+    dispatch.next(ip, stride(encode.OpsBinopImmR064), slots, frame, env, @as(u64, @bitCast(result)), fp0);
+}
+pub fn handle_i64_shr_u_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsBinopImmR064, ip);
+    const result = @as(i64, @bitCast(helper.shrU(i64, r0, @as(u64, @bitCast(ops.imm)))));
+    slots[ops.dst] = RawVal.from(result);
+    dispatch.next(ip, stride(encode.OpsBinopImmR064), slots, frame, env, @as(u64, @bitCast(result)), fp0);
+}
+
 // ── Fused: i64 compare-jump (Candidate F, i64) ──────────────────────────────
 
 inline fn cmpJumpI64(
@@ -1668,6 +1923,79 @@ pub fn handle_i64_ge_u_jump_if_false(ip: [*]u8, slots: [*]RawVal, frame: *Dispat
 pub fn handle_i64_eqz_jump_if_false(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsEqzJump, ip);
     if (slots[ops.src].readAs(i64) != 0) {
+        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
+    } else {
+        dispatch.next(ip, stride(encode.OpsEqzJump), slots, frame, env, r0, fp0);
+    }
+}
+
+// ── Fused: i64 compare-jump-if-true (Peephole J) ─────────────────────────────
+
+inline fn cmpJumpI64True(
+    comptime op: enum { eq, ne, lt_s, lt_u, gt_s, gt_u, le_s, le_u, ge_s, ge_u },
+    ip: [*]u8,
+    slots: [*]RawVal,
+    frame: *DispatchState,
+    env: *const ExecEnv,
+    r0: u64,
+    fp0: f64,
+) void {
+    const ops = readOps(encode.OpsCompareJump, ip);
+    const taken = switch (op) {
+        .eq => slots[ops.lhs].readAs(i64) == slots[ops.rhs].readAs(i64),
+        .ne => slots[ops.lhs].readAs(i64) != slots[ops.rhs].readAs(i64),
+        .lt_s => slots[ops.lhs].readAs(i64) < slots[ops.rhs].readAs(i64),
+        .lt_u => slots[ops.lhs].readAs(u64) < slots[ops.rhs].readAs(u64),
+        .gt_s => slots[ops.lhs].readAs(i64) > slots[ops.rhs].readAs(i64),
+        .gt_u => slots[ops.lhs].readAs(u64) > slots[ops.rhs].readAs(u64),
+        .le_s => slots[ops.lhs].readAs(i64) <= slots[ops.rhs].readAs(i64),
+        .le_u => slots[ops.lhs].readAs(u64) <= slots[ops.rhs].readAs(u64),
+        .ge_s => slots[ops.lhs].readAs(i64) >= slots[ops.rhs].readAs(i64),
+        .ge_u => slots[ops.lhs].readAs(u64) >= slots[ops.rhs].readAs(u64),
+    };
+    if (taken) {
+        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
+    } else {
+        dispatch.next(ip, stride(encode.OpsCompareJump), slots, frame, env, r0, fp0);
+    }
+}
+
+pub fn handle_i64_eq_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpJumpI64True(.eq, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_ne_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpJumpI64True(.ne, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_lt_s_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpJumpI64True(.lt_s, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_lt_u_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpJumpI64True(.lt_u, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_gt_s_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpJumpI64True(.gt_s, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_gt_u_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpJumpI64True(.gt_u, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_le_s_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpJumpI64True(.le_s, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_le_u_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpJumpI64True(.le_u, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_ge_s_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpJumpI64True(.ge_s, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_ge_u_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpJumpI64True(.ge_u, ip, slots, frame, env, r0, fp0);
+}
+/// Fused i64.eqz + br_if: jumps when src == 0 (i.e. eqz is true).
+pub fn handle_i64_eqz_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsEqzJump, ip);
+    if (slots[ops.src].readAs(i64) == 0) {
         const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
         dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
     } else {
@@ -2436,4 +2764,127 @@ pub fn handle_i64_ge_s_imm_jump_if_false(ip: [*]u8, slots: [*]RawVal, frame: *Di
 }
 pub fn handle_i64_ge_u_imm_jump_if_false(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     cmpImmJumpI64(.ge_u, ip, slots, frame, env, r0, fp0);
+}
+
+// ── compare-imm-jump, true-branch helpers (Peephole J-imm) ──────────────────
+
+inline fn cmpImmJumpI32True(
+    comptime op: enum { eq, ne, lt_s, lt_u, gt_s, gt_u, le_s, le_u, ge_s, ge_u },
+    ip: [*]u8,
+    slots: [*]RawVal,
+    frame: *DispatchState,
+    env: *const ExecEnv,
+    r0: u64,
+    fp0: f64,
+) void {
+    const ops = readOps(encode.OpsCompareImmJump, ip);
+    const taken = switch (op) {
+        .eq => slots[ops.lhs].readAs(i32) == ops.imm,
+        .ne => slots[ops.lhs].readAs(i32) != ops.imm,
+        .lt_s => slots[ops.lhs].readAs(i32) < ops.imm,
+        .lt_u => slots[ops.lhs].readAs(u32) < @as(u32, @bitCast(ops.imm)),
+        .gt_s => slots[ops.lhs].readAs(i32) > ops.imm,
+        .gt_u => slots[ops.lhs].readAs(u32) > @as(u32, @bitCast(ops.imm)),
+        .le_s => slots[ops.lhs].readAs(i32) <= ops.imm,
+        .le_u => slots[ops.lhs].readAs(u32) <= @as(u32, @bitCast(ops.imm)),
+        .ge_s => slots[ops.lhs].readAs(i32) >= ops.imm,
+        .ge_u => slots[ops.lhs].readAs(u32) >= @as(u32, @bitCast(ops.imm)),
+    };
+    if (taken) {
+        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
+    } else {
+        dispatch.next(ip, stride(encode.OpsCompareImmJump), slots, frame, env, r0, fp0);
+    }
+}
+
+inline fn cmpImmJumpI64True(
+    comptime op: enum { eq, ne, lt_s, lt_u, gt_s, gt_u, le_s, le_u, ge_s, ge_u },
+    ip: [*]u8,
+    slots: [*]RawVal,
+    frame: *DispatchState,
+    env: *const ExecEnv,
+    r0: u64,
+    fp0: f64,
+) void {
+    const ops = readOps(encode.OpsCompareImmJump64, ip);
+    const taken = switch (op) {
+        .eq => slots[ops.lhs].readAs(i64) == ops.imm,
+        .ne => slots[ops.lhs].readAs(i64) != ops.imm,
+        .lt_s => slots[ops.lhs].readAs(i64) < ops.imm,
+        .lt_u => slots[ops.lhs].readAs(u64) < @as(u64, @bitCast(ops.imm)),
+        .gt_s => slots[ops.lhs].readAs(i64) > ops.imm,
+        .gt_u => slots[ops.lhs].readAs(u64) > @as(u64, @bitCast(ops.imm)),
+        .le_s => slots[ops.lhs].readAs(i64) <= ops.imm,
+        .le_u => slots[ops.lhs].readAs(u64) <= @as(u64, @bitCast(ops.imm)),
+        .ge_s => slots[ops.lhs].readAs(i64) >= ops.imm,
+        .ge_u => slots[ops.lhs].readAs(u64) >= @as(u64, @bitCast(ops.imm)),
+    };
+    if (taken) {
+        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
+    } else {
+        dispatch.next(ip, stride(encode.OpsCompareImmJump64), slots, frame, env, r0, fp0);
+    }
+}
+
+pub fn handle_i32_eq_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpImmJumpI32True(.eq, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_ne_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpImmJumpI32True(.ne, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_lt_s_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpImmJumpI32True(.lt_s, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_lt_u_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpImmJumpI32True(.lt_u, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_gt_s_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpImmJumpI32True(.gt_s, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_gt_u_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpImmJumpI32True(.gt_u, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_le_s_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpImmJumpI32True(.le_s, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_le_u_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpImmJumpI32True(.le_u, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_ge_s_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpImmJumpI32True(.ge_s, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_ge_u_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpImmJumpI32True(.ge_u, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_eq_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpImmJumpI64True(.eq, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_ne_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpImmJumpI64True(.ne, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_lt_s_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpImmJumpI64True(.lt_s, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_lt_u_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpImmJumpI64True(.lt_u, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_gt_s_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpImmJumpI64True(.gt_s, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_gt_u_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpImmJumpI64True(.gt_u, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_le_s_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpImmJumpI64True(.le_s, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_le_u_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpImmJumpI64True(.le_u, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_ge_s_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpImmJumpI64True(.ge_s, ip, slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_ge_u_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    cmpImmJumpI64True(.ge_u, ip, slots, frame, env, r0, fp0);
 }
