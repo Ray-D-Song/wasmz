@@ -92,7 +92,7 @@ pub const LowerLegacy = struct {
         };
     }
 
-    pub fn initWithReservedSlots(allocator: Allocator, reserved_slots: u32, locals_count: u16) LowerLegacy {
+    pub fn initWithReservedSlots(allocator: Allocator, reserved_slots: ir.Slot, locals_count: u16) LowerLegacy {
         return .{
             .inner = Lower.initWithReservedSlots(allocator, reserved_slots, locals_count),
             .allocator = allocator,
@@ -106,7 +106,7 @@ pub const LowerLegacy = struct {
 
     /// Reset this LowerLegacy for reuse on a new function body, retaining all
     /// allocated buffer capacity.  Mirrors `Lower.reset`.
-    pub fn reset(self: *LowerLegacy, reserved_slots: u32, locals_count: u16) void {
+    pub fn reset(self: *LowerLegacy, reserved_slots: ir.Slot, locals_count: u16) void {
         self.inner.reset(reserved_slots, locals_count);
         self.try_states.clearRetainingCapacity();
     }

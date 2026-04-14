@@ -239,13 +239,13 @@ pub const FuncTranslatorAllocations = struct {
 
     /// Prepare the allocations for compiling a new function with the new EH path.
     /// Resets all lists retaining capacity; resets the scratch arena.
-    pub fn resetNew(self: *FuncTranslatorAllocations, reserved_slots: u32, locals_count: u16) void {
+    pub fn resetNew(self: *FuncTranslatorAllocations, reserved_slots: ir.Slot, locals_count: u16) void {
         self.lower.reset(reserved_slots, locals_count);
         _ = self.scratch.reset(.retain_capacity);
     }
 
     /// Prepare the allocations for compiling a new function with the legacy EH path.
-    pub fn resetLegacy(self: *FuncTranslatorAllocations, reserved_slots: u32, locals_count: u16) void {
+    pub fn resetLegacy(self: *FuncTranslatorAllocations, reserved_slots: ir.Slot, locals_count: u16) void {
         self.lower_legacy.reset(reserved_slots, locals_count);
         _ = self.scratch.reset(.retain_capacity);
     }
@@ -1454,7 +1454,7 @@ pub const Module = struct {
     /// including both parameters and all local variables declared in the function body.
     ///
     /// V128 (SIMD) values occupy two consecutive slots; all other types occupy one slot.
-    fn compute_reserved_slots(func_type: FuncType, function_info: payload_mod.FunctionInformation) ModuleCompileError!u32 {
+    fn compute_reserved_slots(func_type: FuncType, function_info: payload_mod.FunctionInformation) ModuleCompileError!ir.Slot {
         var params_slots: usize = 0;
         for (func_type.params()) |param| {
             params_slots += if (param == .V128) 2 else 1;
@@ -1465,7 +1465,7 @@ pub const Module = struct {
             locals_slots += local_group.count * (if (is_v128) @as(usize, 2) else @as(usize, 1));
         }
         const total = params_slots + locals_slots;
-        return std.math.cast(u32, total) orelse error.InvalidLocalCount;
+        return std.math.cast(ir.Slot, total) orelse error.InvalidLocalCount;
     }
 };
 
@@ -1526,7 +1526,7 @@ pub const FuncTypeResolver = struct {
 /// resolver is used to look up callee function signatures when translating call instructions.
 pub fn compileFunctionBody(
     allocator: Allocator,
-    reserved_slots: u32,
+    reserved_slots: ir.Slot,
     locals_count: u16,
     n_results: usize,
     body: []const u8,
@@ -1544,7 +1544,7 @@ pub fn compileFunctionBody(
 /// Compile a function body using the new EH proposal (try_table / throw / throw_ref).
 fn compileFunctionBodyNew(
     allocator: Allocator,
-    reserved_slots: u32,
+    reserved_slots: ir.Slot,
     locals_count: u16,
     n_results: usize,
     body: []const u8,
@@ -1617,7 +1617,7 @@ fn compileFunctionBodyNew(
 /// Compile a function body using the legacy EH proposal (try / catch / rethrow / delegate).
 fn compileFunctionBodyLegacy(
     allocator: Allocator,
-    reserved_slots: u32,
+    reserved_slots: ir.Slot,
     locals_count: u16,
     n_results: usize,
     body: []const u8,
@@ -1717,7 +1717,7 @@ fn compileFunctionBodyLegacy(
 /// scratch arena to avoid per-function allocation churn.
 fn compileFunctionBodyNewInto(
     ta: *FuncTranslatorAllocations,
-    reserved_slots: u32,
+    reserved_slots: ir.Slot,
     locals_count: u16,
     n_results: usize,
     body: []const u8,
@@ -1770,7 +1770,7 @@ fn compileFunctionBodyNewInto(
 /// Compile a function body using the legacy EH proposal, reusing `ta`.
 fn compileFunctionBodyLegacyInto(
     ta: *FuncTranslatorAllocations,
-    reserved_slots: u32,
+    reserved_slots: ir.Slot,
     locals_count: u16,
     n_results: usize,
     body: []const u8,
@@ -2137,13 +2137,13 @@ fn decodeAndLower(
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
             const local = p.read_var_uint32();
             const src = try lower.pop_slot();
-            try lower.emit(.{ .local_set = .{ .local = local, .src = src } });
+            try lower.emit(.{ .local_set = .{ .local = @intCast(local), .src = src } });
         },
         .local_tee => {
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
             const local = p.read_var_uint32();
             const src = lower.stack.peek() orelse return error.StackUnderflow;
-            try lower.emit(.{ .local_set = .{ .local = local, .src = src } });
+            try lower.emit(.{ .local_set = .{ .local = @intCast(local), .src = src } });
         },
         .global_get => {
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
