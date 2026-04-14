@@ -1298,12 +1298,11 @@ pub const CompiledFunction = struct {
 
 /// Lazy compilation metadata for a not-yet-compiled local function.
 ///
-/// `body` is a borrowed slice into the original Wasm bytes held by the caller
-/// (must outlive the Module).  All other fields are pre-computed during the
-/// first parse pass so that compilation can proceed without re-parsing the
-/// module-level metadata.
+/// `body` is an owned copy of the function body bytes.  This allows the module
+/// compiler to stream the original Wasm input without retaining the full
+/// module in memory solely for lazy compilation.
 pub const PendingFunction = struct {
-    /// Raw Wasm bytecode of the function body (borrowed, not owned).
+    /// Raw Wasm bytecode of the function body (owned by the pending slot).
     body: []const u8,
     /// Index into Module.composite_types giving the function's FuncType.
     type_index: u32,
@@ -1332,11 +1331,13 @@ pub const FunctionSlot = union(enum) {
     }
 
     /// Free any owned heap memory held by this slot.
-    /// Only `.encoded` variants own memory; `.import` and `.pending` do not.
+    /// `.pending` owns the copied function body; `.encoded` owns the encoded
+    /// bytecode and auxiliary tables.
     pub fn deinit(self: *FunctionSlot, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .encoded => |*ef| ef.deinit(allocator),
-            .import, .pending => {},
+            .pending => |p| allocator.free(p.body),
+            .import => {},
         }
         self.* = undefined;
     }
