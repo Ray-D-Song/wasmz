@@ -84,7 +84,7 @@ test "lower simple add function into slot IR" {
 
     switch (lower.compiled.ops.items[1]) {
         .ret => |got| {
-            try testing.expectEqual(@as(?u32, 2), got.value);
+            try testing.expectEqual(@as(?u16, 2), got.value);
         },
         else => return error.UnexpectedOpTag,
     }
@@ -183,7 +183,7 @@ test "lower local_set consumes the top stack value" {
 
     switch (lower.compiled.ops.items[2]) {
         .ret => |got| {
-            try testing.expectEqual(@as(?u32, null), got.value);
+            try testing.expectEqual(@as(?u16, null), got.value);
         },
         else => return error.UnexpectedOpTag,
     }
@@ -224,7 +224,7 @@ test "lower local_tee writes local and keeps the top stack value" {
 
     switch (lower.compiled.ops.items[2]) {
         .ret => |got| {
-            try testing.expectEqual(@as(?u32, 1), got.value);
+            try testing.expectEqual(@as(?u16, 1), got.value);
         },
         else => return error.UnexpectedOpTag,
     }
@@ -257,7 +257,7 @@ test "lower drop consumes the top stack value without emitting IR" {
 
     switch (lower.compiled.ops.items[1]) {
         .ret => |got| {
-            try testing.expectEqual(@as(?u32, null), got.value);
+            try testing.expectEqual(@as(?u16, null), got.value);
         },
         else => return error.UnexpectedOpTag,
     }
@@ -292,7 +292,7 @@ test "lower i32_sub into slot IR" {
 
     switch (lower.compiled.ops.items[1]) {
         .ret => |got| {
-            try testing.expectEqual(@as(?u32, 2), got.value);
+            try testing.expectEqual(@as(?u16, 2), got.value);
         },
         else => return error.UnexpectedOpTag,
     }
@@ -327,7 +327,7 @@ test "lower i32_mul into slot IR" {
 
     switch (lower.compiled.ops.items[1]) {
         .ret => |got| {
-            try testing.expectEqual(@as(?u32, 2), got.value);
+            try testing.expectEqual(@as(?u16, 2), got.value);
         },
         else => return error.UnexpectedOpTag,
     }
@@ -360,7 +360,7 @@ test "lower i32_eqz into slot IR" {
 
     switch (lower.compiled.ops.items[1]) {
         .ret => |got| {
-            try testing.expectEqual(@as(?u32, 1), got.value);
+            try testing.expectEqual(@as(?u16, 1), got.value);
         },
         else => return error.UnexpectedOpTag,
     }
@@ -395,7 +395,7 @@ test "lower i32_eq into slot IR" {
 
     switch (lower.compiled.ops.items[1]) {
         .ret => |got| {
-            try testing.expectEqual(@as(?u32, 2), got.value);
+            try testing.expectEqual(@as(?u16, 2), got.value);
         },
         else => return error.UnexpectedOpTag,
     }
@@ -430,7 +430,7 @@ test "lower i32_ne into slot IR" {
 
     switch (lower.compiled.ops.items[1]) {
         .ret => |got| {
-            try testing.expectEqual(@as(?u32, 2), got.value);
+            try testing.expectEqual(@as(?u16, 2), got.value);
         },
         else => return error.UnexpectedOpTag,
     }
@@ -536,7 +536,7 @@ test "lower if without else: skips body when condition is zero" {
         else => return error.UnexpectedOpTag,
     }
     switch (lower.compiled.ops.items[2]) {
-        .ret => |r| try testing.expectEqual(@as(?u32, null), r.value),
+        .ret => |r| try testing.expectEqual(@as(?u16, null), r.value),
         else => return error.UnexpectedOpTag,
     }
 }
@@ -590,7 +590,7 @@ test "lower if-else selects correct branch" {
         else => return error.UnexpectedOpTag,
     }
     switch (lower.compiled.ops.items[6]) {
-        .ret => |r| try testing.expectEqual(@as(?u32, 1), r.value),
+        .ret => |r| try testing.expectEqual(@as(?u16, 1), r.value),
         else => return error.UnexpectedOpTag,
     }
 }

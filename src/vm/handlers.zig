@@ -150,7 +150,7 @@ fn currentRssWindows() usize {
 
 /// Compute effective address with bounds check.
 /// Returns null if out-of-bounds.
-inline fn effectiveAddr(slots: [*]RawVal, addr_slot: u32, offset: u32, size: usize, mem: []const u8) ?u32 {
+inline fn effectiveAddr(slots: [*]RawVal, addr_slot: Slot, offset: u32, size: usize, mem: []const u8) ?u32 {
     const base = slots[addr_slot].readAs(u32);
     const ea = base +% offset;
     if (@as(usize, ea) + size > mem.len) return null;
@@ -1727,7 +1727,7 @@ pub fn handle_i64_shr_u_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchSt
 
 pub fn handle_i32_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsLoad, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 4, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1738,7 +1738,7 @@ pub fn handle_i32_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
 
 pub fn handle_i32_load8_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsLoad, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 1, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1749,7 +1749,7 @@ pub fn handle_i32_load8_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
 
 pub fn handle_i32_load8_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsLoad, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 1, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1760,7 +1760,7 @@ pub fn handle_i32_load8_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
 
 pub fn handle_i32_load16_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsLoad, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 2, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1772,7 +1772,7 @@ pub fn handle_i32_load16_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
 
 pub fn handle_i32_load16_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsLoad, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 2, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1783,7 +1783,7 @@ pub fn handle_i32_load16_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
 
 pub fn handle_i64_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsLoad, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 8, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1794,7 +1794,7 @@ pub fn handle_i64_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
 
 pub fn handle_i64_load8_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsLoad, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 1, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1805,7 +1805,7 @@ pub fn handle_i64_load8_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
 
 pub fn handle_i64_load8_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsLoad, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 1, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1816,7 +1816,7 @@ pub fn handle_i64_load8_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
 
 pub fn handle_i64_load16_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsLoad, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 2, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1828,7 +1828,7 @@ pub fn handle_i64_load16_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
 
 pub fn handle_i64_load16_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsLoad, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 2, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1839,7 +1839,7 @@ pub fn handle_i64_load16_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
 
 pub fn handle_i64_load32_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsLoad, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 4, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1851,7 +1851,7 @@ pub fn handle_i64_load32_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
 
 pub fn handle_i64_load32_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsLoad, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 4, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1862,7 +1862,7 @@ pub fn handle_i64_load32_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
 
 pub fn handle_f32_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsLoad, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 4, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1874,7 +1874,7 @@ pub fn handle_f32_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
 
 pub fn handle_f64_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsLoad, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 8, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1888,7 +1888,7 @@ pub fn handle_f64_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
 
 pub fn handle_i32_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsStore, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 4, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1899,7 +1899,7 @@ pub fn handle_i32_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
 
 pub fn handle_i32_store8(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsStore, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 1, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1910,7 +1910,7 @@ pub fn handle_i32_store8(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
 
 pub fn handle_i32_store16(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsStore, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 2, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1921,7 +1921,7 @@ pub fn handle_i32_store16(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
 
 pub fn handle_i64_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsStore, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 8, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1932,7 +1932,7 @@ pub fn handle_i64_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
 
 pub fn handle_i64_store8(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsStore, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 1, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1943,7 +1943,7 @@ pub fn handle_i64_store8(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
 
 pub fn handle_i64_store16(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsStore, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 2, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1954,7 +1954,7 @@ pub fn handle_i64_store16(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
 
 pub fn handle_i64_store32(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsStore, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 4, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1965,7 +1965,7 @@ pub fn handle_i64_store32(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
 
 pub fn handle_f32_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsStore, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 4, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -1976,7 +1976,7 @@ pub fn handle_f32_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
 
 pub fn handle_f64_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsStore, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 8, memory) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
@@ -2013,6 +2013,8 @@ pub fn handle_memory_grow(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const result: i32 = if (old == std.math.maxInt(u32)) -1 else @intCast(old);
     slots[ops.dst] = RawVal.from(result);
     if (result != -1) {
+        // Refresh cached mem_base/mem_len after successful grow.
+        frame.refreshMemCache(env.memory);
         if (env.memory_budget) |b| {
             b.recordLinearGrow(env.memory.byteLen());
         }
@@ -2044,7 +2046,7 @@ pub fn handle_memory_grow(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
 
 pub fn handle_memory_init(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsMemoryInit, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const dst_addr = slots[ops.dst_addr].readAs(u32);
     const src_offset = slots[ops.src_offset].readAs(u32);
     const len = slots[ops.len].readAs(u32);
@@ -2081,7 +2083,7 @@ pub fn handle_data_drop(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
 
 pub fn handle_memory_copy(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsMemoryCopy, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const dst_addr = slots[ops.dst_addr].readAs(u32);
     const src_addr = slots[ops.src_addr].readAs(u32);
     const len = slots[ops.len].readAs(u32);
@@ -2104,7 +2106,7 @@ pub fn handle_memory_copy(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
 
 pub fn handle_memory_fill(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsMemoryFill, ip);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
     const dst_addr = slots[ops.dst_addr].readAs(u32);
     const value = slots[ops.value].readAs(u32);
     const len = slots[ops.len].readAs(u32);

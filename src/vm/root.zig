@@ -165,6 +165,8 @@ pub const VM = struct {
             .result = .{ .ok = null },
             .vm = self,
         };
+        // Populate cached memory base/length for fast access in handlers.
+        frame.refreshMemCache(env.memory);
         defer frame.deinit();
 
         // Push entry frame — depth=0, cap≥DEFAULT so this always succeeds unless
