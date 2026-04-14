@@ -149,16 +149,16 @@ pub const EhFrame = struct {
 // ── Dispatch state (mutable, shared across all handlers in one invocation) ────
 
 /// Default value-stack size in RawVal slots (8 bytes each).
-/// 128K slots = 1 MiB.  Grows by doubling on overflow up to MAX_VAL_STACK_SLOTS.
-pub const DEFAULT_VAL_STACK_SLOTS: usize = 128 * 1024;
+/// Grows by doubling on overflow up to MAX_VAL_STACK_SLOTS.
+pub const DEFAULT_VAL_STACK_SLOTS: usize = 1 * 1024;
 
 /// Hard upper bound for the value stack (prevents infinite growth).
 /// 16 Mi slots = 128 MiB — no real-world module should approach this.
 pub const MAX_VAL_STACK_SLOTS: usize = 16 * 1024 * 1024;
 
 /// Default call-stack depth (max simultaneous live Wasm call frames).
-/// 4096 frames covers realistic recursion.  Grows by doubling on overflow.
-pub const DEFAULT_CALL_STACK_DEPTH: usize = 4096;
+/// 1024 frames covers realistic recursion.  Grows by doubling on overflow.
+pub const DEFAULT_CALL_STACK_DEPTH: usize = 1024;
 
 /// Hard upper bound for the call stack.
 pub const MAX_CALL_STACK_DEPTH: usize = 1024 * 1024;

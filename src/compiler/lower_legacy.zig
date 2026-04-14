@@ -69,10 +69,10 @@ pub const LegacyTryState = struct {
     handlers_start: u32,
     /// Total number of handlers for this try frame.
     handlers_len: u32,
-    /// Whether we are currently inside a catch arm body (as opposed to the try body).
-    in_catch_body: bool = false,
     /// The catch arm index we are currently processing.
     current_catch_index: u32 = 0,
+    /// Whether we are currently inside a catch arm body (as opposed to the try body).
+    in_catch_body: bool = false,
     /// Whether a catch_all arm has been seen (at most one allowed).
     has_catch_all: bool = false,
 };
