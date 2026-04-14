@@ -182,7 +182,7 @@ pub const VM = struct {
 
         const ip = func.code.ptr;
         const h: dispatch_mod.Handler = @as(*const dispatch_mod.Handler, @ptrCast(ip)).*;
-        h(ip, entry_slots.ptr, &frame, &m3_env, 0, 0.0);
+        h(ip, entry_slots.ptr, &frame, &m3_env);
 
         return frame.result;
     }
