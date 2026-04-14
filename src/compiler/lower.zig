@@ -716,7 +716,7 @@ pub const Lower = struct {
         return .{ .allocator = allocator };
     }
 
-    pub fn initWithReservedSlots(allocator: Allocator, reserved_slots: u32, locals_count: u16) Lower {
+    pub fn initWithReservedSlots(allocator: Allocator, reserved_slots: Slot, locals_count: u16) Lower {
         return .{
             .allocator = allocator,
             .compiled = .{
@@ -778,7 +778,7 @@ pub const Lower = struct {
     /// After `reset`, the Lower is in the same logical state as a fresh
     /// `initWithReservedSlots(self.allocator, reserved_slots, locals_count)`
     /// but without freeing and reallocating any backing memory.
-    pub fn reset(self: *Lower, reserved_slots: u32, locals_count: u16) void {
+    pub fn reset(self: *Lower, reserved_slots: Slot, locals_count: u16) void {
         // Clear value stack retaining capacity.
         self.stack.slots.clearRetainingCapacity();
 
@@ -921,7 +921,7 @@ pub const Lower = struct {
     }
 
     pub fn local_to_slot(_: *Lower, local: u32) Slot {
-        return local;
+        return @intCast(local);
     }
 
     // ── Control stack helpers ─────────────────────────────────────────────────
@@ -1330,7 +1330,7 @@ pub const Lower = struct {
     ///
     /// NOTE: Do NOT call this for `local_tee` because the value must also
     /// remain on the stack.
-    fn try_fuse_local_set(self: *Lower, local: u32, src: Slot) bool {
+    fn try_fuse_local_set(self: *Lower, local: Slot, src: Slot) bool {
         const ops = self.compiled.ops.items;
         if (ops.len == 0) return false;
         const last = &ops[ops.len - 1];
@@ -1562,6 +1562,562 @@ pub const Lower = struct {
         return true;
     }
 
+    // ── Constant folding & algebraic simplification helpers ──────────────────
+
+    /// Recycle a temporary slot back to the free-list.
+    fn recycle_slot(self: *Lower, slot: Slot) void {
+        if (slot >= self.reserved_slots) {
+            self.free_slots.append(self.allocator, slot) catch {};
+        }
+    }
+
+    /// Emit a copy instruction: dst = src (using the existing `copy` op).
+    fn emit_copy(self: *Lower, dst_slot: Slot, src_slot: Slot) !void {
+        try self.emit(.{ .copy = .{ .dst = dst_slot, .src = src_slot } });
+    }
+
+    /// Try to fold a binary op where both operands are compile-time constants.
+    /// Returns true if folding succeeded (and emits the replacement const + pushes dst).
+    fn try_fold_binary_const(
+        self: *Lower,
+        comptime op_tag: []const u8,
+        lhs: Slot,
+        rhs: Slot,
+        dst: Slot,
+    ) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+
+        // We need: ops[len-2] = const producing lhs, ops[len-1] = const producing rhs.
+        // Note: after pop_slot, lhs/rhs slots have been recycled, but the const ops
+        // are still in the buffer.  The order is: lhs_const was emitted first (lower index),
+        // rhs_const was emitted second (higher index).
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+
+        // ── i32 constant folding ──
+        if (comptime std.mem.startsWith(u8, op_tag, "i32_")) {
+            const rhs_val: i32 = switch (rhs_op) {
+                .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+                else => return false,
+            };
+            const lhs_val: i32 = switch (lhs_op) {
+                .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+                else => return false,
+            };
+            const result: ?i32 = comptime_eval_i32(op_tag, lhs_val, rhs_val);
+            if (result) |val| {
+                // Remove both const ops and emit the folded result.
+                _ = self.compiled.ops.pop();
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .const_i32 = .{ .dst = dst, .value = val } });
+                return true;
+            }
+        }
+
+        // ── i64 constant folding ──
+        if (comptime std.mem.startsWith(u8, op_tag, "i64_")) {
+            const rhs_val: i64 = switch (rhs_op) {
+                .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+                else => return false,
+            };
+            const lhs_val: i64 = switch (lhs_op) {
+                .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+                else => return false,
+            };
+            const result: ?i64 = comptime_eval_i64(op_tag, lhs_val, rhs_val);
+            if (result) |val| {
+                _ = self.compiled.ops.pop();
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .const_i64 = .{ .dst = dst, .value = val } });
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// Evaluate i32 binary op at compile time.  Returns null for ops that can trap
+    /// (div/rem by zero, signed overflow) or that we don't handle.
+    fn comptime_eval_i32(comptime op_tag: []const u8, lhs: i32, rhs: i32) ?i32 {
+        const l: u32 = @bitCast(lhs);
+        const r: u32 = @bitCast(rhs);
+        if (comptime std.mem.eql(u8, op_tag, "i32_add")) return lhs +% rhs;
+        if (comptime std.mem.eql(u8, op_tag, "i32_sub")) return lhs -% rhs;
+        if (comptime std.mem.eql(u8, op_tag, "i32_mul")) return lhs *% rhs;
+        if (comptime std.mem.eql(u8, op_tag, "i32_and")) return @bitCast(l & r);
+        if (comptime std.mem.eql(u8, op_tag, "i32_or")) return @bitCast(l | r);
+        if (comptime std.mem.eql(u8, op_tag, "i32_xor")) return @bitCast(l ^ r);
+        if (comptime std.mem.eql(u8, op_tag, "i32_shl")) return @bitCast(l << @intCast(r & 31));
+        if (comptime std.mem.eql(u8, op_tag, "i32_shr_u")) return @bitCast(l >> @intCast(r & 31));
+        if (comptime std.mem.eql(u8, op_tag, "i32_shr_s")) return lhs >> @intCast(r & 31);
+        if (comptime std.mem.eql(u8, op_tag, "i32_rotl")) return @bitCast(std.math.rotl(u32, l, r & 31));
+        if (comptime std.mem.eql(u8, op_tag, "i32_rotr")) return @bitCast(std.math.rotr(u32, l, r & 31));
+        // div/rem: do NOT fold if divisor is zero or signed overflow (INT_MIN / -1).
+        if (comptime std.mem.eql(u8, op_tag, "i32_div_s")) {
+            if (rhs == 0 or (lhs == std.math.minInt(i32) and rhs == -1)) return null;
+            return @intCast(@divTrunc(lhs, rhs));
+        }
+        if (comptime std.mem.eql(u8, op_tag, "i32_div_u")) {
+            if (r == 0) return null;
+            return @bitCast(l / r);
+        }
+        if (comptime std.mem.eql(u8, op_tag, "i32_rem_s")) {
+            if (rhs == 0) return null;
+            if (lhs == std.math.minInt(i32) and rhs == -1) return 0;
+            return @intCast(@rem(lhs, rhs));
+        }
+        if (comptime std.mem.eql(u8, op_tag, "i32_rem_u")) {
+            if (r == 0) return null;
+            return @bitCast(l % r);
+        }
+        return null;
+    }
+
+    /// Evaluate i64 binary op at compile time.
+    fn comptime_eval_i64(comptime op_tag: []const u8, lhs: i64, rhs: i64) ?i64 {
+        const l: u64 = @bitCast(lhs);
+        const r: u64 = @bitCast(rhs);
+        if (comptime std.mem.eql(u8, op_tag, "i64_add")) return lhs +% rhs;
+        if (comptime std.mem.eql(u8, op_tag, "i64_sub")) return lhs -% rhs;
+        if (comptime std.mem.eql(u8, op_tag, "i64_mul")) return lhs *% rhs;
+        if (comptime std.mem.eql(u8, op_tag, "i64_and")) return @bitCast(l & r);
+        if (comptime std.mem.eql(u8, op_tag, "i64_or")) return @bitCast(l | r);
+        if (comptime std.mem.eql(u8, op_tag, "i64_xor")) return @bitCast(l ^ r);
+        if (comptime std.mem.eql(u8, op_tag, "i64_shl")) return @bitCast(l << @intCast(r & 63));
+        if (comptime std.mem.eql(u8, op_tag, "i64_shr_u")) return @bitCast(l >> @intCast(r & 63));
+        if (comptime std.mem.eql(u8, op_tag, "i64_shr_s")) return lhs >> @intCast(r & 63);
+        if (comptime std.mem.eql(u8, op_tag, "i64_rotl")) return @bitCast(std.math.rotl(u64, l, r & 63));
+        if (comptime std.mem.eql(u8, op_tag, "i64_rotr")) return @bitCast(std.math.rotr(u64, l, r & 63));
+        if (comptime std.mem.eql(u8, op_tag, "i64_div_s")) {
+            if (rhs == 0 or (lhs == std.math.minInt(i64) and rhs == -1)) return null;
+            return @intCast(@divTrunc(lhs, rhs));
+        }
+        if (comptime std.mem.eql(u8, op_tag, "i64_div_u")) {
+            if (r == 0) return null;
+            return @bitCast(l / r);
+        }
+        if (comptime std.mem.eql(u8, op_tag, "i64_rem_s")) {
+            if (rhs == 0) return null;
+            if (lhs == std.math.minInt(i64) and rhs == -1) return 0;
+            return @intCast(@rem(lhs, rhs));
+        }
+        if (comptime std.mem.eql(u8, op_tag, "i64_rem_u")) {
+            if (r == 0) return null;
+            return @bitCast(l % r);
+        }
+        return null;
+    }
+
+    /// Try algebraic simplification / strength reduction for i32 binop with immediate rhs.
+    /// Returns true if simplification succeeded (emits replacement, pushes dst to stack).
+    fn try_simplify_imm_i32(
+        self: *Lower,
+        comptime op_tag: []const u8,
+        lhs: Slot,
+        imm: i32,
+        dst: Slot,
+    ) !bool {
+        const imm_u: u32 = @bitCast(imm);
+
+        // ── Identity: result == lhs ──
+        const is_identity = comptime_is_identity_i32(op_tag, imm);
+        if (is_identity) {
+            // Remove the const op, emit copy (or reuse slot).
+            _ = self.compiled.ops.pop();
+            if (dst != lhs) {
+                try self.emit_copy(dst, lhs);
+            }
+            try self.stack.push(self.allocator, dst);
+            return true;
+        }
+
+        // ── Annihilator: result is a known constant ──
+        const annihilator = comptime_annihilator_i32(op_tag, imm);
+        if (annihilator) |val| {
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = val } });
+            try self.stack.push(self.allocator, dst);
+            return true;
+        }
+
+        // ── Strength reduction: mul by power-of-2 → shl ──
+        if (comptime std.mem.eql(u8, op_tag, "i32_mul")) {
+            if (imm_u != 0 and (imm_u & (imm_u - 1)) == 0) {
+                const shift: i32 = @intCast(@ctz(imm_u));
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_shl_imm = .{ .dst = dst, .lhs = lhs, .imm = shift } });
+                try self.stack.push(self.allocator, dst);
+                return true;
+            }
+        }
+
+        // ── Strength reduction: unsigned div by power-of-2 → shr_u ──
+        if (comptime std.mem.eql(u8, op_tag, "i32_div_u")) {
+            if (imm_u != 0 and (imm_u & (imm_u - 1)) == 0) {
+                const shift: i32 = @intCast(@ctz(imm_u));
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i32_shr_u_imm = .{ .dst = dst, .lhs = lhs, .imm = shift } });
+                try self.stack.push(self.allocator, dst);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// Try algebraic simplification / strength reduction for i64 binop with immediate rhs.
+    fn try_simplify_imm_i64(
+        self: *Lower,
+        comptime op_tag: []const u8,
+        lhs: Slot,
+        imm: i64,
+        dst: Slot,
+    ) !bool {
+        const imm_u: u64 = @bitCast(imm);
+
+        // ── Identity: result == lhs ──
+        const is_identity = comptime_is_identity_i64(op_tag, imm);
+        if (is_identity) {
+            _ = self.compiled.ops.pop();
+            if (dst != lhs) {
+                try self.emit_copy(dst, lhs);
+            }
+            try self.stack.push(self.allocator, dst);
+            return true;
+        }
+
+        // ── Annihilator: result is a known constant ──
+        const annihilator = comptime_annihilator_i64(op_tag, imm);
+        if (annihilator) |val| {
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = val } });
+            try self.stack.push(self.allocator, dst);
+            return true;
+        }
+
+        // ── Strength reduction: mul by power-of-2 → shl ──
+        if (comptime std.mem.eql(u8, op_tag, "i64_mul")) {
+            if (imm_u != 0 and (imm_u & (imm_u -% 1)) == 0) {
+                const shift: i64 = @intCast(@ctz(imm_u));
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_shl_imm = .{ .dst = dst, .lhs = lhs, .imm = shift } });
+                try self.stack.push(self.allocator, dst);
+                return true;
+            }
+        }
+
+        // ── Strength reduction: unsigned div by power-of-2 → shr_u ──
+        if (comptime std.mem.eql(u8, op_tag, "i64_div_u")) {
+            if (imm_u != 0 and (imm_u & (imm_u -% 1)) == 0) {
+                const shift: i64 = @intCast(@ctz(imm_u));
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .i64_shr_u_imm = .{ .dst = dst, .lhs = lhs, .imm = shift } });
+                try self.stack.push(self.allocator, dst);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// Check if `rhs_imm` is the identity element for the given i32 binary op.
+    fn comptime_is_identity_i32(comptime op_tag: []const u8, imm: i32) bool {
+        // x + 0, x - 0, x | 0, x ^ 0, x << 0, x >> 0, x rotl 0, x rotr 0
+        if (imm == 0) {
+            return comptime (std.mem.eql(u8, op_tag, "i32_add") or
+                std.mem.eql(u8, op_tag, "i32_sub") or
+                std.mem.eql(u8, op_tag, "i32_or") or
+                std.mem.eql(u8, op_tag, "i32_xor") or
+                std.mem.eql(u8, op_tag, "i32_shl") or
+                std.mem.eql(u8, op_tag, "i32_shr_s") or
+                std.mem.eql(u8, op_tag, "i32_shr_u") or
+                std.mem.eql(u8, op_tag, "i32_rotl") or
+                std.mem.eql(u8, op_tag, "i32_rotr"));
+        }
+        // x * 1, x div_s 1, x div_u 1
+        if (imm == 1) {
+            return comptime (std.mem.eql(u8, op_tag, "i32_mul") or
+                std.mem.eql(u8, op_tag, "i32_div_s") or
+                std.mem.eql(u8, op_tag, "i32_div_u"));
+        }
+        // x & 0xFFFFFFFF (all-ones)
+        if (imm == -1) {
+            return comptime std.mem.eql(u8, op_tag, "i32_and");
+        }
+        return false;
+    }
+
+    /// Check if `rhs_imm` is an annihilator for the given i32 binary op.
+    /// Returns the result constant, or null if not an annihilator.
+    fn comptime_annihilator_i32(comptime op_tag: []const u8, imm: i32) ?i32 {
+        // x * 0 = 0,  x & 0 = 0
+        if (imm == 0) {
+            if (comptime std.mem.eql(u8, op_tag, "i32_mul") or
+                std.mem.eql(u8, op_tag, "i32_and"))
+                return 0;
+        }
+        // x | 0xFFFFFFFF = 0xFFFFFFFF
+        if (imm == -1) {
+            if (comptime std.mem.eql(u8, op_tag, "i32_or"))
+                return -1;
+        }
+        return null;
+    }
+
+    /// Check if `rhs_imm` is the identity element for the given i64 binary op.
+    fn comptime_is_identity_i64(comptime op_tag: []const u8, imm: i64) bool {
+        if (imm == 0) {
+            return comptime (std.mem.eql(u8, op_tag, "i64_add") or
+                std.mem.eql(u8, op_tag, "i64_sub") or
+                std.mem.eql(u8, op_tag, "i64_or") or
+                std.mem.eql(u8, op_tag, "i64_xor") or
+                std.mem.eql(u8, op_tag, "i64_shl") or
+                std.mem.eql(u8, op_tag, "i64_shr_s") or
+                std.mem.eql(u8, op_tag, "i64_shr_u") or
+                std.mem.eql(u8, op_tag, "i64_rotl") or
+                std.mem.eql(u8, op_tag, "i64_rotr"));
+        }
+        if (imm == 1) {
+            return comptime (std.mem.eql(u8, op_tag, "i64_mul") or
+                std.mem.eql(u8, op_tag, "i64_div_s") or
+                std.mem.eql(u8, op_tag, "i64_div_u"));
+        }
+        if (imm == -1) {
+            return comptime std.mem.eql(u8, op_tag, "i64_and");
+        }
+        return false;
+    }
+
+    /// Check if `rhs_imm` is an annihilator for the given i64 binary op.
+    fn comptime_annihilator_i64(comptime op_tag: []const u8, imm: i64) ?i64 {
+        if (imm == 0) {
+            if (comptime std.mem.eql(u8, op_tag, "i64_mul") or
+                std.mem.eql(u8, op_tag, "i64_and"))
+                return 0;
+        }
+        if (imm == -1) {
+            if (comptime std.mem.eql(u8, op_tag, "i64_or"))
+                return -1;
+        }
+        return null;
+    }
+
+    /// Try to fold a comparison op where both operands are compile-time constants.
+    /// Comparison results are always i32 (0 or 1).
+    fn try_fold_compare_const(
+        self: *Lower,
+        comptime op_tag: []const u8,
+        lhs: Slot,
+        rhs: Slot,
+        dst: Slot,
+    ) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+
+        // ── i32 comparisons ──
+        if (comptime std.mem.startsWith(u8, op_tag, "i32_")) {
+            const rhs_val: i32 = switch (rhs_op) {
+                .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+                else => return false,
+            };
+            const lhs_val: i32 = switch (lhs_op) {
+                .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+                else => return false,
+            };
+            const result: ?bool = comptime_eval_cmp_i32(op_tag, lhs_val, rhs_val);
+            if (result) |val| {
+                _ = self.compiled.ops.pop();
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (val) 1 else 0 } });
+                return true;
+            }
+        }
+
+        // ── i64 comparisons ──
+        if (comptime std.mem.startsWith(u8, op_tag, "i64_")) {
+            const rhs_val: i64 = switch (rhs_op) {
+                .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+                else => return false,
+            };
+            const lhs_val: i64 = switch (lhs_op) {
+                .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+                else => return false,
+            };
+            const result: ?bool = comptime_eval_cmp_i64(op_tag, lhs_val, rhs_val);
+            if (result) |val| {
+                _ = self.compiled.ops.pop();
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (val) 1 else 0 } });
+                return true;
+            }
+        }
+
+        // ── f32 comparisons ──
+        if (comptime std.mem.startsWith(u8, op_tag, "f32_")) {
+            const rhs_val: f32 = switch (rhs_op) {
+                .const_f32 => |c| if (c.dst == rhs) c.value else return false,
+                else => return false,
+            };
+            const lhs_val: f32 = switch (lhs_op) {
+                .const_f32 => |c| if (c.dst == lhs) c.value else return false,
+                else => return false,
+            };
+            const result: ?bool = comptime_eval_cmp_f32(op_tag, lhs_val, rhs_val);
+            if (result) |val| {
+                _ = self.compiled.ops.pop();
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (val) 1 else 0 } });
+                return true;
+            }
+        }
+
+        // ── f64 comparisons ──
+        if (comptime std.mem.startsWith(u8, op_tag, "f64_")) {
+            const rhs_val: f64 = switch (rhs_op) {
+                .const_f64 => |c| if (c.dst == rhs) c.value else return false,
+                else => return false,
+            };
+            const lhs_val: f64 = switch (lhs_op) {
+                .const_f64 => |c| if (c.dst == lhs) c.value else return false,
+                else => return false,
+            };
+            const result: ?bool = comptime_eval_cmp_f64(op_tag, lhs_val, rhs_val);
+            if (result) |val| {
+                _ = self.compiled.ops.pop();
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (val) 1 else 0 } });
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    fn comptime_eval_cmp_i32(comptime op_tag: []const u8, lhs: i32, rhs: i32) ?bool {
+        const l: u32 = @bitCast(lhs);
+        const r: u32 = @bitCast(rhs);
+        if (comptime std.mem.eql(u8, op_tag, "i32_eq")) return lhs == rhs;
+        if (comptime std.mem.eql(u8, op_tag, "i32_ne")) return lhs != rhs;
+        if (comptime std.mem.eql(u8, op_tag, "i32_lt_s")) return lhs < rhs;
+        if (comptime std.mem.eql(u8, op_tag, "i32_lt_u")) return l < r;
+        if (comptime std.mem.eql(u8, op_tag, "i32_gt_s")) return lhs > rhs;
+        if (comptime std.mem.eql(u8, op_tag, "i32_gt_u")) return l > r;
+        if (comptime std.mem.eql(u8, op_tag, "i32_le_s")) return lhs <= rhs;
+        if (comptime std.mem.eql(u8, op_tag, "i32_le_u")) return l <= r;
+        if (comptime std.mem.eql(u8, op_tag, "i32_ge_s")) return lhs >= rhs;
+        if (comptime std.mem.eql(u8, op_tag, "i32_ge_u")) return l >= r;
+        return null;
+    }
+
+    fn comptime_eval_cmp_i64(comptime op_tag: []const u8, lhs: i64, rhs: i64) ?bool {
+        const l: u64 = @bitCast(lhs);
+        const r: u64 = @bitCast(rhs);
+        if (comptime std.mem.eql(u8, op_tag, "i64_eq")) return lhs == rhs;
+        if (comptime std.mem.eql(u8, op_tag, "i64_ne")) return lhs != rhs;
+        if (comptime std.mem.eql(u8, op_tag, "i64_lt_s")) return lhs < rhs;
+        if (comptime std.mem.eql(u8, op_tag, "i64_lt_u")) return l < r;
+        if (comptime std.mem.eql(u8, op_tag, "i64_gt_s")) return lhs > rhs;
+        if (comptime std.mem.eql(u8, op_tag, "i64_gt_u")) return l > r;
+        if (comptime std.mem.eql(u8, op_tag, "i64_le_s")) return lhs <= rhs;
+        if (comptime std.mem.eql(u8, op_tag, "i64_le_u")) return l <= r;
+        if (comptime std.mem.eql(u8, op_tag, "i64_ge_s")) return lhs >= rhs;
+        if (comptime std.mem.eql(u8, op_tag, "i64_ge_u")) return l >= r;
+        return null;
+    }
+
+    fn comptime_eval_cmp_f32(comptime op_tag: []const u8, lhs: f32, rhs: f32) ?bool {
+        // IEEE 754 comparison rules: NaN comparisons return false for ordered ops.
+        // This is exactly what Zig's comparison operators do, so we can use them directly.
+        if (comptime std.mem.eql(u8, op_tag, "f32_eq")) return lhs == rhs;
+        if (comptime std.mem.eql(u8, op_tag, "f32_ne")) return lhs != rhs;
+        if (comptime std.mem.eql(u8, op_tag, "f32_lt")) return lhs < rhs;
+        if (comptime std.mem.eql(u8, op_tag, "f32_gt")) return lhs > rhs;
+        if (comptime std.mem.eql(u8, op_tag, "f32_le")) return lhs <= rhs;
+        if (comptime std.mem.eql(u8, op_tag, "f32_ge")) return lhs >= rhs;
+        return null;
+    }
+
+    fn comptime_eval_cmp_f64(comptime op_tag: []const u8, lhs: f64, rhs: f64) ?bool {
+        if (comptime std.mem.eql(u8, op_tag, "f64_eq")) return lhs == rhs;
+        if (comptime std.mem.eql(u8, op_tag, "f64_ne")) return lhs != rhs;
+        if (comptime std.mem.eql(u8, op_tag, "f64_lt")) return lhs < rhs;
+        if (comptime std.mem.eql(u8, op_tag, "f64_gt")) return lhs > rhs;
+        if (comptime std.mem.eql(u8, op_tag, "f64_le")) return lhs <= rhs;
+        if (comptime std.mem.eql(u8, op_tag, "f64_ge")) return lhs >= rhs;
+        return null;
+    }
+
+    /// Try to fold a unary op where the operand is a compile-time constant.
+    /// Returns true if folding succeeded.
+    fn try_fold_unary_const(
+        self: *Lower,
+        comptime op_tag: []const u8,
+        src: Slot,
+        dst: Slot,
+    ) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len == 0) return false;
+
+        const src_op = ops[ops.len - 1];
+
+        // ── i32 unary: eqz, clz, ctz, popcnt ──
+        if (comptime std.mem.startsWith(u8, op_tag, "i32_")) {
+            const val: i32 = switch (src_op) {
+                .const_i32 => |c| if (c.dst == src) c.value else return false,
+                else => return false,
+            };
+            const v: u32 = @bitCast(val);
+            const result: ?i32 = blk: {
+                if (comptime std.mem.eql(u8, op_tag, "i32_eqz")) break :blk @as(i32, if (val == 0) 1 else 0);
+                if (comptime std.mem.eql(u8, op_tag, "i32_clz")) break :blk @intCast(@clz(v));
+                if (comptime std.mem.eql(u8, op_tag, "i32_ctz")) break :blk @intCast(@ctz(v));
+                if (comptime std.mem.eql(u8, op_tag, "i32_popcnt")) break :blk @intCast(@popCount(v));
+                break :blk null;
+            };
+            if (result) |r| {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .const_i32 = .{ .dst = dst, .value = r } });
+                return true;
+            }
+        }
+
+        // ── i64 unary: eqz, clz, ctz, popcnt ──
+        if (comptime std.mem.eql(u8, op_tag, "i64_eqz")) {
+            const val: i64 = switch (src_op) {
+                .const_i64 => |c| if (c.dst == src) c.value else return false,
+                else => return false,
+            };
+            _ = self.compiled.ops.pop();
+            // i64.eqz produces i32 result
+            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (val == 0) 1 else 0 } });
+            return true;
+        }
+        if (comptime std.mem.startsWith(u8, op_tag, "i64_")) {
+            const val: i64 = switch (src_op) {
+                .const_i64 => |c| if (c.dst == src) c.value else return false,
+                else => return false,
+            };
+            const v: u64 = @bitCast(val);
+            const result: ?i64 = blk: {
+                if (comptime std.mem.eql(u8, op_tag, "i64_clz")) break :blk @intCast(@clz(v));
+                if (comptime std.mem.eql(u8, op_tag, "i64_ctz")) break :blk @intCast(@ctz(v));
+                if (comptime std.mem.eql(u8, op_tag, "i64_popcnt")) break :blk @intCast(@popCount(v));
+                break :blk null;
+            };
+            if (result) |r| {
+                _ = self.compiled.ops.pop();
+                try self.emit(.{ .const_i64 = .{ .dst = dst, .value = r } });
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// Handle binary operations: pop two operands, allocate result slot, emit, push result.
     /// The op_tag parameter is a string literal representing the Op field name.
     pub fn lower_binary_op(
@@ -1571,6 +2127,15 @@ pub const Lower = struct {
         const rhs = try self.pop_slot();
         const lhs = try self.pop_slot();
         const dst = self.alloc_slot();
+
+        // ── Constant folding: const + const + binop → const ──────────────────
+        // If both operands are constants, evaluate at compile time and emit a
+        // single const instruction.  We must NOT fold division/remainder when the
+        // divisor is zero or when signed INT_MIN / -1 (these are wasm traps).
+        if (try self.try_fold_binary_const(op_tag, lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
 
         // ── Peephole C: const_i32/i64 + xxx → xxx_imm ────────────────────────
         // If there is a fused _imm variant for this op AND the previous emitted
@@ -1583,6 +2148,9 @@ pub const Lower = struct {
             if (ops.len > 0) {
                 switch (ops[ops.len - 1]) {
                     .const_i32 => |c| if (ImmType == i32 and c.dst == rhs) {
+                        // ── Algebraic simplification & strength reduction ──
+                        if (try self.try_simplify_imm_i32(op_tag, lhs, c.value, dst))
+                            return;
                         // Remove the const_i32 and emit the fused imm op instead.
                         _ = self.compiled.ops.pop();
                         try self.emit(@unionInit(Op, imm_tag, .{
@@ -1594,6 +2162,8 @@ pub const Lower = struct {
                         return;
                     },
                     .const_i64 => |c| if (ImmType == i64 and c.dst == rhs) {
+                        if (try self.try_simplify_imm_i64(op_tag, lhs, c.value, dst))
+                            return;
                         _ = self.compiled.ops.pop();
                         try self.emit(@unionInit(Op, imm_tag, .{
                             .dst = dst,
@@ -1624,6 +2194,12 @@ pub const Lower = struct {
     ) !void {
         const src = try self.pop_slot();
         const dst = self.alloc_slot();
+
+        // ── Constant folding: const + unary → const ──
+        if (try self.try_fold_unary_const(op_tag, src, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
 
         try self.emit(@unionInit(Op, op_tag, .{
             .dst = dst,
@@ -1657,6 +2233,12 @@ pub const Lower = struct {
         const rhs = try self.pop_slot();
         const lhs = try self.pop_slot();
         const dst = self.alloc_slot();
+
+        // ── Constant folding: const + const + compare → const_i32 (0 or 1) ──
+        if (try self.try_fold_compare_const(op_tag, lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
 
         // ── Peephole C (compare variant): const_i32/i64 + xxx_cmp → xxx_cmp_imm ──
         const imm_tag = op_tag ++ "_imm";
@@ -2247,14 +2829,15 @@ pub const Lower = struct {
             },
             .local_set => |local| {
                 const src = try self.pop_slot();
+                const local_slot: Slot = @intCast(local);
                 // ── Peephole D: i32_xxx + local_set → i32_xxx_to_local ────────
-                if (!self.try_fuse_local_set(local, src)) {
-                    try self.emit(.{ .local_set = .{ .local = local, .src = src } });
+                if (!self.try_fuse_local_set(local_slot, src)) {
+                    try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
                 }
             },
             .local_tee => |local| {
                 const src = self.stack.peek() orelse return error.StackUnderflow;
-                try self.emit(.{ .local_set = .{ .local = local, .src = src } });
+                try self.emit(.{ .local_set = .{ .local = @intCast(local), .src = src } });
             },
             // ── Globals ──────────────────────────────────────────────────────────
             .global_get => |global_idx| {
@@ -2668,7 +3251,6 @@ pub const Lower = struct {
             },
 
             // ── Memory load ──────────────────────────────────────────────────────────
-            // For all load op: pop the address slot, allocate a result slot, emit the corresponding load Op, push the result slot.
 
             .i32_load => |inst| {
                 const addr = try self.pop_slot();
@@ -2762,8 +3344,6 @@ pub const Lower = struct {
             },
 
             // ── i32 store instructions ─────────────────────────────────────────────
-            // For all store op: Wasm stack top is value, below is addr (push addr first, then val).
-            // According to Wasm spec pop order: pop val (top), then pop addr.
 
             .i32_store => |inst| {
                 const src = try self.pop_slot(); // value
@@ -3913,15 +4493,16 @@ pub const Lower = struct {
             .local_set => {
                 const local = info.local_index orelse return error.UnsupportedOperator;
                 const src = try self.pop_slot();
+                const local_slot: Slot = @intCast(local);
                 // ── Peephole D: i32_xxx + local_set → i32_xxx_to_local ────────
-                if (!self.try_fuse_local_set(local, src)) {
-                    try self.emit(.{ .local_set = .{ .local = local, .src = src } });
+                if (!self.try_fuse_local_set(local_slot, src)) {
+                    try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
                 }
             },
             .local_tee => {
                 const local = info.local_index orelse return error.UnsupportedOperator;
                 const src = self.stack.peek() orelse return error.StackUnderflow;
-                try self.emit(.{ .local_set = .{ .local = local, .src = src } });
+                try self.emit(.{ .local_set = .{ .local = @intCast(local), .src = src } });
             },
             .global_get => {
                 const global_idx = info.global_index orelse return error.UnsupportedOperator;

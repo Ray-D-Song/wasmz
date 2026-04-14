@@ -204,6 +204,25 @@ pub const DispatchState = struct {
     /// null when the DispatchState owns its stacks directly (non-persistent mode).
     vm: ?*vm_root.VM = null,
 
+    // ── Cached linear memory base/length ─────────────────────────────────
+    // Avoids the `env.memory.bytes()` call (tagged-union dispatch + pointer
+    // chase) on every memory load/store handler.  Updated by `memory.grow`.
+    mem_base: [*]u8 = undefined,
+    mem_len: usize = 0,
+
+    /// Refresh the cached mem_base/mem_len from the canonical Memory object.
+    /// Called once at execute() entry and after every successful memory.grow.
+    pub inline fn refreshMemCache(self: *DispatchState, memory: *const Memory) void {
+        const live = memory.bytes();
+        self.mem_base = live.ptr;
+        self.mem_len = live.len;
+    }
+
+    /// Return the cached memory slice without going through Memory.bytes().
+    pub inline fn memSlice(self: *const DispatchState) []u8 {
+        return self.mem_base[0..self.mem_len];
+    }
+
     pub fn deinit(self: *DispatchState) void {
         // With val_stack, frames do not own their slots — nothing to free per-frame.
         if (self.call_stack_owned and self.call_stack_cap > 0)

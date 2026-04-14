@@ -6,7 +6,7 @@ const SimdOpcode = simd.SimdOpcode;
 const V128 = simd.V128;
 const HeapType = core.HeapType;
 
-pub const Slot = u32;
+pub const Slot = u16;
 
 // ── Generic Operation Types ─────────────────────────────────────────────────────
 
@@ -257,10 +257,10 @@ pub const Op = union(enum) {
     // ── Variable access ─────────────────────────────────────────────────────────
     local_get: struct {
         dst: Slot,
-        local: u32,
+        local: Slot,
     },
     local_set: struct {
-        local: u32,
+        local: Slot,
         src: Slot,
     },
 
@@ -1279,7 +1279,7 @@ pub const CatchHandlerEntry = struct {
 };
 
 pub const CompiledFunction = struct {
-    slots_len: u32,
+    slots_len: Slot,
     /// Number of local variable slots (excluding parameters).
     /// Used to limit @memset in allocCalleeSlots to only the locals range.
     locals_count: u16,
@@ -1307,7 +1307,7 @@ pub const PendingFunction = struct {
     /// Index into Module.composite_types giving the function's FuncType.
     type_index: u32,
     /// Total value-stack slots needed (params + locals).
-    reserved_slots: u32,
+    reserved_slots: Slot,
     /// Number of local variable slots (excluding parameters).
     locals_count: u16,
 };
@@ -1360,7 +1360,7 @@ pub const EncodedFunction = struct {
     /// Flat bytecode stream; 8-byte aligned.
     code: []align(8) u8,
     /// Number of register slots required for this function's frame.
-    slots_len: u32,
+    slots_len: Slot,
     /// Number of local variable slots (excluding parameters).
     /// Used to limit @memset in allocCalleeSlots to only the locals range.
     locals_count: u16,

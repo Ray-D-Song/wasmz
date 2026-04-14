@@ -35,232 +35,234 @@ const HANDLER_SIZE = dispatch.HANDLER_SIZE;
 //   Ops<opname> — operands for the `opname` instruction
 //
 // Structs that share the same layout are aliased.
+// Slot fields use the `Slot` type alias (u16) for compact encoding;
+// non-slot fields (offsets, indices, immediates) remain u32/i32.
 
 /// No operands (e.g. unreachable_, atomic_fence).
 pub const OpsNone = extern struct {};
 
 /// Single destination slot (e.g. memory_size, const_ref_null).
-pub const OpsDst = extern struct { dst: u32 };
+pub const OpsDst = extern struct { dst: Slot };
 
 /// Destination + one source slot.
-pub const OpsDstSrc = extern struct { dst: u32, src: u32 };
+pub const OpsDstSrc = extern struct { dst: Slot, src: Slot };
 
 /// Two source slots (branch on condition, ref_eq).
-pub const OpsDstLhsRhs = extern struct { dst: u32, lhs: u32, rhs: u32 };
+pub const OpsDstLhsRhs = extern struct { dst: Slot, lhs: Slot, rhs: Slot };
 
 /// const_i32
-pub const OpsConstI32 = extern struct { dst: u32, value: i32 };
+pub const OpsConstI32 = extern struct { dst: Slot, _pad: u16 = 0, value: i32 };
 
 /// const_i64
-pub const OpsConstI64 = extern struct { dst: u32, _pad: u32 = 0, value: i64 };
+pub const OpsConstI64 = extern struct { dst: Slot, _pad: [6]u8 = [_]u8{0} ** 6, value: i64 };
 
 /// const_f32
-pub const OpsConstF32 = extern struct { dst: u32, value: f32 };
+pub const OpsConstF32 = extern struct { dst: Slot, _pad: u16 = 0, value: f32 };
 
 /// const_f64
-pub const OpsConstF64 = extern struct { dst: u32, _pad: u32 = 0, value: f64 };
+pub const OpsConstF64 = extern struct { dst: Slot, _pad: [6]u8 = [_]u8{0} ** 6, value: f64 };
 
-/// const_v128 — 16-byte value + 4-byte dst
-pub const OpsConstV128 = extern struct { dst: u32, _pad: [12]u8 = [_]u8{0} ** 12, value: [16]u8 };
+/// const_v128 — 16-byte value + 2-byte dst
+pub const OpsConstV128 = extern struct { dst: Slot, _pad: [14]u8 = [_]u8{0} ** 14, value: [16]u8 };
 
 /// local_get / local_set
-pub const OpsLocalGet = extern struct { dst: u32, local: u32 };
-pub const OpsLocalSet = extern struct { local: u32, src: u32 };
+pub const OpsLocalGet = extern struct { dst: Slot, local: Slot };
+pub const OpsLocalSet = extern struct { local: Slot, src: Slot };
 
 /// global_get / global_set
-pub const OpsGlobalGet = extern struct { dst: u32, global_idx: u32 };
-pub const OpsGlobalSet = extern struct { src: u32, global_idx: u32 };
+pub const OpsGlobalGet = extern struct { dst: Slot, _pad: u16 = 0, global_idx: u32 };
+pub const OpsGlobalSet = extern struct { src: Slot, _pad: u16 = 0, global_idx: u32 };
 
 /// copy
-pub const OpsCopy = extern struct { dst: u32, src: u32 };
+pub const OpsCopy = extern struct { dst: Slot, src: Slot };
 
 /// jump: signed byte offset relative to instruction start
 pub const OpsJump = extern struct { rel_target: i32 };
 
 /// jump_if_z: signed byte offset relative to instruction start
-pub const OpsJumpIfZ = extern struct { cond: u32, rel_target: i32 };
+pub const OpsJumpIfZ = extern struct { cond: Slot, _pad: u16 = 0, rel_target: i32 };
 
-/// i32_xxx_imm: fused binop/compare with immediate rhs. @sizeOf = 12 → stride 24.
-pub const OpsBinopImm = extern struct { dst: u32, lhs: u32, imm: i32 };
+/// i32_xxx_imm: fused binop/compare with immediate rhs.
+pub const OpsBinopImm = extern struct { dst: Slot, lhs: Slot, imm: i32 };
 
-/// i64_xxx_imm: fused i64 binop with immediate rhs. @sizeOf = 16 → stride 24 (aligned to 8).
-pub const OpsBinopImm64 = extern struct { dst: u32, lhs: u32, _pad: u32 = 0, imm: i64 };
+/// i64_xxx_imm: fused i64 binop with immediate rhs.
+pub const OpsBinopImm64 = extern struct { dst: Slot, lhs: Slot, _pad: u32 = 0, imm: i64 };
 
-/// i32_xxx_jump_if_false: fused compare+branch. @sizeOf = 12 → stride 24.
-pub const OpsCompareJump = extern struct { lhs: u32, rhs: u32, rel_target: i32 };
+/// i32_xxx_jump_if_false: fused compare+branch.
+pub const OpsCompareJump = extern struct { lhs: Slot, rhs: Slot, rel_target: i32 };
 
-/// i32_eqz_jump_if_false: fused eqz+branch. @sizeOf = 8 → stride 16.
-pub const OpsEqzJump = extern struct { src: u32, rel_target: i32 };
+/// i32_eqz_jump_if_false: fused eqz+branch.
+pub const OpsEqzJump = extern struct { src: Slot, _pad: u16 = 0, rel_target: i32 };
 
-/// i32_xxx_to_local: fused binop→local_set. @sizeOf = 12 → stride 24.
-pub const OpsBinopToLocal = extern struct { local: u32, lhs: u32, rhs: u32 };
+/// i32_xxx_to_local: fused binop→local_set.
+pub const OpsBinopToLocal = extern struct { local: Slot, lhs: Slot, rhs: Slot };
 
-/// i32_xxx_imm_to_local: fused const+binop→local_set (Candidate E, i32). @sizeOf = 12 → stride 24.
-pub const OpsBinopImmToLocal = extern struct { local: u32, lhs: u32, imm: i32 };
+/// i32_xxx_imm_to_local: fused const+binop→local_set (Candidate E, i32).
+pub const OpsBinopImmToLocal = extern struct { local: Slot, lhs: Slot, imm: i32 };
 
-/// i64_xxx_imm_to_local: fused const+binop→local_set (Candidate E, i64). @sizeOf = 24 → stride 32.
-pub const OpsBinopImmToLocal64 = extern struct { local: u32, lhs: u32, _pad: u32 = 0, imm: i64 };
+/// i64_xxx_imm_to_local: fused const+binop→local_set (Candidate E, i64).
+pub const OpsBinopImmToLocal64 = extern struct { local: Slot, lhs: Slot, _pad: u32 = 0, imm: i64 };
 
-/// i32_xxx_local_inplace: fused local_get+binop_imm+local_set same local (Candidate H, i32). @sizeOf = 8 → stride 16.
-pub const OpsLocalInplace = extern struct { local: u32, imm: i32 };
+/// i32_xxx_local_inplace: fused local_get+binop_imm+local_set same local (Candidate H, i32).
+pub const OpsLocalInplace = extern struct { local: Slot, _pad: u16 = 0, imm: i32 };
 
-/// i64_xxx_local_inplace: fused local_get+binop_imm+local_set same local (Candidate H, i64). @sizeOf = 16 → stride 24.
-pub const OpsLocalInplace64 = extern struct { local: u32, _pad: u32 = 0, imm: i64 };
+/// i64_xxx_local_inplace: fused local_get+binop_imm+local_set same local (Candidate H, i64).
+pub const OpsLocalInplace64 = extern struct { local: Slot, _pad: [6]u8 = [_]u8{0} ** 6, imm: i64 };
 
-/// i32_xxx_imm_jump_if_false: fused const+compare+br_if (Candidate G, i32). @sizeOf = 12 → stride 24.
-pub const OpsCompareImmJump = extern struct { lhs: u32, imm: i32, rel_target: i32 };
+/// i32_xxx_imm_jump_if_false: fused const+compare+br_if (Candidate G, i32).
+pub const OpsCompareImmJump = extern struct { lhs: Slot, _pad: u16 = 0, imm: i32, rel_target: i32 };
 
-/// i64_xxx_imm_jump_if_false: fused const+compare+br_if (Candidate G, i64). @sizeOf = 24 → stride 32.
-pub const OpsCompareImmJump64 = extern struct { lhs: u32, _pad: u32 = 0, imm: i64, rel_target: i32, _pad2: u32 = 0 };
+/// i64_xxx_imm_jump_if_false: fused const+compare+br_if (Candidate G, i64).
+pub const OpsCompareImmJump64 = extern struct { lhs: Slot, _pad: [6]u8 = [_]u8{0} ** 6, imm: i64, rel_target: i32, _pad2: u32 = 0 };
 
 /// jump_table
-pub const OpsJumpTable = extern struct { index: u32, targets_start: u32, targets_len: u32 };
+pub const OpsJumpTable = extern struct { index: Slot, _pad: u16 = 0, targets_start: u32, targets_len: u32 };
 
 /// select
-pub const OpsSelect = extern struct { dst: u32, val1: u32, val2: u32, cond: u32 };
+pub const OpsSelect = extern struct { dst: Slot, val1: Slot, val2: Slot, cond: Slot };
 
 /// ret
 pub const OpsRet = extern struct {
     /// 0 = void return, 1 = has value
-    has_value: u32,
-    value: u32,
+    has_value: u16,
+    value: Slot,
 };
 
 /// ref_func
-pub const OpsRefFunc = extern struct { dst: u32, func_idx: u32 };
+pub const OpsRefFunc = extern struct { dst: Slot, _pad: u16 = 0, func_idx: u32 };
 
 /// ref_test / ref_cast
-pub const OpsRefTest = extern struct { dst: u32, ref: u32, type_idx: u32, nullable: u32 };
+pub const OpsRefTest = extern struct { dst: Slot, ref: Slot, type_idx: u32, nullable: u32 };
 
 /// ref_as_non_null
-pub const OpsRefAsNonNull = extern struct { dst: u32, ref: u32 };
+pub const OpsRefAsNonNull = extern struct { dst: Slot, ref: Slot };
 
 /// br_on_null / br_on_non_null: signed byte offset relative to instruction start
-pub const OpsBrOnNull = extern struct { ref: u32, rel_target: i32 };
+pub const OpsBrOnNull = extern struct { ref: Slot, _pad: u16 = 0, rel_target: i32 };
 
 /// br_on_cast / br_on_cast_fail: signed byte offset relative to instruction start
-pub const OpsBrOnCast = extern struct { ref: u32, rel_target: i32, from_type_idx: u32, to_type_idx: u32, to_nullable: u32 };
+pub const OpsBrOnCast = extern struct { ref: Slot, _pad: u16 = 0, rel_target: i32, from_type_idx: u32, to_type_idx: u32, to_nullable: u32 };
 
 /// ref_i31 / i31_get_s / i31_get_u
-pub const OpsRefI31 = extern struct { dst: u32, value: u32 };
-pub const OpsI31Get = extern struct { dst: u32, ref: u32 };
+pub const OpsRefI31 = extern struct { dst: Slot, value: Slot };
+pub const OpsI31Get = extern struct { dst: Slot, ref: Slot };
 
 /// Memory load: i32_load, i64_load, f32_load, f64_load, etc.
-pub const OpsLoad = extern struct { dst: u32, addr: u32, offset: u32 };
+pub const OpsLoad = extern struct { dst: Slot, addr: Slot, offset: u32 };
 
 /// Memory store
-pub const OpsStore = extern struct { addr: u32, src: u32, offset: u32 };
+pub const OpsStore = extern struct { addr: Slot, src: Slot, offset: u32 };
 
 /// memory_size
-pub const OpsMemorySize = extern struct { dst: u32 };
+pub const OpsMemorySize = extern struct { dst: Slot };
 
 /// memory_grow
-pub const OpsMemoryGrow = extern struct { dst: u32, delta: u32 };
+pub const OpsMemoryGrow = extern struct { dst: Slot, delta: Slot };
 
 /// memory_init
-pub const OpsMemoryInit = extern struct { segment_idx: u32, dst_addr: u32, src_offset: u32, len: u32 };
+pub const OpsMemoryInit = extern struct { dst_addr: Slot, src_offset: Slot, len: Slot, _pad: u16 = 0, segment_idx: u32 };
 
 /// data_drop
 pub const OpsDataDrop = extern struct { segment_idx: u32 };
 
 /// memory_copy
-pub const OpsMemoryCopy = extern struct { dst_addr: u32, src_addr: u32, len: u32 };
+pub const OpsMemoryCopy = extern struct { dst_addr: Slot, src_addr: Slot, len: Slot };
 
 /// memory_fill
-pub const OpsMemoryFill = extern struct { dst_addr: u32, value: u32, len: u32 };
+pub const OpsMemoryFill = extern struct { dst_addr: Slot, value: Slot, len: Slot };
 
-/// call — args_len inline u32 arg slots follow immediately after this struct
-pub const OpsCall = extern struct { dst_valid: u32, dst: u32, func_idx: u32, args_len: u32 };
+/// call — args_len inline Slot arg slots follow immediately after this struct
+pub const OpsCall = extern struct { dst: Slot, dst_valid: u16, func_idx: u32, args_len: u32 };
 
-/// call_indirect — args_len inline u32 arg slots follow immediately after this struct
-pub const OpsCallIndirect = extern struct { dst_valid: u32, dst: u32, index: u32, type_index: u32, table_index: u32, args_len: u32 };
+/// call_indirect — args_len inline Slot arg slots follow immediately after this struct
+pub const OpsCallIndirect = extern struct { dst: Slot, index: Slot, dst_valid: u16, _pad: u16 = 0, type_index: u32, table_index: u32, args_len: u32 };
 
-/// return_call — args_len inline u32 arg slots follow immediately after this struct
+/// return_call — args_len inline Slot arg slots follow immediately after this struct
 pub const OpsReturnCall = extern struct { func_idx: u32, args_len: u32 };
 
-/// return_call_indirect — args_len inline u32 arg slots follow immediately after this struct
-pub const OpsReturnCallIndirect = extern struct { index: u32, type_index: u32, table_index: u32, args_len: u32 };
+/// return_call_indirect — args_len inline Slot arg slots follow immediately after this struct
+pub const OpsReturnCallIndirect = extern struct { index: Slot, _pad: u16 = 0, type_index: u32, table_index: u32, args_len: u32 };
 
-/// call_ref — args_len inline u32 arg slots follow immediately after this struct
-pub const OpsCallRef = extern struct { dst_valid: u32, dst: u32, ref: u32, type_idx: u32, args_len: u32 };
+/// call_ref — args_len inline Slot arg slots follow immediately after this struct
+pub const OpsCallRef = extern struct { dst: Slot, ref: Slot, dst_valid: u16, _pad: u16 = 0, type_idx: u32, args_len: u32 };
 
-/// return_call_ref — args_len inline u32 arg slots follow immediately after this struct
-pub const OpsReturnCallRef = extern struct { ref: u32, type_idx: u32, args_len: u32 };
+/// return_call_ref — args_len inline Slot arg slots follow immediately after this struct
+pub const OpsReturnCallRef = extern struct { ref: Slot, _pad: u16 = 0, type_idx: u32, args_len: u32 };
 
 /// Atomic load/store
-pub const OpsAtomicLoad = extern struct { dst: u32, addr: u32, offset: u32, width: u8, ty: u8, _pad: u16 = 0 };
-pub const OpsAtomicStore = extern struct { addr: u32, src: u32, offset: u32, width: u8, ty: u8, _pad: u16 = 0 };
-pub const OpsAtomicRmw = extern struct { dst: u32, addr: u32, src: u32, offset: u32, op: u8, width: u8, ty: u8, _pad: u8 = 0 };
-pub const OpsAtomicCmpxchg = extern struct { dst: u32, addr: u32, expected: u32, replacement: u32, offset: u32, width: u8, ty: u8, _pad: u16 = 0 };
-pub const OpsAtomicNotify = extern struct { dst: u32, addr: u32, count: u32, offset: u32 };
-pub const OpsAtomicWait32 = extern struct { dst: u32, addr: u32, expected: u32, timeout: u32, offset: u32 };
-pub const OpsAtomicWait64 = extern struct { dst: u32, addr: u32, expected: u32, timeout: u32, offset: u32 };
+pub const OpsAtomicLoad = extern struct { dst: Slot, addr: Slot, offset: u32, width: u8, ty: u8, _pad: u16 = 0 };
+pub const OpsAtomicStore = extern struct { addr: Slot, src: Slot, offset: u32, width: u8, ty: u8, _pad: u16 = 0 };
+pub const OpsAtomicRmw = extern struct { dst: Slot, addr: Slot, src: Slot, _pad: u16 = 0, offset: u32, op: u8, width: u8, ty: u8, _pad2: u8 = 0 };
+pub const OpsAtomicCmpxchg = extern struct { dst: Slot, addr: Slot, expected: Slot, replacement: Slot, offset: u32, width: u8, ty: u8, _pad: u16 = 0 };
+pub const OpsAtomicNotify = extern struct { dst: Slot, addr: Slot, count: Slot, _pad: u16 = 0, offset: u32 };
+pub const OpsAtomicWait32 = extern struct { dst: Slot, addr: Slot, expected: Slot, timeout: Slot, offset: u32 };
+pub const OpsAtomicWait64 = extern struct { dst: Slot, addr: Slot, expected: Slot, timeout: Slot, offset: u32 };
 
 /// Table ops
-pub const OpsTableGet = extern struct { dst: u32, table_index: u32, index: u32 };
-pub const OpsTableSet = extern struct { table_index: u32, index: u32, value: u32 };
-pub const OpsTableSize = extern struct { dst: u32, table_index: u32 };
-pub const OpsTableGrow = extern struct { dst: u32, table_index: u32, init: u32, delta: u32 };
-pub const OpsTableFill = extern struct { table_index: u32, dst_idx: u32, value: u32, len: u32 };
-pub const OpsTableCopy = extern struct { dst_table: u32, src_table: u32, dst_idx: u32, src_idx: u32, len: u32 };
-pub const OpsTableInit = extern struct { table_index: u32, segment_idx: u32, dst_idx: u32, src_offset: u32, len: u32 };
+pub const OpsTableGet = extern struct { dst: Slot, index: Slot, table_index: u32 };
+pub const OpsTableSet = extern struct { index: Slot, value: Slot, table_index: u32 };
+pub const OpsTableSize = extern struct { dst: Slot, _pad: u16 = 0, table_index: u32 };
+pub const OpsTableGrow = extern struct { dst: Slot, init: Slot, delta: Slot, _pad: u16 = 0, table_index: u32 };
+pub const OpsTableFill = extern struct { dst_idx: Slot, value: Slot, len: Slot, _pad: u16 = 0, table_index: u32 };
+pub const OpsTableCopy = extern struct { dst_idx: Slot, src_idx: Slot, len: Slot, _pad: u16 = 0, dst_table: u32, src_table: u32 };
+pub const OpsTableInit = extern struct { dst_idx: Slot, src_offset: Slot, len: Slot, _pad: u16 = 0, table_index: u32, segment_idx: u32 };
 pub const OpsElemDrop = extern struct { segment_idx: u32 };
 
-/// GC struct ops — args_len inline u32 arg slots follow immediately after OpsStructNew
-pub const OpsStructNew = extern struct { dst: u32, type_idx: u32, args_len: u32 };
-pub const OpsStructNewDefault = extern struct { dst: u32, type_idx: u32 };
-pub const OpsStructGet = extern struct { dst: u32, ref: u32, type_idx: u32, field_idx: u32 };
-pub const OpsStructSet = extern struct { ref: u32, value: u32, type_idx: u32, field_idx: u32 };
+/// GC struct ops — args_len inline Slot arg slots follow immediately after OpsStructNew
+pub const OpsStructNew = extern struct { dst: Slot, _pad: u16 = 0, type_idx: u32, args_len: u32 };
+pub const OpsStructNewDefault = extern struct { dst: Slot, _pad: u16 = 0, type_idx: u32 };
+pub const OpsStructGet = extern struct { dst: Slot, ref: Slot, type_idx: u32, field_idx: u32 };
+pub const OpsStructSet = extern struct { ref: Slot, value: Slot, type_idx: u32, field_idx: u32 };
 
 /// GC array ops
-pub const OpsArrayNew = extern struct { dst: u32, init: u32, len: u32, type_idx: u32 };
-pub const OpsArrayNewDefault = extern struct { dst: u32, len: u32, type_idx: u32 };
-/// GC array ops — args_len inline u32 arg slots follow immediately after OpsArrayNewFixed
-pub const OpsArrayNewFixed = extern struct { dst: u32, type_idx: u32, args_len: u32 };
-pub const OpsArrayNewData = extern struct { dst: u32, offset: u32, len: u32, type_idx: u32, data_idx: u32 };
-pub const OpsArrayNewElem = extern struct { dst: u32, offset: u32, len: u32, type_idx: u32, elem_idx: u32 };
-pub const OpsArrayGet = extern struct { dst: u32, ref: u32, index: u32, type_idx: u32 };
-pub const OpsArraySet = extern struct { ref: u32, index: u32, value: u32, type_idx: u32 };
-pub const OpsArrayLen = extern struct { dst: u32, ref: u32 };
-pub const OpsArrayFill = extern struct { ref: u32, offset: u32, value: u32, n: u32, type_idx: u32 };
-pub const OpsArrayCopy = extern struct { dst_ref: u32, dst_offset: u32, src_ref: u32, src_offset: u32, n: u32, dst_type_idx: u32, src_type_idx: u32 };
-pub const OpsArrayInitData = extern struct { ref: u32, d: u32, s: u32, n: u32, type_idx: u32, data_idx: u32 };
-pub const OpsArrayInitElem = extern struct { ref: u32, d: u32, s: u32, n: u32, type_idx: u32, elem_idx: u32 };
+pub const OpsArrayNew = extern struct { dst: Slot, init: Slot, len: Slot, _pad: u16 = 0, type_idx: u32 };
+pub const OpsArrayNewDefault = extern struct { dst: Slot, len: Slot, type_idx: u32 };
+/// GC array ops — args_len inline Slot arg slots follow immediately after OpsArrayNewFixed
+pub const OpsArrayNewFixed = extern struct { dst: Slot, _pad: u16 = 0, type_idx: u32, args_len: u32 };
+pub const OpsArrayNewData = extern struct { dst: Slot, offset: Slot, len: Slot, _pad: u16 = 0, type_idx: u32, data_idx: u32 };
+pub const OpsArrayNewElem = extern struct { dst: Slot, offset: Slot, len: Slot, _pad: u16 = 0, type_idx: u32, elem_idx: u32 };
+pub const OpsArrayGet = extern struct { dst: Slot, ref: Slot, index: Slot, _pad: u16 = 0, type_idx: u32 };
+pub const OpsArraySet = extern struct { ref: Slot, index: Slot, value: Slot, _pad: u16 = 0, type_idx: u32 };
+pub const OpsArrayLen = extern struct { dst: Slot, ref: Slot };
+pub const OpsArrayFill = extern struct { ref: Slot, offset: Slot, value: Slot, n: Slot, type_idx: u32 };
+pub const OpsArrayCopy = extern struct { dst_ref: Slot, dst_offset: Slot, src_ref: Slot, src_offset: Slot, n: Slot, _pad: u16 = 0, dst_type_idx: u32, src_type_idx: u32 };
+pub const OpsArrayInitData = extern struct { ref: Slot, d: Slot, s: Slot, n: Slot, type_idx: u32, data_idx: u32 };
+pub const OpsArrayInitElem = extern struct { ref: Slot, d: Slot, s: Slot, n: Slot, type_idx: u32, elem_idx: u32 };
 
 /// any_convert_extern / extern_convert_any
-pub const OpsConvertRef = extern struct { dst: u32, ref: u32 };
+pub const OpsConvertRef = extern struct { dst: Slot, ref: Slot };
 
-/// EH ops — args_len inline u32 arg slots follow immediately after OpsThrow
+/// EH ops — args_len inline Slot arg slots follow immediately after OpsThrow
 pub const OpsThrow = extern struct { tag_index: u32, args_len: u32 };
-pub const OpsThrowRef = extern struct { ref: u32 };
+pub const OpsThrowRef = extern struct { ref: Slot };
 pub const OpsTryTableEnter = extern struct { handlers_start: u32, handlers_len: u32, end_target: u32 };
 pub const OpsTryTableLeave = extern struct { rel_target: i32 };
 
 /// SIMD unary/binary/ternary/compare/shift
-pub const OpsSimdUnary = extern struct { dst: u32, opcode: u32, src: u32 };
-pub const OpsSimdBinary = extern struct { dst: u32, opcode: u32, lhs: u32, rhs: u32 };
-pub const OpsSimdTernary = extern struct { dst: u32, opcode: u32, first: u32, second: u32, third: u32 };
-pub const OpsSimdExtractLane = extern struct { dst: u32, opcode: u32, src: u32, lane: u8, _pad: [3]u8 = [_]u8{0} ** 3 };
-pub const OpsSimdReplaceLane = extern struct { dst: u32, opcode: u32, src_vec: u32, src_lane: u32, lane: u8, _pad: [3]u8 = [_]u8{0} ** 3 };
-pub const OpsSimdShuffle = extern struct { dst: u32, lhs: u32, rhs: u32, lanes: [16]u8 };
-pub const OpsSimdLoad = extern struct { dst: u32, opcode: u32, addr: u32, offset: u32, lane_valid: u8, lane: u8, src_vec_valid: u8, _pad: u8 = 0, src_vec: u32 };
-pub const OpsSimdStore = extern struct { opcode: u32, addr: u32, src: u32, offset: u32, lane_valid: u8, lane: u8, _pad: [2]u8 = [_]u8{0} ** 2 };
+pub const OpsSimdUnary = extern struct { dst: Slot, src: Slot, opcode: u32 };
+pub const OpsSimdBinary = extern struct { dst: Slot, lhs: Slot, rhs: Slot, _pad: u16 = 0, opcode: u32 };
+pub const OpsSimdTernary = extern struct { dst: Slot, first: Slot, second: Slot, third: Slot, opcode: u32 };
+pub const OpsSimdExtractLane = extern struct { dst: Slot, src: Slot, opcode: u32, lane: u8, _pad2: [3]u8 = [_]u8{0} ** 3 };
+pub const OpsSimdReplaceLane = extern struct { dst: Slot, src_vec: Slot, src_lane: Slot, _pad: u16 = 0, opcode: u32, lane: u8, _pad2: [3]u8 = [_]u8{0} ** 3 };
+pub const OpsSimdShuffle = extern struct { dst: Slot, lhs: Slot, rhs: Slot, _pad: u16 = 0, lanes: [16]u8 };
+pub const OpsSimdLoad = extern struct { dst: Slot, addr: Slot, src_vec: Slot, _pad: u16 = 0, opcode: u32, offset: u32, lane_valid: u8, lane: u8, src_vec_valid: u8, _pad2: u8 = 0 };
+pub const OpsSimdStore = extern struct { addr: Slot, src: Slot, opcode: u32, offset: u32, lane_valid: u8, lane: u8, _pad: [2]u8 = [_]u8{0} ** 2 };
 
 // ── Instruction size helpers ──────────────────────────────────────────────────
 
 /// Read the inline arg slot array that follows a fixed-size ops struct in the bytecode stream.
 /// `ip` is the instruction pointer (pointing to the handler pointer).
-/// Returns a slice of u32 slot indices.
-/// Note: May read unaligned u32 values due to compact encoding (safe on x86_64).
-pub inline fn readInlineArgs(comptime OpsT: type, ip: [*]u8, args_len: u32) []align(1) const u32 {
+/// Returns a slice of Slot (u16) slot indices.
+/// Note: May read unaligned values due to compact encoding (safe on x86_64/aarch64).
+pub inline fn readInlineArgs(comptime OpsT: type, ip: [*]u8, args_len: u32) []align(1) const Slot {
     const offset = HANDLER_SIZE + @sizeOf(OpsT);
-    const ptr: [*]align(1) const u32 = @ptrCast(ip + offset);
+    const ptr: [*]align(1) const Slot = @ptrCast(ip + offset);
     return ptr[0..args_len];
 }
 
 /// Compute the byte stride of a variable-length instruction (handler + ops + inline args).
 pub inline fn varStride(comptime OpsT: type, args_len: u32) usize {
-    return HANDLER_SIZE + @sizeOf(OpsT) + @as(usize, args_len) * @sizeOf(u32);
+    return HANDLER_SIZE + @sizeOf(OpsT) + @as(usize, args_len) * @sizeOf(Slot);
 }
 
 /// Returns the byte size of one encoded instruction (handler pointer + operands).
@@ -648,12 +650,12 @@ pub fn instrSize(op: Op) usize {
         .memory_copy => @sizeOf(OpsMemoryCopy),
         .memory_fill => @sizeOf(OpsMemoryFill),
 
-        .call => |inst| @sizeOf(OpsCall) + @as(usize, inst.args_len) * @sizeOf(u32),
-        .call_indirect => |inst| @sizeOf(OpsCallIndirect) + @as(usize, inst.args_len) * @sizeOf(u32),
-        .return_call => |inst| @sizeOf(OpsReturnCall) + @as(usize, inst.args_len) * @sizeOf(u32),
-        .return_call_indirect => |inst| @sizeOf(OpsReturnCallIndirect) + @as(usize, inst.args_len) * @sizeOf(u32),
-        .call_ref => |inst| @sizeOf(OpsCallRef) + @as(usize, inst.args_len) * @sizeOf(u32),
-        .return_call_ref => |inst| @sizeOf(OpsReturnCallRef) + @as(usize, inst.args_len) * @sizeOf(u32),
+        .call => |inst| @sizeOf(OpsCall) + @as(usize, inst.args_len) * @sizeOf(Slot),
+        .call_indirect => |inst| @sizeOf(OpsCallIndirect) + @as(usize, inst.args_len) * @sizeOf(Slot),
+        .return_call => |inst| @sizeOf(OpsReturnCall) + @as(usize, inst.args_len) * @sizeOf(Slot),
+        .return_call_indirect => |inst| @sizeOf(OpsReturnCallIndirect) + @as(usize, inst.args_len) * @sizeOf(Slot),
+        .call_ref => |inst| @sizeOf(OpsCallRef) + @as(usize, inst.args_len) * @sizeOf(Slot),
+        .return_call_ref => |inst| @sizeOf(OpsReturnCallRef) + @as(usize, inst.args_len) * @sizeOf(Slot),
 
         .atomic_load => @sizeOf(OpsAtomicLoad),
         .atomic_store => @sizeOf(OpsAtomicStore),
@@ -673,14 +675,14 @@ pub fn instrSize(op: Op) usize {
         .table_init => @sizeOf(OpsTableInit),
         .elem_drop => @sizeOf(OpsElemDrop),
 
-        .struct_new => |inst| @sizeOf(OpsStructNew) + @as(usize, inst.args_len) * @sizeOf(u32),
+        .struct_new => |inst| @sizeOf(OpsStructNew) + @as(usize, inst.args_len) * @sizeOf(Slot),
         .struct_new_default => @sizeOf(OpsStructNewDefault),
         .struct_get, .struct_get_s, .struct_get_u => @sizeOf(OpsStructGet),
         .struct_set => @sizeOf(OpsStructSet),
 
         .array_new => @sizeOf(OpsArrayNew),
         .array_new_default => @sizeOf(OpsArrayNewDefault),
-        .array_new_fixed => |inst| @sizeOf(OpsArrayNewFixed) + @as(usize, inst.args_len) * @sizeOf(u32),
+        .array_new_fixed => |inst| @sizeOf(OpsArrayNewFixed) + @as(usize, inst.args_len) * @sizeOf(Slot),
         .array_new_data => @sizeOf(OpsArrayNewData),
         .array_new_elem => @sizeOf(OpsArrayNewElem),
         .array_get, .array_get_s, .array_get_u => @sizeOf(OpsArrayGet),
@@ -701,7 +703,7 @@ pub fn instrSize(op: Op) usize {
 
         .any_convert_extern, .extern_convert_any => @sizeOf(OpsConvertRef),
 
-        .throw => |inst| @sizeOf(OpsThrow) + @as(usize, inst.args_len) * @sizeOf(u32),
+        .throw => |inst| @sizeOf(OpsThrow) + @as(usize, inst.args_len) * @sizeOf(Slot),
         .throw_ref => @sizeOf(OpsThrowRef),
         .try_table_enter => @sizeOf(OpsTryTableEnter),
         .try_table_leave => @sizeOf(OpsTryTableLeave),
@@ -1149,14 +1151,14 @@ pub const HandlerTable = struct {
 
 // ── Encode ────────────────────────────────────────────────────────────────────
 
-/// Write inline arg slots (u32[]) immediately after an ops struct in the code buffer.
+/// Write inline arg slots (Slot[]) immediately after an ops struct in the code buffer.
 /// `ops_ptr` points to the start of the operands (after the handler pointer).
 /// `comptime OpsT` is the fixed-size operand struct type.
 /// `call_args` is the full call_args pool from the CompiledFunction.
 /// `args_start` is the starting index into call_args.
 /// `args_len` is the number of arg slots to write.
 fn writeInlineArgs(ops_ptr: [*]u8, comptime OpsT: type, call_args: []const Slot, args_start: u32, args_len: u32) void {
-    const base: [*]align(1) u32 = @ptrCast(ops_ptr + @sizeOf(OpsT));
+    const base: [*]align(1) Slot = @ptrCast(ops_ptr + @sizeOf(OpsT));
     for (0..args_len) |j| {
         base[j] = call_args[args_start + j];
     }
