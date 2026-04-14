@@ -1,2 +1,2 @@
 # !/bin/bash
-set -euo pipefail && make build-debug && ./zig-out/bin/wasmz tests/esbuild/package/esbuild.wasm --mem-stats --args "--bundle --platform=node --sourcefile=source.js" < tests/esbuild/source.js > /dev/null
+set -euo pipefail && make build-debug && ./zig-out/bin/wasmz tests/esbuild/package/esbuild.wasm --mem-stats --mem-trace --args "--bundle --platform=node --sourcefile=source.js" < tests/esbuild/source.js > /dev/null

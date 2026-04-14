@@ -1331,13 +1331,15 @@ pub const FunctionSlot = union(enum) {
     }
 
     /// Free any owned heap memory held by this slot.
-    /// `.pending` owns the copied function body; `.encoded` owns the encoded
-    /// bytecode and auxiliary tables.
+    ///
+    /// NOTE: `.pending` bodies are NOT freed here.  They are either borrowed
+    /// from the caller's mmap'd input (compile(bytes) path) or owned by the
+    /// Module's body_arena (compileReader path).  Use `Module.deinit()` to
+    /// release them in bulk.
     pub fn deinit(self: *FunctionSlot, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .encoded => |*ef| ef.deinit(allocator),
-            .pending => |p| allocator.free(p.body),
-            .import => {},
+            .pending, .import => {},
         }
         self.* = undefined;
     }

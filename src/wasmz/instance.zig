@@ -113,6 +113,9 @@ pub const Instance = struct {
     /// Persistent VM state (val_stack + call_stack) reused across all calls.
     /// Eliminates the per-call 16 MiB val_stack allocation.
     vm: VM,
+    /// When true, memory.grow events log RSS snapshots to stderr.
+    /// Controlled by the --mem-trace CLI flag; defaults to false.
+    mem_trace: bool = false,
 
     /// Instantiate a Module.
     ///
@@ -474,6 +477,7 @@ pub const Instance = struct {
             .array_layouts = m.array_layouts,
             .type_ancestors = m.type_ancestors,
             .memory_budget = budget_ptr,
+            .mem_trace = self.mem_trace,
         };
     }
 
