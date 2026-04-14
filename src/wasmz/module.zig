@@ -147,12 +147,16 @@ pub const CompiledDataSegment = struct {
     /// The actual data bytes.
     ///
     /// Ownership rules:
-    ///   - passive segments: owned slice, freed in Module.deinit.
-    ///   - active segments: owned slice until the first instantiation; after all
-    ///     active segments have been copied into linear memory the slice is freed
-    ///     and reset to `&.{}` by `Module.releaseActiveSegmentData`.  Once freed,
-    ///     `data.len == 0` and the field must not be freed again.
-    data: []u8,
+    ///   - passive segments: `data_owned == true`; slice is heap-allocated and freed
+    ///     in Module.deinit.
+    ///   - active segments: `data_owned == false`; slice is a borrowed reference into
+    ///     the original WASM bytes (mmap or caller-owned buffer).  Must NOT be freed.
+    ///     After instantiation the slice is cleared to `&.{}` so that it is no longer
+    ///     accessible from the VM, but no allocator.free() call is needed.
+    data: []const u8,
+    /// True only for passive segments whose `data` slice was heap-allocated.
+    /// False for active segments that borrow from the source WASM bytes.
+    data_owned: bool,
 };
 
 /// Compiled element segment, holding the function indices and metadata for runtime table initialization.
@@ -331,7 +335,7 @@ const BuildState = struct {
         self.tables_lists.deinit(self.allocator);
 
         for (self.data_segments_list.items) |*seg| {
-            self.allocator.free(seg.data);
+            if (seg.data_owned) self.allocator.free(seg.data);
         }
         self.data_segments_list.deinit(self.allocator);
 
@@ -519,15 +523,29 @@ const BuildState = struct {
                 self.pending_data_memory_index = seg.memory_index;
             },
             .data_segment_body => |body| {
-                const data_copy = try self.allocator.dupe(u8, body.data);
+                // Active segments are copied directly into linear memory at instantiation
+                // time (Instance.init) and never accessed again via this field.  We can
+                // therefore borrow the slice from the parser (which points into the mmap /
+                // caller-owned buffer) without making a heap copy, eliminating the ~5.5 MB
+                // transient double-buffer that was previously visible in Peak RSS.
+                //
+                // Passive segments must be duplicated because they can be used at any point
+                // during execution via `memory.init`, potentially long after the source bytes
+                // have been unmapped or freed.
+                const is_active = self.pending_data_mode == .active;
+                const data_slice: []const u8 = if (is_active)
+                    body.data // borrow — no allocation
+                else
+                    try self.allocator.dupe(u8, body.data); // owned copy
                 const compiled = CompiledDataSegment{
                     .mode = self.pending_data_mode,
                     .memory_index = self.pending_data_memory_index orelse 0,
-                    .offset = if (self.pending_data_mode == .active)
+                    .offset = if (is_active)
                         (try Module.evaluate_const_expr(self.parserAllocator(), body.offset_expr, .I32)).readAs(u32)
                     else
                         0,
-                    .data = data_copy,
+                    .data = data_slice,
+                    .data_owned = !is_active,
                 };
                 try self.data_segments_list.append(self.allocator, compiled);
             },
@@ -643,7 +661,9 @@ const BuildState = struct {
 
         const data_segments = try self.data_segments_list.toOwnedSlice(self.allocator);
         errdefer {
-            for (data_segments) |*seg| self.allocator.free(seg.data);
+            for (data_segments) |*seg| {
+                if (seg.data_owned) self.allocator.free(seg.data);
+            }
             self.allocator.free(data_segments);
         }
 
@@ -1213,9 +1233,9 @@ pub const Module = struct {
         self.allocator.free(self.func_type_indices);
 
         for (self.data_segments) |*seg| {
-            // Active segment data may have already been freed by
-            // releaseActiveSegmentData() after instantiation; skip those.
-            if (seg.data.len > 0) self.allocator.free(seg.data);
+            // Only passive segments have heap-allocated data (data_owned == true).
+            // Active segments borrow from the source WASM bytes and must NOT be freed.
+            if (seg.data_owned) self.allocator.free(seg.data);
         }
         self.allocator.free(self.data_segments);
 
@@ -1250,21 +1270,21 @@ pub const Module = struct {
 
     // ── deinit helpers ───────────────────────────────────────────────────────────
 
-    /// Release the heap copies of all *active* data segments.
+    /// Clear the data-slice references of all *active* data segments.
     ///
-    /// Active segments are copied into linear memory during instantiation and
-    /// are implicitly dropped afterwards (the WASM spec marks them as dropped so
-    /// that `memory.init` traps on them).  Their in-module copies therefore
-    /// serve no purpose once every instance that shares this Module has been
-    /// initialised, and holding them wastes significant memory for data-heavy
-    /// modules (e.g. ~5.5 MB for esbuild).
+    /// Active segments are copied into linear memory during instantiation and are
+    /// implicitly dropped afterwards (the WASM spec marks them as dropped so that
+    /// `memory.init` traps on them).  Their `data` field is a borrowed reference
+    /// into the source WASM bytes (mmap / caller-owned buffer) and must NOT be
+    /// freed here.  Clearing the slice to `&.{}` simply makes the borrowing
+    /// explicit: the VM handler for `memory.init` checks `data_segments_dropped`
+    /// before accessing `.data`, so this is defensive hygiene rather than a
+    /// correctness requirement.
     ///
     /// Calling convention
     /// ------------------
     /// Call this method after every `Instance.init` / `Instance.initWithSharedMemory`
-    /// that may need the active data has returned successfully.  It is safe to
-    /// call multiple times: segments whose `data` slice has already been freed
-    /// (len == 0) are skipped.
+    /// that may need the active data has returned successfully.
     ///
     /// Thread safety
     /// -------------
@@ -1273,9 +1293,7 @@ pub const Module = struct {
     pub fn releaseActiveSegmentData(self: *Module) void {
         for (self.data_segments) |*seg| {
             if (seg.mode != .active) continue;
-            if (seg.data.len == 0) continue; // already freed
-            self.allocator.free(seg.data);
-            seg.data = &.{};
+            seg.data = &.{}; // clear borrowed reference; do NOT free
         }
     }
 
