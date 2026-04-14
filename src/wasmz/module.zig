@@ -731,6 +731,7 @@ const BuildState = struct {
             .tags = tags,
             .config = .{ .eh_mode = self.detected_eh_mode },
             .translator = null,
+            .pending_count = @intCast(local_functions.len),
         };
     }
 };
@@ -812,6 +813,10 @@ pub const Module = struct {
     /// Reusable compilation state for lazy function compilation.
     /// Null until the first `compileFunctionAt` call; freed in `deinit`.
     translator: ?FuncTranslatorAllocations,
+    /// Number of function slots still in the `.pending` state.
+    /// Decremented by `compileFunctionAt`; used to release `translator` as
+    /// soon as the last function body is compiled (O(1) check per compile).
+    pending_count: u32,
 
     /// Compile WebAssembly bytecode held in memory into a Module.
     ///
@@ -1028,6 +1033,26 @@ pub const Module = struct {
         profiling.call_prof.ns_encode_ir += encode_timer.read();
         self.allocator.free(pending.body);
         slot.* = .{ .encoded = encoded };
+
+        // Decrement the pending counter and release the reusable translator
+        // buffers as soon as the last pending slot is compiled.  This frees
+        // the compilation high-water-mark memory (Lower's ArrayLists + scratch
+        // ArenaAllocator) without scanning the whole functions slice.
+        self.pending_count -= 1;
+        if (self.pending_count == 0) self.releaseTranslator();
+    }
+
+    /// Free the reusable compilation buffers (`FuncTranslatorAllocations`).
+    ///
+    /// Called automatically by `compileFunctionAt` when the last pending slot
+    /// is compiled, and by `compileAll` after all functions are compiled.
+    /// May also be called manually after a batch of lazy compilations to
+    /// reclaim the compilation high-water-mark memory early.
+    pub fn releaseTranslator(self: *Module) void {
+        if (self.translator) |*t| {
+            t.deinit();
+            self.translator = null;
+        }
     }
 
     /// Eagerly compile all pending local functions.
@@ -1035,6 +1060,8 @@ pub const Module = struct {
     /// This avoids lazy-compilation overhead at first call by compiling
     /// every `.pending` function slot up front. Imports (`.import`) and
     /// already-compiled (`.encoded`) slots are skipped.
+    /// After all functions are compiled the reusable translator buffers are
+    /// freed unconditionally (equivalent to calling `releaseTranslator()`).
     pub fn compileAll(self: *Module, engine: Engine) ModuleCompileError!void {
         for (self.functions, 0..) |*slot, i| {
             switch (slot.*) {
@@ -1042,6 +1069,83 @@ pub const Module = struct {
                 .encoded, .import => {},
             }
         }
+        // All slots are now encoded; release compilation buffers eagerly
+        // rather than waiting for the per-slot auto-release inside
+        // compileFunctionAt (which would scan the whole functions slice on
+        // every call).
+        self.releaseTranslator();
+    }
+
+    /// Detailed memory breakdown for a compiled Module.
+    /// All byte counts are best-effort totals based on owned slice lengths.
+    pub const MemStats = struct {
+        /// Total bytes held in `.pending` function body copies (raw Wasm bytecode).
+        pending_body_bytes: usize,
+        /// Total bytes of `.encoded` function code streams (threaded-dispatch bytecode).
+        encoded_code_bytes: usize,
+        /// Total bytes of auxiliary encoded-function tables
+        /// (eh_dst_slots + br_table_targets + catch_handler_tables).
+        encoded_aux_bytes: usize,
+        /// Number of local functions still in the `.pending` (uncompiled) state.
+        pending_count: u32,
+        /// Number of local functions already in the `.encoded` (compiled) state.
+        encoded_count: u32,
+        /// Total bytes remaining in data segment copies
+        /// (active segments are freed after instantiation via releaseActiveSegmentData;
+        ///  passive segments are freed only on Module.deinit).
+        data_segment_bytes: usize,
+
+        /// Grand total of all module-owned bytes tracked above.
+        pub fn total(self: MemStats) usize {
+            return self.pending_body_bytes +
+                self.encoded_code_bytes +
+                self.encoded_aux_bytes +
+                self.data_segment_bytes;
+        }
+    };
+
+    /// Compute a detailed memory breakdown for this module.
+    ///
+    /// Iterates `functions` once to sum pending body bytes and encoded code /
+    /// auxiliary table bytes, and sums data segment bytes.  O(N) in the number
+    /// of function slots.
+    pub fn memStats(self: *const Module) MemStats {
+        var pending_body_bytes: usize = 0;
+        var encoded_code_bytes: usize = 0;
+        var encoded_aux_bytes: usize = 0;
+        var pending_cnt: u32 = 0;
+        var encoded_cnt: u32 = 0;
+
+        for (self.functions) |*slot| {
+            switch (slot.*) {
+                .pending => |p| {
+                    pending_body_bytes += p.body.len;
+                    pending_cnt += 1;
+                },
+                .encoded => |ef| {
+                    encoded_code_bytes += ef.code.len;
+                    encoded_aux_bytes += ef.eh_dst_slots.len * @sizeOf(ir.Slot);
+                    encoded_aux_bytes += ef.br_table_targets.len * @sizeOf(u32);
+                    encoded_aux_bytes += ef.catch_handler_tables.len * @sizeOf(ir.CatchHandlerEntry);
+                    encoded_cnt += 1;
+                },
+                .import => {},
+            }
+        }
+
+        var data_segment_bytes: usize = 0;
+        for (self.data_segments) |seg| {
+            data_segment_bytes += seg.data.len;
+        }
+
+        return .{
+            .pending_body_bytes = pending_body_bytes,
+            .encoded_code_bytes = encoded_code_bytes,
+            .encoded_aux_bytes = encoded_aux_bytes,
+            .pending_count = pending_cnt,
+            .encoded_count = encoded_cnt,
+            .data_segment_bytes = data_segment_bytes,
+        };
     }
 
     pub fn deinit(self: *Module) void {
