@@ -2,8 +2,19 @@
 ///
 /// Provides a unified interface over two kinds of WebAssembly linear memories:
 ///
-///   - Owned memory: a plain heap-allocated byte slice exclusively owned by one Instance.
-///     This is the common case for non-threaded modules.
+///   - Owned memory: a virtual-address-reserved byte region exclusively owned by one
+///     Instance.  This is the common case for non-threaded modules.
+///
+///     On POSIX (macOS, Linux, *BSD) the full virtual address space (up to `max_pages`
+///     pages, or MAX_OWNED_CAPACITY when max is unlimited) is reserved with
+///     `mmap(PROT_NONE)` at init time.  Only the initially-committed range is made
+///     accessible with `mprotect(PROT_READ|WRITE)`.  Subsequent `memory.grow` calls
+///     extend the committed range via a second `mprotect` call — zero copy, zero
+///     realloc.  This eliminates the "old-buffer + new-buffer" peak RSS spike that
+///     occurs when `realloc` cannot extend a heap region in-place.
+///
+///     On non-POSIX targets the implementation falls back to a plain heap-allocated
+///     slice that is `realloc`-ed on every grow (same behaviour as before).
 ///
 ///   - Shared memory: a reference-counted, atomically-accessible byte region that can be
 ///     imported by multiple Instances (potentially on different OS threads).
@@ -26,7 +37,68 @@
 ///     distinguish real notifications from spurious OS-level wake-ups.
 ///   - Each waiter re-checks `notify_seq` in a loop after waking.
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
+
+/// Maximum virtual address space reserved for an owned memory when the module
+/// declares no maximum page count.  4 GiB is the hard limit imposed by the
+/// 32-bit address space of WebAssembly linear memory.
+const MAX_OWNED_CAPACITY: usize = 4 * 1024 * 1024 * 1024;
+
+/// True when the platform supports mmap/mprotect for the virtual-reserve strategy.
+const use_mmap = builtin.os.tag == .linux or
+    builtin.os.tag == .macos or
+    builtin.os.tag == .freebsd or
+    builtin.os.tag == .netbsd or
+    builtin.os.tag == .openbsd or
+    builtin.os.tag == .dragonfly or
+    builtin.os.tag == .solaris or
+    builtin.os.tag == .illumos;
+
+// ── Owned memory helpers (POSIX mmap strategy) ───────────────────────────────
+
+/// OS page alignment for mmap regions.  On macOS this is 16 KiB; on Linux 4 KiB.
+/// WASM_PAGE_SIZE (64 KiB) is always a multiple of this so all offsets are valid.
+const mmap_page_align = std.heap.page_size_min;
+
+/// Allocate a virtual address region of `capacity` bytes with no physical pages
+/// committed (PROT_NONE), then commit the first `committed` bytes.
+/// Returns a pointer to the base of the region and the full capacity slice.
+fn ownedMmapInit(committed: usize, capacity: usize) Allocator.Error![]align(mmap_page_align) u8 {
+    const posix = std.posix;
+    // Reserve full virtual range, inaccessible.
+    const base = posix.mmap(
+        null,
+        capacity,
+        posix.PROT.NONE,
+        .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
+        -1,
+        0,
+    ) catch return error.OutOfMemory;
+    // Commit initial pages.
+    if (committed > 0) {
+        posix.mprotect(base[0..committed], posix.PROT.READ | posix.PROT.WRITE) catch {
+            posix.munmap(base);
+            return error.OutOfMemory;
+        };
+        @memset(base[0..committed], 0);
+    }
+    return base;
+}
+
+/// Extend committed range from `old_committed` to `new_committed`.
+/// `base` is the full reserved region (capacity bytes).
+fn ownedMmapGrow(base: []align(mmap_page_align) u8, old_committed: usize, new_committed: usize) bool {
+    const posix = std.posix;
+    const new_range: []align(mmap_page_align) u8 = @alignCast(base[old_committed..new_committed]);
+    posix.mprotect(new_range, posix.PROT.READ | posix.PROT.WRITE) catch return false;
+    @memset(new_range, 0);
+    return true;
+}
+
+fn ownedMmapDeinit(base: []align(mmap_page_align) u8) void {
+    std.posix.munmap(base);
+}
 
 pub const WASM_PAGE_SIZE: usize = 65536;
 
@@ -321,6 +393,36 @@ pub const SharedMemory = struct {
     }
 };
 
+/// Exclusively-owned linear memory for a single Instance.
+///
+/// POSIX variant: `base` is a `mmap(PROT_NONE)`-reserved region of `base.len` bytes.
+///   `committed` tracks how many bytes are currently accessible (PROT_READ|WRITE).
+///   `bytes()` returns `base[0..committed]`.  `grow` extends via `mprotect`.
+///
+/// Fallback variant (non-POSIX): plain heap slice + realloc on grow.
+const OwnedMemory = if (use_mmap)
+    struct {
+        /// Full virtual reservation (capacity == base.len).
+        /// Aligned to mmap_page_align (OS page size), which is always a divisor of
+        /// WASM_PAGE_SIZE (64 KiB), so all WASM page offsets are valid.
+        base: []align(mmap_page_align) u8,
+        /// Currently committed (accessible) byte count.
+        committed: usize,
+
+        pub fn liveSlice(self: *const @This()) []u8 {
+            return self.base[0..self.committed];
+        }
+    }
+else
+    struct {
+        allocator: Allocator,
+        bytes: []u8,
+
+        pub fn liveSlice(self: *const @This()) []u8 {
+            return self.bytes;
+        }
+    };
+
 /// The backing store tag: either exclusively-owned, shared, or borrowed (no-alloc view).
 pub const MemoryKind = enum { owned, shared, borrowed };
 
@@ -330,10 +432,7 @@ pub const MemoryKind = enum { owned, shared, borrowed };
 /// (for shared memories).  The VM always accesses memory through `Memory.bytes()`.
 pub const Memory = struct {
     kind: union(MemoryKind) {
-        owned: struct {
-            allocator: Allocator,
-            bytes: []u8,
-        },
+        owned: OwnedMemory,
         shared: SharedMemory,
         /// A non-owning view into an externally-managed byte slice.
         /// Used in tests that hand-construct HostInstance / ExecEnv without an allocator.
@@ -343,20 +442,55 @@ pub const Memory = struct {
 
     // ── constructors ─────────────────────────────────────────────────────────────
 
-    /// Create an exclusively-owned memory.  The caller supplies the allocator used for
-    /// the initial allocation; `deinit` will use the same allocator to free the bytes.
+    /// Create an exclusively-owned memory.
+    ///
+    /// On POSIX: reserves up to `max_pages` (or MAX_OWNED_CAPACITY when null) of virtual
+    /// address space, commits only `min_pages` worth of physical pages.  Subsequent
+    /// `grow` calls commit more pages without moving the base address (no copy).
+    ///
+    /// On non-POSIX: falls back to a plain heap allocation of `min_pages`; grow uses realloc.
     pub fn initOwned(allocator: Allocator, min_pages: u32) Allocator.Error!Memory {
-        const byte_count = @as(usize, min_pages) * WASM_PAGE_SIZE;
-        const buf = try allocator.alloc(u8, byte_count);
-        @memset(buf, 0);
-        return .{ .kind = .{ .owned = .{ .allocator = allocator, .bytes = buf } } };
+        return initOwnedWithMax(allocator, min_pages, null);
+    }
+
+    /// Like `initOwned` but accepts an optional maximum page count for tighter reservation.
+    pub fn initOwnedWithMax(allocator: Allocator, min_pages: u32, max_pages: ?u32) Allocator.Error!Memory {
+        const committed = @as(usize, min_pages) * WASM_PAGE_SIZE;
+        if (use_mmap) {
+            const capacity = if (max_pages) |m|
+                @as(usize, m) * WASM_PAGE_SIZE
+            else
+                MAX_OWNED_CAPACITY;
+            const base = try ownedMmapInit(committed, capacity);
+            return .{ .kind = .{ .owned = .{
+                .base = base,
+                .committed = committed,
+            } } };
+        } else {
+            const buf = try allocator.alloc(u8, committed);
+            @memset(buf, 0);
+            return .{ .kind = .{ .owned = .{
+                .allocator = allocator,
+                .bytes = buf,
+            } } };
+        }
     }
 
     /// Create an empty (zero-page) owned memory placeholder used when a module declares
     /// no memory section.
     pub fn initEmpty() Memory {
-        // Use a dummy slice so that `bytes()` returns an empty slice without allocating.
-        return .{ .kind = .{ .owned = .{ .allocator = std.heap.page_allocator, .bytes = &[0]u8{} } } };
+        if (use_mmap) {
+            // Zero-capacity mmap: use an empty slice with no reservation.
+            return .{ .kind = .{ .owned = .{
+                .base = @as([*]align(mmap_page_align) u8, @ptrFromInt(mmap_page_align))[0..0],
+                .committed = 0,
+            } } };
+        } else {
+            return .{ .kind = .{ .owned = .{
+                .allocator = std.heap.page_allocator,
+                .bytes = &[0]u8{},
+            } } };
+        }
     }
 
     /// Wrap an existing `SharedMemory` handle (clones the refcount).
@@ -376,8 +510,12 @@ pub const Memory = struct {
 
     pub fn deinit(self: *Memory) void {
         switch (self.kind) {
-            .owned => |o| {
-                if (o.bytes.len > 0) o.allocator.free(o.bytes);
+            .owned => |*o| {
+                if (use_mmap) {
+                    if (o.base.len > 0) ownedMmapDeinit(o.base);
+                } else {
+                    if (o.bytes.len > 0) o.allocator.free(o.bytes);
+                }
             },
             .shared => |*s| {
                 var shared = s.*;
@@ -396,7 +534,7 @@ pub const Memory = struct {
     /// caller always sees the most recently committed pages.
     pub fn bytes(self: *const Memory) []u8 {
         return switch (self.kind) {
-            .owned => |o| o.bytes,
+            .owned => |*o| o.liveSlice(),
             .shared => |*s| s.bytes(),
             .borrowed => |b| b,
         };
@@ -463,15 +601,27 @@ pub const Memory = struct {
         const FAIL = std.math.maxInt(u32);
         return switch (self.kind) {
             .owned => |*o| blk: {
-                const old_bytes = o.bytes.len;
-                const old_pages: u32 = @intCast(old_bytes / WASM_PAGE_SIZE);
-                if (delta == 0) break :blk old_pages;
-                const new_pages = std.math.add(u32, old_pages, delta) catch break :blk FAIL;
-                const new_bytes = @as(usize, new_pages) * WASM_PAGE_SIZE;
-                const new_buf = o.allocator.realloc(o.bytes, new_bytes) catch break :blk FAIL;
-                @memset(new_buf[old_bytes..], 0);
-                o.bytes = new_buf;
-                break :blk old_pages;
+                if (use_mmap) {
+                    const old_committed = o.committed;
+                    const old_pages: u32 = @intCast(old_committed / WASM_PAGE_SIZE);
+                    if (delta == 0) break :blk old_pages;
+                    const new_pages = std.math.add(u32, old_pages, delta) catch break :blk FAIL;
+                    const new_committed = @as(usize, new_pages) * WASM_PAGE_SIZE;
+                    if (new_committed > o.base.len) break :blk FAIL; // exceeds reservation
+                    if (!ownedMmapGrow(o.base, old_committed, new_committed)) break :blk FAIL;
+                    o.committed = new_committed;
+                    break :blk old_pages;
+                } else {
+                    const old_bytes = o.bytes.len;
+                    const old_pages: u32 = @intCast(old_bytes / WASM_PAGE_SIZE);
+                    if (delta == 0) break :blk old_pages;
+                    const new_pages = std.math.add(u32, old_pages, delta) catch break :blk FAIL;
+                    const new_bytes = @as(usize, new_pages) * WASM_PAGE_SIZE;
+                    const new_buf = o.allocator.realloc(o.bytes, new_bytes) catch break :blk FAIL;
+                    @memset(new_buf[old_bytes..], 0);
+                    o.bytes = new_buf;
+                    break :blk old_pages;
+                }
             },
             .shared => |*s| s.grow(delta),
             .borrowed => FAIL, // borrowed memories cannot grow

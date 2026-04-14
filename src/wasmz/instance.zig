@@ -183,7 +183,7 @@ pub const Instance = struct {
                 const shared = try SharedMemory.init(allocator, mem_def.min_pages, max);
                 break :blk Memory.initShared(shared);
             } else {
-                break :blk try Memory.initOwned(allocator, mem_def.min_pages);
+                break :blk try Memory.initOwnedWithMax(allocator, mem_def.min_pages, mem_def.max_pages);
             }
         } else Memory.initEmpty();
         errdefer mem.deinit();
