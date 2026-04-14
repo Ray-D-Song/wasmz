@@ -1,6 +1,7 @@
 const std = @import("std");
 const wasmz = @import("wasmz");
 const profiling = wasmz.profiling;
+const rss = @import("rss.zig");
 
 const Store = wasmz.Store;
 const Instance = wasmz.Instance;
@@ -10,6 +11,28 @@ pub const MemStatsCtx = struct {
     instance: ?*Instance = null,
 };
 
+/// Context for the mem-trace on-exit callback (proc_exit path).
+pub const MemTraceCtx = struct {
+    label: []const u8 = "proc_exit",
+    prev_rss: *usize,
+};
+
+pub fn onExitMemTrace(_: u32, data: ?*anyopaque) void {
+    if (data) |d| {
+        const ctx: *MemTraceCtx = @ptrCast(@alignCast(d));
+        const cur = rss.currentRssBytes();
+        const cur_mb = @as(f64, @floatFromInt(cur)) / (1024.0 * 1024.0);
+        const delta_bytes: i64 = @as(i64, @intCast(cur)) - @as(i64, @intCast(ctx.prev_rss.*));
+        const delta_mb = @as(f64, @floatFromInt(delta_bytes)) / (1024.0 * 1024.0);
+        const sign: []const u8 = if (delta_bytes >= 0) "+" else "";
+        std.debug.print(
+            "[mem-trace] {s:<22}  RSS {d:.1} MB  ({s}{d:.1} MB)\n",
+            .{ ctx.label, cur_mb, sign, delta_mb },
+        );
+        ctx.prev_rss.* = cur;
+    }
+}
+
 pub fn onExitMemStats(_: u32, data: ?*anyopaque) void {
     if (data) |d| {
         const ctx: *MemStatsCtx = @ptrCast(@alignCast(d));
@@ -18,9 +41,47 @@ pub fn onExitMemStats(_: u32, data: ?*anyopaque) void {
         }
     }
 }
-
 pub fn onExitProfiling(_: u32, _: ?*anyopaque) void {
     profiling.printReport();
+}
+
+/// Combined on-exit context: handles mem-trace + mem-stats + profiling in
+/// a single proc_exit callback so only one setOnExit slot is needed.
+pub const OnExitCtx = struct {
+    // mem-trace
+    mem_trace: bool = false,
+    trace_label: []const u8 = "proc_exit (_start)",
+    prev_rss: ?*usize = null,
+    // mem-stats
+    mem_stats: bool = false,
+    store: ?*Store = null,
+    instance: ?*Instance = null,
+    // profiling
+    do_profiling: bool = false,
+};
+
+pub fn onExitCombined(_: u32, data: ?*anyopaque) void {
+    if (data == null) return;
+    const ctx: *OnExitCtx = @ptrCast(@alignCast(data.?));
+    if (ctx.do_profiling) profiling.printReport();
+    if (ctx.mem_stats) {
+        if (ctx.store != null and ctx.instance != null)
+            printMemStats(ctx.store.?, ctx.instance.?);
+    }
+    if (ctx.mem_trace) {
+        if (ctx.prev_rss) |prev| {
+            const cur = rss.currentRssBytes();
+            const cur_mb = @as(f64, @floatFromInt(cur)) / (1024.0 * 1024.0);
+            const delta_bytes: i64 = @as(i64, @intCast(cur)) - @as(i64, @intCast(prev.*));
+            const delta_mb = @as(f64, @floatFromInt(delta_bytes)) / (1024.0 * 1024.0);
+            const sign: []const u8 = if (delta_bytes >= 0) "+" else "";
+            std.debug.print(
+                "[mem-trace] {s:<22}  RSS {d:.1} MB  ({s}{d:.1} MB)\n",
+                .{ ctx.trace_label, cur_mb, sign, delta_mb },
+            );
+            prev.* = cur;
+        }
+    }
 }
 
 pub fn printMemStats(store: *Store, instance: *Instance) void {

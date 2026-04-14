@@ -67,6 +67,9 @@ pub const ExecEnv = struct {
     /// Optional pointer to the Store's MemoryBudget for linear-memory limit enforcement.
     /// null when the Store has no limit configured.
     memory_budget: ?*MemoryBudget,
+    /// When true, memory.grow events log RSS snapshots to stderr.
+    /// Controlled by the --mem-trace CLI flag.
+    mem_trace: bool = false,
 };
 
 pub const VM = struct {
@@ -131,6 +134,7 @@ pub const VM = struct {
             .array_layouts = env.array_layouts,
             .type_ancestors = env.type_ancestors,
             .memory_budget = env.memory_budget,
+            .mem_trace = env.mem_trace,
         };
 
         // ── Ensure persistent buffers are allocated (lazy, first call only) ──
@@ -159,17 +163,22 @@ pub const VM = struct {
             .call_stack_cap = self.call_stack.len,
             .call_stack_owned = false, // VM owns call_stack
             .result = .{ .ok = null },
+            .vm = self,
         };
         defer frame.deinit();
 
-        // Push entry frame — cannot fail since depth=0 < cap=65536
+        // Push entry frame — depth=0, cap≥DEFAULT so this always succeeds unless
+        // DEFAULT_CALL_STACK_DEPTH was set to 0 (which we never do).
         frame.callStackPush(.{
             .ip = func.code.ptr,
             .slots = entry_slots,
             .slots_sp_base = 0,
             .dst = null,
             .func = func,
-        }) catch unreachable;
+        }) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.StackOverflow => unreachable, // depth=0 < cap=DEFAULT
+        };
 
         const ip = func.code.ptr;
         const h: dispatch_mod.Handler = @as(*const dispatch_mod.Handler, @ptrCast(ip)).*;

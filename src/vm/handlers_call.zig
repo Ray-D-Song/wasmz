@@ -65,10 +65,13 @@ inline fn ensureLocalCompiled(func_idx: u32, env: *const ExecEnv, frame: *Dispat
 /// entire frame.  The argument slots [0..args_len) are overwritten by the caller
 /// immediately after, and the temporary slots beyond locals are SSA-style (always
 /// written before read), so neither needs zeroing.
-/// Returns a slice into the value stack, or null on stack overflow (trap written).
+/// Returns a slice into the value stack, or null on stack overflow / OOM (trap written).
 inline fn allocCalleeSlots(frame: *DispatchState, n: usize, args_len: usize, locals_count: u16) ?[]RawVal {
-    const s = frame.valStackAlloc(n) catch {
-        trapReturn(frame, .StackOverflow);
+    const s = frame.valStackAlloc(n) catch |err| {
+        trapReturn(frame, switch (err) {
+            error.OutOfMemory => .OutOfMemory,
+            error.StackOverflow => .StackOverflow,
+        });
         return null;
     };
     // Only zero-initialise the Wasm local variables (spec requirement).
@@ -216,10 +219,13 @@ pub fn handle_call(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, 
         const callee_slots = allocCalleeSlots(frame, callee_slots_len, arg_slots.len, callee.locals_count) orelse return;
         t.lap(&profiling.call_prof.ns_alloc_slots);
         if (profiling.enabled) profiling.call_prof.slots_len_sum += callee_slots_len;
+        // Re-derive caller slots: valStackAlloc may have grown the buffer,
+        // invalidating the handler's original `slots` parameter.
+        const caller_slots_profiled = frame.callStackTop().slots.ptr;
 
         // ── Phase 2: copy args ─────────────────────────────────────────────────
         for (arg_slots, 0..) |arg_slot, i| {
-            callee_slots[i] = slots[arg_slot];
+            callee_slots[i] = caller_slots_profiled[arg_slot];
         }
         t.lap(&profiling.call_prof.ns_copy_args);
 
@@ -233,9 +239,12 @@ pub fn handle_call(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, 
             .slots_sp_base = sp_base,
             .dst = callee_dst,
             .func = callee,
-        }) catch {
+        }) catch |err| {
             frame.valStackFree(sp_base);
-            trapReturn(frame, .StackOverflow);
+            trapReturn(frame, switch (err) {
+                error.OutOfMemory => .OutOfMemory,
+                error.StackOverflow => .StackOverflow,
+            });
             return;
         };
         t.lap(&profiling.call_prof.ns_push_dispatch);
@@ -311,9 +320,12 @@ pub fn handle_call_indirect(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispat
 
         const sp_base = frame.val_sp;
         const callee_slots = allocCalleeSlots(frame, callee_slots_len, arg_slots.len, callee.locals_count) orelse return;
+        // Re-derive caller slots: valStackAlloc may have grown the buffer,
+        // invalidating the handler's original `slots` parameter.
+        const caller_slots = frame.callStackTop().slots.ptr;
 
         for (arg_slots, 0..) |arg_slot, i| {
-            callee_slots[i] = slots[arg_slot];
+            callee_slots[i] = caller_slots[arg_slot];
         }
 
         const cur = frame.callStackTop();
@@ -327,9 +339,12 @@ pub fn handle_call_indirect(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispat
             .slots_sp_base = sp_base,
             .dst = callee_dst,
             .func = callee,
-        }) catch {
+        }) catch |err| {
             frame.valStackFree(sp_base);
-            trapReturn(frame, .StackOverflow);
+            trapReturn(frame, switch (err) {
+                error.OutOfMemory => .OutOfMemory,
+                error.StackOverflow => .StackOverflow,
+            });
             return;
         };
 
@@ -389,9 +404,12 @@ pub fn handle_return_call(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispatch
         frame.valStackFree(old_sp_base);
         const sp_base = frame.val_sp; // same as old_sp_base
         const callee_slots = allocCalleeSlots(frame, callee_slots_len, arg_slots.len, callee.locals_count) orelse return;
+        // Re-derive caller slots: valStackAlloc may have grown the buffer,
+        // invalidating the handler's original `slots` parameter.
+        const caller_slots = frame.callStackTop().slots.ptr;
 
         for (arg_slots, 0..) |arg_slot, i| {
-            callee_slots[i] = slots[arg_slot];
+            callee_slots[i] = caller_slots[arg_slot];
         }
 
         // Preserve the dst from current frame (return to caller's caller)
@@ -490,9 +508,12 @@ pub fn handle_return_call_indirect(ip: [*]align(8) u8, slots: [*]RawVal, frame: 
         frame.valStackFree(old_sp_base);
         const sp_base = frame.val_sp;
         const callee_slots = allocCalleeSlots(frame, callee_slots_len, arg_slots.len, callee.locals_count) orelse return;
+        // Re-derive caller slots: valStackAlloc may have grown the buffer,
+        // invalidating the handler's original `slots` parameter.
+        const caller_slots = frame.callStackTop().slots.ptr;
 
         for (arg_slots, 0..) |arg_slot, i| {
-            callee_slots[i] = slots[arg_slot];
+            callee_slots[i] = caller_slots[arg_slot];
         }
 
         const tail_dst = frame.callStackAt(frame_idx).dst;
@@ -561,9 +582,12 @@ pub fn handle_call_ref(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchSta
 
         const sp_base = frame.val_sp;
         const callee_slots = allocCalleeSlots(frame, callee_slots_len, arg_slots.len, callee.locals_count) orelse return;
+        // Re-derive caller slots: valStackAlloc may have grown the buffer,
+        // invalidating the handler's original `slots` parameter.
+        const caller_slots = frame.callStackTop().slots.ptr;
 
         for (arg_slots, 0..) |arg_slot, i| {
-            callee_slots[i] = slots[arg_slot];
+            callee_slots[i] = caller_slots[arg_slot];
         }
 
         const cur = frame.callStackTop();
@@ -577,9 +601,12 @@ pub fn handle_call_ref(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchSta
             .slots_sp_base = sp_base,
             .dst = callee_dst,
             .func = callee,
-        }) catch {
+        }) catch |err| {
             frame.valStackFree(sp_base);
-            trapReturn(frame, .StackOverflow);
+            trapReturn(frame, switch (err) {
+                error.OutOfMemory => .OutOfMemory,
+                error.StackOverflow => .StackOverflow,
+            });
             return;
         };
 
@@ -650,9 +677,12 @@ pub fn handle_return_call_ref(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Disp
         frame.valStackFree(old_sp_base);
         const sp_base = frame.val_sp;
         const callee_slots = allocCalleeSlots(frame, callee_slots_len, arg_slots.len, callee.locals_count) orelse return;
+        // Re-derive caller slots: valStackAlloc may have grown the buffer,
+        // invalidating the handler's original `slots` parameter.
+        const caller_slots = frame.callStackTop().slots.ptr;
 
         for (arg_slots, 0..) |arg_slot, i| {
-            callee_slots[i] = slots[arg_slot];
+            callee_slots[i] = caller_slots[arg_slot];
         }
 
         const tail_dst = frame.callStackAt(frame_idx).dst;

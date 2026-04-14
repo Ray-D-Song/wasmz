@@ -5,6 +5,7 @@
 /// the `dispatch.next()` helper reads the handler pointer embedded at the
 /// next instruction and tail-calls it.
 const std = @import("std");
+const builtin = @import("builtin");
 const ir = @import("../compiler/ir.zig");
 const encode = @import("../compiler/encode.zig");
 const dispatch = @import("dispatch.zig");
@@ -62,6 +63,87 @@ inline fn readOps(comptime T: type, ip: [*]align(8) u8) T {
 /// Instruction stride: handler pointer + operand bytes.
 inline fn stride(comptime OpsT: type) usize {
     return std.mem.alignForward(usize, HANDLER_SIZE + @sizeOf(OpsT), 8);
+}
+
+// ── Inline cross-platform RSS reading ────────────────────────────────────────
+// Duplicated/inlined here to avoid cross-module import issues (handlers.zig
+// is inside the wasmz module which cannot import main's utils).
+
+/// Returns the current RSS in bytes, or 0 on unsupported platforms / error.
+fn currentRssBytes() usize {
+    return switch (builtin.os.tag) {
+        .macos => currentRssMacOS(),
+        .linux => currentRssLinux(),
+        .windows => currentRssWindows(),
+        else => 0,
+    };
+}
+
+fn currentRssMacOS() usize {
+    const MachTaskBasicInfo = extern struct {
+        virtual_size: u64,
+        resident_size: u64,
+        resident_size_max: u64,
+        user_time: extern struct { seconds: i32, microseconds: i32 },
+        system_time: extern struct { seconds: i32, microseconds: i32 },
+        policy: i32,
+        suspend_count: i32,
+    };
+    const mach_task_self = struct {
+        extern "c" fn mach_task_self() std.c.mach_port_t;
+    }.mach_task_self;
+    const task_info_fn = struct {
+        extern "c" fn task_info(std.c.mach_port_t, u32, *anyopaque, *u32) i32;
+    }.task_info;
+    var info: MachTaskBasicInfo = undefined;
+    var count: u32 = @sizeOf(MachTaskBasicInfo) / @sizeOf(u32);
+    if (task_info_fn(mach_task_self(), 20, &info, &count) != 0) return 0;
+    return @intCast(info.resident_size);
+}
+
+fn currentRssLinux() usize {
+    var buf: [256]u8 = undefined;
+    const fd = std.posix.open("/proc/self/statm", .{}, 0) catch return 0;
+    defer std.posix.close(fd);
+    const n = std.posix.read(fd, &buf) catch return 0;
+    if (n == 0) return 0;
+    var it = std.mem.tokenizeScalar(u8, buf[0..n], ' ');
+    _ = it.next(); // skip "size"
+    const rss_str = it.next() orelse return 0;
+    const rss_pages = std.fmt.parseInt(usize, rss_str, 10) catch return 0;
+    return rss_pages * std.mem.page_size;
+}
+
+fn currentRssWindows() usize {
+    if (comptime builtin.os.tag != .windows) return 0;
+    const windows = std.os.windows;
+    const PROCESS_MEMORY_COUNTERS = extern struct {
+        cb: u32,
+        PageFaultCount: u32,
+        PeakWorkingSetSize: usize,
+        WorkingSetSize: usize,
+        QuotaPeakPagedPoolUsage: usize,
+        QuotaPagedPoolUsage: usize,
+        QuotaPeakNonPagedPoolUsage: usize,
+        QuotaNonPagedPoolUsage: usize,
+        PagefileUsage: usize,
+        PeakPagefileUsage: usize,
+    };
+    const k32 = struct {
+        extern "kernel32" fn K32GetProcessMemoryInfo(
+            windows.HANDLE,
+            *PROCESS_MEMORY_COUNTERS,
+            u32,
+        ) callconv(.winapi) windows.BOOL;
+    };
+    var counters: PROCESS_MEMORY_COUNTERS = undefined;
+    counters.cb = @sizeOf(PROCESS_MEMORY_COUNTERS);
+    if (k32.K32GetProcessMemoryInfo(
+        windows.self_process_handle,
+        &counters,
+        @sizeOf(PROCESS_MEMORY_COUNTERS),
+    ) == 0) return 0;
+    return counters.WorkingSetSize;
 }
 
 /// Compute effective address with bounds check.
@@ -1857,12 +1939,36 @@ pub fn handle_memory_grow(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispatch
             }
         }
     }
+    const old_byte_len = env.memory.byteLen();
+    const rss_before = if (env.mem_trace and delta > 0) currentRssBytes() else 0;
     const old = env.memory.grow(delta);
     const result: i32 = if (old == std.math.maxInt(u32)) -1 else @intCast(old);
     slots[ops.dst] = RawVal.from(result);
     if (result != -1) {
         if (env.memory_budget) |b| {
             b.recordLinearGrow(env.memory.byteLen());
+        }
+        // ── mem-trace probe: log every successful memory.grow ─────────────
+        if (env.mem_trace and delta > 0) {
+            const new_byte_len = env.memory.byteLen();
+            const rss_after = currentRssBytes();
+            const mb = struct {
+                fn f(b: usize) f64 {
+                    return @as(f64, @floatFromInt(b)) / (1024.0 * 1024.0);
+                }
+            }.f;
+            std.debug.print(
+                "[mem-trace] memory.grow +{d} pages  linear {d:.1} -> {d:.1} MB  RSS {d:.1} -> {d:.1} MB (realloc {s}{d:.1} MB)\n",
+                .{
+                    delta,
+                    mb(old_byte_len),
+                    mb(new_byte_len),
+                    mb(rss_before),
+                    mb(rss_after),
+                    if (rss_after >= rss_before) "+" else "-",
+                    if (rss_after >= rss_before) mb(rss_after - rss_before) else mb(rss_before - rss_after),
+                },
+            );
         }
     }
     dispatch.next(ip, stride(encode.OpsMemoryGrow), slots, frame, env);

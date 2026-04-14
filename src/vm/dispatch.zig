@@ -102,6 +102,9 @@ pub const ExecEnv = struct {
     array_layouts: []const ?ArrayLayout,
     type_ancestors: []const []const u32,
     memory_budget: ?*MemoryBudget,
+    /// When true, memory.grow events log RSS snapshots to stderr.
+    /// Controlled by the --mem-trace CLI flag.
+    mem_trace: bool = false,
 };
 
 // ── Call / EH frame ───────────────────────────────────────────────────────────
@@ -144,14 +147,20 @@ pub const EhFrame = struct {
 
 // ── Dispatch state (mutable, shared across all handlers in one invocation) ────
 
-/// Default value-stack size in RawVal slots (16 bytes each).
-/// 1 Mi slots = 16 MiB.  Large enough for QuickJS / esbuild deep call chains.
-/// Callers may override via `val_stack_size`.
-pub const DEFAULT_VAL_STACK_SLOTS: usize = 1024 * 1024;
+/// Default value-stack size in RawVal slots (8 bytes each).
+/// 128K slots = 1 MiB.  Grows by doubling on overflow up to MAX_VAL_STACK_SLOTS.
+pub const DEFAULT_VAL_STACK_SLOTS: usize = 128 * 1024;
+
+/// Hard upper bound for the value stack (prevents infinite growth).
+/// 16 Mi slots = 128 MiB — no real-world module should approach this.
+pub const MAX_VAL_STACK_SLOTS: usize = 16 * 1024 * 1024;
 
 /// Default call-stack depth (max simultaneous live Wasm call frames).
-/// 65536 frames is far more than any realistic module needs.
-pub const DEFAULT_CALL_STACK_DEPTH: usize = 65536;
+/// 4096 frames covers realistic recursion.  Grows by doubling on overflow.
+pub const DEFAULT_CALL_STACK_DEPTH: usize = 4096;
+
+/// Hard upper bound for the call stack.
+pub const MAX_CALL_STACK_DEPTH: usize = 1024 * 1024;
 
 /// Mutable state shared by every handler in a single `execute()` invocation.
 pub const DispatchState = struct {
@@ -175,6 +184,9 @@ pub const DispatchState = struct {
     val_stack_owned: bool = true,
     /// When false, deinit() does NOT free call_stack (ownership stays with the VM).
     call_stack_owned: bool = true,
+    /// Back-pointer to the owning VM, used for dynamic stack growth.
+    /// null when the DispatchState owns its stacks directly (non-persistent mode).
+    vm: ?*vm_root.VM = null,
 
     pub fn deinit(self: *DispatchState) void {
         // With val_stack, frames do not own their slots — nothing to free per-frame.
@@ -184,11 +196,30 @@ pub const DispatchState = struct {
         if (self.val_stack_owned and self.val_stack.len > 0) self.allocator.free(self.val_stack);
     }
 
-    /// Push a call frame.  Returns error.StackOverflow on overflow.
-    pub inline fn callStackPush(self: *DispatchState, frame: CallFrame) error{StackOverflow}!void {
-        if (self.call_depth >= self.call_stack_cap) return error.StackOverflow;
+    /// Push a call frame.  Grows the call stack (doubling) if needed.
+    /// Returns error.StackOverflow only when MAX_CALL_STACK_DEPTH is reached.
+    pub inline fn callStackPush(self: *DispatchState, frame: CallFrame) error{ StackOverflow, OutOfMemory }!void {
+        if (self.call_depth >= self.call_stack_cap) {
+            try self.growCallStack();
+        }
         self.call_stack[self.call_depth] = frame;
         self.call_depth += 1;
+    }
+
+    /// Grow the call stack by doubling its capacity.
+    /// Updates both this DispatchState and the owning VM (if any).
+    fn growCallStack(self: *DispatchState) error{ StackOverflow, OutOfMemory }!void {
+        const old_cap = self.call_stack_cap;
+        if (old_cap >= MAX_CALL_STACK_DEPTH) return error.StackOverflow;
+        const new_cap = @min(old_cap *| 2, MAX_CALL_STACK_DEPTH);
+        const old_slice = self.call_stack[0..old_cap];
+        const new_slice = try self.allocator.realloc(old_slice, new_cap);
+        self.call_stack = new_slice.ptr;
+        self.call_stack_cap = new_cap;
+        // Sync back to the owning VM so subsequent execute() calls see the grown buffer.
+        if (self.vm) |v| {
+            v.call_stack = new_slice;
+        }
     }
 
     /// Pop the top call frame.  Caller must ensure depth > 0.
@@ -208,12 +239,48 @@ pub const DispatchState = struct {
     }
 
     /// Allocate `n` slots from the value stack.
-    /// Returns error.StackOverflow if insufficient space remains.
-    pub inline fn valStackAlloc(self: *DispatchState, n: usize) error{StackOverflow}![]RawVal {
-        if (self.val_sp + n > self.val_stack.len) return error.StackOverflow;
+    /// Grows the value stack (doubling) if needed.
+    /// Returns error.StackOverflow only when MAX_VAL_STACK_SLOTS is reached.
+    pub inline fn valStackAlloc(self: *DispatchState, n: usize) error{ StackOverflow, OutOfMemory }![]RawVal {
+        if (self.val_sp + n > self.val_stack.len) {
+            try self.growValStack(n);
+        }
         const slice = self.val_stack[self.val_sp .. self.val_sp + n];
         self.val_sp += n;
         return slice;
+    }
+
+    /// Grow the value stack so that at least `needed` more slots are available.
+    /// Doubles until large enough, then fixes up all live CallFrame.slots pointers.
+    fn growValStack(self: *DispatchState, needed: usize) error{ StackOverflow, OutOfMemory }!void {
+        const required = self.val_sp + needed;
+        if (required > MAX_VAL_STACK_SLOTS) return error.StackOverflow;
+
+        var new_cap = @max(self.val_stack.len *| 2, DEFAULT_VAL_STACK_SLOTS);
+        while (new_cap < required) new_cap *|= 2;
+        new_cap = @min(new_cap, MAX_VAL_STACK_SLOTS);
+
+        const old_ptr = self.val_stack.ptr;
+        const new_slice = try self.allocator.realloc(self.val_stack, new_cap);
+        self.val_stack = new_slice;
+
+        // Fix up every live CallFrame.slots pointer (they are sub-slices of the old buffer).
+        if (new_slice.ptr != old_ptr) {
+            const base_new: usize = @intFromPtr(new_slice.ptr);
+            const base_old: usize = @intFromPtr(old_ptr);
+            for (0..self.call_depth) |i| {
+                const f = &self.call_stack[i];
+                const old_frame_ptr: usize = @intFromPtr(f.slots.ptr);
+                const offset = old_frame_ptr - base_old;
+                const new_frame_ptr: [*]RawVal = @ptrFromInt(base_new + offset);
+                f.slots = new_frame_ptr[0..f.slots.len];
+            }
+        }
+
+        // Sync back to the owning VM.
+        if (self.vm) |v| {
+            v.val_stack = new_slice;
+        }
     }
 
     /// Free the top `n` slots by restoring val_sp.

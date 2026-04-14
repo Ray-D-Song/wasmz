@@ -12,6 +12,7 @@
 ///   --func <name>         Name of the exported function to call (reactor/library mode)
 ///   --reactor             Initialize the module as a reactor (_initialize) before calling --func
 ///   --mem-stats           Print memory usage stats to stderr after execution
+///   --mem-trace           Print RSS snapshots at each execution phase to stderr
 ///   --mem-limit <MB>      Memory limit in megabytes
 ///   --eager-compile       Compile all functions eagerly at module load time
 const std = @import("std");
@@ -21,6 +22,8 @@ const wasi_preview1 = @import("wasi").preview1;
 const profiling = wasmz.profiling;
 const arg_parse = @import("utils/arg-parse.zig");
 const stats = @import("utils/stats.zig");
+const rss = @import("utils/rss.zig");
+const mmap = @import("utils/mmap.zig");
 
 const Engine = wasmz.Engine;
 const Module = wasmz.Module;
@@ -55,13 +58,40 @@ fn run(allocator: std.mem.Allocator) void {
     };
     defer cli_args.deinit(allocator);
 
+    // ── mem-trace helpers ─────────────────────────────────────────────────────
+    var trace_prev: usize = 0;
+    const tracePhase = struct {
+        fn f(enabled: bool, prev: *usize, comptime label: []const u8) void {
+            if (!enabled) return;
+            const cur = rss.currentRssBytes();
+            const cur_mb = @as(f64, @floatFromInt(cur)) / (1024.0 * 1024.0);
+            const delta_bytes: i64 = @as(i64, @intCast(cur)) - @as(i64, @intCast(prev.*));
+            const delta_mb = @as(f64, @floatFromInt(delta_bytes)) / (1024.0 * 1024.0);
+            const sign: []const u8 = if (delta_bytes >= 0) "+" else "";
+            std.debug.print(
+                "[mem-trace] {s:<22}  RSS {d:.1} MB  ({s}{d:.1} MB)\n",
+                .{ label, cur_mb, sign, delta_mb },
+            );
+            prev.* = cur;
+        }
+    }.f;
+
     const file_path = cli_args.file_path;
 
+    // Memory-map the Wasm file so that pending function bodies can borrow
+    // slices directly without heap-copying ~10 MB of bytecode.
+    // Uses a cross-platform abstraction (POSIX mmap / Windows NtMapViewOfSection).
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err|
         fatal("Unable to open {s}: {s}", .{ file_path, @errorName(err) });
     defer file.close();
-    var reader_buf: [64 * 1024]u8 = undefined;
-    var reader = file.reader(&reader_buf);
+    const mapped = mmap.mapFile(file) catch |err| switch (err) {
+        error.EmptyFile => fatal("{s}: file is empty", .{file_path}),
+        error.MapFailed => fatal("Failed to mmap {s}", .{file_path}),
+    };
+    defer mmap.unmap(mapped);
+    const wasm_bytes = mapped.data;
+
+    tracePhase(cli_args.mem_trace, &trace_prev, "baseline (file mapped)");
 
     var engine = Engine.init(allocator, .{
         .legacy_exceptions = cli_args.legacy_exceptions,
@@ -70,12 +100,14 @@ fn run(allocator: std.mem.Allocator) void {
     }) catch |err| fatal("Failed to initialize engine: {s}", .{@errorName(err)});
     defer engine.deinit();
 
-    var arc_module = Module.compileArcReader(engine, &reader) catch |err|
+    var arc_module = Module.compileArc(engine, wasm_bytes) catch |err|
         fatal("Failed to compile {s}: {s}", .{ file_path, @errorName(err) });
     defer if (arc_module.releaseUnwrap()) |m| {
         var mod = m;
         mod.deinit();
     };
+
+    tracePhase(cli_args.mem_trace, &trace_prev, "after compile");
 
     var store = Store.init(allocator, engine) catch |err|
         fatal("Failed to init store: {s}", .{@errorName(err)});
@@ -92,7 +124,6 @@ fn run(allocator: std.mem.Allocator) void {
         wasi_host = wasi_preview1.Host.init(allocator);
         wasi_host.?.setArgs(cli_args.wasi_args) catch |err|
             fatal("Failed to set WASI args: {s}", .{@errorName(err)});
-        if (profiling.enabled) wasi_host.?.setOnExit(stats.onExitProfiling, null);
         wasi_host.?.addToLinker(&linker, allocator) catch |err|
             fatal("Failed to add WASI to linker: {s}", .{@errorName(err)});
     }
@@ -101,12 +132,24 @@ fn run(allocator: std.mem.Allocator) void {
         wasmz.printInitError(arc_module, linker, err);
         std.process.exit(1);
     };
-    if (cli_args.mem_stats) {
-        var mem_stats_ctx = stats.MemStatsCtx{
-            .store = &store,
-            .instance = &instance,
-        };
-        if (wasi_host) |*h| h.setOnExit(stats.onExitMemStats, &mem_stats_ctx);
+    instance.mem_trace = cli_args.mem_trace;
+    tracePhase(cli_args.mem_trace, &trace_prev, "after instantiate");
+
+    // Register a single combined on-exit callback (proc_exit path) that
+    // handles mem-trace, mem-stats, and profiling in one slot.
+    var on_exit_ctx = stats.OnExitCtx{
+        .do_profiling = profiling.enabled,
+        .mem_stats = cli_args.mem_stats,
+        .store = &store,
+        .instance = &instance,
+        .mem_trace = cli_args.mem_trace,
+        .prev_rss = &trace_prev,
+    };
+    if (wasi_host) |*h| h.setOnExit(stats.onExitCombined, &on_exit_ctx);
+
+    defer {
+        if (cli_args.mem_stats) stats.printMemStats(&store, &instance);
+        instance.deinit();
     }
     defer {
         if (cli_args.mem_stats) stats.printMemStats(&store, &instance);
@@ -118,6 +161,7 @@ fn run(allocator: std.mem.Allocator) void {
     {
         if (result == .trap) fatalTrap(result.trap, allocator, "start function trapped");
     }
+    tracePhase(cli_args.mem_trace, &trace_prev, "after runStart");
 
     if (cli_args.reactor) {
         if (instance.initializeReactor() catch |err|
@@ -129,9 +173,11 @@ fn run(allocator: std.mem.Allocator) void {
 
     if (cli_args.func_name == null) {
         if (arc_module.value.exports.get("_start")) |_| {
+            tracePhase(cli_args.mem_trace, &trace_prev, "before _start");
             const result = instance.call("_start", &.{}) catch |err|
                 fatal("Failed to call _start: {s}", .{@errorName(err)});
             if (result == .trap) fatalTrap(result.trap, allocator, "trap");
+            tracePhase(cli_args.mem_trace, &trace_prev, "after _start");
             return;
         }
 
@@ -176,6 +222,7 @@ const CliArgs = struct {
     wasi_args: []const []const u8,
     passthrough: bool,
     mem_stats: bool,
+    mem_trace: bool,
     mem_limit_mb: ?u64,
     reactor: bool,
     eager_compile: bool,
@@ -187,6 +234,7 @@ const CliArgs = struct {
         arg_parse.Flag.boolFlag("help", "Show this help message"),
         arg_parse.Flag.boolFlag("legacy-exceptions", "Force legacy exception handling"),
         arg_parse.Flag.boolFlag("mem-stats", "Print memory usage stats after execution"),
+        arg_parse.Flag.boolFlag("mem-trace", "Print RSS snapshots at each execution phase"),
         arg_parse.Flag.boolFlag("reactor", "Initialize as reactor before calling --func"),
         arg_parse.Flag.boolFlag("eager-compile", "Compile all functions eagerly"),
         arg_parse.Flag.stringFlag("args", "Arguments to pass to the WASM module"),
@@ -266,6 +314,7 @@ const CliArgs = struct {
             .i32_args = i32_args,
             .legacy_exceptions = parsed.getBool("legacy-exceptions"),
             .mem_stats = parsed.getBool("mem-stats"),
+            .mem_trace = parsed.getBool("mem-trace"),
             .mem_limit_mb = mem_limit_mb,
             .reactor = parsed.getBool("reactor"),
             .eager_compile = parsed.getBool("eager-compile"),

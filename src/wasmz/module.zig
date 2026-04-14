@@ -251,6 +251,9 @@ const BuildState = struct {
     allocator: Allocator,
     engine: Engine,
     arena: std.heap.ArenaAllocator,
+    /// Arena for pending function body copies (compileReader path).
+    /// null when bodies borrow external bytes (compile(bytes) path).
+    body_arena: ?std.heap.ArenaAllocator = null,
 
     composite_types_list: std.ArrayListUnmanaged(CompositeType) = .empty,
     struct_layouts_list: std.ArrayListUnmanaged(?StructLayout) = .empty,
@@ -341,6 +344,8 @@ const BuildState = struct {
         deinit_function_slots(self.allocator, self.local_functions_list.items);
         self.local_functions_list.deinit(self.allocator);
 
+        // Free body arena if still owned (not transferred to Module via finish()).
+        if (self.body_arena) |*ba| ba.deinit();
         self.arena.deinit();
     }
 
@@ -574,11 +579,17 @@ const BuildState = struct {
         var params_slots: usize = 0;
         for (func_type.params()) |p| params_slots += if (p == .V128) 2 else 1;
         const locals_count: u16 = @intCast(reserved_slots - params_slots);
-        const body_copy = try self.allocator.dupe(u8, info.body);
-        errdefer self.allocator.free(body_copy);
+        // If body_arena is set (compileReader path), dupe the body into the
+        // arena so it outlives the parser's transient buffer.  Otherwise
+        // (compile(bytes) path) borrow the slice directly from the caller's
+        // long-lived input.
+        const body: []const u8 = if (self.body_arena) |*ba|
+            try ba.allocator().dupe(u8, info.body)
+        else
+            info.body;
 
         try self.local_functions_list.append(self.allocator, .{ .pending = .{
-            .body = body_copy,
+            .body = body,
             .type_index = type_index,
             .reserved_slots = reserved_slots,
             .locals_count = locals_count,
@@ -711,6 +722,10 @@ const BuildState = struct {
         const exports = self.exports;
         self.exports = .empty;
 
+        // Transfer body_arena ownership to Module before returning.
+        const body_arena = self.body_arena;
+        self.body_arena = null;
+
         return .{
             .allocator = self.allocator,
             .functions = functions,
@@ -732,13 +747,21 @@ const BuildState = struct {
             .config = .{ .eh_mode = self.detected_eh_mode },
             .translator = null,
             .pending_count = @intCast(local_functions.len),
+            .body_arena = body_arena,
         };
     }
 };
 
 fn deinit_function_slots(allocator: Allocator, functions: []FunctionSlot) void {
     for (functions) |*slot| {
-        slot.deinit(allocator);
+        switch (slot.*) {
+            .encoded => |*ef| ef.deinit(allocator),
+            // Pending body bytes are either borrowed (compile(bytes) path)
+            // or owned by the Module's body_arena (compileReader path).
+            // Either way they are NOT freed individually here.
+            .pending, .import => {},
+        }
+        slot.* = undefined;
     }
 }
 
@@ -817,14 +840,19 @@ pub const Module = struct {
     /// Decremented by `compileFunctionAt`; used to release `translator` as
     /// soon as the last function body is compiled (O(1) check per compile).
     pending_count: u32,
+    /// Arena owning all pending function body copies (compileReader path).
+    /// null when bodies borrow external bytes (compile(bytes) / mmap path).
+    /// Freed in deinit; individual body slices are never freed separately.
+    body_arena: ?std.heap.ArenaAllocator = null,
 
     /// Compile WebAssembly bytecode held in memory into a Module.
     ///
-    /// The input bytes are consumed in a single parser pass, but function bodies
-    /// are copied into pending slots so the resulting Module no longer depends
-    /// on the original backing slice after this function returns.
+    /// Pending function bodies are **borrowed references** into `bytes`.
+    /// The caller MUST keep `bytes` alive for the entire lifetime of the
+    /// returned Module (typically via mmap or a long-lived allocation).
     pub fn compile(engine: Engine, bytes: []const u8) ModuleCompileError!Module {
         var state = BuildState.init(engine);
+        // body_arena stays null → bodies borrow from `bytes` directly.
         defer state.deinit();
 
         var parser = Parser.init(state.parserAllocator());
@@ -852,12 +880,16 @@ pub const Module = struct {
 
     /// Compile WebAssembly bytecode from a streaming reader into a Module.
     ///
-    /// The reader is consumed incrementally; only the currently pending parser
-    /// input plus any copied function bodies remain live after compilation.
+    /// The reader is consumed incrementally.  Function body bytes are copied
+    /// into a Module-owned arena so they outlive the parser's transient
+    /// buffers.  The arena is freed as a whole on Module.deinit().
     pub fn compileReader(engine: Engine, reader: anytype) ModuleCompileReaderError!Module {
         const allocator = engine.allocator();
 
         var state = BuildState.init(engine);
+        // Streaming path: parser buffers are transient, so we need an arena
+        // to hold durable copies of each function body.
+        state.body_arena = std.heap.ArenaAllocator.init(allocator);
         defer state.deinit();
 
         var parser = Parser.init(state.parserAllocator());
@@ -906,10 +938,8 @@ pub const Module = struct {
 
     /// Compile and wrap the module in an `ArcModule`.
     ///
-    /// Convenience wrapper: equivalent to
-    ///   `ArcModule.init(allocator, try Module.compile(engine, bytes))`
-    /// but handles the error path so that the Module is properly deinited on
-    /// allocation failure.
+    /// Pending function bodies borrow slices from `bytes`.  The caller MUST
+    /// keep `bytes` alive for the lifetime of the returned ArcModule.
     pub fn compileArc(engine: Engine, bytes: []const u8) (ModuleCompileError || std.mem.Allocator.Error)!ArcModule {
         var m = try compile(engine, bytes);
         errdefer m.deinit();
@@ -1031,7 +1061,8 @@ pub const Module = struct {
             &handler_table_mod.handler_table,
         );
         profiling.call_prof.ns_encode_ir += encode_timer.read();
-        self.allocator.free(pending.body);
+        // Body bytes are either borrowed (compile(bytes) path) or owned by
+        // body_arena (compileReader path).  No individual free needed.
         slot.* = .{ .encoded = encoded };
 
         // Decrement the pending counter and release the reusable translator
@@ -1152,6 +1183,9 @@ pub const Module = struct {
         if (self.translator) |*t| t.deinit();
         deinit_function_slots(self.allocator, self.functions);
         self.allocator.free(self.functions);
+        // Free the arena that holds all pending body copies (compileReader path).
+        // For the compile(bytes)/mmap path this is null (bodies are borrowed).
+        if (self.body_arena) |*ba| ba.deinit();
 
         deinit_exports(self.allocator, &self.exports);
         for (self.globals) |g| {
