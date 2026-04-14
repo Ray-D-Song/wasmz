@@ -83,6 +83,9 @@ pub const OpsJumpIfZ = extern struct { cond: u32, rel_target: i32 };
 /// i32_xxx_imm: fused binop/compare with immediate rhs. @sizeOf = 12 → stride 24.
 pub const OpsBinopImm = extern struct { dst: u32, lhs: u32, imm: i32 };
 
+/// i64_xxx_imm: fused i64 binop with immediate rhs. @sizeOf = 16 → stride 24 (aligned to 8).
+pub const OpsBinopImm64 = extern struct { dst: u32, lhs: u32, _pad: u32 = 0, imm: i64 };
+
 /// i32_xxx_jump_if_false: fused compare+branch. @sizeOf = 12 → stride 24.
 pub const OpsCompareJump = extern struct { lhs: u32, rhs: u32, rel_target: i32 };
 
@@ -439,6 +442,28 @@ pub fn instrSize(op: Op) usize {
         .i32_ge_u_imm,
         => @sizeOf(OpsBinopImm),
 
+        // fused i64 binop-imm (Candidate C, i64)
+        .i64_add_imm,
+        .i64_sub_imm,
+        .i64_mul_imm,
+        .i64_and_imm,
+        .i64_or_imm,
+        .i64_xor_imm,
+        .i64_shl_imm,
+        .i64_shr_s_imm,
+        .i64_shr_u_imm,
+        .i64_eq_imm,
+        .i64_ne_imm,
+        .i64_lt_s_imm,
+        .i64_lt_u_imm,
+        .i64_gt_s_imm,
+        .i64_gt_u_imm,
+        .i64_le_s_imm,
+        .i64_le_u_imm,
+        .i64_ge_s_imm,
+        .i64_ge_u_imm,
+        => @sizeOf(OpsBinopImm64),
+
         // fused compare-jump (Candidate F)
         .i32_eq_jump_if_false,
         .i32_ne_jump_if_false,
@@ -454,6 +479,21 @@ pub fn instrSize(op: Op) usize {
 
         .i32_eqz_jump_if_false => @sizeOf(OpsEqzJump),
 
+        // fused i64 compare-jump (Candidate F, i64)
+        .i64_eq_jump_if_false,
+        .i64_ne_jump_if_false,
+        .i64_lt_s_jump_if_false,
+        .i64_lt_u_jump_if_false,
+        .i64_gt_s_jump_if_false,
+        .i64_gt_u_jump_if_false,
+        .i64_le_s_jump_if_false,
+        .i64_le_u_jump_if_false,
+        .i64_ge_s_jump_if_false,
+        .i64_ge_u_jump_if_false,
+        => @sizeOf(OpsCompareJump),
+
+        .i64_eqz_jump_if_false => @sizeOf(OpsEqzJump),
+
         // fused binop-to-local (Candidate D)
         .i32_add_to_local,
         .i32_sub_to_local,
@@ -464,6 +504,18 @@ pub fn instrSize(op: Op) usize {
         .i32_shl_to_local,
         .i32_shr_s_to_local,
         .i32_shr_u_to_local,
+        => @sizeOf(OpsBinopToLocal),
+
+        // fused i64 binop-to-local (Candidate D, i64)
+        .i64_add_to_local,
+        .i64_sub_to_local,
+        .i64_mul_to_local,
+        .i64_and_to_local,
+        .i64_or_to_local,
+        .i64_xor_to_local,
+        .i64_shl_to_local,
+        .i64_shr_s_to_local,
+        .i64_shr_u_to_local,
         => @sizeOf(OpsBinopToLocal),
 
         // memory loads
@@ -865,6 +917,26 @@ pub const HandlerTable = struct {
     i32_le_u_imm: Handler,
     i32_ge_s_imm: Handler,
     i32_ge_u_imm: Handler,
+    // Fused: i64 binop-imm (Candidate C, i64)
+    i64_add_imm: Handler,
+    i64_sub_imm: Handler,
+    i64_mul_imm: Handler,
+    i64_and_imm: Handler,
+    i64_or_imm: Handler,
+    i64_xor_imm: Handler,
+    i64_shl_imm: Handler,
+    i64_shr_s_imm: Handler,
+    i64_shr_u_imm: Handler,
+    i64_eq_imm: Handler,
+    i64_ne_imm: Handler,
+    i64_lt_s_imm: Handler,
+    i64_lt_u_imm: Handler,
+    i64_gt_s_imm: Handler,
+    i64_gt_u_imm: Handler,
+    i64_le_s_imm: Handler,
+    i64_le_u_imm: Handler,
+    i64_ge_s_imm: Handler,
+    i64_ge_u_imm: Handler,
     // Fused: compare-jump (Candidate F)
     i32_eq_jump_if_false: Handler,
     i32_ne_jump_if_false: Handler,
@@ -877,6 +949,18 @@ pub const HandlerTable = struct {
     i32_ge_s_jump_if_false: Handler,
     i32_ge_u_jump_if_false: Handler,
     i32_eqz_jump_if_false: Handler,
+    // Fused: i64 compare-jump (Candidate F, i64)
+    i64_eq_jump_if_false: Handler,
+    i64_ne_jump_if_false: Handler,
+    i64_lt_s_jump_if_false: Handler,
+    i64_lt_u_jump_if_false: Handler,
+    i64_gt_s_jump_if_false: Handler,
+    i64_gt_u_jump_if_false: Handler,
+    i64_le_s_jump_if_false: Handler,
+    i64_le_u_jump_if_false: Handler,
+    i64_ge_s_jump_if_false: Handler,
+    i64_ge_u_jump_if_false: Handler,
+    i64_eqz_jump_if_false: Handler,
     // Fused: binop-to-local (Candidate D)
     i32_add_to_local: Handler,
     i32_sub_to_local: Handler,
@@ -887,6 +971,16 @@ pub const HandlerTable = struct {
     i32_shl_to_local: Handler,
     i32_shr_s_to_local: Handler,
     i32_shr_u_to_local: Handler,
+    // Fused: i64 binop-to-local (Candidate D, i64)
+    i64_add_to_local: Handler,
+    i64_sub_to_local: Handler,
+    i64_mul_to_local: Handler,
+    i64_and_to_local: Handler,
+    i64_or_to_local: Handler,
+    i64_xor_to_local: Handler,
+    i64_shl_to_local: Handler,
+    i64_shr_s_to_local: Handler,
+    i64_shr_u_to_local: Handler,
     // SIMD
     simd_unary: Handler,
     simd_binary: Handler,
@@ -1694,6 +1788,34 @@ pub fn encode(
                 };
             },
 
+            // ── Fused: i64 binop-imm (Candidate C, i64) ───────────────────
+            .i64_add_imm,
+            .i64_sub_imm,
+            .i64_mul_imm,
+            .i64_and_imm,
+            .i64_or_imm,
+            .i64_xor_imm,
+            .i64_shl_imm,
+            .i64_shr_s_imm,
+            .i64_shr_u_imm,
+            .i64_eq_imm,
+            .i64_ne_imm,
+            .i64_lt_s_imm,
+            .i64_lt_u_imm,
+            .i64_gt_s_imm,
+            .i64_gt_u_imm,
+            .i64_le_s_imm,
+            .i64_le_u_imm,
+            .i64_ge_s_imm,
+            .i64_ge_u_imm,
+            => |inst| {
+                @as(*OpsBinopImm64, @ptrCast(@alignCast(ops_ptr))).* = .{
+                    .dst = inst.dst,
+                    .lhs = inst.lhs,
+                    .imm = inst.imm,
+                };
+            },
+
             // ── Fused: compare-jump (Candidate F) ─────────────────────────
             .i32_eq_jump_if_false,
             .i32_ne_jump_if_false,
@@ -1719,6 +1841,31 @@ pub fn encode(
                 };
             },
 
+            // ── Fused: i64 compare-jump (Candidate F, i64) ────────────────
+            .i64_eq_jump_if_false,
+            .i64_ne_jump_if_false,
+            .i64_lt_s_jump_if_false,
+            .i64_lt_u_jump_if_false,
+            .i64_gt_s_jump_if_false,
+            .i64_gt_u_jump_if_false,
+            .i64_le_s_jump_if_false,
+            .i64_le_u_jump_if_false,
+            .i64_ge_s_jump_if_false,
+            .i64_ge_u_jump_if_false,
+            => |inst| {
+                @as(*OpsCompareJump, @ptrCast(@alignCast(ops_ptr))).* = .{
+                    .lhs = inst.lhs,
+                    .rhs = inst.rhs,
+                    .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
+                };
+            },
+            .i64_eqz_jump_if_false => |inst| {
+                @as(*OpsEqzJump, @ptrCast(@alignCast(ops_ptr))).* = .{
+                    .src = inst.src,
+                    .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
+                };
+            },
+
             // ── Fused: binop-to-local (Candidate D) ───────────────────────
             .i32_add_to_local,
             .i32_sub_to_local,
@@ -1729,6 +1876,24 @@ pub fn encode(
             .i32_shl_to_local,
             .i32_shr_s_to_local,
             .i32_shr_u_to_local,
+            => |inst| {
+                @as(*OpsBinopToLocal, @ptrCast(@alignCast(ops_ptr))).* = .{
+                    .local = inst.local,
+                    .lhs = inst.lhs,
+                    .rhs = inst.rhs,
+                };
+            },
+
+            // ── Fused: i64 binop-to-local (Candidate D, i64) ──────────────
+            .i64_add_to_local,
+            .i64_sub_to_local,
+            .i64_mul_to_local,
+            .i64_and_to_local,
+            .i64_or_to_local,
+            .i64_xor_to_local,
+            .i64_shl_to_local,
+            .i64_shr_s_to_local,
+            .i64_shr_u_to_local,
             => |inst| {
                 @as(*OpsBinopToLocal, @ptrCast(@alignCast(ops_ptr))).* = .{
                     .local = inst.local,
@@ -2155,6 +2320,26 @@ fn handlerFor(op: Op, t: *const HandlerTable) Handler {
         .i32_le_u_imm => t.i32_le_u_imm,
         .i32_ge_s_imm => t.i32_ge_s_imm,
         .i32_ge_u_imm => t.i32_ge_u_imm,
+        // fused i64 binop-imm (C, i64)
+        .i64_add_imm => t.i64_add_imm,
+        .i64_sub_imm => t.i64_sub_imm,
+        .i64_mul_imm => t.i64_mul_imm,
+        .i64_and_imm => t.i64_and_imm,
+        .i64_or_imm => t.i64_or_imm,
+        .i64_xor_imm => t.i64_xor_imm,
+        .i64_shl_imm => t.i64_shl_imm,
+        .i64_shr_s_imm => t.i64_shr_s_imm,
+        .i64_shr_u_imm => t.i64_shr_u_imm,
+        .i64_eq_imm => t.i64_eq_imm,
+        .i64_ne_imm => t.i64_ne_imm,
+        .i64_lt_s_imm => t.i64_lt_s_imm,
+        .i64_lt_u_imm => t.i64_lt_u_imm,
+        .i64_gt_s_imm => t.i64_gt_s_imm,
+        .i64_gt_u_imm => t.i64_gt_u_imm,
+        .i64_le_s_imm => t.i64_le_s_imm,
+        .i64_le_u_imm => t.i64_le_u_imm,
+        .i64_ge_s_imm => t.i64_ge_s_imm,
+        .i64_ge_u_imm => t.i64_ge_u_imm,
         // fused compare-jump (F)
         .i32_eq_jump_if_false => t.i32_eq_jump_if_false,
         .i32_ne_jump_if_false => t.i32_ne_jump_if_false,
@@ -2167,6 +2352,18 @@ fn handlerFor(op: Op, t: *const HandlerTable) Handler {
         .i32_ge_s_jump_if_false => t.i32_ge_s_jump_if_false,
         .i32_ge_u_jump_if_false => t.i32_ge_u_jump_if_false,
         .i32_eqz_jump_if_false => t.i32_eqz_jump_if_false,
+        // fused i64 compare-jump (F, i64)
+        .i64_eq_jump_if_false => t.i64_eq_jump_if_false,
+        .i64_ne_jump_if_false => t.i64_ne_jump_if_false,
+        .i64_lt_s_jump_if_false => t.i64_lt_s_jump_if_false,
+        .i64_lt_u_jump_if_false => t.i64_lt_u_jump_if_false,
+        .i64_gt_s_jump_if_false => t.i64_gt_s_jump_if_false,
+        .i64_gt_u_jump_if_false => t.i64_gt_u_jump_if_false,
+        .i64_le_s_jump_if_false => t.i64_le_s_jump_if_false,
+        .i64_le_u_jump_if_false => t.i64_le_u_jump_if_false,
+        .i64_ge_s_jump_if_false => t.i64_ge_s_jump_if_false,
+        .i64_ge_u_jump_if_false => t.i64_ge_u_jump_if_false,
+        .i64_eqz_jump_if_false => t.i64_eqz_jump_if_false,
         // fused binop-to-local (D)
         .i32_add_to_local => t.i32_add_to_local,
         .i32_sub_to_local => t.i32_sub_to_local,
@@ -2177,5 +2374,15 @@ fn handlerFor(op: Op, t: *const HandlerTable) Handler {
         .i32_shl_to_local => t.i32_shl_to_local,
         .i32_shr_s_to_local => t.i32_shr_s_to_local,
         .i32_shr_u_to_local => t.i32_shr_u_to_local,
+        // fused i64 binop-to-local (D, i64)
+        .i64_add_to_local => t.i64_add_to_local,
+        .i64_sub_to_local => t.i64_sub_to_local,
+        .i64_mul_to_local => t.i64_mul_to_local,
+        .i64_and_to_local => t.i64_and_to_local,
+        .i64_or_to_local => t.i64_or_to_local,
+        .i64_xor_to_local => t.i64_xor_to_local,
+        .i64_shl_to_local => t.i64_shl_to_local,
+        .i64_shr_s_to_local => t.i64_shr_s_to_local,
+        .i64_shr_u_to_local => t.i64_shr_u_to_local,
     };
 }

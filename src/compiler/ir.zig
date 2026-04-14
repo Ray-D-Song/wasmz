@@ -414,6 +414,27 @@ pub const Op = union(enum) {
     i32_le_u_imm: BinaryOpImm(i32),
     i32_ge_s_imm: BinaryOpImm(i32),
     i32_ge_u_imm: BinaryOpImm(i32),
+    // i64 arithmetic-imm: rhs is an i64 literal embedded in the instruction
+    i64_add_imm: BinaryOpImm(i64),
+    i64_sub_imm: BinaryOpImm(i64),
+    i64_mul_imm: BinaryOpImm(i64),
+    i64_and_imm: BinaryOpImm(i64),
+    i64_or_imm: BinaryOpImm(i64),
+    i64_xor_imm: BinaryOpImm(i64),
+    i64_shl_imm: BinaryOpImm(i64),
+    i64_shr_s_imm: BinaryOpImm(i64),
+    i64_shr_u_imm: BinaryOpImm(i64),
+    // i64 compare-imm: produces an i32 boolean
+    i64_eq_imm: BinaryOpImm(i64),
+    i64_ne_imm: BinaryOpImm(i64),
+    i64_lt_s_imm: BinaryOpImm(i64),
+    i64_lt_u_imm: BinaryOpImm(i64),
+    i64_gt_s_imm: BinaryOpImm(i64),
+    i64_gt_u_imm: BinaryOpImm(i64),
+    i64_le_s_imm: BinaryOpImm(i64),
+    i64_le_u_imm: BinaryOpImm(i64),
+    i64_ge_s_imm: BinaryOpImm(i64),
+    i64_ge_u_imm: BinaryOpImm(i64),
 
     // ── Fused: compare + jump_if_z (F: cmp + branch → cmp_jump) ─────────────
     // Jumps to rel_target (from instruction start) when the comparison is FALSE.
@@ -430,6 +451,19 @@ pub const Op = union(enum) {
     i32_ge_u_jump_if_false: CompareJumpOp(i32),
     // i32 eqz-jump (unary: jumps when src != 0, i.e. when eqz is false)
     i32_eqz_jump_if_false: struct { src: Slot, target: u32 },
+    // i64 compare-jump variants
+    i64_eq_jump_if_false: CompareJumpOp(i64),
+    i64_ne_jump_if_false: CompareJumpOp(i64),
+    i64_lt_s_jump_if_false: CompareJumpOp(i64),
+    i64_lt_u_jump_if_false: CompareJumpOp(i64),
+    i64_gt_s_jump_if_false: CompareJumpOp(i64),
+    i64_gt_u_jump_if_false: CompareJumpOp(i64),
+    i64_le_s_jump_if_false: CompareJumpOp(i64),
+    i64_le_u_jump_if_false: CompareJumpOp(i64),
+    i64_ge_s_jump_if_false: CompareJumpOp(i64),
+    i64_ge_u_jump_if_false: CompareJumpOp(i64),
+    // i64 eqz-jump (unary: jumps when src != 0, i.e. when eqz is false)
+    i64_eqz_jump_if_false: struct { src: Slot, target: u32 },
 
     // ── Fused: binop result to local (D: binop + local_set → binop_to_local) ─
     i32_add_to_local: BinaryOpToLocal(i32),
@@ -441,6 +475,16 @@ pub const Op = union(enum) {
     i32_shl_to_local: BinaryOpToLocal(i32),
     i32_shr_s_to_local: BinaryOpToLocal(i32),
     i32_shr_u_to_local: BinaryOpToLocal(i32),
+    // i64 binop-to-local variants
+    i64_add_to_local: BinaryOpToLocal(i64),
+    i64_sub_to_local: BinaryOpToLocal(i64),
+    i64_mul_to_local: BinaryOpToLocal(i64),
+    i64_and_to_local: BinaryOpToLocal(i64),
+    i64_or_to_local: BinaryOpToLocal(i64),
+    i64_xor_to_local: BinaryOpToLocal(i64),
+    i64_shl_to_local: BinaryOpToLocal(i64),
+    i64_shr_s_to_local: BinaryOpToLocal(i64),
+    i64_shr_u_to_local: BinaryOpToLocal(i64),
 
     // ── SIMD operations ───────────────────────────────────────────────────────
     simd_unary: SimdUnaryOp,
