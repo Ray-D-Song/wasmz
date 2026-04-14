@@ -157,7 +157,7 @@ fn dispatchException(
 
 // ── throw ────────────────────────────────────────────────────────────────────
 
-pub fn handle_throw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_throw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsThrow, ip);
 
     // Read inline arg slots directly from the bytecode stream (zero pointer chasing)
@@ -196,7 +196,7 @@ pub fn handle_throw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *co
     if (dispatchException(ops.tag_index, exn_ref, frame, env.store, env)) {
         // Handler found, dispatch to the handler target
         const cur = frame.callStackTop();
-        dispatch.dispatch(cur.ip, cur.slots.ptr, frame, env);
+        dispatch.dispatch(cur.ip, cur.slots.ptr, frame, env, r0, fp0);
     } else {
         trapReturn(frame, .UnhandledException);
     }
@@ -204,7 +204,7 @@ pub fn handle_throw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *co
 
 // ── throw_ref ────────────────────────────────────────────────────────────────
 
-pub fn handle_throw_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_throw_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsThrowRef, ip);
 
     const exn_ref = slots[ops.ref].readAsGcRef();
@@ -216,7 +216,7 @@ pub fn handle_throw_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
 
     if (dispatchException(tag_index, exn_ref, frame, env.store, env)) {
         const cur = frame.callStackTop();
-        dispatch.dispatch(cur.ip, cur.slots.ptr, frame, env);
+        dispatch.dispatch(cur.ip, cur.slots.ptr, frame, env, r0, fp0);
     } else {
         trapReturn(frame, .UnhandledException);
     }
@@ -224,7 +224,7 @@ pub fn handle_throw_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
 
 // ── try_table_enter ──────────────────────────────────────────────────────────
 
-pub fn handle_try_table_enter(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_try_table_enter(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsTryTableEnter, ip);
 
     frame.eh_stack.append(frame.allocator, .{
@@ -236,16 +236,16 @@ pub fn handle_try_table_enter(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
         trapReturn(frame, .OutOfMemory);
         return;
     };
-    dispatch.next(ip, stride(encode.OpsTryTableEnter), slots, frame, env);
+    dispatch.next(ip, stride(encode.OpsTryTableEnter), slots, frame, env, r0, fp0);
 }
 
 // ── try_table_leave ──────────────────────────────────────────────────────────
 
-pub fn handle_try_table_leave(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_try_table_leave(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsTryTableLeave, ip);
 
     _ = frame.eh_stack.pop();
 
     const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
-    dispatch.dispatch(target_ip, slots, frame, env);
+    dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
 }

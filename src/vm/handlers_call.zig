@@ -172,7 +172,7 @@ fn invokeHostCallInline(
 
 // ── call ─────────────────────────────────────────────────────────────────────
 
-pub fn handle_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsCall, ip);
 
     // Read inline arg slots directly from the bytecode stream (zero pointer chasing)
@@ -199,7 +199,7 @@ pub fn handle_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *con
                 slots[ops.dst] = rv;
             }
         }
-        dispatch.next(ip, instr_stride, slots, frame, env);
+        dispatch.next(ip, instr_stride, slots, frame, env, r0, fp0);
     } else {
         // ── Phase 0: already done above (readOps + inline args) ──
         var t = profiling.ScopedTimer.start();
@@ -251,13 +251,13 @@ pub fn handle_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *con
         t.lap(&profiling.call_prof.ns_push_dispatch);
         if (profiling.enabled) profiling.call_prof.calls += 1;
 
-        dispatch.dispatch(callee.code.ptr, callee_slots.ptr, frame, env);
+        dispatch.dispatch(callee.code.ptr, callee_slots.ptr, frame, env, 0, 0.0);
     }
 }
 
 // ── call_indirect ────────────────────────────────────────────────────────────
 
-pub fn handle_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsCallIndirect, ip);
 
     // Read inline arg slots directly from the bytecode stream
@@ -314,7 +314,7 @@ pub fn handle_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
                 slots[ops.dst] = rv;
             }
         }
-        dispatch.next(ip, instr_stride, slots, frame, env);
+        dispatch.next(ip, instr_stride, slots, frame, env, r0, fp0);
     } else {
         const callee = ensureLocalCompiled(callee_func_idx, env, frame) orelse return;
         const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
@@ -349,13 +349,15 @@ pub fn handle_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
             return;
         };
 
-        dispatch.dispatch(callee.code.ptr, callee_slots.ptr, frame, env);
+        dispatch.dispatch(callee.code.ptr, callee_slots.ptr, frame, env, 0, 0.0);
     }
 }
 
 // ── return_call ──────────────────────────────────────────────────────────────
 
-pub fn handle_return_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_return_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    _ = r0;
+    _ = fp0;
     const ops = readOps(encode.OpsReturnCall, ip);
 
     // Read inline arg slots directly from the bytecode stream
@@ -393,7 +395,7 @@ pub fn handle_return_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
 
         // Resume caller
         const caller = frame.callStackAt(caller_idx);
-        dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env);
+        dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env, 0, 0.0);
     } else {
         // Tail call to local function: replace current frame
         const callee = ensureLocalCompiled(ops.func_idx, env, frame) orelse return;
@@ -425,13 +427,15 @@ pub fn handle_return_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
             .func = callee,
         };
 
-        dispatch.dispatch(callee.code.ptr, callee_slots.ptr, frame, env);
+        dispatch.dispatch(callee.code.ptr, callee_slots.ptr, frame, env, 0, 0.0);
     }
 }
 
 // ── return_call_indirect ─────────────────────────────────────────────────────
 
-pub fn handle_return_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_return_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    _ = r0;
+    _ = fp0;
     const ops = readOps(encode.OpsReturnCallIndirect, ip);
 
     // Read inline arg slots directly from the bytecode stream
@@ -500,7 +504,7 @@ pub fn handle_return_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
         }
 
         const caller = frame.callStackAt(caller_idx);
-        dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env);
+        dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env, 0, 0.0);
     } else {
         const callee = ensureLocalCompiled(callee_func_idx, env, frame) orelse return;
         const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
@@ -527,7 +531,7 @@ pub fn handle_return_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
             .func = callee,
         };
 
-        dispatch.dispatch(callee.code.ptr, callee_slots.ptr, frame, env);
+        dispatch.dispatch(callee.code.ptr, callee_slots.ptr, frame, env, 0, 0.0);
     }
 }
 
@@ -535,7 +539,7 @@ pub fn handle_return_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
 
 // ── call_ref ─────────────────────────────────────────────────────────────────
 
-pub fn handle_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.OpsCallRef, ip);
 
     // funcref is stored as u64: null=0, func_idx+1=non-null
@@ -576,7 +580,7 @@ pub fn handle_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
                 slots[ops.dst] = rv;
             }
         }
-        dispatch.next(ip, instr_stride, slots, frame, env);
+        dispatch.next(ip, instr_stride, slots, frame, env, r0, fp0);
     } else {
         const callee = ensureLocalCompiled(callee_func_idx, env, frame) orelse return;
         const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
@@ -611,13 +615,15 @@ pub fn handle_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
             return;
         };
 
-        dispatch.dispatch(callee.code.ptr, callee_slots.ptr, frame, env);
+        dispatch.dispatch(callee.code.ptr, callee_slots.ptr, frame, env, 0, 0.0);
     }
 }
 
 // ── return_call_ref ──────────────────────────────────────────────────────────
 
-pub fn handle_return_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_return_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    _ = r0;
+    _ = fp0;
     const ops = readOps(encode.OpsReturnCallRef, ip);
 
     const ref_bits = slots[ops.ref].readAs(u64);
@@ -669,7 +675,7 @@ pub fn handle_return_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
         }
 
         const caller = frame.callStackAt(caller_idx);
-        dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env);
+        dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env, 0, 0.0);
     } else {
         const callee = ensureLocalCompiled(callee_func_idx, env, frame) orelse return;
         const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
@@ -696,6 +702,6 @@ pub fn handle_return_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
             .func = callee,
         };
 
-        dispatch.dispatch(callee.code.ptr, callee_slots.ptr, frame, env);
+        dispatch.dispatch(callee.code.ptr, callee_slots.ptr, frame, env, 0, 0.0);
     }
 }
