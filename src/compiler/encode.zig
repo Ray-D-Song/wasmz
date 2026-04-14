@@ -1156,10 +1156,15 @@ pub const HandlerTable = struct {
 /// `args_start` is the starting index into call_args.
 /// `args_len` is the number of arg slots to write.
 fn writeInlineArgs(ops_ptr: [*]u8, comptime OpsT: type, call_args: []const Slot, args_start: u32, args_len: u32) void {
-    const inline_base: [*]u32 = @ptrCast(@alignCast(ops_ptr + @sizeOf(OpsT)));
+    const base: [*]align(1) u32 = @ptrCast(ops_ptr + @sizeOf(OpsT));
     for (0..args_len) |j| {
-        inline_base[j] = call_args[args_start + j];
+        base[j] = call_args[args_start + j];
     }
+}
+
+/// Write an ops struct to an unaligned byte pointer (compact encoding).
+inline fn writeOps(comptime T: type, ptr: [*]u8, value: T) void {
+    std.mem.bytesAsValue(T, ptr[0..@sizeOf(T)]).* = value;
 }
 
 /// Encode a `CompiledFunction` into an `EncodedFunction`.
@@ -1205,7 +1210,7 @@ pub fn encode(
 
         // Write handler pointer (always 8 bytes at the start).
         const h: Handler = handlerFor(op, handlers);
-        @as(*Handler, @ptrCast(@alignCast(ptr))).* = h;
+        std.mem.bytesAsValue(Handler, ptr[0..@sizeOf(Handler)]).* = h;
 
         const ops_ptr = ptr + HANDLER_SIZE;
 
@@ -1213,93 +1218,93 @@ pub fn encode(
         switch (op) {
             .unreachable_ => {},
             .const_i32 => |inst| {
-                @as(*OpsConstI32, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsConstI32, ops_ptr, .{
                     .dst = inst.dst,
                     .value = inst.value,
-                };
+                });
             },
             .const_i64 => |inst| {
-                @as(*OpsConstI64, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsConstI64, ops_ptr, .{
                     .dst = inst.dst,
                     .value = inst.value,
-                };
+                });
             },
             .const_f32 => |inst| {
-                @as(*OpsConstF32, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsConstF32, ops_ptr, .{
                     .dst = inst.dst,
                     .value = inst.value,
-                };
+                });
             },
             .const_f64 => |inst| {
-                @as(*OpsConstF64, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsConstF64, ops_ptr, .{
                     .dst = inst.dst,
                     .value = inst.value,
-                };
+                });
             },
             .const_v128 => |inst| {
-                @as(*OpsConstV128, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsConstV128, ops_ptr, .{
                     .dst = inst.dst,
                     .value = @bitCast(inst.value),
-                };
+                });
             },
             .const_ref_null => |inst| {
-                @as(*OpsDst, @ptrCast(@alignCast(ops_ptr))).* = .{ .dst = inst.dst };
+                writeOps(OpsDst, ops_ptr, .{ .dst = inst.dst });
             },
             .ref_is_null => |inst| {
-                @as(*OpsDstSrc, @ptrCast(@alignCast(ops_ptr))).* = .{ .dst = inst.dst, .src = inst.src };
+                writeOps(OpsDstSrc, ops_ptr, .{ .dst = inst.dst, .src = inst.src });
             },
             .ref_func => |inst| {
-                @as(*OpsRefFunc, @ptrCast(@alignCast(ops_ptr))).* = .{ .dst = inst.dst, .func_idx = inst.func_idx };
+                writeOps(OpsRefFunc, ops_ptr, .{ .dst = inst.dst, .func_idx = inst.func_idx });
             },
             .ref_eq => |inst| {
-                @as(*OpsDstLhsRhs, @ptrCast(@alignCast(ops_ptr))).* = .{ .dst = inst.dst, .lhs = inst.lhs, .rhs = inst.rhs };
+                writeOps(OpsDstLhsRhs, ops_ptr, .{ .dst = inst.dst, .lhs = inst.lhs, .rhs = inst.rhs });
             },
             .local_get => |inst| {
-                @as(*OpsLocalGet, @ptrCast(@alignCast(ops_ptr))).* = .{ .dst = inst.dst, .local = inst.local };
+                writeOps(OpsLocalGet, ops_ptr, .{ .dst = inst.dst, .local = inst.local });
             },
             .local_set => |inst| {
-                @as(*OpsLocalSet, @ptrCast(@alignCast(ops_ptr))).* = .{ .local = inst.local, .src = inst.src };
+                writeOps(OpsLocalSet, ops_ptr, .{ .local = inst.local, .src = inst.src });
             },
             .global_get => |inst| {
-                @as(*OpsGlobalGet, @ptrCast(@alignCast(ops_ptr))).* = .{ .dst = inst.dst, .global_idx = inst.global_idx };
+                writeOps(OpsGlobalGet, ops_ptr, .{ .dst = inst.dst, .global_idx = inst.global_idx });
             },
             .global_set => |inst| {
-                @as(*OpsGlobalSet, @ptrCast(@alignCast(ops_ptr))).* = .{ .src = inst.src, .global_idx = inst.global_idx };
+                writeOps(OpsGlobalSet, ops_ptr, .{ .src = inst.src, .global_idx = inst.global_idx });
             },
             .copy => |inst| {
-                @as(*OpsCopy, @ptrCast(@alignCast(ops_ptr))).* = .{ .dst = inst.dst, .src = inst.src };
+                writeOps(OpsCopy, ops_ptr, .{ .dst = inst.dst, .src = inst.src });
             },
             .jump => |inst| {
-                @as(*OpsJump, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsJump, ops_ptr, .{
                     .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
-                };
+                });
             },
             .jump_if_z => |inst| {
-                @as(*OpsJumpIfZ, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsJumpIfZ, ops_ptr, .{
                     .cond = inst.cond,
                     .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
-                };
+                });
             },
             .jump_table => |inst| {
-                @as(*OpsJumpTable, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsJumpTable, ops_ptr, .{
                     .index = inst.index,
                     .targets_start = inst.targets_start,
                     .targets_len = inst.targets_len,
-                };
+                });
             },
             .select => |inst| {
-                @as(*OpsSelect, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsSelect, ops_ptr, .{
                     .dst = inst.dst,
                     .val1 = inst.val1,
                     .val2 = inst.val2,
                     .cond = inst.cond,
-                };
+                });
             },
             .ret => |inst| {
-                @as(*OpsRet, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsRet, ops_ptr, .{
                     .has_value = if (inst.value != null) 1 else 0,
                     .value = inst.value orelse 0,
-                };
+                });
             },
 
             // ── All binary ops sharing dst/lhs/rhs layout ──────────────────
@@ -1380,11 +1385,11 @@ pub fn encode(
             .f64_le,
             .f64_ge,
             => |inst| {
-                @as(*OpsDstLhsRhs, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsDstLhsRhs, ops_ptr, .{
                     .dst = inst.dst,
                     .lhs = inst.lhs,
                     .rhs = inst.rhs,
-                };
+                });
             },
 
             // ── All unary / conversion ops sharing dst/src layout ──────────
@@ -1449,10 +1454,10 @@ pub fn encode(
             .i64_extend16_s,
             .i64_extend32_s,
             => |inst| {
-                @as(*OpsDstSrc, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsDstSrc, ops_ptr, .{
                     .dst = inst.dst,
                     .src = inst.src,
-                };
+                });
             },
 
             // ── Memory loads ──────────────────────────────────────────────
@@ -1471,11 +1476,11 @@ pub fn encode(
             .f32_load,
             .f64_load,
             => |inst| {
-                @as(*OpsLoad, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsLoad, ops_ptr, .{
                     .dst = inst.dst,
                     .addr = inst.addr,
                     .offset = inst.offset,
-                };
+                });
             },
 
             // ── Memory stores ─────────────────────────────────────────────
@@ -1489,121 +1494,121 @@ pub fn encode(
             .f32_store,
             .f64_store,
             => |inst| {
-                @as(*OpsStore, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsStore, ops_ptr, .{
                     .addr = inst.addr,
                     .src = inst.src,
                     .offset = inst.offset,
-                };
+                });
             },
 
             .memory_size => |inst| {
-                @as(*OpsMemorySize, @ptrCast(@alignCast(ops_ptr))).* = .{ .dst = inst.dst };
+                writeOps(OpsMemorySize, ops_ptr, .{ .dst = inst.dst });
             },
             .memory_grow => |inst| {
-                @as(*OpsMemoryGrow, @ptrCast(@alignCast(ops_ptr))).* = .{ .dst = inst.dst, .delta = inst.delta };
+                writeOps(OpsMemoryGrow, ops_ptr, .{ .dst = inst.dst, .delta = inst.delta });
             },
             .memory_init => |inst| {
-                @as(*OpsMemoryInit, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsMemoryInit, ops_ptr, .{
                     .segment_idx = inst.segment_idx,
                     .dst_addr = inst.dst_addr,
                     .src_offset = inst.src_offset,
                     .len = inst.len,
-                };
+                });
             },
             .data_drop => |inst| {
-                @as(*OpsDataDrop, @ptrCast(@alignCast(ops_ptr))).* = .{ .segment_idx = inst.segment_idx };
+                writeOps(OpsDataDrop, ops_ptr, .{ .segment_idx = inst.segment_idx });
             },
             .memory_copy => |inst| {
-                @as(*OpsMemoryCopy, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsMemoryCopy, ops_ptr, .{
                     .dst_addr = inst.dst_addr,
                     .src_addr = inst.src_addr,
                     .len = inst.len,
-                };
+                });
             },
             .memory_fill => |inst| {
-                @as(*OpsMemoryFill, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsMemoryFill, ops_ptr, .{
                     .dst_addr = inst.dst_addr,
                     .value = inst.value,
                     .len = inst.len,
-                };
+                });
             },
 
             .call => |inst| {
-                @as(*OpsCall, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsCall, ops_ptr, .{
                     .dst_valid = if (inst.dst != null) 1 else 0,
                     .dst = inst.dst orelse 0,
                     .func_idx = inst.func_idx,
                     .args_len = inst.args_len,
-                };
+                });
                 writeInlineArgs(ops_ptr, OpsCall, cf.call_args.items, inst.args_start, inst.args_len);
             },
             .call_indirect => |inst| {
-                @as(*OpsCallIndirect, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsCallIndirect, ops_ptr, .{
                     .dst_valid = if (inst.dst != null) 1 else 0,
                     .dst = inst.dst orelse 0,
                     .index = inst.index,
                     .type_index = inst.type_index,
                     .table_index = inst.table_index,
                     .args_len = inst.args_len,
-                };
+                });
                 writeInlineArgs(ops_ptr, OpsCallIndirect, cf.call_args.items, inst.args_start, inst.args_len);
             },
             .return_call => |inst| {
-                @as(*OpsReturnCall, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsReturnCall, ops_ptr, .{
                     .func_idx = inst.func_idx,
                     .args_len = inst.args_len,
-                };
+                });
                 writeInlineArgs(ops_ptr, OpsReturnCall, cf.call_args.items, inst.args_start, inst.args_len);
             },
             .return_call_indirect => |inst| {
-                @as(*OpsReturnCallIndirect, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsReturnCallIndirect, ops_ptr, .{
                     .index = inst.index,
                     .type_index = inst.type_index,
                     .table_index = inst.table_index,
                     .args_len = inst.args_len,
-                };
+                });
                 writeInlineArgs(ops_ptr, OpsReturnCallIndirect, cf.call_args.items, inst.args_start, inst.args_len);
             },
             .call_ref => |inst| {
-                @as(*OpsCallRef, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsCallRef, ops_ptr, .{
                     .dst_valid = if (inst.dst != null) 1 else 0,
                     .dst = inst.dst orelse 0,
                     .ref = inst.ref,
                     .type_idx = inst.type_idx,
                     .args_len = inst.args_len,
-                };
+                });
                 writeInlineArgs(ops_ptr, OpsCallRef, cf.call_args.items, inst.args_start, inst.args_len);
             },
             .return_call_ref => |inst| {
-                @as(*OpsReturnCallRef, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsReturnCallRef, ops_ptr, .{
                     .ref = inst.ref,
                     .type_idx = inst.type_idx,
                     .args_len = inst.args_len,
-                };
+                });
                 writeInlineArgs(ops_ptr, OpsReturnCallRef, cf.call_args.items, inst.args_start, inst.args_len);
             },
 
             // ── Atomics ───────────────────────────────────────────────────
             .atomic_load => |inst| {
-                @as(*OpsAtomicLoad, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsAtomicLoad, ops_ptr, .{
                     .dst = inst.dst,
                     .addr = inst.addr,
                     .offset = inst.offset,
                     .width = @intFromEnum(inst.width),
                     .ty = @intFromEnum(inst.ty),
-                };
+                });
             },
             .atomic_store => |inst| {
-                @as(*OpsAtomicStore, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsAtomicStore, ops_ptr, .{
                     .addr = inst.addr,
                     .src = inst.src,
                     .offset = inst.offset,
                     .width = @intFromEnum(inst.width),
                     .ty = @intFromEnum(inst.ty),
-                };
+                });
             },
             .atomic_rmw => |inst| {
-                @as(*OpsAtomicRmw, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsAtomicRmw, ops_ptr, .{
                     .dst = inst.dst,
                     .addr = inst.addr,
                     .src = inst.src,
@@ -1611,10 +1616,10 @@ pub fn encode(
                     .op = @intFromEnum(inst.op),
                     .width = @intFromEnum(inst.width),
                     .ty = @intFromEnum(inst.ty),
-                };
+                });
             },
             .atomic_cmpxchg => |inst| {
-                @as(*OpsAtomicCmpxchg, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsAtomicCmpxchg, ops_ptr, .{
                     .dst = inst.dst,
                     .addr = inst.addr,
                     .expected = inst.expected,
@@ -1622,202 +1627,202 @@ pub fn encode(
                     .offset = inst.offset,
                     .width = @intFromEnum(inst.width),
                     .ty = @intFromEnum(inst.ty),
-                };
+                });
             },
             .atomic_fence => {},
             .atomic_notify => |inst| {
-                @as(*OpsAtomicNotify, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsAtomicNotify, ops_ptr, .{
                     .dst = inst.dst,
                     .addr = inst.addr,
                     .count = inst.count,
                     .offset = inst.offset,
-                };
+                });
             },
             .atomic_wait32 => |inst| {
-                @as(*OpsAtomicWait32, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsAtomicWait32, ops_ptr, .{
                     .dst = inst.dst,
                     .addr = inst.addr,
                     .expected = inst.expected,
                     .timeout = inst.timeout,
                     .offset = inst.offset,
-                };
+                });
             },
             .atomic_wait64 => |inst| {
-                @as(*OpsAtomicWait64, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsAtomicWait64, ops_ptr, .{
                     .dst = inst.dst,
                     .addr = inst.addr,
                     .expected = inst.expected,
                     .timeout = inst.timeout,
                     .offset = inst.offset,
-                };
+                });
             },
 
             // ── Tables ────────────────────────────────────────────────────
             .table_get => |inst| {
-                @as(*OpsTableGet, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsTableGet, ops_ptr, .{
                     .dst = inst.dst,
                     .table_index = inst.table_index,
                     .index = inst.index,
-                };
+                });
             },
             .table_set => |inst| {
-                @as(*OpsTableSet, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsTableSet, ops_ptr, .{
                     .table_index = inst.table_index,
                     .index = inst.index,
                     .value = inst.value,
-                };
+                });
             },
             .table_size => |inst| {
-                @as(*OpsTableSize, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsTableSize, ops_ptr, .{
                     .dst = inst.dst,
                     .table_index = inst.table_index,
-                };
+                });
             },
             .table_grow => |inst| {
-                @as(*OpsTableGrow, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsTableGrow, ops_ptr, .{
                     .dst = inst.dst,
                     .table_index = inst.table_index,
                     .init = inst.init,
                     .delta = inst.delta,
-                };
+                });
             },
             .table_fill => |inst| {
-                @as(*OpsTableFill, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsTableFill, ops_ptr, .{
                     .table_index = inst.table_index,
                     .dst_idx = inst.dst_idx,
                     .value = inst.value,
                     .len = inst.len,
-                };
+                });
             },
             .table_copy => |inst| {
-                @as(*OpsTableCopy, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsTableCopy, ops_ptr, .{
                     .dst_table = inst.dst_table,
                     .src_table = inst.src_table,
                     .dst_idx = inst.dst_idx,
                     .src_idx = inst.src_idx,
                     .len = inst.len,
-                };
+                });
             },
             .table_init => |inst| {
-                @as(*OpsTableInit, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsTableInit, ops_ptr, .{
                     .table_index = inst.table_index,
                     .segment_idx = inst.segment_idx,
                     .dst_idx = inst.dst_idx,
                     .src_offset = inst.src_offset,
                     .len = inst.len,
-                };
+                });
             },
             .elem_drop => |inst| {
-                @as(*OpsElemDrop, @ptrCast(@alignCast(ops_ptr))).* = .{ .segment_idx = inst.segment_idx };
+                writeOps(OpsElemDrop, ops_ptr, .{ .segment_idx = inst.segment_idx });
             },
 
             // ── GC structs ─────────────────────────────────────────────────
             .struct_new => |inst| {
-                @as(*OpsStructNew, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsStructNew, ops_ptr, .{
                     .dst = inst.dst,
                     .type_idx = inst.type_idx,
                     .args_len = inst.args_len,
-                };
+                });
                 writeInlineArgs(ops_ptr, OpsStructNew, cf.call_args.items, inst.args_start, inst.args_len);
             },
             .struct_new_default => |inst| {
-                @as(*OpsStructNewDefault, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsStructNewDefault, ops_ptr, .{
                     .dst = inst.dst,
                     .type_idx = inst.type_idx,
-                };
+                });
             },
             inline .struct_get, .struct_get_s, .struct_get_u => |inst| {
-                @as(*OpsStructGet, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsStructGet, ops_ptr, .{
                     .dst = inst.dst,
                     .ref = inst.ref,
                     .type_idx = inst.type_idx,
                     .field_idx = inst.field_idx,
-                };
+                });
             },
             .struct_set => |inst| {
-                @as(*OpsStructSet, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsStructSet, ops_ptr, .{
                     .ref = inst.ref,
                     .value = inst.value,
                     .type_idx = inst.type_idx,
                     .field_idx = inst.field_idx,
-                };
+                });
             },
 
             // ── GC arrays ──────────────────────────────────────────────────
             .array_new => |inst| {
-                @as(*OpsArrayNew, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsArrayNew, ops_ptr, .{
                     .dst = inst.dst,
                     .init = inst.init,
                     .len = inst.len,
                     .type_idx = inst.type_idx,
-                };
+                });
             },
             .array_new_default => |inst| {
-                @as(*OpsArrayNewDefault, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsArrayNewDefault, ops_ptr, .{
                     .dst = inst.dst,
                     .len = inst.len,
                     .type_idx = inst.type_idx,
-                };
+                });
             },
             .array_new_fixed => |inst| {
-                @as(*OpsArrayNewFixed, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsArrayNewFixed, ops_ptr, .{
                     .dst = inst.dst,
                     .type_idx = inst.type_idx,
                     .args_len = inst.args_len,
-                };
+                });
                 writeInlineArgs(ops_ptr, OpsArrayNewFixed, cf.call_args.items, inst.args_start, inst.args_len);
             },
             .array_new_data => |inst| {
-                @as(*OpsArrayNewData, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsArrayNewData, ops_ptr, .{
                     .dst = inst.dst,
                     .offset = inst.offset,
                     .len = inst.len,
                     .type_idx = inst.type_idx,
                     .data_idx = inst.data_idx,
-                };
+                });
             },
             .array_new_elem => |inst| {
-                @as(*OpsArrayNewElem, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsArrayNewElem, ops_ptr, .{
                     .dst = inst.dst,
                     .offset = inst.offset,
                     .len = inst.len,
                     .type_idx = inst.type_idx,
                     .elem_idx = inst.elem_idx,
-                };
+                });
             },
             inline .array_get, .array_get_s, .array_get_u => |inst| {
-                @as(*OpsArrayGet, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsArrayGet, ops_ptr, .{
                     .dst = inst.dst,
                     .ref = inst.ref,
                     .index = inst.index,
                     .type_idx = inst.type_idx,
-                };
+                });
             },
             .array_set => |inst| {
-                @as(*OpsArraySet, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsArraySet, ops_ptr, .{
                     .ref = inst.ref,
                     .index = inst.index,
                     .value = inst.value,
                     .type_idx = inst.type_idx,
-                };
+                });
             },
             .array_len => |inst| {
-                @as(*OpsArrayLen, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsArrayLen, ops_ptr, .{
                     .dst = inst.dst,
                     .ref = inst.ref,
-                };
+                });
             },
             .array_fill => |inst| {
-                @as(*OpsArrayFill, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsArrayFill, ops_ptr, .{
                     .ref = inst.ref,
                     .offset = inst.offset,
                     .value = inst.value,
                     .n = inst.n,
                     .type_idx = inst.type_idx,
-                };
+                });
             },
             .array_copy => |inst| {
-                @as(*OpsArrayCopy, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsArrayCopy, ops_ptr, .{
                     .dst_ref = inst.dst_ref,
                     .dst_offset = inst.dst_offset,
                     .src_ref = inst.src_ref,
@@ -1825,92 +1830,92 @@ pub fn encode(
                     .n = inst.n,
                     .dst_type_idx = inst.dst_type_idx,
                     .src_type_idx = inst.src_type_idx,
-                };
+                });
             },
             .array_init_data => |inst| {
-                @as(*OpsArrayInitData, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsArrayInitData, ops_ptr, .{
                     .ref = inst.ref,
                     .d = inst.d,
                     .s = inst.s,
                     .n = inst.n,
                     .type_idx = inst.type_idx,
                     .data_idx = inst.data_idx,
-                };
+                });
             },
             .array_init_elem => |inst| {
-                @as(*OpsArrayInitElem, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsArrayInitElem, ops_ptr, .{
                     .ref = inst.ref,
                     .d = inst.d,
                     .s = inst.s,
                     .n = inst.n,
                     .type_idx = inst.type_idx,
                     .elem_idx = inst.elem_idx,
-                };
+                });
             },
 
             // ── GC i31 ─────────────────────────────────────────────────────
             .ref_i31 => |inst| {
-                @as(*OpsRefI31, @ptrCast(@alignCast(ops_ptr))).* = .{ .dst = inst.dst, .value = inst.value };
+                writeOps(OpsRefI31, ops_ptr, .{ .dst = inst.dst, .value = inst.value });
             },
             inline .i31_get_s, .i31_get_u => |inst| {
-                @as(*OpsI31Get, @ptrCast(@alignCast(ops_ptr))).* = .{ .dst = inst.dst, .ref = inst.ref };
+                writeOps(OpsI31Get, ops_ptr, .{ .dst = inst.dst, .ref = inst.ref });
             },
 
             // ── GC ref test/cast ────────────────────────────────────────────
             inline .ref_test, .ref_cast => |inst| {
-                @as(*OpsRefTest, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsRefTest, ops_ptr, .{
                     .dst = inst.dst,
                     .ref = inst.ref,
                     .type_idx = inst.type_idx,
                     .nullable = if (inst.nullable) 1 else 0,
-                };
+                });
             },
             .ref_as_non_null => |inst| {
-                @as(*OpsRefAsNonNull, @ptrCast(@alignCast(ops_ptr))).* = .{ .dst = inst.dst, .ref = inst.ref };
+                writeOps(OpsRefAsNonNull, ops_ptr, .{ .dst = inst.dst, .ref = inst.ref });
             },
             inline .br_on_null, .br_on_non_null => |inst| {
-                @as(*OpsBrOnNull, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsBrOnNull, ops_ptr, .{
                     .ref = inst.ref,
                     .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
-                };
+                });
             },
             inline .br_on_cast, .br_on_cast_fail => |inst| {
-                @as(*OpsBrOnCast, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsBrOnCast, ops_ptr, .{
                     .ref = inst.ref,
                     .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
                     .from_type_idx = inst.from_type_idx,
                     .to_type_idx = inst.to_type_idx,
                     .to_nullable = if (inst.to_nullable) 1 else 0,
-                };
+                });
             },
 
             // ── GC extern/any ───────────────────────────────────────────────
             inline .any_convert_extern, .extern_convert_any => |inst| {
-                @as(*OpsConvertRef, @ptrCast(@alignCast(ops_ptr))).* = .{ .dst = inst.dst, .ref = inst.ref };
+                writeOps(OpsConvertRef, ops_ptr, .{ .dst = inst.dst, .ref = inst.ref });
             },
 
             // ── EH ─────────────────────────────────────────────────────────
             .throw => |inst| {
-                @as(*OpsThrow, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsThrow, ops_ptr, .{
                     .tag_index = inst.tag_index,
                     .args_len = inst.args_len,
-                };
+                });
                 writeInlineArgs(ops_ptr, OpsThrow, cf.call_args.items, inst.args_start, inst.args_len);
             },
             .throw_ref => |inst| {
-                @as(*OpsThrowRef, @ptrCast(@alignCast(ops_ptr))).* = .{ .ref = inst.ref };
+                writeOps(OpsThrowRef, ops_ptr, .{ .ref = inst.ref });
             },
             .try_table_enter => |inst| {
-                @as(*OpsTryTableEnter, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsTryTableEnter, ops_ptr, .{
                     .handlers_start = inst.handlers_start,
                     .handlers_len = inst.handlers_len,
                     .end_target = op_offset[inst.end_target],
-                };
+                });
             },
             .try_table_leave => |inst| {
-                @as(*OpsTryTableLeave, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsTryTableLeave, ops_ptr, .{
                     .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
-                };
+                });
             },
 
             // ── Fused: binop-imm (Candidate C) ────────────────────────────
@@ -1934,11 +1939,11 @@ pub fn encode(
             .i32_ge_s_imm,
             .i32_ge_u_imm,
             => |inst| {
-                @as(*OpsBinopImm, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsBinopImm, ops_ptr, .{
                     .dst = inst.dst,
                     .lhs = inst.lhs,
                     .imm = inst.imm,
-                };
+                });
             },
 
             // ── Fused: i64 binop-imm (Candidate C, i64) ───────────────────
@@ -1962,11 +1967,11 @@ pub fn encode(
             .i64_ge_s_imm,
             .i64_ge_u_imm,
             => |inst| {
-                @as(*OpsBinopImm64, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsBinopImm64, ops_ptr, .{
                     .dst = inst.dst,
                     .lhs = inst.lhs,
                     .imm = inst.imm,
-                };
+                });
             },
 
             // ── Fused: compare-jump (Candidate F) ─────────────────────────
@@ -1981,17 +1986,17 @@ pub fn encode(
             .i32_ge_s_jump_if_false,
             .i32_ge_u_jump_if_false,
             => |inst| {
-                @as(*OpsCompareJump, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsCompareJump, ops_ptr, .{
                     .lhs = inst.lhs,
                     .rhs = inst.rhs,
                     .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
-                };
+                });
             },
             .i32_eqz_jump_if_false => |inst| {
-                @as(*OpsEqzJump, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsEqzJump, ops_ptr, .{
                     .src = inst.src,
                     .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
-                };
+                });
             },
 
             // ── Fused: i64 compare-jump (Candidate F, i64) ────────────────
@@ -2006,17 +2011,17 @@ pub fn encode(
             .i64_ge_s_jump_if_false,
             .i64_ge_u_jump_if_false,
             => |inst| {
-                @as(*OpsCompareJump, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsCompareJump, ops_ptr, .{
                     .lhs = inst.lhs,
                     .rhs = inst.rhs,
                     .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
-                };
+                });
             },
             .i64_eqz_jump_if_false => |inst| {
-                @as(*OpsEqzJump, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsEqzJump, ops_ptr, .{
                     .src = inst.src,
                     .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
-                };
+                });
             },
 
             // ── Fused: binop-to-local (Candidate D) ───────────────────────
@@ -2030,11 +2035,11 @@ pub fn encode(
             .i32_shr_s_to_local,
             .i32_shr_u_to_local,
             => |inst| {
-                @as(*OpsBinopToLocal, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsBinopToLocal, ops_ptr, .{
                     .local = inst.local,
                     .lhs = inst.lhs,
                     .rhs = inst.rhs,
-                };
+                });
             },
 
             // ── Fused: i64 binop-to-local (Candidate D, i64) ──────────────
@@ -2048,11 +2053,11 @@ pub fn encode(
             .i64_shr_s_to_local,
             .i64_shr_u_to_local,
             => |inst| {
-                @as(*OpsBinopToLocal, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsBinopToLocal, ops_ptr, .{
                     .local = inst.local,
                     .lhs = inst.lhs,
                     .rhs = inst.rhs,
-                };
+                });
             },
 
             // ── Fused: binop-imm-to-local (Candidate E, i32) ──────────────
@@ -2066,11 +2071,11 @@ pub fn encode(
             .i32_shr_s_imm_to_local,
             .i32_shr_u_imm_to_local,
             => |inst| {
-                @as(*OpsBinopImmToLocal, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsBinopImmToLocal, ops_ptr, .{
                     .local = inst.local,
                     .lhs = inst.lhs,
                     .imm = inst.imm,
-                };
+                });
             },
 
             // ── Fused: binop-imm-to-local (Candidate E, i64) ──────────────
@@ -2084,11 +2089,11 @@ pub fn encode(
             .i64_shr_s_imm_to_local,
             .i64_shr_u_imm_to_local,
             => |inst| {
-                @as(*OpsBinopImmToLocal64, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsBinopImmToLocal64, ops_ptr, .{
                     .local = inst.local,
                     .lhs = inst.lhs,
                     .imm = inst.imm,
-                };
+                });
             },
 
             // ── Fused: local-inplace (Candidate H, i32) ────────────────────
@@ -2102,10 +2107,10 @@ pub fn encode(
             .i32_shr_s_local_inplace,
             .i32_shr_u_local_inplace,
             => |inst| {
-                @as(*OpsLocalInplace, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsLocalInplace, ops_ptr, .{
                     .local = inst.local,
                     .imm = inst.imm,
-                };
+                });
             },
 
             // ── Fused: local-inplace (Candidate H, i64) ────────────────────
@@ -2119,10 +2124,10 @@ pub fn encode(
             .i64_shr_s_local_inplace,
             .i64_shr_u_local_inplace,
             => |inst| {
-                @as(*OpsLocalInplace64, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsLocalInplace64, ops_ptr, .{
                     .local = inst.local,
                     .imm = inst.imm,
-                };
+                });
             },
 
             // ── Fused: compare-imm-jump (Candidate G, i32) ─────────────────
@@ -2137,11 +2142,11 @@ pub fn encode(
             .i32_ge_s_imm_jump_if_false,
             .i32_ge_u_imm_jump_if_false,
             => |inst| {
-                @as(*OpsCompareImmJump, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsCompareImmJump, ops_ptr, .{
                     .lhs = inst.lhs,
                     .imm = inst.imm,
                     .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
-                };
+                });
             },
 
             // ── Fused: compare-imm-jump (Candidate G, i64) ─────────────────
@@ -2156,80 +2161,80 @@ pub fn encode(
             .i64_ge_s_imm_jump_if_false,
             .i64_ge_u_imm_jump_if_false,
             => |inst| {
-                @as(*OpsCompareImmJump64, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsCompareImmJump64, ops_ptr, .{
                     .lhs = inst.lhs,
                     .imm = inst.imm,
                     .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
-                };
+                });
             },
 
             // ── SIMD ───────────────────────────────────────────────────────
             .simd_unary => |inst| {
-                @as(*OpsSimdUnary, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsSimdUnary, ops_ptr, .{
                     .dst = inst.dst,
                     .opcode = @intFromEnum(inst.opcode),
                     .src = inst.src,
-                };
+                });
             },
             .simd_binary => |inst| {
-                @as(*OpsSimdBinary, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsSimdBinary, ops_ptr, .{
                     .dst = inst.dst,
                     .opcode = @intFromEnum(inst.opcode),
                     .lhs = inst.lhs,
                     .rhs = inst.rhs,
-                };
+                });
             },
             .simd_ternary => |inst| {
-                @as(*OpsSimdTernary, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsSimdTernary, ops_ptr, .{
                     .dst = inst.dst,
                     .opcode = @intFromEnum(inst.opcode),
                     .first = inst.first,
                     .second = inst.second,
                     .third = inst.third,
-                };
+                });
             },
             .simd_compare => |inst| {
-                @as(*OpsSimdUnary, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsSimdUnary, ops_ptr, .{
                     .dst = inst.dst,
                     .opcode = @intFromEnum(inst.opcode),
                     .src = inst.lhs,
-                };
+                });
             },
             .simd_shift_scalar => |inst| {
-                @as(*OpsSimdBinary, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsSimdBinary, ops_ptr, .{
                     .dst = inst.dst,
                     .opcode = @intFromEnum(inst.opcode),
                     .lhs = inst.lhs,
                     .rhs = inst.rhs,
-                };
+                });
             },
             .simd_extract_lane => |inst| {
-                @as(*OpsSimdExtractLane, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsSimdExtractLane, ops_ptr, .{
                     .dst = inst.dst,
                     .opcode = @intFromEnum(inst.opcode),
                     .src = inst.src,
                     .lane = inst.lane,
-                };
+                });
             },
             .simd_replace_lane => |inst| {
-                @as(*OpsSimdReplaceLane, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsSimdReplaceLane, ops_ptr, .{
                     .dst = inst.dst,
                     .opcode = @intFromEnum(inst.opcode),
                     .src_vec = inst.src_vec,
                     .src_lane = inst.src_lane,
                     .lane = inst.lane,
-                };
+                });
             },
             .simd_shuffle => |inst| {
-                @as(*OpsSimdShuffle, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsSimdShuffle, ops_ptr, .{
                     .dst = inst.dst,
                     .lhs = inst.lhs,
                     .rhs = inst.rhs,
                     .lanes = inst.lanes,
-                };
+                });
             },
             .simd_load => |inst| {
-                @as(*OpsSimdLoad, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsSimdLoad, ops_ptr, .{
                     .dst = inst.dst,
                     .opcode = @intFromEnum(inst.opcode),
                     .addr = inst.addr,
@@ -2238,17 +2243,17 @@ pub fn encode(
                     .lane = inst.lane orelse 0,
                     .src_vec_valid = if (inst.src_vec != null) 1 else 0,
                     .src_vec = inst.src_vec orelse 0,
-                };
+                });
             },
             .simd_store => |inst| {
-                @as(*OpsSimdStore, @ptrCast(@alignCast(ops_ptr))).* = .{
+                writeOps(OpsSimdStore, ops_ptr, .{
                     .opcode = @intFromEnum(inst.opcode),
                     .addr = inst.addr,
                     .src = inst.src,
                     .offset = inst.offset,
                     .lane_valid = if (inst.lane != null) 1 else 0,
                     .lane = inst.lane orelse 0,
-                };
+                });
             },
         }
     }
