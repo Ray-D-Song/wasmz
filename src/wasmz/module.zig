@@ -144,8 +144,15 @@ pub const CompiledDataSegment = struct {
     /// For active segments, the offset in linear memory where data should be written.
     /// For passive segments, this is unused.
     offset: u32,
-    /// The actual data bytes to be written to memory.
-    data: []const u8,
+    /// The actual data bytes.
+    ///
+    /// Ownership rules:
+    ///   - passive segments: owned slice, freed in Module.deinit.
+    ///   - active segments: owned slice until the first instantiation; after all
+    ///     active segments have been copied into linear memory the slice is freed
+    ///     and reset to `&.{}` by `Module.releaseActiveSegmentData`.  Once freed,
+    ///     `data.len == 0` and the field must not be freed again.
+    data: []u8,
 };
 
 /// Compiled element segment, holding the function indices and metadata for runtime table initialization.
@@ -187,6 +194,8 @@ pub const ModuleCompileError = Allocator.Error ||
         InvalidTagIndex,
         InvalidTagImport,
     };
+
+pub const ModuleCompileReaderError = ModuleCompileError || std.Io.Reader.ShortError;
 
 /// Reusable allocations for function compilation, modelled after wasmi's
 /// `FuncTranslatorAllocations`.  A single instance is kept per `Module` so
@@ -238,14 +247,506 @@ pub const FuncTranslatorAllocations = struct {
     }
 };
 
+const BuildState = struct {
+    allocator: Allocator,
+    engine: Engine,
+    arena: std.heap.ArenaAllocator,
+
+    composite_types_list: std.ArrayListUnmanaged(CompositeType) = .empty,
+    struct_layouts_list: std.ArrayListUnmanaged(?StructLayout) = .empty,
+    array_layouts_list: std.ArrayListUnmanaged(?ArrayLayout) = .empty,
+    direct_parents_list: std.ArrayListUnmanaged(?u32) = .empty,
+    function_type_indices: std.ArrayListUnmanaged(u32) = .empty,
+    imported_funcs_list: std.ArrayListUnmanaged(ImportedFuncDef) = .empty,
+    imported_globals_list: std.ArrayListUnmanaged(ImportedGlobalDef) = .empty,
+    globals_list: std.ArrayListUnmanaged(GlobalInit) = .empty,
+    exports: std.StringHashMapUnmanaged(ExportEntry) = .empty,
+    memory: ?MemoryDef = null,
+    start_function: ?u32 = null,
+    pending_element_mode: payload_mod.ElementMode = .passive,
+    pending_element_table_index: ?u32 = null,
+    tables_lists: std.ArrayListUnmanaged(std.ArrayListUnmanaged(u32)) = .empty,
+    pending_data_mode: payload_mod.DataMode = .passive,
+    pending_data_memory_index: ?u32 = null,
+    data_segments_list: std.ArrayListUnmanaged(CompiledDataSegment) = .empty,
+    elem_segments_list: std.ArrayListUnmanaged(CompiledElemSegment) = .empty,
+    tags_list: std.ArrayListUnmanaged(TagDef) = .empty,
+    local_functions_list: std.ArrayListUnmanaged(FunctionSlot) = .empty,
+    detected_eh_mode: EHMode = .none,
+
+    fn init(engine: Engine) BuildState {
+        const allocator = engine.allocator();
+        return .{
+            .allocator = allocator,
+            .engine = engine,
+            .arena = std.heap.ArenaAllocator.init(allocator),
+        };
+    }
+
+    fn deinit(self: *BuildState) void {
+        for (self.composite_types_list.items) |*ct| {
+            ct.deinit(self.allocator);
+        }
+        self.composite_types_list.deinit(self.allocator);
+
+        for (self.struct_layouts_list.items) |*sl| {
+            if (sl.*) |layout| {
+                layout.deinit(self.allocator);
+            }
+        }
+        self.struct_layouts_list.deinit(self.allocator);
+        self.array_layouts_list.deinit(self.allocator);
+        self.direct_parents_list.deinit(self.allocator);
+        self.function_type_indices.deinit(self.allocator);
+
+        for (self.imported_funcs_list.items) |def| {
+            self.allocator.free(def.module_name);
+            self.allocator.free(def.func_name);
+        }
+        self.imported_funcs_list.deinit(self.allocator);
+
+        for (self.imported_globals_list.items) |def| {
+            self.allocator.free(def.module_name);
+            self.allocator.free(def.global_name);
+        }
+        self.imported_globals_list.deinit(self.allocator);
+
+        for (self.globals_list.items) |g| {
+            if (g.init_expr) |expr| self.allocator.free(expr);
+        }
+        self.globals_list.deinit(self.allocator);
+
+        var export_iter = self.exports.iterator();
+        while (export_iter.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.exports.deinit(self.allocator);
+
+        for (self.tables_lists.items) |*table_list| {
+            table_list.deinit(self.allocator);
+        }
+        self.tables_lists.deinit(self.allocator);
+
+        for (self.data_segments_list.items) |*seg| {
+            self.allocator.free(seg.data);
+        }
+        self.data_segments_list.deinit(self.allocator);
+
+        for (self.elem_segments_list.items) |*seg| {
+            self.allocator.free(seg.func_indices);
+        }
+        self.elem_segments_list.deinit(self.allocator);
+
+        self.tags_list.deinit(self.allocator);
+        deinit_function_slots(self.allocator, self.local_functions_list.items);
+        self.local_functions_list.deinit(self.allocator);
+
+        self.arena.deinit();
+    }
+
+    fn parserAllocator(self: *BuildState) Allocator {
+        return self.arena.allocator();
+    }
+
+    fn handlePayload(self: *BuildState, payload: Payload) ModuleCompileError!void {
+        switch (payload) {
+            .type_entry => |entry| {
+                switch (entry.type) {
+                    .func => {
+                        const func_type = try Module.compile_func_type(self.allocator, self.parserAllocator(), entry);
+                        try self.composite_types_list.append(self.allocator, CompositeType{ .func_type = func_type });
+                        try self.struct_layouts_list.append(self.allocator, null);
+                        try self.array_layouts_list.append(self.allocator, null);
+                        try self.direct_parents_list.append(self.allocator, null);
+                    },
+                    .struct_type, .array_type => {
+                        const composite_type = try translate_mod.wasmCompositeTypeFromTypeEntry(self.allocator, entry);
+                        try self.composite_types_list.append(self.allocator, composite_type);
+
+                        const direct_parent: ?u32 = blk: {
+                            for (entry.super_types) |st| {
+                                switch (st) {
+                                    .index => |idx| break :blk idx,
+                                    else => {},
+                                }
+                            }
+                            break :blk null;
+                        };
+                        try self.direct_parents_list.append(self.allocator, direct_parent);
+
+                        switch (composite_type) {
+                            .struct_type => |s| {
+                                const layout = try gc_mod.computeStructLayout(s, self.allocator);
+                                try self.struct_layouts_list.append(self.allocator, layout);
+                                try self.array_layouts_list.append(self.allocator, null);
+                            },
+                            .array_type => |a| {
+                                try self.struct_layouts_list.append(self.allocator, null);
+                                try self.array_layouts_list.append(self.allocator, gc_mod.computeArrayLayout(a));
+                            },
+                            .func_type => unreachable,
+                        }
+                    },
+                    else => return error.UnsupportedFunctionType,
+                }
+            },
+            .import_entry => |entry| {
+                if (entry.kind == .function) {
+                    const type_idx = entry.func_type_index orelse return error.InvalidFunctionTypeIndex;
+                    const mod_name = try self.allocator.dupe(u8, entry.module);
+                    errdefer self.allocator.free(mod_name);
+                    const fn_name = try self.allocator.dupe(u8, entry.field);
+                    errdefer self.allocator.free(fn_name);
+                    try self.imported_funcs_list.append(self.allocator, .{
+                        .module_name = mod_name,
+                        .func_name = fn_name,
+                        .type_index = type_idx,
+                    });
+                } else if (entry.kind == .global) {
+                    const global_typ = if (entry.typ) |t| switch (t) {
+                        .global => |g| g,
+                        else => return error.UnsupportedFunctionType,
+                    } else return error.UnsupportedFunctionType;
+                    const val_type = try translate_mod.wasmValTypeFromType(global_typ.content_type);
+                    const mutability: Mutability = switch (global_typ.mutability) {
+                        0 => .Const,
+                        1 => .Var,
+                        else => return error.InvalidMutability,
+                    };
+                    const mod_name = try self.allocator.dupe(u8, entry.module);
+                    errdefer self.allocator.free(mod_name);
+                    const global_name = try self.allocator.dupe(u8, entry.field);
+                    errdefer self.allocator.free(global_name);
+                    try self.imported_globals_list.append(self.allocator, .{
+                        .module_name = mod_name,
+                        .global_name = global_name,
+                        .val_type = val_type,
+                        .mutability = mutability,
+                    });
+                } else if (entry.kind == .tag) {
+                    const tt = if (entry.typ) |t| t.tag else return error.InvalidTagImport;
+                    try self.tags_list.append(self.allocator, .{ .type_index = tt.type_index });
+                }
+            },
+            .function_entry => |entry| {
+                try self.function_type_indices.append(self.allocator, entry.type_index);
+            },
+            .global_variable => |entry| {
+                try self.globals_list.append(
+                    self.allocator,
+                    try Module.compile_global_init(self.allocator, self.parserAllocator(), entry),
+                );
+            },
+            .memory_type => |entry| {
+                if (self.memory != null) return error.MultipleMemories;
+                self.memory = .{
+                    .min_pages = entry.limits.initial,
+                    .max_pages = entry.limits.maximum,
+                    .shared = entry.shared,
+                };
+            },
+            .export_entry => |entry| {
+                switch (entry.kind) {
+                    .function => try Module.put_function_export(
+                        self.allocator,
+                        &self.exports,
+                        entry.field,
+                        .{ .function_index = entry.index },
+                    ),
+                    .tag => try Module.put_function_export(
+                        self.allocator,
+                        &self.exports,
+                        entry.field,
+                        .{ .tag_index = entry.index },
+                    ),
+                    else => {},
+                }
+            },
+            .start_entry => |entry| {
+                self.start_function = entry.index;
+            },
+            .table_type => |tbl| {
+                const tbl_idx = self.tables_lists.items.len;
+                try self.tables_lists.append(self.allocator, .empty);
+                const initial_size = tbl.limits.initial;
+                try self.tables_lists.items[tbl_idx].resize(self.allocator, initial_size);
+                @memset(self.tables_lists.items[tbl_idx].items, std.math.maxInt(u32));
+            },
+            .element_segment => |seg| {
+                self.pending_element_mode = seg.mode;
+                self.pending_element_table_index = seg.table_index;
+            },
+            .element_segment_body => |body| {
+                const func_indices_copy = try self.allocator.dupe(u32, body.func_indices);
+                errdefer self.allocator.free(func_indices_copy);
+
+                const offset: u32 = if (self.pending_element_mode == .active)
+                    (try Module.evaluate_const_expr(self.parserAllocator(), body.offset_expr, .I32)).readAs(u32)
+                else
+                    0;
+
+                try self.elem_segments_list.append(self.allocator, .{
+                    .mode = self.pending_element_mode,
+                    .table_index = self.pending_element_table_index orelse 0,
+                    .offset = offset,
+                    .func_indices = func_indices_copy,
+                });
+
+                if (self.pending_element_mode == .active) {
+                    const tbl_idx = self.pending_element_table_index orelse 0;
+                    while (self.tables_lists.items.len <= tbl_idx) {
+                        try self.tables_lists.append(self.allocator, .empty);
+                    }
+                    const tbl = &self.tables_lists.items[tbl_idx];
+                    const required_len = offset + body.func_indices.len;
+                    if (tbl.items.len < required_len) {
+                        const old_len = tbl.items.len;
+                        try tbl.resize(self.allocator, required_len);
+                        @memset(tbl.items[old_len..], std.math.maxInt(u32));
+                    }
+                    for (body.func_indices, 0..) |fi, i| {
+                        tbl.items[offset + i] = fi;
+                    }
+                }
+            },
+            .data_segment => |seg| {
+                self.pending_data_mode = seg.mode;
+                self.pending_data_memory_index = seg.memory_index;
+            },
+            .data_segment_body => |body| {
+                const data_copy = try self.allocator.dupe(u8, body.data);
+                const compiled = CompiledDataSegment{
+                    .mode = self.pending_data_mode,
+                    .memory_index = self.pending_data_memory_index orelse 0,
+                    .offset = if (self.pending_data_mode == .active)
+                        (try Module.evaluate_const_expr(self.parserAllocator(), body.offset_expr, .I32)).readAs(u32)
+                    else
+                        0,
+                    .data = data_copy,
+                };
+                try self.data_segments_list.append(self.allocator, compiled);
+            },
+            .tag_type => |tt| {
+                try self.tags_list.append(self.allocator, .{ .type_index = tt.type_index });
+            },
+            .function_info => |info| {
+                try self.handleFunctionInfo(info);
+            },
+            else => {},
+        }
+    }
+
+    fn handleFunctionInfo(self: *BuildState, info: payload_mod.FunctionInformation) ModuleCompileError!void {
+        const local_func_idx = self.local_functions_list.items.len;
+        if (local_func_idx >= self.function_type_indices.items.len) {
+            return error.MismatchedFunctionCount;
+        }
+
+        const type_index = self.function_type_indices.items[local_func_idx];
+        if (type_index >= self.composite_types_list.items.len) {
+            return error.InvalidFunctionTypeIndex;
+        }
+        const func_type = switch (self.composite_types_list.items[type_index]) {
+            .func_type => |ft| ft,
+            else => return error.InvalidFunctionTypeIndex,
+        };
+
+        if (self.tags_list.items.len > 0 and self.detected_eh_mode != .legacy and !self.engine.config().legacy_exceptions) {
+            var fbp = parser_mod.FunctionBodyParser.init(self.parserAllocator(), info.body);
+            while (!fbp.done()) {
+                const op_info = fbp.next() catch break;
+                switch (op_info.code) {
+                    .delegate, .try_, .rethrow => {
+                        self.detected_eh_mode = .legacy;
+                        break;
+                    },
+                    .try_table, .throw_ref, .throw => {
+                        if (self.detected_eh_mode == .none) {
+                            self.detected_eh_mode = .new;
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+
+        const reserved_slots = try Module.compute_reserved_slots(func_type, info);
+        var params_slots: usize = 0;
+        for (func_type.params()) |p| params_slots += if (p == .V128) 2 else 1;
+        const locals_count: u16 = @intCast(reserved_slots - params_slots);
+        const body_copy = try self.allocator.dupe(u8, info.body);
+        errdefer self.allocator.free(body_copy);
+
+        try self.local_functions_list.append(self.allocator, .{ .pending = .{
+            .body = body_copy,
+            .type_index = type_index,
+            .reserved_slots = reserved_slots,
+            .locals_count = locals_count,
+        } });
+    }
+
+    fn finish(self: *BuildState) ModuleCompileError!Module {
+        if (self.engine.config().legacy_exceptions) {
+            self.detected_eh_mode = .legacy;
+        }
+
+        if (self.local_functions_list.items.len != self.function_type_indices.items.len) {
+            return error.MismatchedFunctionCount;
+        }
+
+        const globals = try self.globals_list.toOwnedSlice(self.allocator);
+        errdefer {
+            for (globals) |g| {
+                if (g.init_expr) |expr| self.allocator.free(expr);
+            }
+            self.allocator.free(globals);
+        }
+
+        const imported_funcs = try self.imported_funcs_list.toOwnedSlice(self.allocator);
+        errdefer {
+            for (imported_funcs) |def| {
+                self.allocator.free(def.module_name);
+                self.allocator.free(def.func_name);
+            }
+            self.allocator.free(imported_funcs);
+        }
+        const imported_globals = try self.imported_globals_list.toOwnedSlice(self.allocator);
+        errdefer {
+            for (imported_globals) |def| {
+                self.allocator.free(def.module_name);
+                self.allocator.free(def.global_name);
+            }
+            self.allocator.free(imported_globals);
+        }
+
+        const tables = try self.allocator.alloc([]u32, self.tables_lists.items.len);
+        errdefer {
+            for (tables) |t| self.allocator.free(t);
+            self.allocator.free(tables);
+        }
+        for (self.tables_lists.items, 0..) |*tl, i| {
+            tables[i] = try tl.toOwnedSlice(self.allocator);
+        }
+        self.tables_lists.deinit(self.allocator);
+        self.tables_lists = .empty;
+
+        const data_segments = try self.data_segments_list.toOwnedSlice(self.allocator);
+        errdefer {
+            for (data_segments) |*seg| self.allocator.free(seg.data);
+            self.allocator.free(data_segments);
+        }
+
+        const elem_segments = try self.elem_segments_list.toOwnedSlice(self.allocator);
+        errdefer {
+            for (elem_segments) |*seg| self.allocator.free(seg.func_indices);
+            self.allocator.free(elem_segments);
+        }
+
+        const local_functions = try self.local_functions_list.toOwnedSlice(self.allocator);
+        errdefer {
+            deinit_function_slots(self.allocator, local_functions);
+            self.allocator.free(local_functions);
+        }
+
+        const imported_function_count = imported_funcs.len;
+        const function_count = imported_function_count + local_functions.len;
+        const functions = try self.allocator.alloc(FunctionSlot, function_count);
+        errdefer {
+            deinit_function_slots(self.allocator, functions);
+            self.allocator.free(functions);
+        }
+        for (functions[0..imported_function_count]) |*f| {
+            f.* = .import;
+        }
+        for (local_functions, 0..) |slot, i| {
+            functions[imported_function_count + i] = slot;
+        }
+        self.allocator.free(local_functions);
+
+        const func_type_indices = try self.allocator.alloc(u32, function_count);
+        errdefer self.allocator.free(func_type_indices);
+        for (imported_funcs, 0..) |def, i| {
+            func_type_indices[i] = def.type_index;
+        }
+        for (self.function_type_indices.items, 0..) |ti, i| {
+            func_type_indices[imported_function_count + i] = ti;
+        }
+
+        const composite_types = try self.composite_types_list.toOwnedSlice(self.allocator);
+        errdefer {
+            for (composite_types) |*ct| ct.deinit(self.allocator);
+            self.allocator.free(composite_types);
+        }
+        const struct_layouts = try self.struct_layouts_list.toOwnedSlice(self.allocator);
+        errdefer {
+            for (struct_layouts) |*sl| {
+                if (sl.*) |layout| layout.deinit(self.allocator);
+            }
+            self.allocator.free(struct_layouts);
+        }
+        const array_layouts = try self.array_layouts_list.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(array_layouts);
+        const tags = try self.tags_list.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(tags);
+
+        const n_composite = self.direct_parents_list.items.len;
+        const type_ancestors_outer = try self.allocator.alloc([]const u32, n_composite);
+        errdefer {
+            for (type_ancestors_outer) |anc_slice| self.allocator.free(anc_slice);
+            self.allocator.free(type_ancestors_outer);
+        }
+        for (0..n_composite) |i| {
+            const direct_parent = self.direct_parents_list.items[i];
+            if (direct_parent) |p| {
+                const parent_ancestors = type_ancestors_outer[p];
+                const anc_slice = try self.allocator.alloc(u32, 1 + parent_ancestors.len);
+                anc_slice[0] = p;
+                @memcpy(anc_slice[1..], parent_ancestors);
+                type_ancestors_outer[i] = anc_slice;
+            } else {
+                type_ancestors_outer[i] = &.{};
+            }
+        }
+
+        const exports = self.exports;
+        self.exports = .empty;
+
+        return .{
+            .allocator = self.allocator,
+            .functions = functions,
+            .exports = exports,
+            .globals = globals,
+            .memory = self.memory,
+            .start_function = self.start_function,
+            .imported_funcs = imported_funcs,
+            .imported_globals = imported_globals,
+            .tables = tables,
+            .func_type_indices = func_type_indices,
+            .data_segments = data_segments,
+            .elem_segments = elem_segments,
+            .composite_types = composite_types,
+            .struct_layouts = struct_layouts,
+            .array_layouts = array_layouts,
+            .type_ancestors = type_ancestors_outer,
+            .tags = tags,
+            .config = .{ .eh_mode = self.detected_eh_mode },
+            .translator = null,
+        };
+    }
+};
+
+fn deinit_function_slots(allocator: Allocator, functions: []FunctionSlot) void {
+    for (functions) |*slot| {
+        slot.deinit(allocator);
+    }
+}
+
 /// Compiled WebAssembly module, holding all data required for runtime execution.
 ///
 /// Field descriptions:
 ///   - functions:        List of function slots indexed by Wasm function index space (imports first).
 ///                       Each slot is `.import` for host imports, `.pending` for uncompiled locals,
 ///                       or `.encoded` for compiled locals.  Slots are compiled on first call (lazy).
-///   - wasm_bytes:       Borrowed slice of the original Wasm binary.  Must outlive the Module.
-///                       Used to re-access function bodies during lazy compilation.
 ///   - exports:          Mapping from export names to ExportEntry, currently only function exports are supported.
 ///   - globals:          List of global variables, each containing mutability and the initial value evaluated from constant expressions.
 ///   - memory:           Linear memory definition (optional), currently supports at most one memory segment.
@@ -264,9 +765,6 @@ pub const Module = struct {
     /// Function slots in Wasm function index space (imports first, then locals).
     /// Slot variants: `.import` (host import), `.pending` (uncompiled), `.encoded` (compiled).
     functions: []FunctionSlot,
-    /// Borrowed slice of the original Wasm binary bytes.
-    /// Must remain valid for the entire lifetime of the Module.
-    wasm_bytes: []const u8,
     exports: std.StringHashMapUnmanaged(ExportEntry),
     globals: []GlobalInit,
     memory: ?MemoryDef,
@@ -315,552 +813,90 @@ pub const Module = struct {
     /// Null until the first `compileFunctionAt` call; freed in `deinit`.
     translator: ?FuncTranslatorAllocations,
 
-    /// Compile WebAssembly bytecode into a Module.
+    /// Compile WebAssembly bytecode held in memory into a Module.
     ///
-    /// Uses streaming parsing: the Parser emits one event at a time and each is
-    /// processed immediately, avoiding the allocation of a full []Payload array.
-    /// Function bodies are stored as pending (lazy) and compiled on first call.
-    /// The Arena allocator is used internally to store temporary data during the
-    /// compilation process, which will be automatically released after compilation.
+    /// The input bytes are consumed in a single parser pass, but function bodies
+    /// are copied into pending slots so the resulting Module no longer depends
+    /// on the original backing slice after this function returns.
     pub fn compile(engine: Engine, bytes: []const u8) ModuleCompileError!Module {
-        const allocator = engine.allocator();
+        var state = BuildState.init(engine);
+        defer state.deinit();
 
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        defer arena.deinit();
-
-        var parser = Parser.init(arena.allocator());
+        var parser = Parser.init(state.parserAllocator());
         var remaining_bytes = bytes;
 
-        // Unified type section: composite_types covers ALL type entries (func, struct, array)
-        // indexed by the unified type section index.
-        var composite_types_list: std.ArrayListUnmanaged(CompositeType) = .empty;
-        errdefer {
-            for (composite_types_list.items) |*ct| {
-                ct.deinit(allocator);
-            }
-            composite_types_list.deinit(allocator);
-        }
-
-        var struct_layouts_list: std.ArrayListUnmanaged(?StructLayout) = .empty;
-        errdefer {
-            for (struct_layouts_list.items) |*sl| {
-                if (sl.*) |layout| {
-                    layout.deinit(allocator);
-                }
-            }
-            struct_layouts_list.deinit(allocator);
-        }
-
-        var array_layouts_list: std.ArrayListUnmanaged(?ArrayLayout) = .empty;
-        errdefer array_layouts_list.deinit(allocator);
-
-        // For each composite type (indexed by composite type index), store its direct parent
-        // composite type index, or null if it has no concrete supertype.
-        // Used after the first pass to compute the transitive ancestor closure.
-        var direct_parents_list: std.ArrayListUnmanaged(?u32) = .empty;
-        defer direct_parents_list.deinit(allocator);
-
-        var function_type_indices: std.ArrayListUnmanaged(u32) = .empty;
-        defer function_type_indices.deinit(allocator);
-
-        // Temporary list of imported function definitions collected during the first pass.
-        // module_name and func_name strings are duped into `allocator` and will be owned by
-        // the resulting `imported_funcs` slice stored in the Module.
-        var imported_funcs_list: std.ArrayListUnmanaged(ImportedFuncDef) = .empty;
-        errdefer {
-            for (imported_funcs_list.items) |def| {
-                allocator.free(def.module_name);
-                allocator.free(def.func_name);
-            }
-            imported_funcs_list.deinit(allocator);
-        }
-
-        // Temporary list of imported global definitions collected during the first pass.
-        var imported_globals_list: std.ArrayListUnmanaged(ImportedGlobalDef) = .empty;
-        errdefer {
-            for (imported_globals_list.items) |def| {
-                allocator.free(def.module_name);
-                allocator.free(def.global_name);
-            }
-            imported_globals_list.deinit(allocator);
-        }
-
-        var globals_list: std.ArrayListUnmanaged(GlobalInit) = .empty;
-        defer globals_list.deinit(allocator);
-
-        var exports: std.StringHashMapUnmanaged(ExportEntry) = .empty;
-        errdefer deinit_exports(allocator, &exports);
-
-        var memory: ?MemoryDef = null;
-        var start_function: ?u32 = null;
-
-        // Element section: track pending segments to build tables.
-        // We track the last seen element_segment (for mode/table_index) then consume
-        // the func_indices from element_segment_body.
-        var pending_element_mode: payload_mod.ElementMode = .passive;
-        var pending_element_table_index: ?u32 = null;
-        var tables_lists: std.ArrayListUnmanaged(std.ArrayListUnmanaged(u32)) = .empty;
-        errdefer {
-            for (tables_lists.items) |*tl| tl.deinit(allocator);
-            tables_lists.deinit(allocator);
-        }
-
-        // Data section: track pending segments to build data_segments.
-        var pending_data_mode: payload_mod.DataMode = .passive;
-        var pending_data_memory_index: ?u32 = null;
-        var data_segments_list: std.ArrayListUnmanaged(CompiledDataSegment) = .empty;
-        errdefer {
-            for (data_segments_list.items) |*seg| allocator.free(seg.data);
-            data_segments_list.deinit(allocator);
-        }
-
-        // Element section: track all element segments (both active and passive) for table.init/elem.drop.
-        var elem_segments_list: std.ArrayListUnmanaged(CompiledElemSegment) = .empty;
-        errdefer {
-            for (elem_segments_list.items) |*seg| allocator.free(seg.func_indices);
-            elem_segments_list.deinit(allocator);
-        }
-
-        // Tag section: collect exception tag definitions.
-        var tags_list: std.ArrayListUnmanaged(TagDef) = .empty;
-        defer tags_list.deinit(allocator);
-
-        // Collect function_info entries during the main loop for deferred
-        // pending-slot creation (avoids a separate pass over all payloads).
-        var function_infos: std.ArrayListUnmanaged(payload_mod.FunctionInformation) = .empty;
-        defer function_infos.deinit(arena.allocator());
-
-        // EH mode detection: scan operator payloads for EH-specific opcodes.
-        // Precedence: legacy indicators (delegate, rethrow-with-depth) override new;
-        // new indicators (try_table, throw_ref, catch_ref, catch_all_ref) set new;
-        // If no EH opcodes are seen, mode stays .none.
-        var detected_eh_mode: EHMode = .none;
-
-        // All metadata collection is done in a single streaming pass over the
-        // parser output. Tags from both Import Section and Tag Section are
-        // collected inline; Wasm spec guarantees both appear before the Code Section.
-        // Using streaming parse avoids materializing the full []Payload array (~5-8MB
-        // for large modules like esbuild.wasm).
-
         while (true) {
-            const parse_result = parser.parse(remaining_bytes, true);
-            const payload = switch (parse_result) {
-                .parsed => |parsed| blk: {
+            switch (parser.parse(remaining_bytes, true)) {
+                .parsed => |parsed| {
                     if (parsed.consumed == 0) return error.UnexpectedNeedMoreData;
                     remaining_bytes = remaining_bytes[parsed.consumed..];
-                    break :blk parsed.payload;
+                    try state.handlePayload(parsed.payload);
                 },
                 .need_more_data => return error.UnexpectedNeedMoreData,
                 .end => break,
                 .err => |err| return err,
-            };
-            switch (payload) {
-                .type_entry => |entry| {
-                    switch (entry.type) {
-                        .func => {
-                            const func_type = try compile_func_type(allocator, arena.allocator(), entry);
-                            // Add to the unified composite_types_list (sole owner of FuncType buffers).
-                            try composite_types_list.append(allocator, CompositeType{ .func_type = func_type });
-                            // func types have no struct/array layout
-                            try struct_layouts_list.append(allocator, null);
-                            try array_layouts_list.append(allocator, null);
-                            // func types have no concrete supertype in the GC sense
-                            try direct_parents_list.append(allocator, null);
-                        },
-                        .struct_type, .array_type => {
-                            const composite_type = try translate_mod.wasmCompositeTypeFromTypeEntry(allocator, entry);
-                            try composite_types_list.append(allocator, composite_type);
-
-                            // Record the direct parent composite type index (if any) for the
-                            // transitive ancestor computation done after the first pass.
-                            // Only concrete (index-typed) supertypes count; abstract heap type supertypes
-                            // (e.g. `any`, `eq`) are handled by the GcRefKind bitmask path.
-                            const direct_parent: ?u32 = blk: {
-                                for (entry.super_types) |st| {
-                                    switch (st) {
-                                        .index => |idx| break :blk idx,
-                                        else => {},
-                                    }
-                                }
-                                break :blk null;
-                            };
-                            try direct_parents_list.append(allocator, direct_parent);
-
-                            switch (composite_type) {
-                                .struct_type => |s| {
-                                    const layout = try gc_mod.computeStructLayout(s, allocator);
-                                    try struct_layouts_list.append(allocator, layout);
-                                    try array_layouts_list.append(allocator, null);
-                                },
-                                .array_type => |a| {
-                                    try struct_layouts_list.append(allocator, null);
-                                    try array_layouts_list.append(allocator, gc_mod.computeArrayLayout(a));
-                                },
-                                .func_type => unreachable,
-                            }
-                        },
-                        else => return error.UnsupportedFunctionType,
-                    }
-                },
-                .import_entry => |entry| {
-                    if (entry.kind == .function) {
-                        // func_type_index is guaranteed non-null for function imports per Wasm spec.
-                        const type_idx = entry.func_type_index orelse return error.InvalidFunctionTypeIndex;
-                        // Dupe the strings so they are owned by the Module allocator.
-                        const mod_name = try allocator.dupe(u8, entry.module);
-                        errdefer allocator.free(mod_name);
-                        const fn_name = try allocator.dupe(u8, entry.field);
-                        errdefer allocator.free(fn_name);
-                        try imported_funcs_list.append(allocator, .{
-                            .module_name = mod_name,
-                            .func_name = fn_name,
-                            .type_index = type_idx,
-                        });
-                    } else if (entry.kind == .global) {
-                        const global_typ = if (entry.typ) |t| switch (t) {
-                            .global => |g| g,
-                            else => return error.UnsupportedFunctionType,
-                        } else return error.UnsupportedFunctionType;
-                        const val_type = try translate_mod.wasmValTypeFromType(global_typ.content_type);
-                        const mutability: Mutability = switch (global_typ.mutability) {
-                            0 => .Const,
-                            1 => .Var,
-                            else => return error.InvalidMutability,
-                        };
-                        const mod_name = try allocator.dupe(u8, entry.module);
-                        errdefer allocator.free(mod_name);
-                        const global_name = try allocator.dupe(u8, entry.field);
-                        errdefer allocator.free(global_name);
-                        try imported_globals_list.append(allocator, .{
-                            .module_name = mod_name,
-                            .global_name = global_name,
-                            .val_type = val_type,
-                            .mutability = mutability,
-                        });
-                    } else if (entry.kind == .tag) {
-                        const tt = if (entry.typ) |t| t.tag else return error.InvalidTagImport;
-                        try tags_list.append(allocator, .{ .type_index = tt.type_index });
-                    }
-                },
-                .function_entry => |entry| {
-                    try function_type_indices.append(allocator, entry.type_index);
-                },
-                .global_variable => |entry| {
-                    try globals_list.append(
-                        allocator,
-                        try compile_global_init(allocator, arena.allocator(), entry),
-                    );
-                },
-                .memory_type => |entry| {
-                    if (memory != null) return error.MultipleMemories;
-                    memory = .{
-                        .min_pages = entry.limits.initial,
-                        .max_pages = entry.limits.maximum,
-                        .shared = entry.shared,
-                    };
-                },
-                .export_entry => |entry| {
-                    switch (entry.kind) {
-                        .function => try put_function_export(
-                            allocator,
-                            &exports,
-                            entry.field,
-                            .{ .function_index = entry.index },
-                        ),
-                        .tag => try put_function_export(
-                            allocator,
-                            &exports,
-                            entry.field,
-                            .{ .tag_index = entry.index },
-                        ),
-                        else => {},
-                    }
-                },
-                // Wasm Start Section: record the start function index, automatically called by Instance.init
-                .start_entry => |entry| {
-                    start_function = entry.index;
-                },
-                // Wasm Table Section: create a pre-sized table entry for each declared table.
-                // Each slot is initialized to maxInt(u32) (null funcref sentinel).
-                .table_type => |tbl| {
-                    const tbl_idx = tables_lists.items.len;
-                    try tables_lists.append(allocator, .empty);
-                    const initial_size = tbl.limits.initial;
-                    try tables_lists.items[tbl_idx].resize(allocator, initial_size);
-                    @memset(tables_lists.items[tbl_idx].items, std.math.maxInt(u32));
-                },
-                .element_segment => |seg| {
-                    // Record metadata for the upcoming element_segment_body.
-                    pending_element_mode = seg.mode;
-                    pending_element_table_index = seg.table_index;
-                },
-                .element_segment_body => |body| {
-                    // Store all element segments (active + passive) for table.init / elem.drop.
-                    const func_indices_copy = try allocator.dupe(u32, body.func_indices);
-                    errdefer allocator.free(func_indices_copy);
-
-                    // Calculate offset for active segments by evaluating the constant expression.
-                    const offset: u32 = if (pending_element_mode == .active)
-                        (try evaluate_const_expr(arena.allocator(), body.offset_expr, .I32)).readAs(u32)
-                    else
-                        0;
-
-                    try elem_segments_list.append(allocator, .{
-                        .mode = pending_element_mode,
-                        .table_index = pending_element_table_index orelse 0,
-                        .offset = offset,
-                        .func_indices = func_indices_copy,
-                    });
-
-                    // For active segments, also populate the runtime table at the calculated offset.
-                    // The table was pre-sized by the table section (or will be created here if absent).
-                    if (pending_element_mode == .active) {
-                        const tbl_idx = pending_element_table_index orelse 0;
-                        // Ensure the table list exists.
-                        while (tables_lists.items.len <= tbl_idx) {
-                            try tables_lists.append(allocator, .empty);
-                        }
-                        const tbl = &tables_lists.items[tbl_idx];
-                        const required_len = offset + body.func_indices.len;
-                        if (tbl.items.len < required_len) {
-                            // Table smaller than segment+offset: extend with nulls then overwrite.
-                            const old_len = tbl.items.len;
-                            try tbl.resize(allocator, required_len);
-                            @memset(tbl.items[old_len..], std.math.maxInt(u32));
-                        }
-                        // Write func indices at the calculated offset (overwriting null-initialized slots).
-                        for (body.func_indices, 0..) |fi, i| {
-                            tbl.items[offset + i] = fi;
-                        }
-                    }
-                },
-                .data_segment => |seg| {
-                    pending_data_mode = seg.mode;
-                    pending_data_memory_index = seg.memory_index;
-                },
-                .data_segment_body => |body| {
-                    const data_copy = try allocator.dupe(u8, body.data);
-                    const compiled = CompiledDataSegment{
-                        .mode = pending_data_mode,
-                        .memory_index = pending_data_memory_index orelse 0,
-                        .offset = if (pending_data_mode == .active)
-                            (try evaluate_const_expr(arena.allocator(), body.offset_expr, .I32)).readAs(u32)
-                        else
-                            0,
-                        .data = data_copy,
-                    };
-                    try data_segments_list.append(allocator, compiled);
-                },
-                // Tag section: collect tag definitions inline.
-                .tag_type => |tt| {
-                    try tags_list.append(allocator, .{ .type_index = tt.type_index });
-                },
-                // EH mode detection: scan function bodies for EH-specific opcodes.
-                // Skipped entirely when no tags are defined (no EH possible) or
-                // when --legacy-exceptions forces legacy mode.
-                .function_info => |info| {
-                    if (tags_list.items.len > 0 and detected_eh_mode != .legacy and !engine.config().legacy_exceptions) {
-                        var fbp = parser_mod.FunctionBodyParser.init(arena.allocator(), info.body);
-                        while (!fbp.done()) {
-                            const op_info = fbp.next() catch break;
-                            switch (op_info.code) {
-                                // Legacy-only opcodes → force legacy mode
-                                .delegate, .try_, .rethrow => {
-                                    detected_eh_mode = .legacy;
-                                    break;
-                                },
-                                // New-proposal opcodes → set new (unless already legacy)
-                                .try_table, .throw_ref, .throw => {
-                                    if (detected_eh_mode == .none) {
-                                        detected_eh_mode = .new;
-                                    }
-                                },
-                                else => {},
-                            }
-                        }
-                    }
-                    // Collect for deferred pending-slot creation.
-                    try function_infos.append(arena.allocator(), info);
-                },
-                else => {},
             }
         }
 
-        // Allow CLI/config to force legacy mode, overriding auto-detection.
-        if (engine.config().legacy_exceptions) {
-            detected_eh_mode = .legacy;
-        }
-
-        const imported_function_count = imported_funcs_list.items.len;
-        const function_count = imported_function_count + function_type_indices.items.len;
-        const functions = try allocator.alloc(FunctionSlot, function_count);
-        errdefer {
-            deinit_functions(allocator, functions);
-            allocator.free(functions);
-        }
-        // Initialize import slots; local function slots will be filled as `.pending` below.
-        for (functions[0..imported_function_count]) |*f| {
-            f.* = .import;
-        }
-        for (functions[imported_function_count..]) |*f| {
-            f.* = .import; // temporary; overwritten per-function below
-        }
-
-        // Build the import type index slice for FuncTypeResolver:
-        // imported_funcs_list.items[i].type_index gives the type of import i.
-        var import_type_indices_list: std.ArrayListUnmanaged(u32) = .empty;
-        defer import_type_indices_list.deinit(allocator);
-        for (imported_funcs_list.items) |def| {
-            try import_type_indices_list.append(allocator, def.type_index);
-        }
-
-        // Build pending function slots from the function_infos collected in the
-        // main loop above — no extra pass over all payloads needed.
-        for (function_infos.items, 0..) |info, local_func_idx| {
-            if (local_func_idx >= function_type_indices.items.len) {
-                return error.MismatchedFunctionCount;
-            }
-
-            const type_index = function_type_indices.items[local_func_idx];
-            // Validate against the unified type index space (composite_types_list).
-            if (type_index >= composite_types_list.items.len) {
-                return error.InvalidFunctionTypeIndex;
-            }
-            const func_type = switch (composite_types_list.items[type_index]) {
-                .func_type => |ft| ft,
-                else => return error.InvalidFunctionTypeIndex,
-            };
-
-            const reserved_slots = try compute_reserved_slots(func_type, info);
-            // Count param slots (V128 params occupy 2 slots each).
-            var params_slots: usize = 0;
-            for (func_type.params()) |p| params_slots += if (p == .V128) 2 else 1;
-            const locals_count: u16 = @intCast(reserved_slots - params_slots);
-            const function_index = imported_function_count + local_func_idx;
-
-            // Lazy compilation: store the raw bytecode and pre-computed metadata.
-            // The actual IR compilation + encoding happens on first call.
-            functions[function_index] = .{ .pending = .{
-                .body = info.body,
-                .type_index = type_index,
-                .reserved_slots = reserved_slots,
-                .locals_count = locals_count,
-            } };
-        }
-        if (function_infos.items.len != function_type_indices.items.len) {
-            return error.MismatchedFunctionCount;
-        }
-
-        const globals = try globals_list.toOwnedSlice(allocator);
-        errdefer {
-            for (globals) |g| {
-                if (g.init_expr) |expr| allocator.free(expr);
-            }
-            allocator.free(globals);
-        }
-
-        const imported_funcs = try imported_funcs_list.toOwnedSlice(allocator);
-        const imported_globals = try imported_globals_list.toOwnedSlice(allocator);
-
-        // ── Build tables slice from tables_lists ──────────────────────────────
-        // Convert ArrayListUnmanaged(ArrayListUnmanaged(u32)) -> [][]u32.
-        const tables = try allocator.alloc([]u32, tables_lists.items.len);
-        errdefer {
-            for (tables) |t| allocator.free(t);
-            allocator.free(tables);
-        }
-        for (tables_lists.items, 0..) |*tl, i| {
-            tables[i] = try tl.toOwnedSlice(allocator);
-        }
-        tables_lists.deinit(allocator);
-
-        // ── Build data_segments slice ────────────────────────────────────────
-        const data_segments = try data_segments_list.toOwnedSlice(allocator);
-
-        // ── Build elem_segments slice ────────────────────────────────────────
-        const elem_segments = try elem_segments_list.toOwnedSlice(allocator);
-        errdefer {
-            for (elem_segments) |*seg| allocator.free(seg.func_indices);
-            allocator.free(elem_segments);
-        }
-
-        // ── Build func_type_indices: imports first, then locals ───────────────
-        // Total entries = imported_function_count + function_type_indices.items.len
-        const func_type_indices = try allocator.alloc(u32, function_count);
-        errdefer allocator.free(func_type_indices);
-        for (import_type_indices_list.items, 0..) |ti, i| {
-            func_type_indices[i] = ti;
-        }
-        for (function_type_indices.items, 0..) |ti, i| {
-            func_type_indices[imported_function_count + i] = ti;
-        }
-
-        // ── Build composite_types, struct_layouts, array_layouts ──────────────
-        const composite_types = try composite_types_list.toOwnedSlice(allocator);
-        const struct_layouts = try struct_layouts_list.toOwnedSlice(allocator);
-        const array_layouts = try array_layouts_list.toOwnedSlice(allocator);
-
-        // ── Build tags slice ────────────────────────────────────────────────────
-        const tags = try tags_list.toOwnedSlice(allocator);
-
-        // ── Build type_ancestors: transitive closure of supertype chains ──────
-        // For each composite type index i, type_ancestors[i] is the list of all
-        // strict ancestor composite type indices (parent, grandparent, …) in order
-        // from closest ancestor outward.
-        //
-        // Because Wasm GC sub-type declarations must reference a previously-defined
-        // type (the spec enforces a topological order), we can compute ancestors by
-        // a simple linear scan: for type i, its ancestors = [parent(i)] + ancestors[parent(i)].
-        const n_composite = direct_parents_list.items.len;
-        const type_ancestors_outer = try allocator.alloc([]const u32, n_composite);
-        errdefer {
-            for (type_ancestors_outer) |anc_slice| allocator.free(anc_slice);
-            allocator.free(type_ancestors_outer);
-        }
-        for (0..n_composite) |i| {
-            const direct_parent = direct_parents_list.items[i];
-            if (direct_parent) |p| {
-                // ancestors of i = [p] ++ ancestors[p]
-                // ancestors[p] is already computed since p < i (Wasm spec ordering).
-                const parent_ancestors = type_ancestors_outer[p];
-                const anc_slice = try allocator.alloc(u32, 1 + parent_ancestors.len);
-                anc_slice[0] = p;
-                @memcpy(anc_slice[1..], parent_ancestors);
-                type_ancestors_outer[i] = anc_slice;
-            } else {
-                type_ancestors_outer[i] = &.{};
-            }
-        }
-
-        var module = Module{
-            .allocator = allocator,
-            .functions = functions,
-            .wasm_bytes = bytes,
-            .exports = exports,
-            .globals = globals,
-            .memory = memory,
-            .start_function = start_function,
-            .imported_funcs = imported_funcs,
-            .imported_globals = imported_globals,
-            .tables = tables,
-            .func_type_indices = func_type_indices,
-            .data_segments = data_segments,
-            .elem_segments = elem_segments,
-            .composite_types = composite_types,
-            .struct_layouts = struct_layouts,
-            .array_layouts = array_layouts,
-            .type_ancestors = type_ancestors_outer,
-            .tags = tags,
-            .config = .{ .eh_mode = detected_eh_mode },
-            .translator = null,
-        };
-
-        // Eagerly compile all local functions if configured.
+        var module = try state.finish();
         if (engine.config().eager_compile) {
             try module.compileAll(engine);
         }
-
         return module;
+    }
+
+    /// Compile WebAssembly bytecode from a streaming reader into a Module.
+    ///
+    /// The reader is consumed incrementally; only the currently pending parser
+    /// input plus any copied function bodies remain live after compilation.
+    pub fn compileReader(engine: Engine, reader: anytype) ModuleCompileReaderError!Module {
+        const allocator = engine.allocator();
+
+        var state = BuildState.init(engine);
+        defer state.deinit();
+
+        var parser = Parser.init(state.parserAllocator());
+        var pending: std.ArrayListUnmanaged(u8) = .empty;
+        defer pending.deinit(allocator);
+
+        var pending_start: usize = 0;
+        var eof = false;
+        var read_buf: [64 * 1024]u8 = undefined;
+
+        while (true) {
+            while (true) {
+                const input = pending.items[pending_start..];
+                switch (parser.parse(input, eof)) {
+                    .parsed => |parsed| {
+                        if (parsed.consumed == 0) return error.UnexpectedNeedMoreData;
+                        pending_start += parsed.consumed;
+                        try state.handlePayload(parsed.payload);
+                    },
+                    .need_more_data => break,
+                    .end => {
+                        var module = try state.finish();
+                        if (engine.config().eager_compile) {
+                            try module.compileAll(engine);
+                        }
+                        return module;
+                    },
+                    .err => |err| return err,
+                }
+            }
+
+            if (eof) return error.UnexpectedNeedMoreData;
+
+            if (pending_start > 0) {
+                const remaining = pending.items.len - pending_start;
+                std.mem.copyForwards(u8, pending.items[0..remaining], pending.items[pending_start..]);
+                pending.items.len = remaining;
+                pending_start = 0;
+            }
+
+            const n = try readSliceShortCompat(reader, &read_buf);
+            eof = n == 0;
+            try pending.appendSlice(allocator, read_buf[0..n]);
+        }
     }
 
     /// Compile and wrap the module in an `ArcModule`.
@@ -873,6 +909,45 @@ pub const Module = struct {
         var m = try compile(engine, bytes);
         errdefer m.deinit();
         return ArcModule.init(engine.allocator(), m);
+    }
+
+    /// Compile a module from a streaming reader and wrap it in an `ArcModule`.
+    pub fn compileArcReader(engine: Engine, reader: anytype) (ModuleCompileReaderError || std.mem.Allocator.Error)!ArcModule {
+        var m = try compileReader(engine, reader);
+        errdefer m.deinit();
+        return ArcModule.init(engine.allocator(), m);
+    }
+
+    fn readSliceShortCompat(reader: anytype, buffer: []u8) ModuleCompileReaderError!usize {
+        return switch (@typeInfo(@TypeOf(reader))) {
+            .pointer => |ptr| blk: {
+                const Child = ptr.child;
+                if (@hasDecl(Child, "readSliceShort")) {
+                    break :blk try reader.readSliceShort(buffer);
+                }
+                if (@hasDecl(Child, "read")) {
+                    break :blk try reader.read(buffer);
+                }
+                if (@hasField(Child, "interface")) {
+                    break :blk try reader.interface.readSliceShort(buffer);
+                }
+                @compileError("compileReader requires a reader with readSliceShort() or read()");
+            },
+            else => blk: {
+                const ReaderType = @TypeOf(reader);
+                if (@hasDecl(ReaderType, "readSliceShort")) {
+                    break :blk try reader.readSliceShort(buffer);
+                }
+                if (@hasDecl(ReaderType, "read")) {
+                    break :blk try reader.read(buffer);
+                }
+                if (@hasField(ReaderType, "interface")) {
+                    var value = reader;
+                    break :blk try value.interface.readSliceShort(buffer);
+                }
+                @compileError("compileReader requires a reader with readSliceShort() or read()");
+            },
+        };
     }
 
     /// Lazily compile a single function by its Wasm function index.
@@ -951,6 +1026,7 @@ pub const Module = struct {
             &handler_table_mod.handler_table,
         );
         profiling.call_prof.ns_encode_ir += encode_timer.read();
+        self.allocator.free(pending.body);
         slot.* = .{ .encoded = encoded };
     }
 
@@ -970,7 +1046,7 @@ pub const Module = struct {
 
     pub fn deinit(self: *Module) void {
         if (self.translator) |*t| t.deinit();
-        deinit_functions(self.allocator, self.functions);
+        deinit_function_slots(self.allocator, self.functions);
         self.allocator.free(self.functions);
 
         deinit_exports(self.allocator, &self.exports);
@@ -999,7 +1075,9 @@ pub const Module = struct {
         self.allocator.free(self.func_type_indices);
 
         for (self.data_segments) |*seg| {
-            self.allocator.free(seg.data);
+            // Active segment data may have already been freed by
+            // releaseActiveSegmentData() after instantiation; skip those.
+            if (seg.data.len > 0) self.allocator.free(seg.data);
         }
         self.allocator.free(self.data_segments);
 
@@ -1034,14 +1112,32 @@ pub const Module = struct {
 
     // ── deinit helpers ───────────────────────────────────────────────────────────
 
-    /// Free heap memory held by each FunctionSlot.
-    /// Only `.encoded` variants own memory; `.import` and `.pending` do not.
-    fn deinit_functions(allocator: Allocator, functions: []FunctionSlot) void {
-        for (functions) |*slot| {
-            switch (slot.*) {
-                .encoded => |*ef| ef.deinit(allocator),
-                .import, .pending => {},
-            }
+    /// Release the heap copies of all *active* data segments.
+    ///
+    /// Active segments are copied into linear memory during instantiation and
+    /// are implicitly dropped afterwards (the WASM spec marks them as dropped so
+    /// that `memory.init` traps on them).  Their in-module copies therefore
+    /// serve no purpose once every instance that shares this Module has been
+    /// initialised, and holding them wastes significant memory for data-heavy
+    /// modules (e.g. ~5.5 MB for esbuild).
+    ///
+    /// Calling convention
+    /// ------------------
+    /// Call this method after every `Instance.init` / `Instance.initWithSharedMemory`
+    /// that may need the active data has returned successfully.  It is safe to
+    /// call multiple times: segments whose `data` slice has already been freed
+    /// (len == 0) are skipped.
+    ///
+    /// Thread safety
+    /// -------------
+    /// This method is NOT thread-safe.  Do not call it concurrently with another
+    /// `Instance.init` on the same Module.
+    pub fn releaseActiveSegmentData(self: *Module) void {
+        for (self.data_segments) |*seg| {
+            if (seg.mode != .active) continue;
+            if (seg.data.len == 0) continue; // already freed
+            self.allocator.free(seg.data);
+            seg.data = &.{};
         }
     }
 

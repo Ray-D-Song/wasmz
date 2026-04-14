@@ -60,10 +60,8 @@ fn run(allocator: std.mem.Allocator) void {
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err|
         fatal("Unable to open {s}: {s}", .{ file_path, @errorName(err) });
     defer file.close();
-
-    const bytes = file.readToEndAlloc(allocator, 64 * 1024 * 1024) catch |err|
-        fatal("Unable to read {s}: {s}", .{ file_path, @errorName(err) });
-    defer allocator.free(bytes);
+    var reader_buf: [64 * 1024]u8 = undefined;
+    var reader = file.reader(&reader_buf);
 
     var engine = Engine.init(allocator, .{
         .legacy_exceptions = cli_args.legacy_exceptions,
@@ -72,7 +70,7 @@ fn run(allocator: std.mem.Allocator) void {
     }) catch |err| fatal("Failed to initialize engine: {s}", .{@errorName(err)});
     defer engine.deinit();
 
-    var arc_module = Module.compileArc(engine, bytes) catch |err|
+    var arc_module = Module.compileArcReader(engine, &reader) catch |err|
         fatal("Failed to compile {s}: {s}", .{ file_path, @errorName(err) });
     defer if (arc_module.releaseUnwrap()) |m| {
         var mod = m;

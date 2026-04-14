@@ -231,6 +231,12 @@ pub const Instance = struct {
                 data_segments_dropped[i] = true;
             }
         }
+        // Free the in-module copies of active segment data now that they have been
+        // written into linear memory.  Active segments are immediately dropped after
+        // instantiation (data_segments_dropped[i] = true above) so the VM will
+        // never access their .data field again.  Releasing them here avoids keeping
+        // a redundant copy alive for the lifetime of the Module.
+        @constCast(module).releaseActiveSegmentData();
 
         // ── 5. initialize element segment dropped flags ──────────────────────────────
         const elem_segments_dropped = try allocator.alloc(bool, module.elem_segments.len);
@@ -372,6 +378,7 @@ pub const Instance = struct {
                 data_segments_dropped[i] = true;
             }
         }
+        @constCast(module).releaseActiveSegmentData();
 
         const elem_segments_dropped = try allocator.alloc(bool, module.elem_segments.len);
         errdefer allocator.free(elem_segments_dropped);

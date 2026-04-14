@@ -96,6 +96,35 @@ test "module.compile builds exported function bodies" {
     try testing.expectEqual(@as(i32, 1), result.readAs(i32));
 }
 
+test "module.compileReader streams input without retaining full wasm bytes" {
+    const exported_const_wasm = [_]u8{
+        0x00, 0x61, 0x73, 0x6d,
+        0x01, 0x00, 0x00, 0x00,
+        0x01, 0x05, 0x01, 0x60,
+        0x00, 0x01, 0x7f, 0x03,
+        0x02, 0x01, 0x00, 0x07,
+        0x05, 0x01, 0x01, 'f',
+        0x00, 0x00, 0x0a, 0x06,
+        0x01, 0x04, 0x00, 0x41,
+        0x01, 0x0b,
+    };
+
+    var engine = try Engine.init(testing.allocator, Config{});
+    defer engine.deinit();
+
+    var stream = std.io.fixedBufferStream(&exported_const_wasm);
+    var reader = stream.reader();
+    var module = try Module.compileReader(engine, &reader);
+    defer module.deinit();
+
+    try testing.expectEqual(@as(usize, 1), module.functions.len);
+    const pending = switch (module.functions[0]) {
+        .pending => |p| p,
+        else => return error.ExpectedPendingFunction,
+    };
+    try testing.expectEqualSlices(u8, &[_]u8{ 0x41, 0x01, 0x0b }, pending.body);
+}
+
 test "module.compile captures global initializers" {
     const global_module_wasm = [_]u8{
         0x00, 0x61, 0x73, 0x6d,
