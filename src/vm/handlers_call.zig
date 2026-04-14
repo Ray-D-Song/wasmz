@@ -29,13 +29,14 @@ const profiling = @import("../utils/profiling.zig");
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-inline fn readOps(comptime T: type, ip: [*]align(8) u8) T {
+inline fn readOps(comptime T: type, ip: [*]u8) T {
     if (@sizeOf(T) == 0) return .{};
-    return @as(*const T, @ptrCast(@alignCast(ip + HANDLER_SIZE))).*;
+    const bytes = ip[HANDLER_SIZE..][0..@sizeOf(T)];
+    return std.mem.bytesAsValue(T, bytes).*;
 }
 
 inline fn stride(comptime OpsT: type) usize {
-    return std.mem.alignForward(usize, HANDLER_SIZE + @sizeOf(OpsT), 8);
+    return HANDLER_SIZE + @sizeOf(OpsT);
 }
 
 inline fn trapReturn(frame: *DispatchState, code: core.TrapCode) void {
@@ -94,7 +95,7 @@ fn invokeHostCallInline(
     store: *Store,
     host_instance: *dispatch.HostInstance,
     host_func: HostFunc,
-    arg_slots: []const u32,
+    arg_slots: []align(1) const u32,
     slots: [*]RawVal,
     result_len: usize,
     frame: *DispatchState,
@@ -171,7 +172,7 @@ fn invokeHostCallInline(
 
 // ── call ─────────────────────────────────────────────────────────────────────
 
-pub fn handle_call(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsCall, ip);
 
     // Read inline arg slots directly from the bytecode stream (zero pointer chasing)
@@ -231,7 +232,7 @@ pub fn handle_call(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, 
 
         // ── Phase 3: save ip, push frame, dispatch ────────────────────────────
         const cur = frame.callStackTop();
-        cur.ip = @alignCast(ip + instr_stride);
+        cur.ip = ip + instr_stride;
         const callee_dst: ?ir.Slot = if (ops.dst_valid != 0) @intCast(ops.dst) else null;
         frame.callStackPush(.{
             .ip = callee.code.ptr,
@@ -256,7 +257,7 @@ pub fn handle_call(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, 
 
 // ── call_indirect ────────────────────────────────────────────────────────────
 
-pub fn handle_call_indirect(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsCallIndirect, ip);
 
     // Read inline arg slots directly from the bytecode stream
@@ -329,7 +330,7 @@ pub fn handle_call_indirect(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispat
         }
 
         const cur = frame.callStackTop();
-        cur.ip = @alignCast(ip + instr_stride);
+        cur.ip = ip + instr_stride;
 
         const callee_dst: ?ir.Slot = if (ops.dst_valid != 0) @intCast(ops.dst) else null;
 
@@ -354,7 +355,7 @@ pub fn handle_call_indirect(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispat
 
 // ── return_call ──────────────────────────────────────────────────────────────
 
-pub fn handle_return_call(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_return_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsReturnCall, ip);
 
     // Read inline arg slots directly from the bytecode stream
@@ -430,7 +431,7 @@ pub fn handle_return_call(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispatch
 
 // ── return_call_indirect ─────────────────────────────────────────────────────
 
-pub fn handle_return_call_indirect(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_return_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsReturnCallIndirect, ip);
 
     // Read inline arg slots directly from the bytecode stream
@@ -534,7 +535,7 @@ pub fn handle_return_call_indirect(ip: [*]align(8) u8, slots: [*]RawVal, frame: 
 
 // ── call_ref ─────────────────────────────────────────────────────────────────
 
-pub fn handle_call_ref(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsCallRef, ip);
 
     // funcref is stored as u64: null=0, func_idx+1=non-null
@@ -591,7 +592,7 @@ pub fn handle_call_ref(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchSta
         }
 
         const cur = frame.callStackTop();
-        cur.ip = @alignCast(ip + instr_stride);
+        cur.ip = ip + instr_stride;
 
         const callee_dst: ?ir.Slot = if (ops.dst_valid != 0) @intCast(ops.dst) else null;
 
@@ -616,7 +617,7 @@ pub fn handle_call_ref(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchSta
 
 // ── return_call_ref ──────────────────────────────────────────────────────────
 
-pub fn handle_return_call_ref(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_return_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsReturnCallRef, ip);
 
     const ref_bits = slots[ops.ref].readAs(u64);

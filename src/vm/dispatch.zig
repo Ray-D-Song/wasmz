@@ -58,6 +58,7 @@ const CompiledElemSegment = module_mod.CompiledElemSegment;
 /// Parameters:
 ///   ip    — pointer to the *current* instruction (i.e., the 8-byte handler
 ///            pointer field).  The handler reads its operands at ip[8..].
+///            Note: ip may not be 8-byte aligned due to compact encoding.
 ///   slots — base pointer of the *current* call frame's register file.
 ///   frame — mutable shared dispatch state (call stack, EH stack, result).
 ///   env   — read-only execution environment (globals, memory, functions …).
@@ -66,7 +67,7 @@ const CompiledElemSegment = module_mod.CompiledElemSegment;
 /// Because C calling convention is used the function must return `void`; the
 /// execution result is communicated through `frame.result`.
 pub const Handler = *const fn (
-    ip: [*]align(8) u8,
+    ip: [*]u8,
     slots: [*]RawVal,
     frame: *DispatchState,
     env: *const ExecEnv,
@@ -118,7 +119,7 @@ pub const CallFrame = struct {
     /// Updated before pushing a new frame so that when we pop back we know
     /// which instruction to resume.
     /// For the entry frame this is set to the first instruction (code.ptr).
-    ip: [*]align(8) u8,
+    ip: [*]u8,
     /// Slice into DispatchState.val_stack for this frame's register file.
     /// Not owned; freed by restoring val_sp to slots_sp_base on pop.
     slots: []RawVal,
@@ -299,14 +300,14 @@ pub const DispatchState = struct {
 ///
 /// Using `inline` ensures the tail call is always visible to the Zig backend.
 pub inline fn next(
-    ip: [*]align(8) u8,
+    ip: [*]u8,
     stride: usize,
     slots: [*]RawVal,
     frame: *DispatchState,
     env: *const ExecEnv,
 ) void {
-    const next_ip: [*]align(8) u8 = @alignCast(ip + stride);
-    const h: Handler = @as(*const Handler, @ptrCast(next_ip)).*;
+    const next_ip = ip + stride;
+    const h: Handler = std.mem.bytesAsValue(Handler, next_ip[0..@sizeOf(Handler)]).*;
     @call(.always_tail, h, .{ next_ip, slots, frame, env });
 }
 
@@ -315,12 +316,12 @@ pub inline fn next(
 /// (jumps, calls) and wants to dispatch to whatever instruction `ip` now points
 /// to.
 pub inline fn dispatch(
-    ip: [*]align(8) u8,
+    ip: [*]u8,
     slots: [*]RawVal,
     frame: *DispatchState,
     env: *const ExecEnv,
 ) void {
-    const h: Handler = @as(*const Handler, @ptrCast(ip)).*;
+    const h: Handler = std.mem.bytesAsValue(Handler, ip[0..@sizeOf(Handler)]).*;
     @call(.always_tail, h, .{ ip, slots, frame, env });
 }
 

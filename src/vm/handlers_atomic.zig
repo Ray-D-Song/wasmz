@@ -18,13 +18,14 @@ const HANDLER_SIZE = dispatch.HANDLER_SIZE;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-inline fn readOps(comptime T: type, ip: [*]align(8) u8) T {
+inline fn readOps(comptime T: type, ip: [*]u8) T {
     if (@sizeOf(T) == 0) return .{};
-    return @as(*const T, @ptrCast(@alignCast(ip + HANDLER_SIZE))).*;
+    const bytes = ip[HANDLER_SIZE..][0..@sizeOf(T)];
+    return std.mem.bytesAsValue(T, bytes).*;
 }
 
 inline fn stride(comptime OpsT: type) usize {
-    return std.mem.alignForward(usize, HANDLER_SIZE + @sizeOf(OpsT), 8);
+    return HANDLER_SIZE + @sizeOf(OpsT);
 }
 
 inline fn trapReturn(frame: *DispatchState, code: core.TrapCode) void {
@@ -33,7 +34,7 @@ inline fn trapReturn(frame: *DispatchState, code: core.TrapCode) void {
 
 // ── atomic_fence ─────────────────────────────────────────────────────────────
 
-pub fn handle_atomic_fence(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_atomic_fence(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const Fence = struct {
         threadlocal var dummy: u8 = 0;
     };
@@ -43,7 +44,7 @@ pub fn handle_atomic_fence(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispatc
 
 // ── atomic_load ──────────────────────────────────────────────────────────────
 
-pub fn handle_atomic_load(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_atomic_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsAtomicLoad, ip);
     const mem = env.memory.bytes();
     const width: ir.AtomicWidth = @enumFromInt(ops.width);
@@ -77,7 +78,7 @@ pub fn handle_atomic_load(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispatch
 
 // ── atomic_store ─────────────────────────────────────────────────────────────
 
-pub fn handle_atomic_store(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_atomic_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsAtomicStore, ip);
     const mem = env.memory.bytes();
     const width: ir.AtomicWidth = @enumFromInt(ops.width);
@@ -111,7 +112,7 @@ pub fn handle_atomic_store(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispatc
 
 // ── atomic_rmw ───────────────────────────────────────────────────────────────
 
-pub fn handle_atomic_rmw(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_atomic_rmw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsAtomicRmw, ip);
     const mem = env.memory.bytes();
     const width: ir.AtomicWidth = @enumFromInt(ops.width);
@@ -194,7 +195,7 @@ pub fn handle_atomic_rmw(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchS
 
 // ── atomic_cmpxchg ───────────────────────────────────────────────────────────
 
-pub fn handle_atomic_cmpxchg(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_atomic_cmpxchg(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsAtomicCmpxchg, ip);
     const mem = env.memory.bytes();
     const width: ir.AtomicWidth = @enumFromInt(ops.width);
@@ -259,7 +260,7 @@ pub fn handle_atomic_cmpxchg(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispa
 
 // ── atomic_notify ────────────────────────────────────────────────────────────
 
-pub fn handle_atomic_notify(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_atomic_notify(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsAtomicNotify, ip);
     const mem = env.memory.bytes();
     const base = slots[ops.addr].readAs(u32);
@@ -282,7 +283,7 @@ pub fn handle_atomic_notify(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispat
 
 // ── atomic_wait32 ────────────────────────────────────────────────────────────
 
-pub fn handle_atomic_wait32(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_atomic_wait32(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsAtomicWait32, ip);
 
     if (!env.memory.isShared()) {
@@ -312,7 +313,7 @@ pub fn handle_atomic_wait32(ip: [*]align(8) u8, slots: [*]RawVal, frame: *Dispat
 
 // ── atomic_wait64 ────────────────────────────────────────────────────────────
 
-pub fn handle_atomic_wait64(ip: [*]align(8) u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
+pub fn handle_atomic_wait64(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
     const ops = readOps(encode.OpsAtomicWait64, ip);
 
     if (!env.memory.isShared()) {
