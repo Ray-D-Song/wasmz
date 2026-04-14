@@ -28,10 +28,60 @@ WARMUP=2
 die()  { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "» $*"; }
 
-# Returns peak RSS in bytes (macOS /usr/bin/time -l)
+# Returns peak RSS in bytes for a single run (macOS /usr/bin/time -l).
 measure_rss() {
   /usr/bin/time -l "$@" 2>&1 >/dev/null \
     | awk '/maximum resident set size/ { print $1 }'
+}
+
+# Returns time-averaged RSS in bytes for a single run.
+#
+# Starts the target process in the background, then polls `ps -o rss=` every
+# SAMPLE_INTERVAL_MS milliseconds until the process exits.  The arithmetic
+# mean of all RSS samples is printed (in bytes).
+#
+# Accuracy notes:
+#   - For processes that run < ~200 ms the sample count will be low (1–2);
+#     the number shown is still correct for those samples, just noisier.
+#   - ps RSS is in KB on macOS; we convert to bytes before averaging.
+#
+# Usage: measure_avg_rss cmd [args...]
+SAMPLE_INTERVAL_MS=100
+measure_avg_rss() {
+  python3 - "$@" << 'PYEOF'
+import subprocess, sys, time, os, signal
+
+INTERVAL = int(os.environ.get("SAMPLE_INTERVAL_MS", "100")) / 1000.0
+
+cmd = sys.argv[1:]
+proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+samples = []
+while True:
+    # Sample RSS (KB) via ps; ps may return nothing if the process just exited.
+    try:
+        out = subprocess.check_output(
+            ["ps", "-o", "rss=", "-p", str(proc.pid)],
+            stderr=subprocess.DEVNULL, text=True
+        ).strip()
+        if out:
+            samples.append(int(out) * 1024)   # KB → bytes
+    except subprocess.CalledProcessError:
+        pass   # process already gone
+
+    ret = proc.poll()
+    if ret is not None:
+        break
+    time.sleep(INTERVAL)
+
+# Ensure process is gone
+proc.wait()
+
+if samples:
+    print(sum(samples) // len(samples))
+else:
+    print(0)
+PYEOF
 }
 
 # File size in bytes
@@ -145,6 +195,25 @@ RSS_ESBUILD_WASM3=$(measure_rss sh -c \
 RSS_ESBUILD_WASMI=$(measure_rss sh -c \
   "\"$WASMI\" \"$ESBUILD_WASM\" --bundle --platform=node --sourcefile=source.js < \"$ESBUILD_SOURCE\" > /dev/null")
 
+# ─── 5b. time-averaged RSS (ps sampled every SAMPLE_INTERVAL_MS during one run) ─
+info "Measuring time-averaged RSS for fib(30)..."
+AVG_FIB_WASMZ=$(measure_avg_rss "$WASMZ" "$FIB_WASM")
+AVG_FIB_WASM3=$(measure_avg_rss "$WASM3" "$FIB_WASM")
+AVG_FIB_WASMI=$(measure_avg_rss "$WASMI" "$FIB_WASM")
+
+info "Measuring time-averaged RSS for QuickJS fib(25)..."
+AVG_QJS_WASMZ=$(measure_avg_rss sh -c "\"$WASMZ\" \"$QJS_WASM\" --args \"-e 'function fib(n){return n<=1?n:fib(n-1)+fib(n-2)} print(fib(25))'\"")
+AVG_QJS_WASM3=$(measure_avg_rss sh -c "\"$WASM3\" \"$QJS_WASM\" -e 'function fib(n){return n<=1?n:fib(n-1)+fib(n-2)} print(fib(25))'")
+AVG_QJS_WASMI=$(measure_avg_rss sh -c "\"$WASMI\" \"$QJS_WASM\" -e 'function fib(n){return n<=1?n:fib(n-1)+fib(n-2)} print(fib(25))'")
+
+info "Measuring time-averaged RSS for esbuild..."
+AVG_ESBUILD_WASMZ=$(measure_avg_rss sh -c \
+  "\"$WASMZ\" \"$ESBUILD_WASM\" --args '--bundle --platform=node --sourcefile=source.js' < \"$ESBUILD_SOURCE\" > /dev/null")
+AVG_ESBUILD_WASM3=$(measure_avg_rss sh -c \
+  "\"$WASM3\" \"$ESBUILD_WASM\" --bundle --platform=node --sourcefile=source.js < \"$ESBUILD_SOURCE\" > /dev/null")
+AVG_ESBUILD_WASMI=$(measure_avg_rss sh -c \
+  "\"$WASMI\" \"$ESBUILD_WASM\" --bundle --platform=node --sourcefile=source.js < \"$ESBUILD_SOURCE\" > /dev/null")
+
 # ─── 6. parse medians ─────────────────────────────────────────────────────────
 MED_FIB_WASMZ=$(parse_median_ms "$HYPERFINE_DIR/fib.json" "wasmz")
 MED_FIB_WASM3=$(parse_median_ms "$HYPERFINE_DIR/fib.json" "wasm3")
@@ -213,29 +282,33 @@ cat << MDEOF
 
 ## Peak RSS (memory) — lower is better
 
+> Peak RSS = highest resident set size seen at any point during the run.
+> Avg RSS  = time-weighted mean RSS sampled every ${SAMPLE_INTERVAL_MS} ms during one run
+>            (reflects actual memory consumption over the process lifetime, not just the spike).
+
 ### fib(30)
 
-| Runtime | Peak RSS |
-|---------|----------|
-| wasmz   | $(human_bytes ${RSS_FIB_WASMZ:-0}) |
-| wasmi   | $(human_bytes ${RSS_FIB_WASMI:-0}) |
-| wasm3   | $(human_bytes ${RSS_FIB_WASM3:-0}) |
+| Runtime | Peak RSS | Avg RSS |
+|---------|----------|---------|
+| wasmz   | $(human_bytes ${RSS_FIB_WASMZ:-0}) | $(human_bytes ${AVG_FIB_WASMZ:-0}) |
+| wasmi   | $(human_bytes ${RSS_FIB_WASMI:-0}) | $(human_bytes ${AVG_FIB_WASMI:-0}) |
+| wasm3   | $(human_bytes ${RSS_FIB_WASM3:-0}) | $(human_bytes ${AVG_FIB_WASM3:-0}) |
 
 ### QuickJS fib(25)
 
-| Runtime | Peak RSS |
-|---------|----------|
-| wasmz   | $(human_bytes ${RSS_QJS_WASMZ:-0}) |
-| wasmi   | $(human_bytes ${RSS_QJS_WASMI:-0}) |
-| wasm3   | $(human_bytes ${RSS_QJS_WASM3:-0}) |
+| Runtime | Peak RSS | Avg RSS |
+|---------|----------|---------|
+| wasmz   | $(human_bytes ${RSS_QJS_WASMZ:-0}) | $(human_bytes ${AVG_QJS_WASMZ:-0}) |
+| wasmi   | $(human_bytes ${RSS_QJS_WASMI:-0}) | $(human_bytes ${AVG_QJS_WASMI:-0}) |
+| wasm3   | $(human_bytes ${RSS_QJS_WASM3:-0}) | $(human_bytes ${AVG_QJS_WASM3:-0}) |
 
 ### esbuild bundling
 
-| Runtime | Peak RSS |
-|---------|----------|
-| wasmz   | $(human_bytes ${RSS_ESBUILD_WASMZ:-0}) |
-| wasmi   | $(human_bytes ${RSS_ESBUILD_WASMI:-0}) |
-| wasm3   | $(human_bytes ${RSS_ESBUILD_WASM3:-0}) |
+| Runtime | Peak RSS | Avg RSS |
+|---------|----------|---------|
+| wasmz   | $(human_bytes ${RSS_ESBUILD_WASMZ:-0}) | $(human_bytes ${AVG_ESBUILD_WASMZ:-0}) |
+| wasmi   | $(human_bytes ${RSS_ESBUILD_WASMI:-0}) | $(human_bytes ${AVG_ESBUILD_WASMI:-0}) |
+| wasm3   | $(human_bytes ${RSS_ESBUILD_WASM3:-0}) | $(human_bytes ${AVG_ESBUILD_WASM3:-0}) |
 MDEOF
 } > "$REPORT"
 

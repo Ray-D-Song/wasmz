@@ -403,6 +403,29 @@ pub const Instance = struct {
         };
     }
 
+    /// VM stack memory breakdown (bytes allocated, not in-use).
+    pub const VmMemStats = struct {
+        /// Bytes allocated for the persistent value stack.
+        val_stack_bytes: usize,
+        /// Number of slots in the value stack.
+        val_stack_slots: usize,
+        /// Bytes allocated for the persistent call stack.
+        call_stack_bytes: usize,
+        /// Number of frames in the call stack.
+        call_stack_frames: usize,
+    };
+
+    /// Return the byte sizes of the VM's persistent val_stack and call_stack.
+    pub fn vmMemStats(self: *const Instance) VmMemStats {
+        const CallFrameT = std.meta.Elem(@TypeOf(self.vm.call_stack));
+        return .{
+            .val_stack_bytes = self.vm.val_stack.len * @sizeOf(vm_mod.RawVal),
+            .val_stack_slots = self.vm.val_stack.len,
+            .call_stack_bytes = self.vm.call_stack.len * @sizeOf(CallFrameT),
+            .call_stack_frames = self.vm.call_stack.len,
+        };
+    }
+
     pub fn deinit(self: *Instance) void {
         const allocator = self.store.allocator;
         allocator.free(self.globals);
