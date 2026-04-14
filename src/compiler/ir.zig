@@ -58,6 +58,44 @@ pub fn CompareOp(comptime InputT: type) type {
     };
 }
 
+/// Fused: binop with immediate rhs — replaces `const_i32 { dst=T, value=K }` + `i32_xxx { dst=D, lhs=S, rhs=T }`.
+/// `{ dst: Slot, lhs: Slot, imm: i32 }` — 12 bytes → stride 24 (same as OpsDstLhsRhs).
+pub fn BinaryOpImm(comptime T: type) type {
+    return struct {
+        dst: Slot,
+        lhs: Slot,
+        imm: T,
+
+        pub const ValueType = T;
+    };
+}
+
+/// Fused: compare + jump_if_z — replaces `i32_xxx_cmp { dst=C, lhs=A, rhs=B }` + `jump_if_z { cond=C, rel=R }`.
+/// Jumps to `target` (op-index, converted to relative byte offset at encode time)
+/// when the comparison is FALSE (i.e. jump when compare result == 0).
+pub fn CompareJumpOp(comptime InputT: type) type {
+    return struct {
+        lhs: Slot,
+        rhs: Slot,
+        /// Op-index of the jump target (converted to relative byte offset by the encoder).
+        target: u32,
+
+        pub const InputType = InputT;
+    };
+}
+
+/// Fused: binop result written directly into a local slot — replaces `i32_xxx { dst=T, lhs=A, rhs=B }` + `local_set { local=L, src=T }`.
+/// `{ local: Slot, lhs: Slot, rhs: Slot }` — 12 bytes → stride 24 (same as OpsDstLhsRhs).
+pub fn BinaryOpToLocal(comptime T: type) type {
+    return struct {
+        local: Slot,
+        lhs: Slot,
+        rhs: Slot,
+
+        pub const ValueType = T;
+    };
+}
+
 pub const SimdUnaryOp = struct {
     dst: Slot,
     opcode: SimdOpcode,
@@ -353,6 +391,56 @@ pub const Op = union(enum) {
     i64_extend8_s: ConvertOp(i64, i64),
     i64_extend16_s: ConvertOp(i64, i64),
     i64_extend32_s: ConvertOp(i64, i64),
+
+    // ── Fused: binop with immediate rhs (C: const_i32 + binop → xxx_imm) ─────
+    // i32 arithmetic-imm: rhs is an i32 literal embedded in the instruction
+    i32_add_imm: BinaryOpImm(i32),
+    i32_sub_imm: BinaryOpImm(i32),
+    i32_mul_imm: BinaryOpImm(i32),
+    i32_and_imm: BinaryOpImm(i32),
+    i32_or_imm: BinaryOpImm(i32),
+    i32_xor_imm: BinaryOpImm(i32),
+    i32_shl_imm: BinaryOpImm(i32),
+    i32_shr_s_imm: BinaryOpImm(i32),
+    i32_shr_u_imm: BinaryOpImm(i32),
+    // i32 compare-imm: produces an i32 boolean
+    i32_eq_imm: BinaryOpImm(i32),
+    i32_ne_imm: BinaryOpImm(i32),
+    i32_lt_s_imm: BinaryOpImm(i32),
+    i32_lt_u_imm: BinaryOpImm(i32),
+    i32_gt_s_imm: BinaryOpImm(i32),
+    i32_gt_u_imm: BinaryOpImm(i32),
+    i32_le_s_imm: BinaryOpImm(i32),
+    i32_le_u_imm: BinaryOpImm(i32),
+    i32_ge_s_imm: BinaryOpImm(i32),
+    i32_ge_u_imm: BinaryOpImm(i32),
+
+    // ── Fused: compare + jump_if_z (F: cmp + branch → cmp_jump) ─────────────
+    // Jumps to rel_target (from instruction start) when the comparison is FALSE.
+    // i32 compare-jump variants
+    i32_eq_jump_if_false: CompareJumpOp(i32),
+    i32_ne_jump_if_false: CompareJumpOp(i32),
+    i32_lt_s_jump_if_false: CompareJumpOp(i32),
+    i32_lt_u_jump_if_false: CompareJumpOp(i32),
+    i32_gt_s_jump_if_false: CompareJumpOp(i32),
+    i32_gt_u_jump_if_false: CompareJumpOp(i32),
+    i32_le_s_jump_if_false: CompareJumpOp(i32),
+    i32_le_u_jump_if_false: CompareJumpOp(i32),
+    i32_ge_s_jump_if_false: CompareJumpOp(i32),
+    i32_ge_u_jump_if_false: CompareJumpOp(i32),
+    // i32 eqz-jump (unary: jumps when src != 0, i.e. when eqz is false)
+    i32_eqz_jump_if_false: struct { src: Slot, target: u32 },
+
+    // ── Fused: binop result to local (D: binop + local_set → binop_to_local) ─
+    i32_add_to_local: BinaryOpToLocal(i32),
+    i32_sub_to_local: BinaryOpToLocal(i32),
+    i32_mul_to_local: BinaryOpToLocal(i32),
+    i32_and_to_local: BinaryOpToLocal(i32),
+    i32_or_to_local: BinaryOpToLocal(i32),
+    i32_xor_to_local: BinaryOpToLocal(i32),
+    i32_shl_to_local: BinaryOpToLocal(i32),
+    i32_shr_s_to_local: BinaryOpToLocal(i32),
+    i32_shr_u_to_local: BinaryOpToLocal(i32),
 
     // ── SIMD operations ───────────────────────────────────────────────────────
     simd_unary: SimdUnaryOp,

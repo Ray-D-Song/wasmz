@@ -33,3 +33,5 @@ bench/results/hyperfine/
 
 # Binary file for benchmarking and testing
 /wasm3
+
+report-*.md
