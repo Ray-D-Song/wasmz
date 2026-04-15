@@ -27,6 +27,8 @@ pub const Store = struct {
     /// The GC heap and ExecEnv hold pointers into this field, so Store must not
     /// be moved after init (always access Store through a pointer).
     memory_budget: MemoryBudget,
+    /// Total number of allocations performed by this store's runtime.
+    alloc_count: usize = 0,
 
     pub fn init(allocator: Allocator, engine: Engine) std.mem.Allocator.Error!Store {
         const limit: ?u64 = engine.config().*.mem_limit_bytes;

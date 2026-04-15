@@ -104,6 +104,12 @@ pub fn printMemStats(store: *Store, instance: *Instance) void {
     const module_total = ms.total();
     const grand_total = runtime_total + module_total;
 
+    // ── allocation counts ─────────────────────────────────────────────────────
+    const gc_alloc_count = store.gc_heap.alloc_count;
+    const vm_alloc_count = vm.vm_alloc_count;
+    const instance_alloc_count = instance.alloc_count;
+    const total_alloc_count = gc_alloc_count + vm_alloc_count + instance_alloc_count;
+
     // ── formatting helpers ────────────────────────────────────────────────────
     const mb = struct {
         fn f(b: usize) f64 {
@@ -147,6 +153,14 @@ pub fn printMemStats(store: *Store, instance: *Instance) void {
         \\  ═════════════════════════════════════════
         \\  Grand total:       {d:.2} MB
         \\
+        \\  Allocations
+        \\  ─────────────────────────────────────────
+        \\  Instance:           {d}
+        \\  VM (val/call stack): {d}
+        \\  GC heap:            {d}
+        \\  ─────────────────────────────────────────
+        \\  Total:              {d}
+        \\
     ,
         .{
             // Runtime
@@ -163,6 +177,9 @@ pub fn printMemStats(store: *Store, instance: *Instance) void {
             mb(module_total),
             // Grand total
                      mb(grand_total),
+            // Allocation counts
+            instance_alloc_count,      vm_alloc_count,
+            gc_alloc_count,            total_alloc_count,
         },
     ) catch {};
     std.fs.File.stderr().writeAll(fbs.getWritten()) catch {};
