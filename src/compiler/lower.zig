@@ -1389,7 +1389,7 @@ pub const Lower = struct {
     ///
     /// NOTE: Do NOT call this for `local_tee` because the value must also
     /// remain on the stack.
-    fn try_fuse_local_set(self: *Lower, local: Slot, src: Slot) bool {
+    pub fn try_fuse_local_set(self: *Lower, local: Slot, src: Slot) bool {
         const ops = self.compiled.ops.items;
         if (ops.len == 0) return false;
         const last = &ops[ops.len - 1];
@@ -1615,6 +1615,67 @@ pub const Lower = struct {
                 } else {
                     last.* = .{ .i64_shr_u_imm_to_local = .{ .local = local, .lhs = b.lhs, .imm = b.imm } };
                 }
+            },
+            else => return false,
+        }
+        return true;
+    }
+
+    /// Attempt to fuse a preceding `const_i32`/`const_i64` + `local_set` into
+    /// `i32_const_to_local`/`i64_const_to_local`.
+    pub fn try_fuse_const_to_local(self: *Lower, local: Slot, src: Slot) bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len == 0) return false;
+        const last = &ops[ops.len - 1];
+        switch (last.*) {
+            .const_i32 => |c| {
+                if (c.dst != src) return false;
+                self.recycle_slot(src);
+                last.* = .{ .i32_const_to_local = .{ .local = local, .value = c.value } };
+            },
+            .const_i64 => |c| {
+                if (c.dst != src) return false;
+                self.recycle_slot(src);
+                last.* = .{ .i64_const_to_local = .{ .local = local, .value = c.value } };
+            },
+            else => return false,
+        }
+        return true;
+    }
+
+    /// Attempt to fuse a preceding `global_get` + `local_set` into
+    /// `global_get_to_local`.
+    pub fn try_fuse_global_get_to_local(self: *Lower, local: Slot, src: Slot) bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len == 0) return false;
+        const last = &ops[ops.len - 1];
+        switch (last.*) {
+            .global_get => |g| {
+                if (g.dst != src) return false;
+                self.recycle_slot(src);
+                last.* = .{ .global_get_to_local = .{ .local = local, .global_idx = g.global_idx } };
+            },
+            else => return false,
+        }
+        return true;
+    }
+
+    /// Attempt to fuse a preceding `i32_load`/`i64_load` + `local_set` into
+    /// `i32_load_to_local`/`i64_load_to_local`.
+    pub fn try_fuse_load_to_local(self: *Lower, local: Slot, src: Slot) bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len == 0) return false;
+        const last = &ops[ops.len - 1];
+        switch (last.*) {
+            .i32_load => |l| {
+                if (l.dst != src) return false;
+                self.recycle_slot(src);
+                last.* = .{ .i32_load_to_local = .{ .local = local, .addr = l.addr, .offset = l.offset } };
+            },
+            .i64_load => |l| {
+                if (l.dst != src) return false;
+                self.recycle_slot(src);
+                last.* = .{ .i64_load_to_local = .{ .local = local, .addr = l.addr, .offset = l.offset } };
             },
             else => return false,
         }
@@ -3111,7 +3172,13 @@ pub const Lower = struct {
                 const src = try self.pop_slot();
                 const local_slot: Slot = @intCast(local);
                 // ── Peephole D: i32_xxx + local_set → i32_xxx_to_local ────────
-                if (!self.try_fuse_local_set(local_slot, src)) {
+                if (self.try_fuse_local_set(local_slot, src) or
+                    self.try_fuse_const_to_local(local_slot, src) or
+                    self.try_fuse_global_get_to_local(local_slot, src) or
+                    self.try_fuse_load_to_local(local_slot, src))
+                {
+                    // fused successfully
+                } else {
                     try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
                 }
             },
@@ -4820,7 +4887,13 @@ pub const Lower = struct {
                 const src = try self.pop_slot();
                 const local_slot: Slot = @intCast(local);
                 // ── Peephole D: i32_xxx + local_set → i32_xxx_to_local ────────
-                if (!self.try_fuse_local_set(local_slot, src)) {
+                if (self.try_fuse_local_set(local_slot, src) or
+                    self.try_fuse_const_to_local(local_slot, src) or
+                    self.try_fuse_global_get_to_local(local_slot, src) or
+                    self.try_fuse_load_to_local(local_slot, src))
+                {
+                    // fused successfully
+                } else {
                     try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
                 }
             },

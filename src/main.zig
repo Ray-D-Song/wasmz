@@ -210,6 +210,9 @@ fn run(allocator: std.mem.Allocator) void {
                     \\  i64_imm_to_local: {d:>6}  ({d:.1}%)
                     \\  i32_local_inplace: {d:>5}  ({d:.1}%)
                     \\  i64_local_inplace: {d:>5}  ({d:.1}%)
+                    \\  const_to_local : {d:>9}  ({d:.1}%)
+                    \\  load_to_local  : {d:>9}  ({d:.1}%)
+                    \\  global_to_local: {d:>9}  ({d:.1}%)
                     \\  --- Dispatch overhead ---
                     \\  dispatch_dispatch : {d:>9}  ({d:.1}%)
                     \\  dispatch_next     : {d:>9}  ({d:.1}%)
@@ -222,6 +225,9 @@ fn run(allocator: std.mem.Allocator) void {
                     oc.i64_imm_to_local,  pct(oc.i64_imm_to_local, oc.total),
                     oc.i32_local_inplace, pct(oc.i32_local_inplace, oc.total),
                     oc.i64_local_inplace, pct(oc.i64_local_inplace, oc.total),
+                    oc.const_to_local,    pct(oc.const_to_local, oc.total),
+                    oc.load_to_local,     pct(oc.load_to_local, oc.total),
+                    oc.global_to_local,   pct(oc.global_to_local, oc.total),
                     oc.dispatch_dispatch, pct(oc.dispatch_dispatch, oc.total),
                     oc.dispatch_next,     pct(oc.dispatch_next, oc.total),
                     oc.total,

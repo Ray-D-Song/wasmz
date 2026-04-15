@@ -2142,7 +2142,13 @@ fn decodeAndLower(
             const local = p.read_var_uint32();
             const src = try lower.pop_slot();
             const local_slot: ir.Slot = @intCast(local);
-            if (!lower.try_fuse_local_set(local_slot, src)) {
+            if (lower.try_fuse_local_set(local_slot, src) or
+                lower.try_fuse_const_to_local(local_slot, src) or
+                lower.try_fuse_global_get_to_local(local_slot, src) or
+                lower.try_fuse_load_to_local(local_slot, src))
+            {
+                // fused successfully
+            } else {
                 try lower.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
             }
         },

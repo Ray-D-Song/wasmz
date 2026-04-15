@@ -451,6 +451,14 @@ pub const handler_table: encode.HandlerTable = .{
     .i64_shl_local_inplace = &handlers.handle_i64_shl_local_inplace,
     .i64_shr_s_local_inplace = &handlers.handle_i64_shr_s_local_inplace,
     .i64_shr_u_local_inplace = &handlers.handle_i64_shr_u_local_inplace,
+    // ── Fused: const-to-local ────────────────────────────────────────────────
+    .i32_const_to_local = &handlers.handle_i32_const_to_local,
+    .i64_const_to_local = &handlers.handle_i64_const_to_local,
+    // ── Fused: global_get-to-local ────────────────────────────────────────────
+    .global_get_to_local = &handlers.handle_global_get_to_local,
+    // ── Fused: load-to-local ──────────────────────────────────────────────────
+    .i32_load_to_local = &handlers.handle_i32_load_to_local,
+    .i64_load_to_local = &handlers.handle_i64_load_to_local,
     // ── Fused: compare-imm-jump-if-false (Candidate G) ───────────────────────
     .i32_eq_imm_jump_if_false = &handlers.handle_i32_eq_imm_jump_if_false,
     .i32_ne_imm_jump_if_false = &handlers.handle_i32_ne_imm_jump_if_false,
