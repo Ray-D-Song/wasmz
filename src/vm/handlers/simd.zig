@@ -3,9 +3,9 @@
 /// simd_unary, simd_binary, simd_ternary, simd_compare, simd_shift_scalar,
 /// simd_extract_lane, simd_replace_lane, simd_shuffle, simd_load, simd_store
 const std = @import("std");
-const ir = @import("../compiler/ir.zig");
-const encode = @import("../compiler/encode.zig");
-const dispatch = @import("dispatch.zig");
+const ir = @import("../../compiler/ir.zig");
+const encode = @import("../../compiler/encode.zig");
+const dispatch = @import("../dispatch.zig");
 const core = @import("core");
 const simd = core.simd;
 

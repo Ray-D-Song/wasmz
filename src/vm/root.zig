@@ -5,7 +5,7 @@ const host_mod = @import("../wasmz/host.zig");
 const module_mod = @import("../wasmz/module.zig");
 const store_mod = @import("../wasmz/store.zig");
 const gc_mod = @import("./gc/root.zig");
-const dispatch_mod = @import("dispatch.zig");
+const dispatch_mod = @import("./dispatch.zig");
 
 const EncodedFunction = ir.EncodedFunction;
 const FunctionSlot = ir.FunctionSlot;

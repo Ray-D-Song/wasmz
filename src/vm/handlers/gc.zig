@@ -6,12 +6,12 @@
 /// br_on_null/non_null, br_on_cast/cast_fail, any_convert_extern, extern_convert_any
 /// + gcAlloc / collectGcRoots helpers
 const std = @import("std");
-const ir = @import("../compiler/ir.zig");
-const encode = @import("../compiler/encode.zig");
-const dispatch = @import("dispatch.zig");
+const ir = @import("../../compiler/ir.zig");
+const encode = @import("../../compiler/encode.zig");
+const dispatch = @import("../dispatch.zig");
 const core = @import("core");
-const gc_mod = @import("gc/root.zig");
-const store_mod = @import("../wasmz/store.zig");
+const gc_mod = @import("../gc/root.zig");
+const store_mod = @import("../../wasmz/store.zig");
 
 const Allocator = std.mem.Allocator;
 const RawVal = dispatch.RawVal;

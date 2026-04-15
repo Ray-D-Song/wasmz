@@ -19,7 +19,7 @@
 ///   that returns, reads the result.
 const std = @import("std");
 const ir = @import("../compiler/ir.zig");
-const vm_root = @import("root.zig");
+const vm_root = @import("./root.zig");
 const gc_mod = @import("gc/root.zig");
 const core = @import("core");
 const store_mod = @import("../wasmz/store.zig");

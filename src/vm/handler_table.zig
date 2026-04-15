@@ -2,13 +2,13 @@
 /// encode.HandlerTable, used by the encoder to patch handler pointers into the
 /// M3 bytecode stream.
 const encode = @import("../compiler/encode.zig");
-const handlers = @import("handlers.zig");
-const handlers_call = @import("handlers_call.zig");
-const handlers_table = @import("handlers_table.zig");
-const handlers_atomic = @import("handlers_atomic.zig");
-const handlers_gc = @import("handlers_gc.zig");
-const handlers_eh = @import("handlers_eh.zig");
-const handlers_simd = @import("handlers_simd.zig");
+const handlers = @import("handlers/root.zig");
+const handlers_call = @import("handlers/call.zig");
+const handlers_table = @import("handlers/table.zig");
+const handlers_atomic = @import("handlers/atomic.zig");
+const handlers_gc = @import("handlers/gc.zig");
+const handlers_eh = @import("handlers/eh.zig");
+const handlers_simd = @import("handlers/simd.zig");
 
 pub const handler_table: encode.HandlerTable = .{
     // ── terminators / constants / refs / vars / control ──────────────────
