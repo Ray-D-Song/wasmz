@@ -343,6 +343,7 @@ pub inline fn next(
     fp0: f64,
 ) void {
     op_counts.total += 1;
+    op_counts.dispatch_next += 1;
     const next_ip = ip + stride;
     const h: Handler = std.mem.bytesAsValue(Handler, next_ip[0..@sizeOf(Handler)]).*;
     @call(.always_tail, h, .{ next_ip, slots, frame, env, r0, fp0 });
@@ -361,6 +362,7 @@ pub inline fn dispatch(
     fp0: f64,
 ) void {
     op_counts.total += 1;
+    op_counts.dispatch_dispatch += 1;
     const h: Handler = std.mem.bytesAsValue(Handler, ip[0..@sizeOf(Handler)]).*;
     @call(.always_tail, h, .{ ip, slots, frame, env, r0, fp0 });
 }
@@ -371,31 +373,32 @@ pub const OpCounts = struct {
     copy: u64 = 0,
     local_get: u64 = 0,
     local_set: u64 = 0,
-    const_i32: u64 = 0,
-    const_i64: u64 = 0,
-    const_f32: u64 = 0,
-    const_f64: u64 = 0,
-    i32_binop: u64 = 0,
-    i64_binop: u64 = 0,
-    f32_binop: u64 = 0,
-    f64_binop: u64 = 0,
-    i32_imm: u64 = 0,
-    i64_imm: u64 = 0,
-    i32_imm_r: u64 = 0,
-    i64_imm_r: u64 = 0,
-    call: u64 = 0,
-    jump: u64 = 0,
-    jump_if_z: u64 = 0,
-    jump_if_nz: u64 = 0,
     copy_jump_if_nz: u64 = 0,
-    ret: u64 = 0,
+    jump: u64 = 0,
+    call_ret: u64 = 0,
+    global: u64 = 0,
+    constant: u64 = 0,
+    imm: u64 = 0,
+    imm_r: u64 = 0,
+    unary: u64 = 0,
+    conv: u64 = 0,
+    cmp: u64 = 0,
+    binop: u64 = 0,
+    ref_select: u64 = 0,
+    mem_table: u64 = 0,
+    simd: u64 = 0,
+    atomic: u64 = 0,
+    trap_unreachable: u64 = 0,
     i32_to_local: u64 = 0,
     i64_to_local: u64 = 0,
     i32_imm_to_local: u64 = 0,
     i64_imm_to_local: u64 = 0,
     i32_local_inplace: u64 = 0,
     i64_local_inplace: u64 = 0,
+    misc: u64 = 0,
     total: u64 = 0,
+    dispatch_dispatch: u64 = 0,
+    dispatch_next: u64 = 0,
 };
 
 pub var op_counts: OpCounts = .{};

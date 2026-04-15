@@ -155,64 +155,65 @@ fn run(allocator: std.mem.Allocator) void {
         if (oc.total > 0) {
             std.debug.print(
                 \\=== Runtime op counts ===
-                \\  copy        : {d:>12}  ({d:.1}%)
-                \\  local_get   : {d:>12}  ({d:.1}%)
-                \\  local_set   : {d:>12}  ({d:.1}%)
-                \\  const_i32   : {d:>12}  ({d:.1}%)
-                \\  const_i64   : {d:>12}  ({d:.1}%)
-                \\  const_f32   : {d:>12}  ({d:.1}%)
-                \\  const_f64   : {d:>12}  ({d:.1}%)
-                \\  i32_binop   : {d:>12}  ({d:.1}%)
-                \\  i64_binop   : {d:>12}  ({d:.1}%)
-                \\  f32_binop   : {d:>12}  ({d:.1}%)
+                \\  copy              : {d:>12}  ({d:.1}%)
+                \\  local_get         : {d:>12}  ({d:.1}%)
+                \\  local_set         : {d:>12}  ({d:.1}%)
+                \\  copy_jump_if_nz   : {d:>12}  ({d:.1}%)
+                \\  jump              : {d:>12}  ({d:.1}%)
+                \\  call_ret          : {d:>12}  ({d:.1}%)
+                \\  global            : {d:>12}  ({d:.1}%)
+                \\  constant          : {d:>12}  ({d:.1}%)
+                \\  imm               : {d:>12}  ({d:.1}%)
+                \\  imm_r             : {d:>12}  ({d:.1}%)
                 \\
             , .{
-                oc.copy,      pct(oc.copy, oc.total),
-                oc.local_get, pct(oc.local_get, oc.total),
-                oc.local_set, pct(oc.local_set, oc.total),
-                oc.const_i32, pct(oc.const_i32, oc.total),
-                oc.const_i64, pct(oc.const_i64, oc.total),
-                oc.const_f32, pct(oc.const_f32, oc.total),
-                oc.const_f64, pct(oc.const_f64, oc.total),
-                oc.i32_binop, pct(oc.i32_binop, oc.total),
-                oc.i64_binop, pct(oc.i64_binop, oc.total),
-                oc.f32_binop, pct(oc.f32_binop, oc.total),
+                oc.copy,            pct(oc.copy, oc.total),
+                oc.local_get,       pct(oc.local_get, oc.total),
+                oc.local_set,       pct(oc.local_set, oc.total),
+                oc.copy_jump_if_nz, pct(oc.copy_jump_if_nz, oc.total),
+                oc.jump,            pct(oc.jump, oc.total),
+                oc.call_ret,        pct(oc.call_ret, oc.total),
+                oc.global,          pct(oc.global, oc.total),
+                oc.constant,        pct(oc.constant, oc.total),
+                oc.imm,             pct(oc.imm, oc.total),
+                oc.imm_r,           pct(oc.imm_r, oc.total),
             });
             std.debug.print(
-                \\  f64_binop   : {d:>12}  ({d:.1}%)
-                \\  i32_imm     : {d:>12}  ({d:.1}%)
-                \\  i64_imm     : {d:>12}  ({d:.1}%)
-                \\  i32_imm_r   : {d:>12}  ({d:.1}%)
-                \\  i64_imm_r   : {d:>12}  ({d:.1}%)
-                \\  call        : {d:>12}  ({d:.1}%)
-                \\  jump        : {d:>12}  ({d:.1}%)
-                \\  jump_if_z   : {d:>12}  ({d:.1}%)
-                \\  jump_if_nz  : {d:>12}  ({d:.1}%)
-                \\  copy_jump_if_nz: {d:>9}  ({d:.1}%)
-                \\  ret         : {d:>12}  ({d:.1}%)
+                \\  unary             : {d:>12}  ({d:.1}%)
+                \\  conv              : {d:>12}  ({d:.1}%)
+                \\  cmp               : {d:>12}  ({d:.1}%)
+                \\  binop             : {d:>12}  ({d:.1}%)
+                \\  ref_select        : {d:>12}  ({d:.1}%)
+                \\  mem_table         : {d:>12}  ({d:.1}%)
+                \\  simd              : {d:>12}  ({d:.1}%)
+                \\  atomic            : {d:>12}  ({d:.1}%)
+                \\  trap_unreachable  : {d:>12}  ({d:.1}%)
+                \\  misc              : {d:>12}  ({d:.1}%)
                 \\
             , .{
-                oc.f64_binop,       pct(oc.f64_binop, oc.total),
-                oc.i32_imm,         pct(oc.i32_imm, oc.total),
-                oc.i64_imm,         pct(oc.i64_imm, oc.total),
-                oc.i32_imm_r,       pct(oc.i32_imm_r, oc.total),
-                oc.i64_imm_r,       pct(oc.i64_imm_r, oc.total),
-                oc.call,            pct(oc.call, oc.total),
-                oc.jump,            pct(oc.jump, oc.total),
-                oc.jump_if_z,       pct(oc.jump_if_z, oc.total),
-                oc.jump_if_nz,      pct(oc.jump_if_nz, oc.total),
-                oc.copy_jump_if_nz, pct(oc.copy_jump_if_nz, oc.total),
-                oc.ret,             pct(oc.ret, oc.total),
+                oc.unary,            pct(oc.unary, oc.total),
+                oc.conv,             pct(oc.conv, oc.total),
+                oc.cmp,              pct(oc.cmp, oc.total),
+                oc.binop,            pct(oc.binop, oc.total),
+                oc.ref_select,       pct(oc.ref_select, oc.total),
+                oc.mem_table,        pct(oc.mem_table, oc.total),
+                oc.simd,             pct(oc.simd, oc.total),
+                oc.atomic,           pct(oc.atomic, oc.total),
+                oc.trap_unreachable, pct(oc.trap_unreachable, oc.total),
+                oc.misc,             pct(oc.misc, oc.total),
             });
             std.debug.print(
                 \\  --- Fused local ops ---
-                \\  i32_to_local: {d:>9}  ({d:.1}%)
-                \\  i64_to_local: {d:>9}  ({d:.1}%)
+                \\  i32_to_local    : {d:>9}  ({d:.1}%)
+                \\  i64_to_local    : {d:>9}  ({d:.1}%)
                 \\  i32_imm_to_local: {d:>6}  ({d:.1}%)
                 \\  i64_imm_to_local: {d:>6}  ({d:.1}%)
                 \\  i32_local_inplace: {d:>5}  ({d:.1}%)
                 \\  i64_local_inplace: {d:>5}  ({d:.1}%)
-                \\  TOTAL       : {d:>12}
+                \\  --- Dispatch overhead ---
+                \\  dispatch_dispatch : {d:>9}  ({d:.1}%)
+                \\  dispatch_next     : {d:>9}  ({d:.1}%)
+                \\  TOTAL             : {d:>12}
                 \\
             , .{
                 oc.i32_to_local,      pct(oc.i32_to_local, oc.total),
@@ -221,6 +222,8 @@ fn run(allocator: std.mem.Allocator) void {
                 oc.i64_imm_to_local,  pct(oc.i64_imm_to_local, oc.total),
                 oc.i32_local_inplace, pct(oc.i32_local_inplace, oc.total),
                 oc.i64_local_inplace, pct(oc.i64_local_inplace, oc.total),
+                oc.dispatch_dispatch, pct(oc.dispatch_dispatch, oc.total),
+                oc.dispatch_next,     pct(oc.dispatch_next, oc.total),
                 oc.total,
             });
         }
