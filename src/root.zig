@@ -43,6 +43,10 @@ pub const HostFunc = @import("wasmz/host.zig").HostFunc;
 /// Profiling utilities (conditional on -Dprofiling=true build option).
 pub const profiling = @import("utils/profiling.zig");
 
+/// Runtime op counters (always available, zero overhead when not printed).
+pub const OpCounts = @import("vm/root.zig").OpCounts;
+pub const op_counts = @import("vm/root.zig").op_counts;
+
 // Include all submodule tests in the coverage of `zig build test`
 test {
     _ = @import("engine/func_ty.zig");

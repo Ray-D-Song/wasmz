@@ -76,6 +76,10 @@ pub const OpsGlobalSet = extern struct { src: Slot, _pad: u16 = 0, global_idx: u
 /// copy
 pub const OpsCopy = extern struct { dst: Slot, src: Slot };
 
+/// copy_jump_if_nz: fused copy + conditional branch (Peephole K).
+/// slots[dst] = slots[src]; if slots[cond] != 0 jump to target.
+pub const OpsCopyJumpIfNz = extern struct { dst: Slot, src: Slot, cond: Slot, _pad: u16 = 0, rel_target: i32 };
+
 /// jump: signed byte offset relative to instruction start
 pub const OpsJump = extern struct { rel_target: i32 };
 
@@ -292,6 +296,7 @@ pub fn instrSize(op: Op) usize {
         .global_get => @sizeOf(OpsGlobalGet),
         .global_set => @sizeOf(OpsGlobalSet),
         .copy => @sizeOf(OpsCopy),
+        .copy_jump_if_nz => @sizeOf(OpsCopyJumpIfNz),
         .jump => @sizeOf(OpsJump),
         .jump_if_z => @sizeOf(OpsJumpIfZ),
         .jump_if_nz => @sizeOf(OpsJumpIfZ),
@@ -831,6 +836,8 @@ pub const HandlerTable = struct {
     global_get: Handler,
     global_set: Handler,
     copy: Handler,
+    /// Peephole K: fused copy + conditional branch
+    copy_jump_if_nz: Handler,
     jump: Handler,
     jump_if_z: Handler,
     jump_if_nz: Handler,
@@ -1437,6 +1444,14 @@ pub fn encode(
             },
             .copy => |inst| {
                 writeOps(OpsCopy, ops_ptr, .{ .dst = inst.dst, .src = inst.src });
+            },
+            .copy_jump_if_nz => |inst| {
+                writeOps(OpsCopyJumpIfNz, ops_ptr, .{
+                    .dst = inst.dst,
+                    .src = inst.src,
+                    .cond = inst.cond,
+                    .rel_target = @intCast(@as(i64, op_offset[inst.target]) - @as(i64, base)),
+                });
             },
             .jump => |inst| {
                 writeOps(OpsJump, ops_ptr, .{
@@ -2622,6 +2637,7 @@ fn handlerFor(op: Op, t: *const HandlerTable) Handler {
         .global_get => t.global_get,
         .global_set => t.global_set,
         .copy => t.copy,
+        .copy_jump_if_nz => t.copy_jump_if_nz,
         .jump => t.jump,
         .jump_if_z => t.jump_if_z,
         .jump_if_nz => t.jump_if_nz,

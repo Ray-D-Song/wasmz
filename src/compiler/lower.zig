@@ -1000,6 +1000,8 @@ pub const Lower = struct {
                     .br_on_cast => |*j| j.target = target_pc,
                     .br_on_cast_fail => |*j| j.target = target_pc,
                     .try_table_leave => |*j| j.target = target_pc,
+                    // Peephole K: fused copy+conditional-jump
+                    .copy_jump_if_nz => |*j| j.target = target_pc,
                     // Fused compare-jump ops (Peephole F)
                     .i32_eq_jump_if_false => |*j| j.target = target_pc,
                     .i32_ne_jump_if_false => |*j| j.target = target_pc,
@@ -2914,7 +2916,67 @@ pub const Lower = struct {
                     break :fused true; // fusion succeeded — no need for the normal patching below
                 };
 
-                if (!peephole_j_fused) {
+                // ── Peephole K: fuse copy + jump_if_nz → copy_jump_if_nz ──────
+                // When Peephole J didn't fire (because a copy sits between jiz_pc and
+                // branch_jump_pc) and we have exactly one copy immediately before the
+                // jump_if_z/jump_if_nz, fuse copy+jump into a single copy_jump_if_nz op.
+                //
+                // Pattern before fusion (forward br_if with single result, after F/J tries):
+                //   copy      { dst=result_slot, src=val_slot }   ← at jiz_pc - 1
+                //   jump_if_z { cond=cond_slot,  target=skip  }   ← at jiz_pc
+                //   jump      { target=block_end }                 ← at branch_jump_pc
+                //   skip: ...
+                //
+                // Pattern after fusion:
+                //   copy_jump_if_nz { dst=result_slot, src=val_slot, cond=cond_slot, target=block_end }
+                //   skip: ...  (jump_if_z and jump are gone; copy_jump_if_nz is at jiz_pc - 1)
+                //
+                // Condition: Peephole J did NOT fire AND the preceding op is `copy` AND
+                // the jump_if_z source is a plain `jump_if_z` (not a fused compare-jump,
+                // since those carry their own cond evaluation).
+                const peephole_k_fused = fused_k: {
+                    if (peephole_j_fused) break :fused_k false;
+                    // Need: jiz_pc > 0, ops[jiz_pc-1] is `copy`, ops[jiz_pc] is plain `jump_if_z`.
+                    if (jiz_pc == 0) break :fused_k false;
+                    const copy_candidate = self.compiled.ops.items[jiz_pc - 1];
+                    const jiz_candidate = self.compiled.ops.items[jiz_pc];
+                    const cp = switch (copy_candidate) {
+                        .copy => |c| c,
+                        else => break :fused_k false,
+                    };
+                    // Only fuse the plain jump_if_z → jump_if_nz path (not fused compare-jumps).
+                    const cond_slot: Slot = switch (jiz_candidate) {
+                        .jump_if_z => |j| j.cond,
+                        else => break :fused_k false,
+                    };
+                    // Safety: ensure the copy dst is not the condition slot itself.
+                    if (cp.dst == cond_slot) break :fused_k false;
+                    // We need the branch target from branch_jump_pc (already emitted).
+                    const branch_target = self.compiled.ops.items[branch_jump_pc].jump.target;
+                    // Remove jump at branch_jump_pc and jump_if_z at jiz_pc.
+                    _ = self.compiled.ops.pop(); // remove jump (branch_jump_pc)
+                    _ = self.compiled.ops.pop(); // remove jump_if_z (jiz_pc)
+                    // Replace copy at (jiz_pc - 1) with the fused op.
+                    self.compiled.ops.items[jiz_pc - 1] = .{ .copy_jump_if_nz = .{
+                        .dst = cp.dst,
+                        .src = cp.src,
+                        .cond = cond_slot,
+                        .target = branch_target,
+                    } };
+                    // For forward jumps: patch site now points to the fused op (jiz_pc - 1).
+                    if (is_forward) {
+                        const sites = frame.patch_sites.itemsMut();
+                        for (sites) |*site| {
+                            if (site.* == branch_jump_pc) {
+                                site.* = jiz_pc - 1;
+                                break;
+                            }
+                        }
+                    }
+                    break :fused_k true;
+                };
+
+                if (!peephole_k_fused and !peephole_j_fused) {
                     // Patch the jump_if_z (or fused compare-jump) to skip just past the unconditional jump.
                     const continue_pc = self.current_pc();
 

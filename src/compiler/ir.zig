@@ -744,6 +744,16 @@ pub const Op = union(enum) {
         dst: Slot,
         src: Slot,
     },
+    /// Peephole K: fused copy + conditional jump (br_if with single result value).
+    /// Equivalent to wasm3's PreserveSetSlot: copy src→dst, then jump to `target` if cond != 0.
+    /// Replaces the two-instruction sequence: `copy { dst, src }` + `jump_if_nz { cond, target }`.
+    copy_jump_if_nz: struct {
+        dst: Slot,
+        src: Slot,
+        cond: Slot,
+        /// Op-index of the jump target (converted to relative byte offset by encoder).
+        target: u32,
+    },
     /// Read value from global and write it into `dst` slot
     global_get: struct {
         dst: Slot,

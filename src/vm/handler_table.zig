@@ -27,6 +27,7 @@ pub const handler_table: encode.HandlerTable = .{
     .global_get = &handlers.handle_global_get,
     .global_set = &handlers.handle_global_set,
     .copy = &handlers.handle_copy,
+    .copy_jump_if_nz = &handlers.handle_copy_jump_if_nz,
     .jump = &handlers.handle_jump,
     .jump_if_z = &handlers.handle_jump_if_z,
     .jump_if_nz = &handlers.handle_jump_if_nz,
