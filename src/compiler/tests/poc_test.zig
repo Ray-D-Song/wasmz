@@ -155,25 +155,17 @@ test "lower local_set consumes the top stack value" {
     }
 
     try testing.expectEqual(@as(u32, 2), lower.compiled.slots_len);
-    try testing.expectEqual(@as(usize, 3), lower.compiled.ops.items.len);
+    try testing.expectEqual(@as(usize, 2), lower.compiled.ops.items.len);
 
     switch (lower.compiled.ops.items[0]) {
-        .const_i32 => |got| {
-            try testing.expectEqual(@as(u32, 1), got.dst);
+        .i32_const_to_local => |got| {
+            try testing.expectEqual(@as(u32, 0), got.local);
             try testing.expectEqual(@as(i32, 7), got.value);
         },
         else => return error.UnexpectedOpTag,
     }
 
     switch (lower.compiled.ops.items[1]) {
-        .local_set => |got| {
-            try testing.expectEqual(@as(u32, 0), got.local);
-            try testing.expectEqual(@as(u32, 1), got.src);
-        },
-        else => return error.UnexpectedOpTag,
-    }
-
-    switch (lower.compiled.ops.items[2]) {
         .ret => |got| {
             try testing.expectEqual(@as(?u16, null), got.value);
         },
