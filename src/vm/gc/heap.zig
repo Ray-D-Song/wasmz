@@ -86,6 +86,8 @@ pub const GcHeap = struct {
     free_list: FreeList,
     /// Total bytes currently in use (for statistics).
     used: u32,
+    /// Number of allocations performed by this heap.
+    alloc_count: usize = 0,
 
     const Self = @This();
 
@@ -130,6 +132,7 @@ pub const GcHeap = struct {
 
         const aligned_size = alignUp(size);
         const total_size = aligned_size;
+        self.alloc_count += 1;
 
         if (self.free_list.isEmpty()) {
             const result = self.bumpAlloc(total_size) orelse return null;

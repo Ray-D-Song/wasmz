@@ -85,6 +85,8 @@ pub const VM = struct {
     /// Persistent call-stack: fixed-size slice allocated once and reused.
     /// Using a raw slice + depth counter avoids ArrayList overhead on every push/pop.
     call_stack: []dispatch_mod.CallFrame = &[_]dispatch_mod.CallFrame{},
+    /// Number of allocations performed by this VM.
+    alloc_count: usize = 0,
 
     pub fn init(allocator: Allocator) VM {
         return .{ .allocator = allocator };
@@ -100,9 +102,11 @@ pub const VM = struct {
     fn ensureBuffers(self: *VM) Allocator.Error!void {
         if (self.val_stack.len == 0) {
             self.val_stack = try self.allocator.alloc(RawVal, dispatch_mod.DEFAULT_VAL_STACK_SLOTS);
+            self.alloc_count += 1;
         }
         if (self.call_stack.len == 0) {
             self.call_stack = try self.allocator.alloc(dispatch_mod.CallFrame, dispatch_mod.DEFAULT_CALL_STACK_DEPTH);
+            self.alloc_count += 1;
         }
     }
 
