@@ -37,6 +37,9 @@ pub const ExecResult = union(enum) {
     trap: Trap,
 };
 
+pub const OpCounts = dispatch_mod.OpCounts;
+pub const op_counts = &dispatch_mod.op_counts;
+
 pub const ExecEnv = struct {
     store: *Store,
     host_instance: *HostInstance,

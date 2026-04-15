@@ -31,6 +31,7 @@ const Store = wasmz.Store;
 const Instance = wasmz.Instance;
 const RawVal = wasmz.RawVal;
 const Linker = wasmz.Linker;
+const op_counts = wasmz.op_counts;
 
 pub fn main() void {
     if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
@@ -149,6 +150,80 @@ fn run(allocator: std.mem.Allocator) void {
 
     defer {
         if (cli_args.mem_stats) stats.printMemStats(&store, &instance);
+        // Print op counts to stderr
+        const oc = op_counts;
+        if (oc.total > 0) {
+            std.debug.print(
+                \\=== Runtime op counts ===
+                \\  copy        : {d:>12}  ({d:.1}%)
+                \\  local_get   : {d:>12}  ({d:.1}%)
+                \\  local_set   : {d:>12}  ({d:.1}%)
+                \\  const_i32   : {d:>12}  ({d:.1}%)
+                \\  const_i64   : {d:>12}  ({d:.1}%)
+                \\  const_f32   : {d:>12}  ({d:.1}%)
+                \\  const_f64   : {d:>12}  ({d:.1}%)
+                \\  i32_binop   : {d:>12}  ({d:.1}%)
+                \\  i64_binop   : {d:>12}  ({d:.1}%)
+                \\  f32_binop   : {d:>12}  ({d:.1}%)
+                \\
+            , .{
+                oc.copy,      pct(oc.copy, oc.total),
+                oc.local_get, pct(oc.local_get, oc.total),
+                oc.local_set, pct(oc.local_set, oc.total),
+                oc.const_i32, pct(oc.const_i32, oc.total),
+                oc.const_i64, pct(oc.const_i64, oc.total),
+                oc.const_f32, pct(oc.const_f32, oc.total),
+                oc.const_f64, pct(oc.const_f64, oc.total),
+                oc.i32_binop, pct(oc.i32_binop, oc.total),
+                oc.i64_binop, pct(oc.i64_binop, oc.total),
+                oc.f32_binop, pct(oc.f32_binop, oc.total),
+            });
+            std.debug.print(
+                \\  f64_binop   : {d:>12}  ({d:.1}%)
+                \\  i32_imm     : {d:>12}  ({d:.1}%)
+                \\  i64_imm     : {d:>12}  ({d:.1}%)
+                \\  i32_imm_r   : {d:>12}  ({d:.1}%)
+                \\  i64_imm_r   : {d:>12}  ({d:.1}%)
+                \\  call        : {d:>12}  ({d:.1}%)
+                \\  jump        : {d:>12}  ({d:.1}%)
+                \\  jump_if_z   : {d:>12}  ({d:.1}%)
+                \\  jump_if_nz  : {d:>12}  ({d:.1}%)
+                \\  copy_jump_if_nz: {d:>9}  ({d:.1}%)
+                \\  ret         : {d:>12}  ({d:.1}%)
+                \\
+            , .{
+                oc.f64_binop,       pct(oc.f64_binop, oc.total),
+                oc.i32_imm,         pct(oc.i32_imm, oc.total),
+                oc.i64_imm,         pct(oc.i64_imm, oc.total),
+                oc.i32_imm_r,       pct(oc.i32_imm_r, oc.total),
+                oc.i64_imm_r,       pct(oc.i64_imm_r, oc.total),
+                oc.call,            pct(oc.call, oc.total),
+                oc.jump,            pct(oc.jump, oc.total),
+                oc.jump_if_z,       pct(oc.jump_if_z, oc.total),
+                oc.jump_if_nz,      pct(oc.jump_if_nz, oc.total),
+                oc.copy_jump_if_nz, pct(oc.copy_jump_if_nz, oc.total),
+                oc.ret,             pct(oc.ret, oc.total),
+            });
+            std.debug.print(
+                \\  --- Fused local ops ---
+                \\  i32_to_local: {d:>9}  ({d:.1}%)
+                \\  i64_to_local: {d:>9}  ({d:.1}%)
+                \\  i32_imm_to_local: {d:>6}  ({d:.1}%)
+                \\  i64_imm_to_local: {d:>6}  ({d:.1}%)
+                \\  i32_local_inplace: {d:>5}  ({d:.1}%)
+                \\  i64_local_inplace: {d:>5}  ({d:.1}%)
+                \\  TOTAL       : {d:>12}
+                \\
+            , .{
+                oc.i32_to_local,      pct(oc.i32_to_local, oc.total),
+                oc.i64_to_local,      pct(oc.i64_to_local, oc.total),
+                oc.i32_imm_to_local,  pct(oc.i32_imm_to_local, oc.total),
+                oc.i64_imm_to_local,  pct(oc.i64_imm_to_local, oc.total),
+                oc.i32_local_inplace, pct(oc.i32_local_inplace, oc.total),
+                oc.i64_local_inplace, pct(oc.i64_local_inplace, oc.total),
+                oc.total,
+            });
+        }
         instance.deinit();
     }
 
@@ -349,6 +424,11 @@ pub const panic = switch (builtin.mode) {
 fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
     std.debug.print("error: " ++ fmt ++ "\n", args);
     std.process.exit(1);
+}
+
+inline fn pct(part: u64, total: u64) f64 {
+    if (total == 0) return 0.0;
+    return @as(f64, @floatFromInt(part)) / @as(f64, @floatFromInt(total)) * 100.0;
 }
 
 fn fatalTrap(trap: wasmz.Trap, allocator: std.mem.Allocator, comptime context: []const u8) noreturn {
