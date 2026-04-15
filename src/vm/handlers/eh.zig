@@ -251,6 +251,6 @@ pub fn handle_try_table_leave(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
 
     _ = frame.eh_stack.pop();
 
-    const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+    const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
     dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
 }

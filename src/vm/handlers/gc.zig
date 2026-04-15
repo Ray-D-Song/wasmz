@@ -1042,7 +1042,7 @@ pub fn handle_br_on_null(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
 
     const gc_ref = slots[ops.ref].readAsGcRef();
     if (gc_ref.isNull()) {
-        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
         dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
     } else {
         dispatch.next(ip, stride(encode.OpsBrOnNull), slots, frame, env, r0, fp0);
@@ -1056,7 +1056,7 @@ pub fn handle_br_on_non_null(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState,
 
     const gc_ref = slots[ops.ref].readAsGcRef();
     if (!gc_ref.isNull()) {
-        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
         dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
     } else {
         dispatch.next(ip, stride(encode.OpsBrOnNull), slots, frame, env, r0, fp0);
@@ -1102,7 +1102,7 @@ pub fn handle_br_on_cast(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
     }
 
     if (should_branch) {
-        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
         dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
     } else {
         dispatch.next(ip, stride(encode.OpsBrOnCast), slots, frame, env, r0, fp0);
@@ -1153,7 +1153,7 @@ pub fn handle_br_on_cast_fail(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
     }
 
     if (should_branch) {
-        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
         dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
     } else {
         dispatch.next(ip, stride(encode.OpsBrOnCast), slots, frame, env, r0, fp0);
