@@ -432,7 +432,7 @@ pub fn handle_copy_jump_if_nz(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
     const ops = readOps(encode.OpsCopyJumpIfNz, ip);
     slots[ops.dst] = slots[ops.src];
     if (slots[ops.cond].readAs(i32) != 0) {
-        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
         dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
     } else {
         dispatch.next(ip, stride(encode.OpsCopyJumpIfNz), slots, frame, env, r0, fp0);
@@ -446,7 +446,7 @@ pub fn handle_jump(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *con
 
     const ops = readOps(encode.OpsJump, ip);
     // rel_target is a signed byte offset from instruction start
-    const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+    const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
     dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
 }
 
@@ -455,7 +455,7 @@ pub fn handle_jump_if_z(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
 
     const ops = readOps(encode.OpsJumpIfZ, ip);
     if (slots[ops.cond].readAs(i32) == 0) {
-        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
         dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
     } else {
         dispatch.next(ip, stride(encode.OpsJumpIfZ), slots, frame, env, r0, fp0);
@@ -468,7 +468,7 @@ pub fn handle_jump_if_nz(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
 
     const ops = readOps(encode.OpsJumpIfZ, ip);
     if (slots[ops.cond].readAs(i32) != 0) {
-        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
         dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
     } else {
         dispatch.next(ip, stride(encode.OpsJumpIfZ), slots, frame, env, r0, fp0);
@@ -2042,7 +2042,7 @@ inline fn cmpJumpI32(
         .ge_u => slots[ops.lhs].readAs(u32) >= slots[ops.rhs].readAs(u32),
     };
     if (!taken) {
-        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
         dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
     } else {
         dispatch.next(ip, stride(encode.OpsCompareJump), slots, frame, env, r0, fp0);
@@ -2105,7 +2105,7 @@ pub fn handle_i32_eqz_jump_if_false(ip: [*]u8, slots: [*]RawVal, frame: *Dispatc
 
     const ops = readOps(encode.OpsEqzJump, ip);
     if (slots[ops.src].readAs(i32) != 0) {
-        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
         dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
     } else {
         dispatch.next(ip, stride(encode.OpsEqzJump), slots, frame, env, r0, fp0);
@@ -2138,7 +2138,7 @@ inline fn cmpJumpI32True(
         .ge_u => slots[ops.lhs].readAs(u32) >= slots[ops.rhs].readAs(u32),
     };
     if (taken) {
-        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
         dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
     } else {
         dispatch.next(ip, stride(encode.OpsCompareJump), slots, frame, env, r0, fp0);
@@ -2201,7 +2201,7 @@ pub fn handle_i32_eqz_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
 
     const ops = readOps(encode.OpsEqzJump, ip);
     if (slots[ops.src].readAs(i32) == 0) {
-        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
         dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
     } else {
         dispatch.next(ip, stride(encode.OpsEqzJump), slots, frame, env, r0, fp0);
@@ -2580,7 +2580,7 @@ inline fn cmpJumpI64(
         .ge_u => slots[ops.lhs].readAs(u64) >= slots[ops.rhs].readAs(u64),
     };
     if (!taken) {
-        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
         dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
     } else {
         dispatch.next(ip, stride(encode.OpsCompareJump), slots, frame, env, r0, fp0);
@@ -2643,7 +2643,7 @@ pub fn handle_i64_eqz_jump_if_false(ip: [*]u8, slots: [*]RawVal, frame: *Dispatc
 
     const ops = readOps(encode.OpsEqzJump, ip);
     if (slots[ops.src].readAs(i64) != 0) {
-        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
         dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
     } else {
         dispatch.next(ip, stride(encode.OpsEqzJump), slots, frame, env, r0, fp0);
@@ -2675,7 +2675,7 @@ inline fn cmpJumpI64True(
         .ge_u => slots[ops.lhs].readAs(u64) >= slots[ops.rhs].readAs(u64),
     };
     if (taken) {
-        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
         dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
     } else {
         dispatch.next(ip, stride(encode.OpsCompareJump), slots, frame, env, r0, fp0);
@@ -2738,7 +2738,7 @@ pub fn handle_i64_eqz_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
 
     const ops = readOps(encode.OpsEqzJump, ip);
     if (slots[ops.src].readAs(i64) == 0) {
-        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
         dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
     } else {
         dispatch.next(ip, stride(encode.OpsEqzJump), slots, frame, env, r0, fp0);
@@ -3275,7 +3275,7 @@ inline fn cmpImmJumpI32(
         .ge_u => slots[ops.lhs].readAs(u32) >= @as(u32, @bitCast(ops.imm)),
     };
     if (!taken) {
-        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
         dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
     } else {
         dispatch.next(ip, stride(encode.OpsCompareImmJump), slots, frame, env, r0, fp0);
@@ -3305,7 +3305,7 @@ inline fn cmpImmJumpI64(
         .ge_u => slots[ops.lhs].readAs(u64) >= @as(u64, @bitCast(ops.imm)),
     };
     if (!taken) {
-        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
         dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
     } else {
         dispatch.next(ip, stride(encode.OpsCompareImmJump64), slots, frame, env, r0, fp0);
@@ -3438,7 +3438,7 @@ inline fn cmpImmJumpI32True(
         .ge_u => slots[ops.lhs].readAs(u32) >= @as(u32, @bitCast(ops.imm)),
     };
     if (taken) {
-        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
         dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
     } else {
         dispatch.next(ip, stride(encode.OpsCompareImmJump), slots, frame, env, r0, fp0);
@@ -3468,7 +3468,7 @@ inline fn cmpImmJumpI64True(
         .ge_u => slots[ops.lhs].readAs(u64) >= @as(u64, @bitCast(ops.imm)),
     };
     if (taken) {
-        const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
+        const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
         dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
     } else {
         dispatch.next(ip, stride(encode.OpsCompareImmJump64), slots, frame, env, r0, fp0);
