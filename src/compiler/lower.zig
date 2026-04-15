@@ -1118,7 +1118,7 @@ pub const Lower = struct {
             while (ri > 0) {
                 ri -= 1;
                 const src = self.stack.peek() orelse return error.StackUnderflow;
-                try self.emit(.{ .copy = .{ .dst = target_slots[ri], .src = src } });
+                try self.emit_copy(target_slots[ri], src);
                 _ = self.stack.pop();
             }
         }
@@ -1629,7 +1629,14 @@ pub const Lower = struct {
     }
 
     /// Emit a copy instruction: dst = src (using the existing `copy` op).
+    /// Propagates r0_slot: if src is the current r0 accumulator, dst becomes
+    /// the new r0_slot so downstream _imm_r fusions can still fire.
     fn emit_copy(self: *Lower, dst_slot: Slot, src_slot: Slot) !void {
+        // Propagate r0 tracking across copies: if the source was in r0, the
+        // destination now holds the same value, so it is also in r0.
+        if (self.r0_slot == src_slot) {
+            self.r0_slot = dst_slot;
+        }
         try self.emit(.{ .copy = .{ .dst = dst_slot, .src = src_slot } });
     }
 
@@ -2278,6 +2285,11 @@ pub const Lower = struct {
         }
 
         self.r0_slot = null;
+        // Integer-producing binops write their result to the r0 register at runtime.
+        // Track which slot holds r0 so downstream copy/imm_r can eliminate redundant reads.
+        if (comptime std.mem.startsWith(u8, op_tag, "i32_") or std.mem.startsWith(u8, op_tag, "i64_")) {
+            self.r0_slot = dst;
+        }
         try self.emit(@unionInit(Op, op_tag, .{
             .dst = dst,
             .lhs = lhs,
@@ -2306,6 +2318,13 @@ pub const Lower = struct {
             .src = src,
         }));
 
+        // Integer-producing unary ops write r0 at runtime.
+        if (comptime std.mem.startsWith(u8, op_tag, "i32_") or std.mem.startsWith(u8, op_tag, "i64_")) {
+            self.r0_slot = dst;
+        } else {
+            self.r0_slot = null;
+        }
+
         try self.stack.push(self.allocator, dst);
     }
 
@@ -2321,6 +2340,13 @@ pub const Lower = struct {
             .dst = dst,
             .src = src,
         }));
+
+        // Integer-producing conversions write r0 at runtime.
+        if (comptime std.mem.startsWith(u8, op_tag, "i32_") or std.mem.startsWith(u8, op_tag, "i64_")) {
+            self.r0_slot = dst;
+        } else {
+            self.r0_slot = null;
+        }
 
         try self.stack.push(self.allocator, dst);
     }
@@ -2377,6 +2403,8 @@ pub const Lower = struct {
             .lhs = lhs,
             .rhs = rhs,
         }));
+        // All comparison ops produce i32, which is written to r0 at runtime.
+        self.r0_slot = dst;
 
         try self.stack.push(self.allocator, dst);
     }
@@ -2499,7 +2527,7 @@ pub const Lower = struct {
                     while (pi > 0) {
                         pi -= 1;
                         const src = try self.pop_slot();
-                        try self.emit(.{ .copy = .{ .dst = slots.params.items()[pi], .src = src } });
+                        try self.emit_copy(slots.params.items()[pi], src);
                     }
                 }
                 // Record the stack height AFTER consuming params (before block body).
@@ -2527,7 +2555,7 @@ pub const Lower = struct {
                     while (pi > 0) {
                         pi -= 1;
                         const src = try self.pop_slot();
-                        try self.emit(.{ .copy = .{ .dst = slots.params.items()[pi], .src = src } });
+                        try self.emit_copy(slots.params.items()[pi], src);
                     }
                 }
                 const height_after_params = self.stack.len();
@@ -2556,7 +2584,7 @@ pub const Lower = struct {
                     while (pi > 0) {
                         pi -= 1;
                         const src = try self.pop_slot();
-                        try self.emit(.{ .copy = .{ .dst = slots.params.items()[pi], .src = src } });
+                        try self.emit_copy(slots.params.items()[pi], src);
                     }
                 }
                 const height_after_params = self.stack.len();
@@ -2601,7 +2629,7 @@ pub const Lower = struct {
                     while (ri > 0) {
                         ri -= 1;
                         const src = self.stack.peek() orelse break;
-                        try self.emit(.{ .copy = .{ .dst = frame.result_slots.items()[ri], .src = src } });
+                        try self.emit_copy(frame.result_slots.items()[ri], src);
                         _ = self.stack.pop();
                     }
                 }
@@ -2678,7 +2706,7 @@ pub const Lower = struct {
                     while (ri > 0) {
                         ri -= 1;
                         if (self.stack.peek()) |src| {
-                            try self.emit(.{ .copy = .{ .dst = frame.result_slots.items()[ri], .src = src } });
+                            try self.emit_copy(frame.result_slots.items()[ri], src);
                             _ = self.stack.pop();
                         }
                     }
@@ -2780,7 +2808,7 @@ pub const Lower = struct {
                         // stack[stack_len - 1 - (target_slots.len - 1 - ri)]
                         // = stack[stack_len - target_slots.len + ri]
                         const src = self.stack.slots.items[stack_len - target_slots.len + ri];
-                        try self.emit(.{ .copy = .{ .dst = target_slots[ri], .src = src } });
+                        try self.emit_copy(target_slots[ri], src);
                     }
                 }
 
@@ -3042,6 +3070,7 @@ pub const Lower = struct {
             .i32_const => |value| {
                 const dst = self.alloc_slot();
                 try self.emit(.{ .const_i32 = .{ .dst = dst, .value = value } });
+                self.r0_slot = dst;
                 try self.stack.push(self.allocator, dst);
             },
 
@@ -3050,6 +3079,7 @@ pub const Lower = struct {
             .i64_const => |value| {
                 const dst = self.alloc_slot();
                 try self.emit(.{ .const_i64 = .{ .dst = dst, .value = value } });
+                self.r0_slot = dst;
                 try self.stack.push(self.allocator, dst);
             },
             .f32_const => |value| {
@@ -3480,30 +3510,35 @@ pub const Lower = struct {
                 const addr = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .i32_load = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
+                self.r0_slot = dst;
                 try self.stack.push(self.allocator, dst);
             },
             .i32_load8_s => |inst| {
                 const addr = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .i32_load8_s = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
+                self.r0_slot = dst;
                 try self.stack.push(self.allocator, dst);
             },
             .i32_load8_u => |inst| {
                 const addr = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .i32_load8_u = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
+                self.r0_slot = dst;
                 try self.stack.push(self.allocator, dst);
             },
             .i32_load16_s => |inst| {
                 const addr = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .i32_load16_s = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
+                self.r0_slot = dst;
                 try self.stack.push(self.allocator, dst);
             },
             .i32_load16_u => |inst| {
                 const addr = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .i32_load16_u = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
+                self.r0_slot = dst;
                 try self.stack.push(self.allocator, dst);
             },
 
@@ -5285,7 +5320,7 @@ pub const Lower = struct {
             while (ri > 0) {
                 ri -= 1;
                 if (self.stack.peek()) |src| {
-                    try self.emit(.{ .copy = .{ .dst = frame.result_slots.items()[ri], .src = src } });
+                    try self.emit_copy(frame.result_slots.items()[ri], src);
                     _ = self.stack.pop();
                 }
             }
