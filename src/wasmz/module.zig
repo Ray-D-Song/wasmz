@@ -280,6 +280,9 @@ const BuildState = struct {
     tags_list: std.ArrayListUnmanaged(TagDef) = .empty,
     local_functions_list: std.ArrayListUnmanaged(FunctionSlot) = .empty,
     detected_eh_mode: EHMode = .none,
+    /// Sparse map: func_idx → name string (owned, heap-allocated).
+    /// Populated from the Wasm Name Section when a function_name_entry is parsed.
+    func_names_map: std.AutoHashMapUnmanaged(u32, []const u8) = .empty,
 
     fn init(engine: Engine) BuildState {
         const allocator = engine.allocator();
@@ -347,6 +350,11 @@ const BuildState = struct {
         self.tags_list.deinit(self.allocator);
         deinit_function_slots(self.allocator, self.local_functions_list.items);
         self.local_functions_list.deinit(self.allocator);
+
+        // Free name strings stored in func_names_map (these are always duped).
+        var names_iter = self.func_names_map.valueIterator();
+        while (names_iter.next()) |name| self.allocator.free(name.*);
+        self.func_names_map.deinit(self.allocator);
 
         // Free body arena if still owned (not transferred to Module via finish()).
         if (self.body_arena) |*ba| ba.deinit();
@@ -555,6 +563,18 @@ const BuildState = struct {
             .function_info => |info| {
                 try self.handleFunctionInfo(info);
             },
+            .function_name_entry => |entry| {
+                // Store function names from the Wasm Name Section.
+                // Duplicate the name string so it outlives the parser's transient buffer.
+                for (entry.names) |naming| {
+                    const duped = try self.allocator.dupe(u8, naming.name);
+                    errdefer self.allocator.free(duped);
+                    // If a duplicate entry exists (shouldn't happen in valid wasm), free the old one.
+                    if (try self.func_names_map.fetchPut(self.allocator, naming.index, duped)) |old| {
+                        self.allocator.free(old.value);
+                    }
+                }
+            },
             else => {},
         }
     }
@@ -746,6 +766,27 @@ const BuildState = struct {
         const body_arena = self.body_arena;
         self.body_arena = null;
 
+        // Build the func_names slice: one entry per function in the full function
+        // index space (imports first, then locals).  Entries are null for functions
+        // with no name in the Name Section.  The map ownership is transferred here;
+        // the BuildState no longer frees the values.
+        const func_names = try self.allocator.alloc(?[]const u8, functions.len);
+        errdefer {
+            for (func_names) |n| if (n) |s| self.allocator.free(s);
+            self.allocator.free(func_names);
+        }
+        @memset(func_names, null);
+        var names_iter = self.func_names_map.iterator();
+        while (names_iter.next()) |entry| {
+            const idx = entry.key_ptr.*;
+            if (idx < func_names.len) {
+                func_names[idx] = entry.value_ptr.*;
+                entry.value_ptr.* = ""; // prevent double-free in BuildState.deinit
+            } else {
+                self.allocator.free(entry.value_ptr.*);
+            }
+        }
+
         return .{
             .allocator = self.allocator,
             .functions = functions,
@@ -764,6 +805,7 @@ const BuildState = struct {
             .array_layouts = array_layouts,
             .type_ancestors = type_ancestors_outer,
             .tags = tags,
+            .func_names = func_names,
             .config = .{ .eh_mode = self.detected_eh_mode },
             .translator = null,
             .pending_count = @intCast(local_functions.len),
@@ -851,6 +893,12 @@ pub const Module = struct {
     /// Exception tags defined in the Tag Section (and imported tag entries).
     /// tags[i].type_index is the FuncType index for tag i.
     tags: []TagDef,
+    /// Function names from the Wasm Name Section (custom section), indexed by
+    /// func_idx (the full Wasm function index space: imports first, then locals).
+    /// Each entry is either a heap-allocated name string or null when no name was
+    /// provided for that function index.
+    /// Empty slice when the module contains no Name Section.
+    func_names: []?[]const u8,
     /// Module-level configuration.
     config: ModuleConfig,
     /// Reusable compilation state for lazy function compilation.
@@ -1083,7 +1131,9 @@ pub const Module = struct {
         profiling.call_prof.ns_encode_ir += encode_timer.read();
         // Body bytes are either borrowed (compile(bytes) path) or owned by
         // body_arena (compileReader path).  No individual free needed.
-        slot.* = .{ .encoded = encoded };
+        var encoded_with_idx = encoded;
+        encoded_with_idx.func_idx = func_index;
+        slot.* = .{ .encoded = encoded_with_idx };
 
         // Decrement the pending counter and release the reusable translator
         // buffers as soon as the last pending slot is compiled.  This frees
@@ -1264,6 +1314,9 @@ pub const Module = struct {
         self.allocator.free(self.type_ancestors);
 
         self.allocator.free(self.tags);
+
+        for (self.func_names) |n| if (n) |s| self.allocator.free(s);
+        self.allocator.free(self.func_names);
 
         self.* = undefined;
     }

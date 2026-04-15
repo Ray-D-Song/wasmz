@@ -28,7 +28,12 @@ inline fn stride(comptime OpsT: type) usize {
 }
 
 inline fn trapReturn(frame: *DispatchState, code: core.TrapCode) void {
-    frame.result = .{ .trap = Trap.fromTrapCode(code) };
+    var trap = Trap.fromTrapCode(code);
+    if (frame.captureStackTrace()) |trace| {
+        trap.allocator = frame.allocator;
+        trap.stack_trace = trace;
+    }
+    frame.result = .{ .trap = trap };
 }
 
 // ── table_get ────────────────────────────────────────────────────────────────

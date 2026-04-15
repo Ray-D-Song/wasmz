@@ -23,6 +23,7 @@ pub const Simd = simd;
 pub const TypedRawVal = typed.TypedRawVal;
 pub const Trap = trap.Trap;
 pub const TrapCode = trap.TrapCode;
+pub const StackFrame = trap.StackFrame;
 pub const HeapType = heap_type.HeapType;
 pub const GcRefKind = heap_type.GcRefKind;
 pub const RefType = ref_type.RefType;
