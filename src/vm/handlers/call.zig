@@ -173,7 +173,7 @@ fn invokeHostCallInline(
 // ── call ─────────────────────────────────────────────────────────────────────
 
 pub fn handle_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.op_counts.call_ret += 1;
+    dispatch.countOp("call_ret");
     const ops = readOps(encode.OpsCall, ip);
 
     // Read inline arg slots directly from the bytecode stream (zero pointer chasing)
