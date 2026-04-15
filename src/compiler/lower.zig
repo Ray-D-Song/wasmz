@@ -1630,16 +1630,15 @@ pub const Lower = struct {
         switch (last.*) {
             .const_i32 => |c| {
                 if (c.dst != src) return false;
-                self.recycle_slot(src);
                 last.* = .{ .i32_const_to_local = .{ .local = local, .value = c.value } };
             },
             .const_i64 => |c| {
                 if (c.dst != src) return false;
-                self.recycle_slot(src);
                 last.* = .{ .i64_const_to_local = .{ .local = local, .value = c.value } };
             },
             else => return false,
         }
+        if (self.r0_slot == src) self.r0_slot = null;
         return true;
     }
 
@@ -1652,11 +1651,11 @@ pub const Lower = struct {
         switch (last.*) {
             .global_get => |g| {
                 if (g.dst != src) return false;
-                self.recycle_slot(src);
                 last.* = .{ .global_get_to_local = .{ .local = local, .global_idx = g.global_idx } };
             },
             else => return false,
         }
+        if (self.r0_slot == src) self.r0_slot = null;
         return true;
     }
 
@@ -1669,16 +1668,15 @@ pub const Lower = struct {
         switch (last.*) {
             .i32_load => |l| {
                 if (l.dst != src) return false;
-                self.recycle_slot(src);
                 last.* = .{ .i32_load_to_local = .{ .local = local, .addr = l.addr, .offset = l.offset } };
             },
             .i64_load => |l| {
                 if (l.dst != src) return false;
-                self.recycle_slot(src);
                 last.* = .{ .i64_load_to_local = .{ .local = local, .addr = l.addr, .offset = l.offset } };
             },
             else => return false,
         }
+        if (self.r0_slot == src) self.r0_slot = null;
         return true;
     }
 
