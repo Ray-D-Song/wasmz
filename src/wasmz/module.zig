@@ -2141,7 +2141,10 @@ fn decodeAndLower(
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
             const local = p.read_var_uint32();
             const src = try lower.pop_slot();
-            try lower.emit(.{ .local_set = .{ .local = @intCast(local), .src = src } });
+            const local_slot: ir.Slot = @intCast(local);
+            if (!lower.try_fuse_local_set(local_slot, src)) {
+                try lower.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
+            }
         },
         .local_tee => {
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
