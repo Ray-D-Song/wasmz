@@ -108,6 +108,19 @@ pub fn BinaryOpToLocal(comptime T: type) type {
     };
 }
 
+/// Fused: binop + local_tee — writes result to both a stack slot and a local.
+/// `{ dst: Slot, local: Slot, lhs: Slot, rhs: Slot }` — 8 bytes → stride 16.
+pub fn BinaryOpTeeLocal(comptime T: type) type {
+    return struct {
+        dst: Slot,
+        local: Slot,
+        lhs: Slot,
+        rhs: Slot,
+
+        pub const ValueType = T;
+    };
+}
+
 /// Fused: const + binop + local_set → binop_imm_to_local (Candidate E).
 /// i32: `{ local: Slot, lhs: Slot, imm: i32 }` — 12 bytes → stride 24.
 /// i64: `{ local: Slot, lhs: Slot, imm: i64 }` (encoder adds padding) → stride 32.
@@ -602,6 +615,26 @@ pub const Op = union(enum) {
     i64_shl_to_local: BinaryOpToLocal(i64),
     i64_shr_s_to_local: BinaryOpToLocal(i64),
     i64_shr_u_to_local: BinaryOpToLocal(i64),
+
+    // ── Fused: binop + local_tee → binop_tee_local ────────────────────────
+    i32_add_tee_local: BinaryOpTeeLocal(i32),
+    i32_sub_tee_local: BinaryOpTeeLocal(i32),
+    i32_mul_tee_local: BinaryOpTeeLocal(i32),
+    i32_and_tee_local: BinaryOpTeeLocal(i32),
+    i32_or_tee_local: BinaryOpTeeLocal(i32),
+    i32_xor_tee_local: BinaryOpTeeLocal(i32),
+    i32_shl_tee_local: BinaryOpTeeLocal(i32),
+    i32_shr_s_tee_local: BinaryOpTeeLocal(i32),
+    i32_shr_u_tee_local: BinaryOpTeeLocal(i32),
+    i64_add_tee_local: BinaryOpTeeLocal(i64),
+    i64_sub_tee_local: BinaryOpTeeLocal(i64),
+    i64_mul_tee_local: BinaryOpTeeLocal(i64),
+    i64_and_tee_local: BinaryOpTeeLocal(i64),
+    i64_or_tee_local: BinaryOpTeeLocal(i64),
+    i64_xor_tee_local: BinaryOpTeeLocal(i64),
+    i64_shl_tee_local: BinaryOpTeeLocal(i64),
+    i64_shr_s_tee_local: BinaryOpTeeLocal(i64),
+    i64_shr_u_tee_local: BinaryOpTeeLocal(i64),
 
     // ── Fused: binop-imm-to-local (E: const + binop + local_set → binop_imm_to_local) ──
     // i32 arithmetic-imm-to-local

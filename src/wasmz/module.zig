@@ -2209,7 +2209,10 @@ fn decodeAndLower(
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
             const local = p.read_var_uint32();
             const src = lower.stack.peek() orelse return error.StackUnderflow;
-            try lower.emit(.{ .local_set = .{ .local = @intCast(local), .src = src } });
+            const local_slot: ir.Slot = @intCast(local);
+            if (!lower.try_fuse_local_tee(local_slot, src)) {
+                try lower.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
+            }
         },
         .global_get => {
             if (!p.has_var_int_bytes()) return error.NeedMoreData;

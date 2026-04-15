@@ -1682,6 +1682,93 @@ pub const Lower = struct {
 
     // ── Constant folding & algebraic simplification helpers ──────────────────
 
+    /// Attempt to fuse a preceding binop + local_tee into binop_tee_local.
+    /// `local` is the target local slot, `src` is the value on the value-stack
+    /// (which `local_tee` peeks at — it does NOT pop it).
+    pub fn try_fuse_local_tee(self: *Lower, local: Slot, src: Slot) bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len == 0) return false;
+        const last = &ops[ops.len - 1];
+        switch (last.*) {
+            .i32_add => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_add_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_sub => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_sub_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_mul => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_mul_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_and => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_and_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_or => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_or_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_xor => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_xor_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_shl => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_shl_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_shr_s => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_shr_s_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_shr_u => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_shr_u_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            // i64 variants
+            .i64_add => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_add_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_sub => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_sub_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_mul => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_mul_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_and => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_and_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_or => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_or_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_xor => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_xor_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_shl => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_shl_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_shr_s => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_shr_s_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_shr_u => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_shr_u_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            else => return false,
+        }
+        if (self.r0_slot == src) self.r0_slot = null;
+        return true;
+    }
+
     /// Recycle a temporary slot back to the free-list.
     fn recycle_slot(self: *Lower, slot: Slot) void {
         if (slot >= self.reserved_slots) {
@@ -3182,7 +3269,10 @@ pub const Lower = struct {
             },
             .local_tee => |local| {
                 const src = self.stack.peek() orelse return error.StackUnderflow;
-                try self.emit(.{ .local_set = .{ .local = @intCast(local), .src = src } });
+                const local_slot: Slot = @intCast(local);
+                if (!self.try_fuse_local_tee(local_slot, src)) {
+                    try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
+                }
             },
             // ── Globals ──────────────────────────────────────────────────────────
             .global_get => |global_idx| {
@@ -4898,7 +4988,10 @@ pub const Lower = struct {
             .local_tee => {
                 const local = info.local_index orelse return error.UnsupportedOperator;
                 const src = self.stack.peek() orelse return error.StackUnderflow;
-                try self.emit(.{ .local_set = .{ .local = @intCast(local), .src = src } });
+                const local_slot: Slot = @intCast(local);
+                if (!self.try_fuse_local_tee(local_slot, src)) {
+                    try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
+                }
             },
             .global_get => {
                 const global_idx = info.global_index orelse return error.UnsupportedOperator;
