@@ -2,12 +2,12 @@
 ///
 /// throw, throw_ref, try_table_enter, try_table_leave + dispatchException helper
 const std = @import("std");
-const ir = @import("../compiler/ir.zig");
-const encode = @import("../compiler/encode.zig");
-const dispatch = @import("dispatch.zig");
+const ir = @import("../../compiler/ir.zig");
+const encode = @import("../../compiler/encode.zig");
+const dispatch = @import("../dispatch.zig");
 const core = @import("core");
-const gc_mod = @import("gc/root.zig");
-const store_mod = @import("../wasmz/store.zig");
+const gc_mod = @import("../gc/root.zig");
+const store_mod = @import("../../wasmz/store.zig");
 
 const Allocator = std.mem.Allocator;
 const RawVal = dispatch.RawVal;

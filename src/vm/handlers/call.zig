@@ -2,13 +2,13 @@
 ///
 /// call, call_indirect, return_call, return_call_indirect, call_ref, return_call_ref
 const std = @import("std");
-const ir = @import("../compiler/ir.zig");
-const encode = @import("../compiler/encode.zig");
-const dispatch = @import("dispatch.zig");
+const ir = @import("../../compiler/ir.zig");
+const encode = @import("../../compiler/encode.zig");
+const dispatch = @import("../dispatch.zig");
 const core = @import("core");
-const store_mod = @import("../wasmz/store.zig");
-const host_mod = @import("../wasmz/host.zig");
-const module_mod = @import("../wasmz/module.zig");
+const store_mod = @import("../../wasmz/store.zig");
+const host_mod = @import("../../wasmz/host.zig");
+const module_mod = @import("../../wasmz/module.zig");
 
 const Allocator = std.mem.Allocator;
 const RawVal = dispatch.RawVal;
@@ -25,7 +25,7 @@ const HostContext = host_mod.HostContext;
 
 const HANDLER_SIZE = dispatch.HANDLER_SIZE;
 
-const profiling = @import("../utils/profiling.zig");
+const profiling = @import("../../utils/profiling.zig");
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

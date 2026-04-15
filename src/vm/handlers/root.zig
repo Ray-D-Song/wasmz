@@ -6,15 +6,15 @@
 /// next instruction and tail-calls it.
 const std = @import("std");
 const builtin = @import("builtin");
-const ir = @import("../compiler/ir.zig");
-const encode = @import("../compiler/encode.zig");
-const dispatch = @import("dispatch.zig");
-const vm_root = @import("root.zig");
-const gc_mod = @import("gc/root.zig");
+const ir = @import("../../compiler/ir.zig");
+const encode = @import("../../compiler/encode.zig");
+const dispatch = @import("../dispatch.zig");
+const vm_root = @import("../root.zig");
+const gc_mod = @import("../gc/root.zig");
 const core = @import("core");
-const store_mod = @import("../wasmz/store.zig");
-const host_mod = @import("../wasmz/host.zig");
-const module_mod = @import("../wasmz/module.zig");
+const store_mod = @import("../../wasmz/store.zig");
+const host_mod = @import("../../wasmz/host.zig");
+const module_mod = @import("../../wasmz/module.zig");
 
 const Allocator = std.mem.Allocator;
 const RawVal = dispatch.RawVal;

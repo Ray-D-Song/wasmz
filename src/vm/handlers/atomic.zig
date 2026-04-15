@@ -3,9 +3,9 @@
 /// atomic_fence, atomic_load, atomic_store, atomic_rmw, atomic_cmpxchg,
 /// atomic_notify, atomic_wait32, atomic_wait64
 const std = @import("std");
-const ir = @import("../compiler/ir.zig");
-const encode = @import("../compiler/encode.zig");
-const dispatch = @import("dispatch.zig");
+const ir = @import("../../compiler/ir.zig");
+const encode = @import("../../compiler/encode.zig");
+const dispatch = @import("../dispatch.zig");
 const core = @import("core");
 
 const RawVal = dispatch.RawVal;

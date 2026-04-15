@@ -2,9 +2,9 @@
 ///
 /// table_get, table_set, table_size, table_grow, table_fill, table_copy, table_init, elem_drop
 const std = @import("std");
-const ir = @import("../compiler/ir.zig");
-const encode = @import("../compiler/encode.zig");
-const dispatch = @import("dispatch.zig");
+const ir = @import("../../compiler/ir.zig");
+const encode = @import("../../compiler/encode.zig");
+const dispatch = @import("../dispatch.zig");
 const core = @import("core");
 
 const RawVal = dispatch.RawVal;
