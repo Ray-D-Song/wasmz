@@ -121,6 +121,19 @@ pub fn BinaryOpTeeLocal(comptime T: type) type {
     };
 }
 
+/// Fused: comparison + local_set — writes i32 comparison result directly into a local slot.
+/// `{ local: Slot, lhs: Slot, rhs: Slot }` — 12 bytes → stride 24.
+pub fn CompareOpToLocal(comptime InputT: type) type {
+    return struct {
+        local: Slot,
+        lhs: Slot,
+        rhs: Slot,
+
+        pub const InputType = InputT;
+        pub const ValueType = i32;
+    };
+}
+
 /// Fused: const + binop + local_set → binop_imm_to_local (Candidate E).
 /// i32: `{ local: Slot, lhs: Slot, imm: i32 }` — 12 bytes → stride 24.
 /// i64: `{ local: Slot, lhs: Slot, imm: i64 }` (encoder adds padding) → stride 32.
@@ -635,6 +648,28 @@ pub const Op = union(enum) {
     i64_shl_tee_local: BinaryOpTeeLocal(i64),
     i64_shr_s_tee_local: BinaryOpTeeLocal(i64),
     i64_shr_u_tee_local: BinaryOpTeeLocal(i64),
+
+    // ── Fused: comparison + local_set (cmp_to_local) ──────────────────────
+    i32_eq_to_local: CompareOpToLocal(i32),
+    i32_ne_to_local: CompareOpToLocal(i32),
+    i32_lt_s_to_local: CompareOpToLocal(i32),
+    i32_lt_u_to_local: CompareOpToLocal(i32),
+    i32_gt_s_to_local: CompareOpToLocal(i32),
+    i32_gt_u_to_local: CompareOpToLocal(i32),
+    i32_le_s_to_local: CompareOpToLocal(i32),
+    i32_le_u_to_local: CompareOpToLocal(i32),
+    i32_ge_s_to_local: CompareOpToLocal(i32),
+    i32_ge_u_to_local: CompareOpToLocal(i32),
+    i64_eq_to_local: CompareOpToLocal(i64),
+    i64_ne_to_local: CompareOpToLocal(i64),
+    i64_lt_s_to_local: CompareOpToLocal(i64),
+    i64_lt_u_to_local: CompareOpToLocal(i64),
+    i64_gt_s_to_local: CompareOpToLocal(i64),
+    i64_gt_u_to_local: CompareOpToLocal(i64),
+    i64_le_s_to_local: CompareOpToLocal(i64),
+    i64_le_u_to_local: CompareOpToLocal(i64),
+    i64_ge_s_to_local: CompareOpToLocal(i64),
+    i64_ge_u_to_local: CompareOpToLocal(i64),
 
     // ── Fused: binop-imm-to-local (E: const + binop + local_set → binop_imm_to_local) ──
     // i32 arithmetic-imm-to-local

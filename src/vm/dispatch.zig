@@ -431,6 +431,7 @@ pub const OpCounts = if (op_counts_enabled) struct {
     load_to_local: u64 = 0,
     global_to_local: u64 = 0,
     tee_local: u64 = 0,
+    cmp_to_local: u64 = 0,
     misc: u64 = 0,
     total: u64 = 0,
     dispatch_dispatch: u64 = 0,
