@@ -37,7 +37,9 @@ pub const ExecResult = union(enum) {
     trap: Trap,
 };
 
+pub const op_counts_enabled = dispatch_mod.op_counts_enabled;
 pub const OpCounts = dispatch_mod.OpCounts;
+/// Non-null only when profiling is enabled (`-Dprofiling=true` / `make build-debug`).
 pub const op_counts = &dispatch_mod.op_counts;
 
 pub const ExecEnv = struct {

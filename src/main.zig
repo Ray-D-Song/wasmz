@@ -32,7 +32,6 @@ const Instance = wasmz.Instance;
 const RawVal = wasmz.RawVal;
 const Linker = wasmz.Linker;
 const op_counts = wasmz.op_counts;
-
 pub fn main() void {
     if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
         var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -150,83 +149,85 @@ fn run(allocator: std.mem.Allocator) void {
 
     defer {
         if (cli_args.mem_stats) stats.printMemStats(&store, &instance);
-        // Print op counts to stderr
-        const oc = op_counts;
-        if (oc.total > 0) {
-            std.debug.print(
-                \\=== Runtime op counts ===
-                \\  copy              : {d:>12}  ({d:.1}%)
-                \\  local_get         : {d:>12}  ({d:.1}%)
-                \\  local_set         : {d:>12}  ({d:.1}%)
-                \\  copy_jump_if_nz   : {d:>12}  ({d:.1}%)
-                \\  jump              : {d:>12}  ({d:.1}%)
-                \\  call_ret          : {d:>12}  ({d:.1}%)
-                \\  global            : {d:>12}  ({d:.1}%)
-                \\  constant          : {d:>12}  ({d:.1}%)
-                \\  imm               : {d:>12}  ({d:.1}%)
-                \\  imm_r             : {d:>12}  ({d:.1}%)
-                \\
-            , .{
-                oc.copy,            pct(oc.copy, oc.total),
-                oc.local_get,       pct(oc.local_get, oc.total),
-                oc.local_set,       pct(oc.local_set, oc.total),
-                oc.copy_jump_if_nz, pct(oc.copy_jump_if_nz, oc.total),
-                oc.jump,            pct(oc.jump, oc.total),
-                oc.call_ret,        pct(oc.call_ret, oc.total),
-                oc.global,          pct(oc.global, oc.total),
-                oc.constant,        pct(oc.constant, oc.total),
-                oc.imm,             pct(oc.imm, oc.total),
-                oc.imm_r,           pct(oc.imm_r, oc.total),
-            });
-            std.debug.print(
-                \\  unary             : {d:>12}  ({d:.1}%)
-                \\  conv              : {d:>12}  ({d:.1}%)
-                \\  cmp               : {d:>12}  ({d:.1}%)
-                \\  binop             : {d:>12}  ({d:.1}%)
-                \\  ref_select        : {d:>12}  ({d:.1}%)
-                \\  mem_table         : {d:>12}  ({d:.1}%)
-                \\  simd              : {d:>12}  ({d:.1}%)
-                \\  atomic            : {d:>12}  ({d:.1}%)
-                \\  trap_unreachable  : {d:>12}  ({d:.1}%)
-                \\  misc              : {d:>12}  ({d:.1}%)
-                \\
-            , .{
-                oc.unary,            pct(oc.unary, oc.total),
-                oc.conv,             pct(oc.conv, oc.total),
-                oc.cmp,              pct(oc.cmp, oc.total),
-                oc.binop,            pct(oc.binop, oc.total),
-                oc.ref_select,       pct(oc.ref_select, oc.total),
-                oc.mem_table,        pct(oc.mem_table, oc.total),
-                oc.simd,             pct(oc.simd, oc.total),
-                oc.atomic,           pct(oc.atomic, oc.total),
-                oc.trap_unreachable, pct(oc.trap_unreachable, oc.total),
-                oc.misc,             pct(oc.misc, oc.total),
-            });
-            std.debug.print(
-                \\  --- Fused local ops ---
-                \\  i32_to_local    : {d:>9}  ({d:.1}%)
-                \\  i64_to_local    : {d:>9}  ({d:.1}%)
-                \\  i32_imm_to_local: {d:>6}  ({d:.1}%)
-                \\  i64_imm_to_local: {d:>6}  ({d:.1}%)
-                \\  i32_local_inplace: {d:>5}  ({d:.1}%)
-                \\  i64_local_inplace: {d:>5}  ({d:.1}%)
-                \\  --- Dispatch overhead ---
-                \\  dispatch_dispatch : {d:>9}  ({d:.1}%)
-                \\  dispatch_next     : {d:>9}  ({d:.1}%)
-                \\  TOTAL             : {d:>12}
-                \\
-            , .{
-                oc.i32_to_local,      pct(oc.i32_to_local, oc.total),
-                oc.i64_to_local,      pct(oc.i64_to_local, oc.total),
-                oc.i32_imm_to_local,  pct(oc.i32_imm_to_local, oc.total),
-                oc.i64_imm_to_local,  pct(oc.i64_imm_to_local, oc.total),
-                oc.i32_local_inplace, pct(oc.i32_local_inplace, oc.total),
-                oc.i64_local_inplace, pct(oc.i64_local_inplace, oc.total),
-                oc.dispatch_dispatch, pct(oc.dispatch_dispatch, oc.total),
-                oc.dispatch_next,     pct(oc.dispatch_next, oc.total),
-                oc.total,
-            });
-        }
+        // Print op counts to stderr — only compiled in when profiling is enabled
+        if (wasmz.op_counts_enabled) {
+            const oc = op_counts;
+            if (oc.total > 0) {
+                std.debug.print(
+                    \\=== Runtime op counts ===
+                    \\  copy              : {d:>12}  ({d:.1}%)
+                    \\  local_get         : {d:>12}  ({d:.1}%)
+                    \\  local_set         : {d:>12}  ({d:.1}%)
+                    \\  copy_jump_if_nz   : {d:>12}  ({d:.1}%)
+                    \\  jump              : {d:>12}  ({d:.1}%)
+                    \\  call_ret          : {d:>12}  ({d:.1}%)
+                    \\  global            : {d:>12}  ({d:.1}%)
+                    \\  constant          : {d:>12}  ({d:.1}%)
+                    \\  imm               : {d:>12}  ({d:.1}%)
+                    \\  imm_r             : {d:>12}  ({d:.1}%)
+                    \\
+                , .{
+                    oc.copy,            pct(oc.copy, oc.total),
+                    oc.local_get,       pct(oc.local_get, oc.total),
+                    oc.local_set,       pct(oc.local_set, oc.total),
+                    oc.copy_jump_if_nz, pct(oc.copy_jump_if_nz, oc.total),
+                    oc.jump,            pct(oc.jump, oc.total),
+                    oc.call_ret,        pct(oc.call_ret, oc.total),
+                    oc.global,          pct(oc.global, oc.total),
+                    oc.constant,        pct(oc.constant, oc.total),
+                    oc.imm,             pct(oc.imm, oc.total),
+                    oc.imm_r,           pct(oc.imm_r, oc.total),
+                });
+                std.debug.print(
+                    \\  unary             : {d:>12}  ({d:.1}%)
+                    \\  conv              : {d:>12}  ({d:.1}%)
+                    \\  cmp               : {d:>12}  ({d:.1}%)
+                    \\  binop             : {d:>12}  ({d:.1}%)
+                    \\  ref_select        : {d:>12}  ({d:.1}%)
+                    \\  mem_table         : {d:>12}  ({d:.1}%)
+                    \\  simd              : {d:>12}  ({d:.1}%)
+                    \\  atomic            : {d:>12}  ({d:.1}%)
+                    \\  trap_unreachable  : {d:>12}  ({d:.1}%)
+                    \\  misc              : {d:>12}  ({d:.1}%)
+                    \\
+                , .{
+                    oc.unary,            pct(oc.unary, oc.total),
+                    oc.conv,             pct(oc.conv, oc.total),
+                    oc.cmp,              pct(oc.cmp, oc.total),
+                    oc.binop,            pct(oc.binop, oc.total),
+                    oc.ref_select,       pct(oc.ref_select, oc.total),
+                    oc.mem_table,        pct(oc.mem_table, oc.total),
+                    oc.simd,             pct(oc.simd, oc.total),
+                    oc.atomic,           pct(oc.atomic, oc.total),
+                    oc.trap_unreachable, pct(oc.trap_unreachable, oc.total),
+                    oc.misc,             pct(oc.misc, oc.total),
+                });
+                std.debug.print(
+                    \\  --- Fused local ops ---
+                    \\  i32_to_local    : {d:>9}  ({d:.1}%)
+                    \\  i64_to_local    : {d:>9}  ({d:.1}%)
+                    \\  i32_imm_to_local: {d:>6}  ({d:.1}%)
+                    \\  i64_imm_to_local: {d:>6}  ({d:.1}%)
+                    \\  i32_local_inplace: {d:>5}  ({d:.1}%)
+                    \\  i64_local_inplace: {d:>5}  ({d:.1}%)
+                    \\  --- Dispatch overhead ---
+                    \\  dispatch_dispatch : {d:>9}  ({d:.1}%)
+                    \\  dispatch_next     : {d:>9}  ({d:.1}%)
+                    \\  TOTAL             : {d:>12}
+                    \\
+                , .{
+                    oc.i32_to_local,      pct(oc.i32_to_local, oc.total),
+                    oc.i64_to_local,      pct(oc.i64_to_local, oc.total),
+                    oc.i32_imm_to_local,  pct(oc.i32_imm_to_local, oc.total),
+                    oc.i64_imm_to_local,  pct(oc.i64_imm_to_local, oc.total),
+                    oc.i32_local_inplace, pct(oc.i32_local_inplace, oc.total),
+                    oc.i64_local_inplace, pct(oc.i64_local_inplace, oc.total),
+                    oc.dispatch_dispatch, pct(oc.dispatch_dispatch, oc.total),
+                    oc.dispatch_next,     pct(oc.dispatch_next, oc.total),
+                    oc.total,
+                });
+            }
+        } // if (wasmz.op_counts_enabled)
         instance.deinit();
     }
 

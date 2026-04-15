@@ -342,8 +342,8 @@ pub inline fn next(
     r0: u64,
     fp0: f64,
 ) void {
-    op_counts.total += 1;
-    op_counts.dispatch_next += 1;
+    countOp("total");
+    countOp("dispatch_next");
     const next_ip = ip + stride;
     const h: Handler = std.mem.bytesAsValue(Handler, next_ip[0..@sizeOf(Handler)]).*;
     @call(.always_tail, h, .{ next_ip, slots, frame, env, r0, fp0 });
@@ -361,15 +361,22 @@ pub inline fn dispatch(
     r0: u64,
     fp0: f64,
 ) void {
-    op_counts.total += 1;
-    op_counts.dispatch_dispatch += 1;
+    countOp("total");
+    countOp("dispatch_dispatch");
     const h: Handler = std.mem.bytesAsValue(Handler, ip[0..@sizeOf(Handler)]).*;
     @call(.always_tail, h, .{ ip, slots, frame, env, r0, fp0 });
 }
 
 // ── Runtime op counters (for profiling) ──────────────────────────────────────
+//
+// Only compiled in when `-Dprofiling=true` (i.e. `make build-debug`).
+// In release builds this struct is zero-sized and all increment calls are no-ops.
 
-pub const OpCounts = struct {
+const build_options = @import("build_options");
+
+pub const op_counts_enabled = build_options.profiling;
+
+pub const OpCounts = if (op_counts_enabled) struct {
     copy: u64 = 0,
     local_get: u64 = 0,
     local_set: u64 = 0,
@@ -399,9 +406,16 @@ pub const OpCounts = struct {
     total: u64 = 0,
     dispatch_dispatch: u64 = 0,
     dispatch_next: u64 = 0,
-};
+} else struct {};
 
 pub var op_counts: OpCounts = .{};
+
+/// Increment a field of `op_counts` by 1. Compiles to a no-op when profiling is disabled.
+pub inline fn countOp(comptime field: []const u8) void {
+    if (op_counts_enabled) {
+        @field(op_counts, field) += 1;
+    }
+}
 
 // ── Instruction operand sizes ─────────────────────────────────────────────────
 //
