@@ -214,6 +214,7 @@ fn run(allocator: std.mem.Allocator) void {
                     \\  load_to_local  : {d:>9}  ({d:.1}%)
                     \\  global_to_local: {d:>9}  ({d:.1}%)
                     \\  tee_local      : {d:>9}  ({d:.1}%)
+                    \\  cmp_to_local   : {d:>9}  ({d:.1}%)
                     \\  --- Dispatch overhead ---
                     \\  dispatch_dispatch : {d:>9}  ({d:.1}%)
                     \\  dispatch_next     : {d:>9}  ({d:.1}%)
@@ -230,6 +231,7 @@ fn run(allocator: std.mem.Allocator) void {
                     oc.load_to_local,     pct(oc.load_to_local, oc.total),
                     oc.global_to_local,   pct(oc.global_to_local, oc.total),
                     oc.tee_local,         pct(oc.tee_local, oc.total),
+                    oc.cmp_to_local,      pct(oc.cmp_to_local, oc.total),
                     oc.dispatch_dispatch, pct(oc.dispatch_dispatch, oc.total),
                     oc.dispatch_next,     pct(oc.dispatch_next, oc.total),
                     oc.total,

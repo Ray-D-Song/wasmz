@@ -1621,6 +1621,99 @@ pub const Lower = struct {
         return true;
     }
 
+    /// Attempt to fuse a preceding `i32_xx_cmp`/`i64_xx_cmp` + `local_set` into
+    /// `i32_eq_to_local`/`i64_eq_to_local` etc.
+    pub fn try_fuse_cmp_to_local(self: *Lower, local: Slot, src: Slot) bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len == 0) return false;
+        const last = &ops[ops.len - 1];
+        switch (last.*) {
+            .i32_eq => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i32_eq_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i32_ne => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i32_ne_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i32_lt_s => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i32_lt_s_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i32_lt_u => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i32_lt_u_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i32_gt_s => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i32_gt_s_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i32_gt_u => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i32_gt_u_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i32_le_s => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i32_le_s_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i32_le_u => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i32_le_u_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i32_ge_s => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i32_ge_s_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i32_ge_u => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i32_ge_u_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i64_eq => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i64_eq_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i64_ne => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i64_ne_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i64_lt_s => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i64_lt_s_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i64_lt_u => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i64_lt_u_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i64_gt_s => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i64_gt_s_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i64_gt_u => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i64_gt_u_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i64_le_s => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i64_le_s_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i64_le_u => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i64_le_u_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i64_ge_s => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i64_ge_s_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i64_ge_u => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i64_ge_u_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            else => return false,
+        }
+        if (self.r0_slot == src) self.r0_slot = null;
+        return true;
+    }
+
     /// Attempt to fuse a preceding `const_i32`/`const_i64` + `local_set` into
     /// `i32_const_to_local`/`i64_const_to_local`.
     pub fn try_fuse_const_to_local(self: *Lower, local: Slot, src: Slot) bool {
@@ -3260,7 +3353,8 @@ pub const Lower = struct {
                 if (self.try_fuse_local_set(local_slot, src) or
                     self.try_fuse_const_to_local(local_slot, src) or
                     self.try_fuse_global_get_to_local(local_slot, src) or
-                    self.try_fuse_load_to_local(local_slot, src))
+                    self.try_fuse_load_to_local(local_slot, src) or
+                    self.try_fuse_cmp_to_local(local_slot, src))
                 {
                     // fused successfully
                 } else {
@@ -4978,7 +5072,8 @@ pub const Lower = struct {
                 if (self.try_fuse_local_set(local_slot, src) or
                     self.try_fuse_const_to_local(local_slot, src) or
                     self.try_fuse_global_get_to_local(local_slot, src) or
-                    self.try_fuse_load_to_local(local_slot, src))
+                    self.try_fuse_load_to_local(local_slot, src) or
+                    self.try_fuse_cmp_to_local(local_slot, src))
                 {
                     // fused successfully
                 } else {

@@ -1204,6 +1204,36 @@ fn cmpI64(comptime op: enum { eq, ne, lt_s, lt_u, gt_s, gt_u, le_s, le_u, ge_s, 
     slots[ops.dst] = RawVal.from(result);
 }
 
+fn cmpI32ToLocal(comptime op: enum { eq, ne, lt_s, lt_u, gt_s, gt_u, le_s, le_u, ge_s, ge_u }, slots: [*]RawVal, ops: encode.OpsCmpToLocal) i32 {
+    return switch (op) {
+        .eq => if (slots[ops.lhs].readAs(i32) == slots[ops.rhs].readAs(i32)) @as(i32, 1) else 0,
+        .ne => if (slots[ops.lhs].readAs(i32) != slots[ops.rhs].readAs(i32)) @as(i32, 1) else 0,
+        .lt_s => if (slots[ops.lhs].readAs(i32) < slots[ops.rhs].readAs(i32)) @as(i32, 1) else 0,
+        .lt_u => if (slots[ops.lhs].readAs(u32) < slots[ops.rhs].readAs(u32)) @as(i32, 1) else 0,
+        .gt_s => if (slots[ops.lhs].readAs(i32) > slots[ops.rhs].readAs(i32)) @as(i32, 1) else 0,
+        .gt_u => if (slots[ops.lhs].readAs(u32) > slots[ops.rhs].readAs(u32)) @as(i32, 1) else 0,
+        .le_s => if (slots[ops.lhs].readAs(i32) <= slots[ops.rhs].readAs(i32)) @as(i32, 1) else 0,
+        .le_u => if (slots[ops.lhs].readAs(u32) <= slots[ops.rhs].readAs(u32)) @as(i32, 1) else 0,
+        .ge_s => if (slots[ops.lhs].readAs(i32) >= slots[ops.rhs].readAs(i32)) @as(i32, 1) else 0,
+        .ge_u => if (slots[ops.lhs].readAs(u32) >= slots[ops.rhs].readAs(u32)) @as(i32, 1) else 0,
+    };
+}
+
+fn cmpI64ToLocal(comptime op: enum { eq, ne, lt_s, lt_u, gt_s, gt_u, le_s, le_u, ge_s, ge_u }, slots: [*]RawVal, ops: encode.OpsCmpToLocal) i32 {
+    return switch (op) {
+        .eq => if (slots[ops.lhs].readAs(i64) == slots[ops.rhs].readAs(i64)) @as(i32, 1) else 0,
+        .ne => if (slots[ops.lhs].readAs(i64) != slots[ops.rhs].readAs(i64)) @as(i32, 1) else 0,
+        .lt_s => if (slots[ops.lhs].readAs(i64) < slots[ops.rhs].readAs(i64)) @as(i32, 1) else 0,
+        .lt_u => if (slots[ops.lhs].readAs(u64) < slots[ops.rhs].readAs(u64)) @as(i32, 1) else 0,
+        .gt_s => if (slots[ops.lhs].readAs(i64) > slots[ops.rhs].readAs(i64)) @as(i32, 1) else 0,
+        .gt_u => if (slots[ops.lhs].readAs(u64) > slots[ops.rhs].readAs(u64)) @as(i32, 1) else 0,
+        .le_s => if (slots[ops.lhs].readAs(i64) <= slots[ops.rhs].readAs(i64)) @as(i32, 1) else 0,
+        .le_u => if (slots[ops.lhs].readAs(u64) <= slots[ops.rhs].readAs(u64)) @as(i32, 1) else 0,
+        .ge_s => if (slots[ops.lhs].readAs(i64) >= slots[ops.rhs].readAs(i64)) @as(i32, 1) else 0,
+        .ge_u => if (slots[ops.lhs].readAs(u64) >= slots[ops.rhs].readAs(u64)) @as(i32, 1) else 0,
+    };
+}
+
 pub fn handle_i64_eq(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("cmp");
 
@@ -1263,6 +1293,132 @@ pub fn handle_i64_ge_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
 
     cmpI64(.ge_u, slots, readOps(encode.OpsDstLhsRhs, ip));
     dispatch.next(ip, stride(encode.OpsDstLhsRhs), slots, frame, env, r0, fp0);
+}
+
+// ── Fused: comparison + local_set (cmp_to_local, i32) ───────────────────
+
+pub fn handle_i32_eq_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("cmp_to_local");
+    const ops = readOps(encode.OpsCmpToLocal, ip);
+    slots[ops.local] = RawVal.from(cmpI32ToLocal(.eq, slots, ops));
+    dispatch.next(ip, stride(encode.OpsCmpToLocal), slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_ne_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("cmp_to_local");
+    const ops = readOps(encode.OpsCmpToLocal, ip);
+    slots[ops.local] = RawVal.from(cmpI32ToLocal(.ne, slots, ops));
+    dispatch.next(ip, stride(encode.OpsCmpToLocal), slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_lt_s_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("cmp_to_local");
+    const ops = readOps(encode.OpsCmpToLocal, ip);
+    slots[ops.local] = RawVal.from(cmpI32ToLocal(.lt_s, slots, ops));
+    dispatch.next(ip, stride(encode.OpsCmpToLocal), slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_lt_u_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("cmp_to_local");
+    const ops = readOps(encode.OpsCmpToLocal, ip);
+    slots[ops.local] = RawVal.from(cmpI32ToLocal(.lt_u, slots, ops));
+    dispatch.next(ip, stride(encode.OpsCmpToLocal), slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_gt_s_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("cmp_to_local");
+    const ops = readOps(encode.OpsCmpToLocal, ip);
+    slots[ops.local] = RawVal.from(cmpI32ToLocal(.gt_s, slots, ops));
+    dispatch.next(ip, stride(encode.OpsCmpToLocal), slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_gt_u_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("cmp_to_local");
+    const ops = readOps(encode.OpsCmpToLocal, ip);
+    slots[ops.local] = RawVal.from(cmpI32ToLocal(.gt_u, slots, ops));
+    dispatch.next(ip, stride(encode.OpsCmpToLocal), slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_le_s_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("cmp_to_local");
+    const ops = readOps(encode.OpsCmpToLocal, ip);
+    slots[ops.local] = RawVal.from(cmpI32ToLocal(.le_s, slots, ops));
+    dispatch.next(ip, stride(encode.OpsCmpToLocal), slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_le_u_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("cmp_to_local");
+    const ops = readOps(encode.OpsCmpToLocal, ip);
+    slots[ops.local] = RawVal.from(cmpI32ToLocal(.le_u, slots, ops));
+    dispatch.next(ip, stride(encode.OpsCmpToLocal), slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_ge_s_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("cmp_to_local");
+    const ops = readOps(encode.OpsCmpToLocal, ip);
+    slots[ops.local] = RawVal.from(cmpI32ToLocal(.ge_s, slots, ops));
+    dispatch.next(ip, stride(encode.OpsCmpToLocal), slots, frame, env, r0, fp0);
+}
+pub fn handle_i32_ge_u_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("cmp_to_local");
+    const ops = readOps(encode.OpsCmpToLocal, ip);
+    slots[ops.local] = RawVal.from(cmpI32ToLocal(.ge_u, slots, ops));
+    dispatch.next(ip, stride(encode.OpsCmpToLocal), slots, frame, env, r0, fp0);
+}
+
+// ── Fused: comparison + local_set (cmp_to_local, i64) ───────────────────
+
+pub fn handle_i64_eq_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("cmp_to_local");
+    const ops = readOps(encode.OpsCmpToLocal, ip);
+    slots[ops.local] = RawVal.from(cmpI64ToLocal(.eq, slots, ops));
+    dispatch.next(ip, stride(encode.OpsCmpToLocal), slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_ne_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("cmp_to_local");
+    const ops = readOps(encode.OpsCmpToLocal, ip);
+    slots[ops.local] = RawVal.from(cmpI64ToLocal(.ne, slots, ops));
+    dispatch.next(ip, stride(encode.OpsCmpToLocal), slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_lt_s_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("cmp_to_local");
+    const ops = readOps(encode.OpsCmpToLocal, ip);
+    slots[ops.local] = RawVal.from(cmpI64ToLocal(.lt_s, slots, ops));
+    dispatch.next(ip, stride(encode.OpsCmpToLocal), slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_lt_u_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("cmp_to_local");
+    const ops = readOps(encode.OpsCmpToLocal, ip);
+    slots[ops.local] = RawVal.from(cmpI64ToLocal(.lt_u, slots, ops));
+    dispatch.next(ip, stride(encode.OpsCmpToLocal), slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_gt_s_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("cmp_to_local");
+    const ops = readOps(encode.OpsCmpToLocal, ip);
+    slots[ops.local] = RawVal.from(cmpI64ToLocal(.gt_s, slots, ops));
+    dispatch.next(ip, stride(encode.OpsCmpToLocal), slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_gt_u_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("cmp_to_local");
+    const ops = readOps(encode.OpsCmpToLocal, ip);
+    slots[ops.local] = RawVal.from(cmpI64ToLocal(.gt_u, slots, ops));
+    dispatch.next(ip, stride(encode.OpsCmpToLocal), slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_le_s_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("cmp_to_local");
+    const ops = readOps(encode.OpsCmpToLocal, ip);
+    slots[ops.local] = RawVal.from(cmpI64ToLocal(.le_s, slots, ops));
+    dispatch.next(ip, stride(encode.OpsCmpToLocal), slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_le_u_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("cmp_to_local");
+    const ops = readOps(encode.OpsCmpToLocal, ip);
+    slots[ops.local] = RawVal.from(cmpI64ToLocal(.le_u, slots, ops));
+    dispatch.next(ip, stride(encode.OpsCmpToLocal), slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_ge_s_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("cmp_to_local");
+    const ops = readOps(encode.OpsCmpToLocal, ip);
+    slots[ops.local] = RawVal.from(cmpI64ToLocal(.ge_s, slots, ops));
+    dispatch.next(ip, stride(encode.OpsCmpToLocal), slots, frame, env, r0, fp0);
+}
+pub fn handle_i64_ge_u_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("cmp_to_local");
+    const ops = readOps(encode.OpsCmpToLocal, ip);
+    slots[ops.local] = RawVal.from(cmpI64ToLocal(.ge_u, slots, ops));
+    dispatch.next(ip, stride(encode.OpsCmpToLocal), slots, frame, env, r0, fp0);
 }
 
 fn cmpF32(comptime op: enum { eq, ne, lt, gt, le, ge }, slots: [*]RawVal, ops: encode.OpsDstLhsRhs) void {
@@ -2056,27 +2212,11 @@ pub fn handle_i32_eqz_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
 
 pub fn handle_i32_add_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
     const ops = readOps(encode.OpsBinopToLocal, ip);
     slots[ops.local] = RawVal.from(slots[ops.lhs].readAs(i32) +% slots[ops.rhs].readAs(i32));
     dispatch.next(ip, stride(encode.OpsBinopToLocal), slots, frame, env, r0, fp0);
 }
 pub fn handle_i32_sub_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
     dispatch.countOp("i32_to_local");
     const ops = readOps(encode.OpsBinopToLocal, ip);
     slots[ops.local] = RawVal.from(slots[ops.lhs].readAs(i32) -% slots[ops.rhs].readAs(i32));
@@ -2084,27 +2224,11 @@ pub fn handle_i32_sub_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchStat
 }
 pub fn handle_i32_mul_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
     const ops = readOps(encode.OpsBinopToLocal, ip);
     slots[ops.local] = RawVal.from(slots[ops.lhs].readAs(i32) *% slots[ops.rhs].readAs(i32));
     dispatch.next(ip, stride(encode.OpsBinopToLocal), slots, frame, env, r0, fp0);
 }
 pub fn handle_i32_and_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
     dispatch.countOp("i32_to_local");
     const ops = readOps(encode.OpsBinopToLocal, ip);
     slots[ops.local] = RawVal.from(slots[ops.lhs].readAs(i32) & slots[ops.rhs].readAs(i32));
@@ -2112,27 +2236,11 @@ pub fn handle_i32_and_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchStat
 }
 pub fn handle_i32_or_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
     const ops = readOps(encode.OpsBinopToLocal, ip);
     slots[ops.local] = RawVal.from(slots[ops.lhs].readAs(i32) | slots[ops.rhs].readAs(i32));
     dispatch.next(ip, stride(encode.OpsBinopToLocal), slots, frame, env, r0, fp0);
 }
 pub fn handle_i32_xor_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
     dispatch.countOp("i32_to_local");
     const ops = readOps(encode.OpsBinopToLocal, ip);
     slots[ops.local] = RawVal.from(slots[ops.lhs].readAs(i32) ^ slots[ops.rhs].readAs(i32));
@@ -2140,41 +2248,17 @@ pub fn handle_i32_xor_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchStat
 }
 pub fn handle_i32_shl_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
     const ops = readOps(encode.OpsBinopToLocal, ip);
     slots[ops.local] = RawVal.from(helper.shl(slots[ops.lhs].readAs(i32), slots[ops.rhs].readAs(i32)));
     dispatch.next(ip, stride(encode.OpsBinopToLocal), slots, frame, env, r0, fp0);
 }
 pub fn handle_i32_shr_s_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
     const ops = readOps(encode.OpsBinopToLocal, ip);
     slots[ops.local] = RawVal.from(helper.shrS(slots[ops.lhs].readAs(i32), slots[ops.rhs].readAs(i32)));
     dispatch.next(ip, stride(encode.OpsBinopToLocal), slots, frame, env, r0, fp0);
 }
 pub fn handle_i32_shr_u_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
-    dispatch.countOp("i32_to_local");
     dispatch.countOp("i32_to_local");
     const ops = readOps(encode.OpsBinopToLocal, ip);
     slots[ops.local] = RawVal.from(@as(i32, @bitCast(helper.shrU(i32, slots[ops.lhs].readAs(u32), slots[ops.rhs].readAs(u32)))));
@@ -2665,27 +2749,11 @@ pub fn handle_i64_eqz_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
 
 pub fn handle_i64_add_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
     const ops = readOps(encode.OpsBinopToLocal, ip);
     slots[ops.local] = RawVal.from(slots[ops.lhs].readAs(i64) +% slots[ops.rhs].readAs(i64));
     dispatch.next(ip, stride(encode.OpsBinopToLocal), slots, frame, env, r0, fp0);
 }
 pub fn handle_i64_sub_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
     dispatch.countOp("i64_to_local");
     const ops = readOps(encode.OpsBinopToLocal, ip);
     slots[ops.local] = RawVal.from(slots[ops.lhs].readAs(i64) -% slots[ops.rhs].readAs(i64));
@@ -2693,27 +2761,11 @@ pub fn handle_i64_sub_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchStat
 }
 pub fn handle_i64_mul_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
     const ops = readOps(encode.OpsBinopToLocal, ip);
     slots[ops.local] = RawVal.from(slots[ops.lhs].readAs(i64) *% slots[ops.rhs].readAs(i64));
     dispatch.next(ip, stride(encode.OpsBinopToLocal), slots, frame, env, r0, fp0);
 }
 pub fn handle_i64_and_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
     dispatch.countOp("i64_to_local");
     const ops = readOps(encode.OpsBinopToLocal, ip);
     slots[ops.local] = RawVal.from(slots[ops.lhs].readAs(i64) & slots[ops.rhs].readAs(i64));
@@ -2721,27 +2773,11 @@ pub fn handle_i64_and_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchStat
 }
 pub fn handle_i64_or_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
     const ops = readOps(encode.OpsBinopToLocal, ip);
     slots[ops.local] = RawVal.from(slots[ops.lhs].readAs(i64) | slots[ops.rhs].readAs(i64));
     dispatch.next(ip, stride(encode.OpsBinopToLocal), slots, frame, env, r0, fp0);
 }
 pub fn handle_i64_xor_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
     dispatch.countOp("i64_to_local");
     const ops = readOps(encode.OpsBinopToLocal, ip);
     slots[ops.local] = RawVal.from(slots[ops.lhs].readAs(i64) ^ slots[ops.rhs].readAs(i64));
@@ -2749,41 +2785,17 @@ pub fn handle_i64_xor_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchStat
 }
 pub fn handle_i64_shl_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
     const ops = readOps(encode.OpsBinopToLocal, ip);
     slots[ops.local] = RawVal.from(helper.shl(slots[ops.lhs].readAs(i64), slots[ops.rhs].readAs(i64)));
     dispatch.next(ip, stride(encode.OpsBinopToLocal), slots, frame, env, r0, fp0);
 }
 pub fn handle_i64_shr_s_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
     const ops = readOps(encode.OpsBinopToLocal, ip);
     slots[ops.local] = RawVal.from(helper.shrS(slots[ops.lhs].readAs(i64), slots[ops.rhs].readAs(i64)));
     dispatch.next(ip, stride(encode.OpsBinopToLocal), slots, frame, env, r0, fp0);
 }
 pub fn handle_i64_shr_u_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
-    dispatch.countOp("i64_to_local");
     dispatch.countOp("i64_to_local");
     const ops = readOps(encode.OpsBinopToLocal, ip);
     slots[ops.local] = RawVal.from(@as(i64, @bitCast(helper.shrU(i64, slots[ops.lhs].readAs(u64), slots[ops.rhs].readAs(u64)))));
@@ -2994,28 +3006,12 @@ pub const handle_memory_fill = memory.handle_memory_fill;
 
 pub fn handle_i32_add_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
     dispatch.countOp("i32_to_local");
     const ops = readOps(encode.OpsBinopImmToLocal, ip);
     slots[ops.local] = RawVal.from(slots[ops.lhs].readAs(i32) +% ops.imm);
     dispatch.next(ip, stride(encode.OpsBinopImmToLocal), slots, frame, env, r0, fp0);
 }
 pub fn handle_i32_sub_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
     dispatch.countOp("i32_imm_to_local");
     dispatch.countOp("i32_to_local");
     const ops = readOps(encode.OpsBinopImmToLocal, ip);
@@ -3024,28 +3020,12 @@ pub fn handle_i32_sub_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
 }
 pub fn handle_i32_mul_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
     dispatch.countOp("i32_to_local");
     const ops = readOps(encode.OpsBinopImmToLocal, ip);
     slots[ops.local] = RawVal.from(slots[ops.lhs].readAs(i32) *% ops.imm);
     dispatch.next(ip, stride(encode.OpsBinopImmToLocal), slots, frame, env, r0, fp0);
 }
 pub fn handle_i32_and_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
     dispatch.countOp("i32_imm_to_local");
     dispatch.countOp("i32_to_local");
     const ops = readOps(encode.OpsBinopImmToLocal, ip);
@@ -3054,28 +3034,12 @@ pub fn handle_i32_and_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
 }
 pub fn handle_i32_or_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
     dispatch.countOp("i32_to_local");
     const ops = readOps(encode.OpsBinopImmToLocal, ip);
     slots[ops.local] = RawVal.from(slots[ops.lhs].readAs(i32) | ops.imm);
     dispatch.next(ip, stride(encode.OpsBinopImmToLocal), slots, frame, env, r0, fp0);
 }
 pub fn handle_i32_xor_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
     dispatch.countOp("i32_imm_to_local");
     dispatch.countOp("i32_to_local");
     const ops = readOps(encode.OpsBinopImmToLocal, ip);
@@ -3084,14 +3048,6 @@ pub fn handle_i32_xor_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
 }
 pub fn handle_i32_shl_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
     dispatch.countOp("i32_to_local");
     const ops = readOps(encode.OpsBinopImmToLocal, ip);
     slots[ops.local] = RawVal.from(helper.shl(slots[ops.lhs].readAs(i32), ops.imm));
@@ -3099,28 +3055,12 @@ pub fn handle_i32_shl_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
 }
 pub fn handle_i32_shr_s_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
     dispatch.countOp("i32_to_local");
     const ops = readOps(encode.OpsBinopImmToLocal, ip);
     slots[ops.local] = RawVal.from(helper.shrS(slots[ops.lhs].readAs(i32), ops.imm));
     dispatch.next(ip, stride(encode.OpsBinopImmToLocal), slots, frame, env, r0, fp0);
 }
 pub fn handle_i32_shr_u_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
-    dispatch.countOp("i32_imm_to_local");
     dispatch.countOp("i32_imm_to_local");
     dispatch.countOp("i32_to_local");
     const ops = readOps(encode.OpsBinopImmToLocal, ip);
@@ -3132,28 +3072,12 @@ pub fn handle_i32_shr_u_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *Dispat
 
 pub fn handle_i64_add_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
     dispatch.countOp("i64_to_local");
     const ops = readOps(encode.OpsBinopImmToLocal64, ip);
     slots[ops.local] = RawVal.from(slots[ops.lhs].readAs(i64) +% ops.imm);
     dispatch.next(ip, stride(encode.OpsBinopImmToLocal64), slots, frame, env, r0, fp0);
 }
 pub fn handle_i64_sub_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
     dispatch.countOp("i64_imm_to_local");
     dispatch.countOp("i64_to_local");
     const ops = readOps(encode.OpsBinopImmToLocal64, ip);
@@ -3162,28 +3086,12 @@ pub fn handle_i64_sub_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
 }
 pub fn handle_i64_mul_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
     dispatch.countOp("i64_to_local");
     const ops = readOps(encode.OpsBinopImmToLocal64, ip);
     slots[ops.local] = RawVal.from(slots[ops.lhs].readAs(i64) *% ops.imm);
     dispatch.next(ip, stride(encode.OpsBinopImmToLocal64), slots, frame, env, r0, fp0);
 }
 pub fn handle_i64_and_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
     dispatch.countOp("i64_imm_to_local");
     dispatch.countOp("i64_to_local");
     const ops = readOps(encode.OpsBinopImmToLocal64, ip);
@@ -3192,28 +3100,12 @@ pub fn handle_i64_and_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
 }
 pub fn handle_i64_or_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
     dispatch.countOp("i64_to_local");
     const ops = readOps(encode.OpsBinopImmToLocal64, ip);
     slots[ops.local] = RawVal.from(slots[ops.lhs].readAs(i64) | ops.imm);
     dispatch.next(ip, stride(encode.OpsBinopImmToLocal64), slots, frame, env, r0, fp0);
 }
 pub fn handle_i64_xor_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
     dispatch.countOp("i64_imm_to_local");
     dispatch.countOp("i64_to_local");
     const ops = readOps(encode.OpsBinopImmToLocal64, ip);
@@ -3222,14 +3114,6 @@ pub fn handle_i64_xor_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
 }
 pub fn handle_i64_shl_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
     dispatch.countOp("i64_to_local");
     const ops = readOps(encode.OpsBinopImmToLocal64, ip);
     slots[ops.local] = RawVal.from(helper.shl(slots[ops.lhs].readAs(i64), ops.imm));
@@ -3237,28 +3121,12 @@ pub fn handle_i64_shl_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
 }
 pub fn handle_i64_shr_s_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
     dispatch.countOp("i64_to_local");
     const ops = readOps(encode.OpsBinopImmToLocal64, ip);
     slots[ops.local] = RawVal.from(helper.shrS(slots[ops.lhs].readAs(i64), ops.imm));
     dispatch.next(ip, stride(encode.OpsBinopImmToLocal64), slots, frame, env, r0, fp0);
 }
 pub fn handle_i64_shr_u_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
-    dispatch.countOp("i64_imm_to_local");
     dispatch.countOp("i64_imm_to_local");
     dispatch.countOp("i64_to_local");
     const ops = readOps(encode.OpsBinopImmToLocal64, ip);
@@ -3271,27 +3139,11 @@ pub fn handle_i64_shr_u_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *Dispat
 
 pub fn handle_i32_add_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
     const ops = readOps(encode.OpsLocalInplace, ip);
     slots[ops.local] = RawVal.from(slots[ops.local].readAs(i32) +% ops.imm);
     dispatch.next(ip, stride(encode.OpsLocalInplace), slots, frame, env, r0, fp0);
 }
 pub fn handle_i32_sub_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
     dispatch.countOp("i32_local_inplace");
     const ops = readOps(encode.OpsLocalInplace, ip);
     slots[ops.local] = RawVal.from(slots[ops.local].readAs(i32) -% ops.imm);
@@ -3299,27 +3151,11 @@ pub fn handle_i32_sub_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *Dispatc
 }
 pub fn handle_i32_mul_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
     const ops = readOps(encode.OpsLocalInplace, ip);
     slots[ops.local] = RawVal.from(slots[ops.local].readAs(i32) *% ops.imm);
     dispatch.next(ip, stride(encode.OpsLocalInplace), slots, frame, env, r0, fp0);
 }
 pub fn handle_i32_and_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
     dispatch.countOp("i32_local_inplace");
     const ops = readOps(encode.OpsLocalInplace, ip);
     slots[ops.local] = RawVal.from(slots[ops.local].readAs(i32) & ops.imm);
@@ -3327,27 +3163,11 @@ pub fn handle_i32_and_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *Dispatc
 }
 pub fn handle_i32_or_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
     const ops = readOps(encode.OpsLocalInplace, ip);
     slots[ops.local] = RawVal.from(slots[ops.local].readAs(i32) | ops.imm);
     dispatch.next(ip, stride(encode.OpsLocalInplace), slots, frame, env, r0, fp0);
 }
 pub fn handle_i32_xor_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
     dispatch.countOp("i32_local_inplace");
     const ops = readOps(encode.OpsLocalInplace, ip);
     slots[ops.local] = RawVal.from(slots[ops.local].readAs(i32) ^ ops.imm);
@@ -3355,41 +3175,17 @@ pub fn handle_i32_xor_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *Dispatc
 }
 pub fn handle_i32_shl_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
     const ops = readOps(encode.OpsLocalInplace, ip);
     slots[ops.local] = RawVal.from(helper.shl(slots[ops.local].readAs(i32), ops.imm));
     dispatch.next(ip, stride(encode.OpsLocalInplace), slots, frame, env, r0, fp0);
 }
 pub fn handle_i32_shr_s_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
     const ops = readOps(encode.OpsLocalInplace, ip);
     slots[ops.local] = RawVal.from(helper.shrS(slots[ops.local].readAs(i32), ops.imm));
     dispatch.next(ip, stride(encode.OpsLocalInplace), slots, frame, env, r0, fp0);
 }
 pub fn handle_i32_shr_u_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
-    dispatch.countOp("i32_local_inplace");
     dispatch.countOp("i32_local_inplace");
     const ops = readOps(encode.OpsLocalInplace, ip);
     slots[ops.local] = RawVal.from(@as(i32, @bitCast(helper.shrU(i32, slots[ops.local].readAs(u32), @as(u32, @bitCast(ops.imm))))));
@@ -3400,27 +3196,11 @@ pub fn handle_i32_shr_u_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *Dispa
 
 pub fn handle_i64_add_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
     const ops = readOps(encode.OpsLocalInplace64, ip);
     slots[ops.local] = RawVal.from(slots[ops.local].readAs(i64) +% ops.imm);
     dispatch.next(ip, stride(encode.OpsLocalInplace64), slots, frame, env, r0, fp0);
 }
 pub fn handle_i64_sub_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
     dispatch.countOp("i64_local_inplace");
     const ops = readOps(encode.OpsLocalInplace64, ip);
     slots[ops.local] = RawVal.from(slots[ops.local].readAs(i64) -% ops.imm);
@@ -3428,27 +3208,11 @@ pub fn handle_i64_sub_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *Dispatc
 }
 pub fn handle_i64_mul_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
     const ops = readOps(encode.OpsLocalInplace64, ip);
     slots[ops.local] = RawVal.from(slots[ops.local].readAs(i64) *% ops.imm);
     dispatch.next(ip, stride(encode.OpsLocalInplace64), slots, frame, env, r0, fp0);
 }
 pub fn handle_i64_and_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
     dispatch.countOp("i64_local_inplace");
     const ops = readOps(encode.OpsLocalInplace64, ip);
     slots[ops.local] = RawVal.from(slots[ops.local].readAs(i64) & ops.imm);
@@ -3456,27 +3220,11 @@ pub fn handle_i64_and_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *Dispatc
 }
 pub fn handle_i64_or_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
     const ops = readOps(encode.OpsLocalInplace64, ip);
     slots[ops.local] = RawVal.from(slots[ops.local].readAs(i64) | ops.imm);
     dispatch.next(ip, stride(encode.OpsLocalInplace64), slots, frame, env, r0, fp0);
 }
 pub fn handle_i64_xor_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
     dispatch.countOp("i64_local_inplace");
     const ops = readOps(encode.OpsLocalInplace64, ip);
     slots[ops.local] = RawVal.from(slots[ops.local].readAs(i64) ^ ops.imm);
@@ -3484,41 +3232,17 @@ pub fn handle_i64_xor_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *Dispatc
 }
 pub fn handle_i64_shl_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
     const ops = readOps(encode.OpsLocalInplace64, ip);
     slots[ops.local] = RawVal.from(helper.shl(slots[ops.local].readAs(i64), ops.imm));
     dispatch.next(ip, stride(encode.OpsLocalInplace64), slots, frame, env, r0, fp0);
 }
 pub fn handle_i64_shr_s_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
     const ops = readOps(encode.OpsLocalInplace64, ip);
     slots[ops.local] = RawVal.from(helper.shrS(slots[ops.local].readAs(i64), ops.imm));
     dispatch.next(ip, stride(encode.OpsLocalInplace64), slots, frame, env, r0, fp0);
 }
 pub fn handle_i64_shr_u_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
-    dispatch.countOp("i64_local_inplace");
     dispatch.countOp("i64_local_inplace");
     const ops = readOps(encode.OpsLocalInplace64, ip);
     slots[ops.local] = RawVal.from(@as(i64, @bitCast(helper.shrU(i64, slots[ops.local].readAs(u64), @as(u64, @bitCast(ops.imm))))));
