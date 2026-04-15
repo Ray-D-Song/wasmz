@@ -39,8 +39,24 @@ inline fn stride(comptime OpsT: type) usize {
     return HANDLER_SIZE + @sizeOf(OpsT);
 }
 
+inline fn trapReturnFromTrap(frame: *DispatchState, trap: core.Trap) void {
+    var t = trap;
+    if (t.stack_trace == null) {
+        if (frame.captureStackTrace()) |trace| {
+            t.allocator = frame.allocator;
+            t.stack_trace = trace;
+        }
+    }
+    frame.result = .{ .trap = t };
+}
+
 inline fn trapReturn(frame: *DispatchState, code: core.TrapCode) void {
-    frame.result = .{ .trap = Trap.fromTrapCode(code) };
+    var trap = Trap.fromTrapCode(code);
+    if (frame.captureStackTrace()) |trace| {
+        trap.allocator = frame.allocator;
+        trap.stack_trace = trace;
+    }
+    frame.result = .{ .trap = trap };
 }
 
 /// Ensure a local function slot is compiled, triggering lazy compilation if needed.
@@ -116,7 +132,7 @@ fn invokeHostCallInline(
         host_func.call(&ctx, host_params, host_results) catch |err| {
             switch (err) {
                 error.HostTrap => {
-                    frame.result = .{ .trap = ctx.takeTrap() };
+                    trapReturnFromTrap(frame, ctx.takeTrap());
                     return null;
                 },
                 error.OutOfMemory => {
@@ -149,7 +165,7 @@ fn invokeHostCallInline(
     host_func.call(&ctx, host_params, host_results) catch |err| {
         const ret_val: ?RawVal = switch (err) {
             error.HostTrap => {
-                frame.result = .{ .trap = ctx.takeTrap() };
+                trapReturnFromTrap(frame, ctx.takeTrap());
                 allocator.free(host_params);
                 allocator.free(host_results);
                 return null;

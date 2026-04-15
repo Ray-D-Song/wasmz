@@ -157,7 +157,12 @@ pub inline fn effectiveAddr(slots: [*]RawVal, addr_slot: Slot, offset: u32, size
 }
 
 pub inline fn trapReturn(frame: *DispatchState, code: core.TrapCode) void {
-    frame.result = .{ .trap = Trap.fromTrapCode(code) };
+    var trap = Trap.fromTrapCode(code);
+    if (frame.captureStackTrace()) |trace| {
+        trap.allocator = frame.allocator;
+        trap.stack_trace = trace;
+    }
+    frame.result = .{ .trap = trap };
 }
 
 pub inline fn UnsignedOf(comptime T: type) type {

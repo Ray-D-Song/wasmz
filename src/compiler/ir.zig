@@ -1503,6 +1503,10 @@ pub const EncodedFunction = struct {
     /// Number of local variable slots (excluding parameters).
     /// Used to limit @memset in allocCalleeSlots to only the locals range.
     locals_count: u16,
+    /// The Wasm function index in the module's full function index space
+    /// (imports + locals).  Set by Module.compileFunctionAt so that call
+    /// stack walks can report which function a frame belongs to.
+    func_idx: u32 = 0,
     /// Destination slot lists for exception handler catch arms (catch_tag / catch_tag_ref).
     /// CatchHandlerEntry.dst_slots_start/dst_slots_len index into this array.
     eh_dst_slots: []Slot,

@@ -240,7 +240,7 @@ fn run(allocator: std.mem.Allocator) void {
     if (instance.runStartFunction() catch |err|
         fatal("Failed to run start function: {s}", .{@errorName(err)})) |result|
     {
-        if (result == .trap) fatalTrap(result.trap, allocator, "start function trapped");
+        if (result == .trap) fatalTrap(result.trap, allocator, arc_module.value, "start function trapped");
     }
     tracePhase(cli_args.mem_trace, &trace_prev, "after runStart");
 
@@ -248,7 +248,7 @@ fn run(allocator: std.mem.Allocator) void {
         if (instance.initializeReactor() catch |err|
             fatal("Failed to call _initialize: {s}", .{@errorName(err)})) |res|
         {
-            if (res == .trap) fatalTrap(res.trap, allocator, "_initialize trapped");
+            if (res == .trap) fatalTrap(res.trap, allocator, arc_module.value, "_initialize trapped");
         }
     }
 
@@ -257,7 +257,7 @@ fn run(allocator: std.mem.Allocator) void {
             tracePhase(cli_args.mem_trace, &trace_prev, "before _start");
             const result = instance.call("_start", &.{}) catch |err|
                 fatal("Failed to call _start: {s}", .{@errorName(err)});
-            if (result == .trap) fatalTrap(result.trap, allocator, "trap");
+            if (result == .trap) fatalTrap(result.trap, allocator, arc_module.value, "trap");
             tracePhase(cli_args.mem_trace, &trace_prev, "after _start");
             return;
         }
@@ -291,7 +291,7 @@ fn run(allocator: std.mem.Allocator) void {
 
     switch (result) {
         .ok => |val| if (val) |v| stdout.print("{d}\n", .{v.readAs(i32)}) catch {},
-        .trap => |t| fatalTrap(t, allocator, "trap"),
+        .trap => |t| fatalTrap(t, allocator, arc_module.value, "trap"),
     }
 }
 
@@ -441,9 +441,41 @@ inline fn pct(part: u64, total: u64) f64 {
     return @as(f64, @floatFromInt(part)) / @as(f64, @floatFromInt(total)) * 100.0;
 }
 
-fn fatalTrap(trap: wasmz.Trap, allocator: std.mem.Allocator, comptime context: []const u8) noreturn {
+fn fatalTrap(trap: wasmz.Trap, allocator: std.mem.Allocator, module: *const Module, comptime context: []const u8) noreturn {
+    const red = "\x1b[31m";
+    const reset = "\x1b[0m";
     const msg = trap.allocPrint(allocator) catch "?";
-    std.debug.print("error: {s}: {s}\n", .{ context, msg });
+    std.debug.print("{s}{s}: {s}{s}\n", .{ red, context, msg, reset });
+    if (trap.stack_trace) |frames| {
+        std.debug.print("wasm backtrace:\n", .{});
+        for (frames, 0..) |frame, i| {
+            const func_name = blk: {
+                if (frame.func_idx < module.func_names.len) {
+                    if (module.func_names[frame.func_idx]) |name| break :blk name;
+                }
+                // Fall back to export name reverse-lookup
+                var iter = module.exports.iterator();
+                while (iter.next()) |entry| {
+                    switch (entry.value_ptr.*) {
+                        .function_index => |idx| {
+                            if (idx == frame.func_idx) break :blk entry.key_ptr.*;
+                        },
+                        else => {},
+                    }
+                }
+                // Fall back to import name
+                if (frame.func_idx < module.imported_funcs.len) {
+                    break :blk module.imported_funcs[frame.func_idx].func_name;
+                }
+                break :blk null;
+            };
+            if (func_name) |name| {
+                std.debug.print("  {d}: [func {d}] {s} +0x{x}\n", .{ i, frame.func_idx, name, frame.code_offset });
+            } else {
+                std.debug.print("  {d}: [func {d}] <unknown> +0x{x}\n", .{ i, frame.func_idx, frame.code_offset });
+            }
+        }
+    }
     std.process.exit(1);
 }
 

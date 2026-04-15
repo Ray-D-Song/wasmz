@@ -140,10 +140,25 @@ const Reason = union(ReasonTag) {
     host_message: []const u8,
 };
 
+/// One frame in the Wasm call stack at the moment a trap occurred.
+pub const StackFrame = struct {
+    /// Wasm function index in the module's full function index space
+    /// (imports first, then locals).
+    func_idx: u32,
+    /// Byte offset of the faulting instruction from the start of the
+    /// function's code buffer.  May be 0 for entry frames.
+    code_offset: usize,
+};
+
 pub const Trap = struct {
     reason: Reason,
     allocator: ?std.mem.Allocator = null,
     owned_buffer: ?[]u8 = null,
+    /// Call stack snapshot captured at the moment the trap occurred.
+    /// Ordered innermost-first (index 0 is the faulting frame).
+    /// null when no snapshot was captured (e.g. host-side traps).
+    /// Owned by this Trap; freed in deinit().
+    stack_trace: ?[]StackFrame = null,
 
     pub fn fromTrapCode(code: TrapCode) Trap {
         return .{
@@ -196,8 +211,14 @@ pub const Trap = struct {
                 allocator.free(buffer);
             }
         }
+        if (self.stack_trace) |frames| {
+            if (self.allocator) |allocator| {
+                allocator.free(frames);
+            }
+        }
         self.allocator = null;
         self.owned_buffer = null;
+        self.stack_trace = null;
     }
 
     pub fn i32ExitStatus(self: Trap) ?i32 {

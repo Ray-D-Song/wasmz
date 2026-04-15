@@ -322,6 +322,31 @@ pub const DispatchState = struct {
     pub inline fn valStackFree(self: *DispatchState, sp_base: usize) void {
         self.val_sp = sp_base;
     }
+
+    /// Capture the current Wasm call stack into a freshly-allocated slice of
+    /// `StackFrame` values, ordered innermost-first (index 0 = currently
+    /// executing function, last index = entry frame).
+    ///
+    /// Returns null if allocation fails (the trap is still reported; the stack
+    /// trace is just omitted).
+    pub fn captureStackTrace(self: *const DispatchState) ?[]core.StackFrame {
+        if (self.call_depth == 0) return null;
+        const frames = self.allocator.alloc(core.StackFrame, self.call_depth) catch return null;
+        var i: usize = 0;
+        // Walk innermost → outermost (call_depth-1 downto 0)
+        while (i < self.call_depth) : (i += 1) {
+            const cf = &self.call_stack[self.call_depth - 1 - i];
+            const code_offset: usize = if (@intFromPtr(cf.ip) >= @intFromPtr(cf.func.code.ptr))
+                @intFromPtr(cf.ip) - @intFromPtr(cf.func.code.ptr)
+            else
+                0;
+            frames[i] = .{
+                .func_idx = cf.func.func_idx,
+                .code_offset = code_offset,
+            };
+        }
+        return frames;
+    }
 };
 
 // ── Dispatch helper ───────────────────────────────────────────────────────────

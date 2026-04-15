@@ -31,7 +31,12 @@ inline fn stride(comptime OpsT: type) usize {
 }
 
 inline fn trapReturn(frame: *DispatchState, code: core.TrapCode) void {
-    frame.result = .{ .trap = Trap.fromTrapCode(code) };
+    var trap = Trap.fromTrapCode(code);
+    if (frame.captureStackTrace()) |trace| {
+        trap.allocator = frame.allocator;
+        trap.stack_trace = trace;
+    }
+    frame.result = .{ .trap = trap };
 }
 
 inline fn effectiveAddr(slots: [*]RawVal, addr_slot: u32, offset: u32, size: usize, mem: []const u8) ?u32 {

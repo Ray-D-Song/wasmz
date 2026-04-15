@@ -157,15 +157,20 @@ inline fn effectiveAddr(slots: [*]RawVal, addr_slot: Slot, offset: u32, size: us
 }
 
 inline fn trapReturn(frame: *DispatchState, code: core.TrapCode) void {
-    frame.result = .{ .trap = Trap.fromTrapCode(code) };
+    var trap = Trap.fromTrapCode(code);
+    if (frame.captureStackTrace()) |trace| {
+        trap.allocator = frame.allocator;
+        trap.stack_trace = trace;
+    }
+    frame.result = .{ .trap = trap };
 }
 
 inline fn UnsignedOf(comptime T: type) type {
     return std.meta.Int(.unsigned, @bitSizeOf(T));
 }
 
-inline fn trapFromTruncateError(err: helper.TruncateError) Trap {
-    return Trap.fromTrapCode(switch (err) {
+inline fn trapReturnTruncate(frame: *DispatchState, err: helper.TruncateError) void {
+    trapReturn(frame, switch (err) {
         error.NaN => .BadConversionToInteger,
         error.OutOfRange => .IntegerOverflow,
     });
@@ -1364,7 +1369,7 @@ pub fn handle_i32_trunc_f32_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
 
     const ops = readOps(encode.OpsDstSrc, ip);
     const result = helper.tryTruncateInto(i32, slots[ops.src].readAs(f32)) catch |err| {
-        frame.result = .{ .trap = trapFromTruncateError(err) };
+        trapReturnTruncate(frame, err);
         return;
     };
     slots[ops.dst] = RawVal.from(result);
@@ -1376,7 +1381,7 @@ pub fn handle_i32_trunc_f64_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
 
     const ops = readOps(encode.OpsDstSrc, ip);
     const result = helper.tryTruncateInto(i32, slots[ops.src].readAs(f64)) catch |err| {
-        frame.result = .{ .trap = trapFromTruncateError(err) };
+        trapReturnTruncate(frame, err);
         return;
     };
     slots[ops.dst] = RawVal.from(result);
@@ -1388,7 +1393,7 @@ pub fn handle_i64_trunc_f32_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
 
     const ops = readOps(encode.OpsDstSrc, ip);
     const result = helper.tryTruncateInto(i64, slots[ops.src].readAs(f32)) catch |err| {
-        frame.result = .{ .trap = trapFromTruncateError(err) };
+        trapReturnTruncate(frame, err);
         return;
     };
     slots[ops.dst] = RawVal.from(result);
@@ -1400,7 +1405,7 @@ pub fn handle_i64_trunc_f64_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
 
     const ops = readOps(encode.OpsDstSrc, ip);
     const result = helper.tryTruncateInto(i64, slots[ops.src].readAs(f64)) catch |err| {
-        frame.result = .{ .trap = trapFromTruncateError(err) };
+        trapReturnTruncate(frame, err);
         return;
     };
     slots[ops.dst] = RawVal.from(result);
@@ -1413,7 +1418,7 @@ pub fn handle_i32_trunc_f32_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
 
     const ops = readOps(encode.OpsDstSrc, ip);
     const result = helper.tryTruncateInto(u32, slots[ops.src].readAs(f32)) catch |err| {
-        frame.result = .{ .trap = trapFromTruncateError(err) };
+        trapReturnTruncate(frame, err);
         return;
     };
     slots[ops.dst] = RawVal.from(reinterpretUnsignedAsSigned(i32, result));
@@ -1425,7 +1430,7 @@ pub fn handle_i32_trunc_f64_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
 
     const ops = readOps(encode.OpsDstSrc, ip);
     const result = helper.tryTruncateInto(u32, slots[ops.src].readAs(f64)) catch |err| {
-        frame.result = .{ .trap = trapFromTruncateError(err) };
+        trapReturnTruncate(frame, err);
         return;
     };
     slots[ops.dst] = RawVal.from(reinterpretUnsignedAsSigned(i32, result));
@@ -1437,7 +1442,7 @@ pub fn handle_i64_trunc_f32_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
 
     const ops = readOps(encode.OpsDstSrc, ip);
     const result = helper.tryTruncateInto(u64, slots[ops.src].readAs(f32)) catch |err| {
-        frame.result = .{ .trap = trapFromTruncateError(err) };
+        trapReturnTruncate(frame, err);
         return;
     };
     slots[ops.dst] = RawVal.from(reinterpretUnsignedAsSigned(i64, result));
@@ -1449,7 +1454,7 @@ pub fn handle_i64_trunc_f64_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
 
     const ops = readOps(encode.OpsDstSrc, ip);
     const result = helper.tryTruncateInto(u64, slots[ops.src].readAs(f64)) catch |err| {
-        frame.result = .{ .trap = trapFromTruncateError(err) };
+        trapReturnTruncate(frame, err);
         return;
     };
     slots[ops.dst] = RawVal.from(reinterpretUnsignedAsSigned(i64, result));
