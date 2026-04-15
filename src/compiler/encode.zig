@@ -107,6 +107,9 @@ pub const OpsEqzJump = extern struct { src: Slot, _pad: u16 = 0, rel_target: i32
 /// i32_xxx_to_local: fused binop→local_set.
 pub const OpsBinopToLocal = extern struct { local: Slot, lhs: Slot, rhs: Slot };
 
+/// binop + local_tee: result written to both a stack slot and a local.
+pub const OpsBinopTeeLocal = extern struct { dst: Slot, local: Slot, lhs: Slot, rhs: Slot };
+
 /// i32_xxx_imm_to_local: fused const+binop→local_set (Candidate E, i32).
 pub const OpsBinopImmToLocal = extern struct { local: Slot, lhs: Slot, imm: i32 };
 
@@ -621,6 +624,29 @@ pub fn instrSize(op: Op) usize {
         .i64_shr_s_to_local,
         .i64_shr_u_to_local,
         => @sizeOf(OpsBinopToLocal),
+
+        // fused binop + local_tee
+        .i32_add_tee_local,
+        .i32_sub_tee_local,
+        .i32_mul_tee_local,
+        .i32_and_tee_local,
+        .i32_or_tee_local,
+        .i32_xor_tee_local,
+        .i32_shl_tee_local,
+        .i32_shr_s_tee_local,
+        .i32_shr_u_tee_local,
+        => @sizeOf(OpsBinopTeeLocal),
+
+        .i64_add_tee_local,
+        .i64_sub_tee_local,
+        .i64_mul_tee_local,
+        .i64_and_tee_local,
+        .i64_or_tee_local,
+        .i64_xor_tee_local,
+        .i64_shl_tee_local,
+        .i64_shr_s_tee_local,
+        .i64_shr_u_tee_local,
+        => @sizeOf(OpsBinopTeeLocal),
 
         // fused i32 binop-imm-to-local (Candidate E, i32)
         .i32_add_imm_to_local,
@@ -1252,6 +1278,25 @@ pub const HandlerTable = struct {
     i64_shl_to_local: Handler,
     i64_shr_s_to_local: Handler,
     i64_shr_u_to_local: Handler,
+    // Fused: binop + local_tee
+    i32_add_tee_local: Handler,
+    i32_sub_tee_local: Handler,
+    i32_mul_tee_local: Handler,
+    i32_and_tee_local: Handler,
+    i32_or_tee_local: Handler,
+    i32_xor_tee_local: Handler,
+    i32_shl_tee_local: Handler,
+    i32_shr_s_tee_local: Handler,
+    i32_shr_u_tee_local: Handler,
+    i64_add_tee_local: Handler,
+    i64_sub_tee_local: Handler,
+    i64_mul_tee_local: Handler,
+    i64_and_tee_local: Handler,
+    i64_or_tee_local: Handler,
+    i64_xor_tee_local: Handler,
+    i64_shl_tee_local: Handler,
+    i64_shr_s_tee_local: Handler,
+    i64_shr_u_tee_local: Handler,
     // fused binop-imm-to-local (Candidate E)
     i32_add_imm_to_local: Handler,
     i32_sub_imm_to_local: Handler,
@@ -2367,6 +2412,44 @@ pub fn encode(
                 });
             },
 
+            // ── Fused: binop + local_tee (i32) ───────────────────────
+            .i32_add_tee_local,
+            .i32_sub_tee_local,
+            .i32_mul_tee_local,
+            .i32_and_tee_local,
+            .i32_or_tee_local,
+            .i32_xor_tee_local,
+            .i32_shl_tee_local,
+            .i32_shr_s_tee_local,
+            .i32_shr_u_tee_local,
+            => |inst| {
+                writeOps(OpsBinopTeeLocal, ops_ptr, .{
+                    .dst = inst.dst,
+                    .local = inst.local,
+                    .lhs = inst.lhs,
+                    .rhs = inst.rhs,
+                });
+            },
+
+            // ── Fused: binop + local_tee (i64) ───────────────────────
+            .i64_add_tee_local,
+            .i64_sub_tee_local,
+            .i64_mul_tee_local,
+            .i64_and_tee_local,
+            .i64_or_tee_local,
+            .i64_xor_tee_local,
+            .i64_shl_tee_local,
+            .i64_shr_s_tee_local,
+            .i64_shr_u_tee_local,
+            => |inst| {
+                writeOps(OpsBinopTeeLocal, ops_ptr, .{
+                    .dst = inst.dst,
+                    .local = inst.local,
+                    .lhs = inst.lhs,
+                    .rhs = inst.rhs,
+                });
+            },
+
             // ── Fused: binop-imm-to-local (Candidate E, i32) ──────────────
             .i32_add_imm_to_local,
             .i32_sub_imm_to_local,
@@ -3089,6 +3172,25 @@ fn handlerFor(op: Op, t: *const HandlerTable) Handler {
         .i64_shl_to_local => t.i64_shl_to_local,
         .i64_shr_s_to_local => t.i64_shr_s_to_local,
         .i64_shr_u_to_local => t.i64_shr_u_to_local,
+        // fused binop + local_tee
+        .i32_add_tee_local => t.i32_add_tee_local,
+        .i32_sub_tee_local => t.i32_sub_tee_local,
+        .i32_mul_tee_local => t.i32_mul_tee_local,
+        .i32_and_tee_local => t.i32_and_tee_local,
+        .i32_or_tee_local => t.i32_or_tee_local,
+        .i32_xor_tee_local => t.i32_xor_tee_local,
+        .i32_shl_tee_local => t.i32_shl_tee_local,
+        .i32_shr_s_tee_local => t.i32_shr_s_tee_local,
+        .i32_shr_u_tee_local => t.i32_shr_u_tee_local,
+        .i64_add_tee_local => t.i64_add_tee_local,
+        .i64_sub_tee_local => t.i64_sub_tee_local,
+        .i64_mul_tee_local => t.i64_mul_tee_local,
+        .i64_and_tee_local => t.i64_and_tee_local,
+        .i64_or_tee_local => t.i64_or_tee_local,
+        .i64_xor_tee_local => t.i64_xor_tee_local,
+        .i64_shl_tee_local => t.i64_shl_tee_local,
+        .i64_shr_s_tee_local => t.i64_shr_s_tee_local,
+        .i64_shr_u_tee_local => t.i64_shr_u_tee_local,
         // fused binop-imm-to-local (E)
         .i32_add_imm_to_local => t.i32_add_imm_to_local,
         .i32_sub_imm_to_local => t.i32_sub_imm_to_local,
