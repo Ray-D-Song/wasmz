@@ -133,6 +133,17 @@ pub fn LocalInplace(comptime T: type) type {
     };
 }
 
+/// Fused: const + local_set → write constant directly to local.
+/// Same layout as LocalInplace but different semantic name for clarity.
+pub fn ConstToLocal(comptime T: type) type {
+    return struct {
+        local: Slot,
+        value: T,
+
+        pub const ValueType = T;
+    };
+}
+
 /// Fused: const + compare + br_if → compare_imm_jump_if_false (Candidate G).
 /// Jumps to `target` when comparison is FALSE.
 /// i32: `{ lhs: Slot, imm: i32, target: u32 }`.
@@ -635,6 +646,20 @@ pub const Op = union(enum) {
     i64_shl_local_inplace: LocalInplace(i64),
     i64_shr_s_local_inplace: LocalInplace(i64),
     i64_shr_u_local_inplace: LocalInplace(i64),
+
+    // ── Fused: const + local_set → const_to_local (just write constant to local) ──
+    i32_const_to_local: ConstToLocal(i32),
+    i64_const_to_local: ConstToLocal(i64),
+
+    // ── Fused: global_get + local_set → global_get_to_local ──
+    global_get_to_local: struct {
+        local: Slot,
+        global_idx: u32,
+    },
+
+    // ── Fused: i32/i64 load + local_set → load_to_local ──
+    i32_load_to_local: struct { local: Slot, addr: Slot, offset: u32 },
+    i64_load_to_local: struct { local: Slot, addr: Slot, offset: u32 },
 
     // ── Fused: compare-imm + jump_if_false (G: const + compare + br_if) ─────
     // i32 compare-imm-jump

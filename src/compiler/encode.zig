@@ -119,6 +119,18 @@ pub const OpsLocalInplace = extern struct { local: Slot, _pad: u16 = 0, imm: i32
 /// i64_xxx_local_inplace: fused local_get+binop_imm+local_set same local (Candidate H, i64).
 pub const OpsLocalInplace64 = extern struct { local: Slot, _pad: [6]u8 = [_]u8{0} ** 6, imm: i64 };
 
+/// i32_const_to_local: fused const_i32 + local_set.
+pub const OpsConstToLocal32 = extern struct { local: Slot, _pad: u16 = 0, value: i32 };
+
+/// i64_const_to_local: fused const_i64 + local_set.
+pub const OpsConstToLocal64 = extern struct { local: Slot, _pad: [6]u8 = [_]u8{0} ** 6, value: i64 };
+
+/// global_get_to_local: fused global_get + local_set.
+pub const OpsGlobalGetToLocal = extern struct { local: Slot, _pad: u16 = 0, global_idx: u32 };
+
+/// load_to_local: fused load + local_set (same layout for i32/i64).
+pub const OpsLoadToLocal = extern struct { local: Slot, addr: Slot, offset: u32 };
+
 /// i32_xxx_imm_jump_if_false: fused const+compare+br_if (Candidate G, i32).
 pub const OpsCompareImmJump = extern struct { lhs: Slot, _pad: u16 = 0, imm: i32, rel_target: i32 };
 
@@ -657,6 +669,22 @@ pub fn instrSize(op: Op) usize {
         .i64_shr_s_local_inplace,
         .i64_shr_u_local_inplace,
         => @sizeOf(OpsLocalInplace64),
+
+        // fused const-to-local
+        .i32_const_to_local,
+        => @sizeOf(OpsConstToLocal32),
+
+        .i64_const_to_local,
+        => @sizeOf(OpsConstToLocal64),
+
+        // fused global_get-to-local
+        .global_get_to_local,
+        => @sizeOf(OpsGlobalGetToLocal),
+
+        // fused load-to-local
+        .i32_load_to_local,
+        .i64_load_to_local,
+        => @sizeOf(OpsLoadToLocal),
 
         // fused i32 compare-imm-jump (Candidate G, i32)
         .i32_eq_imm_jump_if_false,
@@ -1262,6 +1290,14 @@ pub const HandlerTable = struct {
     i64_shl_local_inplace: Handler,
     i64_shr_s_local_inplace: Handler,
     i64_shr_u_local_inplace: Handler,
+    // fused const-to-local
+    i32_const_to_local: Handler,
+    i64_const_to_local: Handler,
+    // fused global_get-to-local
+    global_get_to_local: Handler,
+    // fused load-to-local
+    i32_load_to_local: Handler,
+    i64_load_to_local: Handler,
     // fused compare-imm-jump (Candidate G)
     i32_eq_imm_jump_if_false: Handler,
     i32_ne_imm_jump_if_false: Handler,
@@ -2401,6 +2437,51 @@ pub fn encode(
                 });
             },
 
+            // ── Fused: const-to-local ───────────────────────────────────────
+            .i32_const_to_local,
+            => |inst| {
+                writeOps(OpsConstToLocal32, ops_ptr, .{
+                    .local = inst.local,
+                    .value = inst.value,
+                });
+            },
+
+            .i64_const_to_local,
+            => |inst| {
+                writeOps(OpsConstToLocal64, ops_ptr, .{
+                    .local = inst.local,
+                    .value = inst.value,
+                });
+            },
+
+            // ── Fused: global_get-to-local ────────────────────────────────────
+            .global_get_to_local,
+            => |inst| {
+                writeOps(OpsGlobalGetToLocal, ops_ptr, .{
+                    .local = inst.local,
+                    .global_idx = inst.global_idx,
+                });
+            },
+
+            // ── Fused: load-to-local ─────────────────────────────────────────
+            .i32_load_to_local,
+            => |inst| {
+                writeOps(OpsLoadToLocal, ops_ptr, .{
+                    .local = inst.local,
+                    .addr = inst.addr,
+                    .offset = inst.offset,
+                });
+            },
+
+            .i64_load_to_local,
+            => |inst| {
+                writeOps(OpsLoadToLocal, ops_ptr, .{
+                    .local = inst.local,
+                    .addr = inst.addr,
+                    .offset = inst.offset,
+                });
+            },
+
             // ── Fused: compare-imm-jump (Candidate G, i32) ─────────────────
             .i32_eq_imm_jump_if_false,
             .i32_ne_imm_jump_if_false,
@@ -3046,6 +3127,14 @@ fn handlerFor(op: Op, t: *const HandlerTable) Handler {
         .i64_shl_local_inplace => t.i64_shl_local_inplace,
         .i64_shr_s_local_inplace => t.i64_shr_s_local_inplace,
         .i64_shr_u_local_inplace => t.i64_shr_u_local_inplace,
+        // fused const-to-local
+        .i32_const_to_local => t.i32_const_to_local,
+        .i64_const_to_local => t.i64_const_to_local,
+        // fused global_get-to-local
+        .global_get_to_local => t.global_get_to_local,
+        // fused load-to-local
+        .i32_load_to_local => t.i32_load_to_local,
+        .i64_load_to_local => t.i64_load_to_local,
         // fused compare-imm-jump (G)
         .i32_eq_imm_jump_if_false => t.i32_eq_imm_jump_if_false,
         .i32_ne_imm_jump_if_false => t.i32_ne_imm_jump_if_false,
