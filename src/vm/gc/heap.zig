@@ -22,12 +22,12 @@ const MemoryBudget = core.MemoryBudget;
 const MIN_ALIGNMENT: u32 = 8;
 const HEADER_SIZE: u32 = @sizeOf(GcHeader);
 
-/// Default initial heap size (4 KB = one page).
+/// Default initial heap size (1 KB).
 /// Chosen as a conservative default for WASM GC workloads:
 ///   - Matches common OS page size for efficient memory management
 ///   - Small enough to not waste memory for simple modules
 ///   - Grows exponentially (2x) when needed
-pub const INITIAL_HEAP_SIZE: u32 = 4 * 1024;
+pub const INITIAL_HEAP_SIZE: u32 = 1 * 1024;
 
 /// Sentinel value for null/invalid indices in the free list.
 pub const NULL_INDEX: u32 = 0;
@@ -86,6 +86,8 @@ pub const GcHeap = struct {
     free_list: FreeList,
     /// Total bytes currently in use (for statistics).
     used: u32,
+    /// Number of allocations performed by this heap.
+    alloc_count: usize = 0,
 
     const Self = @This();
 
@@ -130,6 +132,7 @@ pub const GcHeap = struct {
 
         const aligned_size = alignUp(size);
         const total_size = aligned_size;
+        self.alloc_count += 1;
 
         if (self.free_list.isEmpty()) {
             const result = self.bumpAlloc(total_size) orelse return null;

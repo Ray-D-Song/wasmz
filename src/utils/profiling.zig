@@ -26,6 +26,17 @@ pub const CallProfiling = struct {
     slots_len_sum: u64 = 0,
     /// Number of calls that triggered lazy compilation
     lazy_compiles: u64 = 0,
+    arity_0: u64 = 0,
+    arity_1: u64 = 0,
+    arity_2: u64 = 0,
+    arity_3: u64 = 0,
+    arity_4: u64 = 0,
+    arity_5: u64 = 0,
+    arity_6: u64 = 0,
+    arity_7: u64 = 0,
+    arity_8: u64 = 0,
+    arity_gt8: u64 = 0,
+    resolved_hits: u64 = 0,
 
     pub fn total(self: CallProfiling) u64 {
         return self.ns_read_ops + self.ns_ensure_compiled + self.ns_alloc_slots + self.ns_copy_args + self.ns_push_dispatch;
@@ -139,6 +150,8 @@ pub fn printReport() void {
             \\  TOTAL measured         : {d:>10} ns
             \\  avg per call           : {d:.1} ns
             \\  avg slots_len          : {d:.1}
+            \\  resolved hits          : {d}
+            \\  arity histogram        : 0={d} 1={d} 2={d} 3={d} 4={d} 5={d} 6={d} 7={d} 8={d} >8={d}
             \\
         , .{
             c.calls,
@@ -160,6 +173,17 @@ pub fn printReport() void {
             t,
             if (c.calls > 0) @as(f64, @floatFromInt(t)) / @as(f64, @floatFromInt(c.calls)) else 0.0,
             if (c.calls > 0) @as(f64, @floatFromInt(c.slots_len_sum)) / @as(f64, @floatFromInt(c.calls)) else 0.0,
+            c.resolved_hits,
+            c.arity_0,
+            c.arity_1,
+            c.arity_2,
+            c.arity_3,
+            c.arity_4,
+            c.arity_5,
+            c.arity_6,
+            c.arity_7,
+            c.arity_8,
+            c.arity_gt8,
         });
     }
 

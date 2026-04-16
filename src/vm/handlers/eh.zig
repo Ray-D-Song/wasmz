@@ -2,12 +2,12 @@
 ///
 /// throw, throw_ref, try_table_enter, try_table_leave + dispatchException helper
 const std = @import("std");
-const ir = @import("../compiler/ir.zig");
-const encode = @import("../compiler/encode.zig");
-const dispatch = @import("dispatch.zig");
+const ir = @import("../../compiler/ir.zig");
+const encode = @import("../../compiler/encode/encode.zig");
+const dispatch = @import("../dispatch.zig");
 const core = @import("core");
-const gc_mod = @import("gc/root.zig");
-const store_mod = @import("../wasmz/store.zig");
+const gc_mod = @import("../gc/root.zig");
+const store_mod = @import("../../wasmz/store.zig");
 
 const Allocator = std.mem.Allocator;
 const RawVal = dispatch.RawVal;
@@ -45,7 +45,12 @@ inline fn stride(comptime OpsT: type) usize {
 }
 
 inline fn trapReturn(frame: *DispatchState, code: core.TrapCode) void {
-    frame.result = .{ .trap = Trap.fromTrapCode(code) };
+    var trap = Trap.fromTrapCode(code);
+    if (frame.captureStackTrace()) |trace| {
+        trap.allocator = frame.allocator;
+        trap.stack_trace = trace;
+    }
+    frame.result = .{ .trap = trap };
 }
 
 fn collectGcRoots(
@@ -124,7 +129,7 @@ fn dispatchException(
                     const dst_slots = tgt_func.eh_dst_slots[dst_start .. dst_start + n];
                     var i: u32 = 0;
                     while (i < n) : (i += 1) {
-                        tgt_slots[dst_slots[i]] = store.gc_heap.exceptionArg(exn_ref, i);
+                        tgt_slots[dst_slots[i]] = store.gc_heap.?.exceptionArg(exn_ref, i);
                     }
                 },
                 .catch_tag_ref => {
@@ -133,7 +138,7 @@ fn dispatchException(
                     const dst_slots = tgt_func.eh_dst_slots[dst_start .. dst_start + n];
                     var i: u32 = 0;
                     while (i < n) : (i += 1) {
-                        tgt_slots[dst_slots[i]] = store.gc_heap.exceptionArg(exn_ref, i);
+                        tgt_slots[dst_slots[i]] = store.gc_heap.?.exceptionArg(exn_ref, i);
                     }
                     tgt_slots[h.dst_ref] = RawVal.fromGcRef(exn_ref);
                 },
@@ -157,11 +162,11 @@ fn dispatchException(
 
 // ── throw ────────────────────────────────────────────────────────────────────
 
-pub fn handle_throw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
-    const ops = readOps(encode.OpsThrow, ip);
+pub fn handle_throw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.ops.OpsThrow, ip);
 
     // Read inline arg slots directly from the bytecode stream (zero pointer chasing)
-    const arg_slots = encode.readInlineArgs(encode.OpsThrow, ip, ops.args_len);
+    const arg_slots = encode.readInlineArgs(encode.ops.OpsThrow, ip, ops.args_len);
 
     const exc_args = frame.allocator.alloc(RawVal, arg_slots.len) catch {
         trapReturn(frame, .OutOfMemory);
@@ -173,7 +178,7 @@ pub fn handle_throw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *co
 
     // Allocate exception on GC heap
     const exn_ref: GcRef = blk: {
-        if (env.store.gc_heap.allocException(ops.tag_index, exc_args)) |r| {
+        if (env.store.gc_heap.?.allocException(ops.tag_index, exc_args)) |r| {
             frame.allocator.free(exc_args);
             break :blk r;
         }
@@ -182,9 +187,9 @@ pub fn handle_throw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *co
             trapReturn(frame, .OutOfMemory);
             return;
         };
-        env.store.gc_heap.collect(roots, env.composite_types, env.struct_layouts, env.array_layouts);
+        env.store.gc_heap.?.collect(roots, env.composite_types, env.struct_layouts, env.array_layouts);
         frame.allocator.free(roots);
-        const ref = env.store.gc_heap.allocException(ops.tag_index, exc_args) orelse {
+        const ref = env.store.gc_heap.?.allocException(ops.tag_index, exc_args) orelse {
             frame.allocator.free(exc_args);
             trapReturn(frame, .OutOfMemory);
             return;
@@ -196,7 +201,7 @@ pub fn handle_throw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *co
     if (dispatchException(ops.tag_index, exn_ref, frame, env.store, env)) {
         // Handler found, dispatch to the handler target
         const cur = frame.callStackTop();
-        dispatch.dispatch(cur.ip, cur.slots.ptr, frame, env);
+        dispatch.dispatch(cur.ip, cur.slots.ptr, frame, env, r0, fp0);
     } else {
         trapReturn(frame, .UnhandledException);
     }
@@ -204,19 +209,19 @@ pub fn handle_throw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *co
 
 // ── throw_ref ────────────────────────────────────────────────────────────────
 
-pub fn handle_throw_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
-    const ops = readOps(encode.OpsThrowRef, ip);
+pub fn handle_throw_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.ops.OpsThrowRef, ip);
 
     const exn_ref = slots[ops.ref].readAsGcRef();
     if (exn_ref.asHeapIndex() == null) {
         trapReturn(frame, .NullReference);
         return;
     }
-    const tag_index = env.store.gc_heap.exceptionTagIndex(exn_ref);
+    const tag_index = env.store.gc_heap.?.exceptionTagIndex(exn_ref);
 
     if (dispatchException(tag_index, exn_ref, frame, env.store, env)) {
         const cur = frame.callStackTop();
-        dispatch.dispatch(cur.ip, cur.slots.ptr, frame, env);
+        dispatch.dispatch(cur.ip, cur.slots.ptr, frame, env, r0, fp0);
     } else {
         trapReturn(frame, .UnhandledException);
     }
@@ -224,8 +229,8 @@ pub fn handle_throw_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
 
 // ── try_table_enter ──────────────────────────────────────────────────────────
 
-pub fn handle_try_table_enter(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
-    const ops = readOps(encode.OpsTryTableEnter, ip);
+pub fn handle_try_table_enter(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.ops.OpsTryTableEnter, ip);
 
     frame.eh_stack.append(frame.allocator, .{
         .call_stack_depth = frame.call_depth,
@@ -236,16 +241,16 @@ pub fn handle_try_table_enter(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
         trapReturn(frame, .OutOfMemory);
         return;
     };
-    dispatch.next(ip, stride(encode.OpsTryTableEnter), slots, frame, env);
+    dispatch.next(ip, stride(encode.ops.OpsTryTableEnter), slots, frame, env, r0, fp0);
 }
 
 // ── try_table_leave ──────────────────────────────────────────────────────────
 
-pub fn handle_try_table_leave(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv) callconv(.c) void {
-    const ops = readOps(encode.OpsTryTableLeave, ip);
+pub fn handle_try_table_leave(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.ops.OpsTryTableLeave, ip);
 
     _ = frame.eh_stack.pop();
 
-    const target_ip: [*]u8 = @ptrFromInt(@as(usize, @intCast(@as(isize, @intCast(@intFromPtr(ip))) + ops.rel_target)));
-    dispatch.dispatch(target_ip, slots, frame, env);
+    const target_ip: [*]u8 = @ptrFromInt(@intFromPtr(ip) +% @as(usize, @bitCast(@as(isize, ops.rel_target))));
+    dispatch.dispatch(target_ip, slots, frame, env, r0, fp0);
 }

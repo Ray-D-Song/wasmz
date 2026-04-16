@@ -8,16 +8,21 @@ const gc_mod = @import("../../vm/gc/root.zig");
 
 const Store = store_mod.Store;
 
-test "Store initializes GC heap" {
+test "Store initializes GC heap lazily" {
     var engine = try engine_pkg.Engine.init(testing.allocator, config_pkg.Config{});
     defer engine.deinit();
 
     var store = try Store.init(testing.allocator, engine);
     defer store.deinit();
 
-    try testing.expect(store.gc_heap.totalSize() >= gc_mod.INITIAL_HEAP_SIZE);
+    // GC heap should not be initialized until needed
+    try testing.expect(store.gc_heap == null);
 
-    const ref = store.gc_heap.alloc(32) orelse return error.AllocationFailed;
+    // Initialize GC heap on demand
+    const gc_heap = try store.ensureGcHeap();
+    try testing.expect(gc_heap.totalSize() >= gc_mod.INITIAL_HEAP_SIZE);
+
+    const ref = gc_heap.alloc(32) orelse return error.AllocationFailed;
     try testing.expect(ref.isHeapRef());
     try testing.expect(ref.asHeapIndex().? >= 8);
 }

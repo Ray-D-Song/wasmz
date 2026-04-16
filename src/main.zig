@@ -31,7 +31,9 @@ const Store = wasmz.Store;
 const Instance = wasmz.Instance;
 const RawVal = wasmz.RawVal;
 const Linker = wasmz.Linker;
+const op_counts = wasmz.op_counts;
 
+const SMART_SIZE_THRESHOLD: u64 = 3 * 1024 * 1024;
 pub fn main() void {
     if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
         var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -57,6 +59,16 @@ fn run(allocator: std.mem.Allocator) void {
         else => fatal("Failed to parse args: {s}", .{@errorName(err)}),
     };
     defer cli_args.deinit(allocator);
+
+    const phase_diag_enabled = blk: {
+        const value = std.process.getEnvVarOwned(allocator, "WASMZ_PHASE_DIAG") catch break :blk false;
+        allocator.free(value);
+        break :blk true;
+    };
+    var phase_diag = stats.PhaseDiagCtx{
+        .enabled = phase_diag_enabled,
+        .t0_ns = if (phase_diag_enabled) std.time.nanoTimestamp() else 0,
+    };
 
     // ── mem-trace helpers ─────────────────────────────────────────────────────
     var trace_prev: usize = 0;
@@ -90,13 +102,19 @@ fn run(allocator: std.mem.Allocator) void {
     };
     defer mmap.unmap(mapped);
     const wasm_bytes = mapped.data;
+    if (phase_diag.enabled) phase_diag.after_mmap_ns = std.time.nanoTimestamp();
 
     tracePhase(cli_args.mem_trace, &trace_prev, "baseline (file mapped)");
+
+    const use_eager_compile = if (cli_args.smart_compile)
+        wasm_bytes.len < SMART_SIZE_THRESHOLD
+    else
+        cli_args.eager_compile;
 
     var engine = Engine.init(allocator, .{
         .legacy_exceptions = cli_args.legacy_exceptions,
         .mem_limit_bytes = if (cli_args.mem_limit_mb) |mb| mb * 1024 * 1024 else null,
-        .eager_compile = cli_args.eager_compile,
+        .eager_compile = use_eager_compile,
     }) catch |err| fatal("Failed to initialize engine: {s}", .{@errorName(err)});
     defer engine.deinit();
 
@@ -106,6 +124,7 @@ fn run(allocator: std.mem.Allocator) void {
         var mod = m;
         mod.deinit();
     };
+    if (phase_diag.enabled) phase_diag.after_compile_ns = std.time.nanoTimestamp();
 
     tracePhase(cli_args.mem_trace, &trace_prev, "after compile");
 
@@ -127,12 +146,14 @@ fn run(allocator: std.mem.Allocator) void {
         wasi_host.?.addToLinker(&linker, allocator) catch |err|
             fatal("Failed to add WASI to linker: {s}", .{@errorName(err)});
     }
+    if (phase_diag.enabled) phase_diag.after_store_ns = std.time.nanoTimestamp();
 
     var instance = Instance.init(&store, arc_module.retain(), linker) catch |err| {
         wasmz.printInitError(arc_module, linker, err);
         std.process.exit(1);
     };
     instance.mem_trace = cli_args.mem_trace;
+    if (phase_diag.enabled) phase_diag.after_instantiate_ns = std.time.nanoTimestamp();
     tracePhase(cli_args.mem_trace, &trace_prev, "after instantiate");
 
     // Register a single combined on-exit callback (proc_exit path) that
@@ -144,35 +165,131 @@ fn run(allocator: std.mem.Allocator) void {
         .instance = &instance,
         .mem_trace = cli_args.mem_trace,
         .prev_rss = &trace_prev,
+        .phase_diag = if (phase_diag.enabled) &phase_diag else null,
     };
     if (wasi_host) |*h| h.setOnExit(stats.onExitCombined, &on_exit_ctx);
 
     defer {
         if (cli_args.mem_stats) stats.printMemStats(&store, &instance);
+        // Print op counts to stderr — only compiled in when profiling is enabled
+        if (wasmz.op_counts_enabled) {
+            const oc = op_counts;
+            if (oc.total > 0) {
+                std.debug.print(
+                    \\=== Runtime op counts ===
+                    \\  copy              : {d:>12}  ({d:.1}%)
+                    \\  local_get         : {d:>12}  ({d:.1}%)
+                    \\  local_set         : {d:>12}  ({d:.1}%)
+                    \\  copy_jump_if_nz   : {d:>12}  ({d:.1}%)
+                    \\  jump              : {d:>12}  ({d:.1}%)
+                    \\  call_ret          : {d:>12}  ({d:.1}%)
+                    \\  global            : {d:>12}  ({d:.1}%)
+                    \\  constant          : {d:>12}  ({d:.1}%)
+                    \\  imm               : {d:>12}  ({d:.1}%)
+                    \\  imm_r             : {d:>12}  ({d:.1}%)
+                    \\
+                , .{
+                    oc.copy,            pct(oc.copy, oc.total),
+                    oc.local_get,       pct(oc.local_get, oc.total),
+                    oc.local_set,       pct(oc.local_set, oc.total),
+                    oc.copy_jump_if_nz, pct(oc.copy_jump_if_nz, oc.total),
+                    oc.jump,            pct(oc.jump, oc.total),
+                    oc.call_ret,        pct(oc.call_ret, oc.total),
+                    oc.global,          pct(oc.global, oc.total),
+                    oc.constant,        pct(oc.constant, oc.total),
+                    oc.imm,             pct(oc.imm, oc.total),
+                    oc.imm_r,           pct(oc.imm_r, oc.total),
+                });
+                std.debug.print(
+                    \\  unary             : {d:>12}  ({d:.1}%)
+                    \\  conv              : {d:>12}  ({d:.1}%)
+                    \\  cmp               : {d:>12}  ({d:.1}%)
+                    \\  binop             : {d:>12}  ({d:.1}%)
+                    \\  ref_select        : {d:>12}  ({d:.1}%)
+                    \\  mem_table         : {d:>12}  ({d:.1}%)
+                    \\  simd              : {d:>12}  ({d:.1}%)
+                    \\  atomic            : {d:>12}  ({d:.1}%)
+                    \\  trap_unreachable  : {d:>12}  ({d:.1}%)
+                    \\  misc              : {d:>12}  ({d:.1}%)
+                    \\
+                , .{
+                    oc.unary,            pct(oc.unary, oc.total),
+                    oc.conv,             pct(oc.conv, oc.total),
+                    oc.cmp,              pct(oc.cmp, oc.total),
+                    oc.binop,            pct(oc.binop, oc.total),
+                    oc.ref_select,       pct(oc.ref_select, oc.total),
+                    oc.mem_table,        pct(oc.mem_table, oc.total),
+                    oc.simd,             pct(oc.simd, oc.total),
+                    oc.atomic,           pct(oc.atomic, oc.total),
+                    oc.trap_unreachable, pct(oc.trap_unreachable, oc.total),
+                    oc.misc,             pct(oc.misc, oc.total),
+                });
+                std.debug.print(
+                    \\  --- Fused local ops ---
+                    \\  i32_to_local    : {d:>9}  ({d:.1}%)
+                    \\  i64_to_local    : {d:>9}  ({d:.1}%)
+                    \\  i32_imm_to_local: {d:>6}  ({d:.1}%)
+                    \\  i64_imm_to_local: {d:>6}  ({d:.1}%)
+                    \\  i32_local_inplace: {d:>5}  ({d:.1}%)
+                    \\  i64_local_inplace: {d:>5}  ({d:.1}%)
+                    \\  const_to_local : {d:>9}  ({d:.1}%)
+                    \\  load_to_local  : {d:>9}  ({d:.1}%)
+                    \\  global_to_local: {d:>9}  ({d:.1}%)
+                    \\  tee_local      : {d:>9}  ({d:.1}%)
+                    \\  cmp_to_local   : {d:>9}  ({d:.1}%)
+                    \\  --- Dispatch overhead ---
+                    \\  dispatch_dispatch : {d:>9}  ({d:.1}%)
+                    \\  dispatch_next     : {d:>9}  ({d:.1}%)
+                    \\  TOTAL             : {d:>12}
+                    \\
+                , .{
+                    oc.i32_to_local,      pct(oc.i32_to_local, oc.total),
+                    oc.i64_to_local,      pct(oc.i64_to_local, oc.total),
+                    oc.i32_imm_to_local,  pct(oc.i32_imm_to_local, oc.total),
+                    oc.i64_imm_to_local,  pct(oc.i64_imm_to_local, oc.total),
+                    oc.i32_local_inplace, pct(oc.i32_local_inplace, oc.total),
+                    oc.i64_local_inplace, pct(oc.i64_local_inplace, oc.total),
+                    oc.const_to_local,    pct(oc.const_to_local, oc.total),
+                    oc.load_to_local,     pct(oc.load_to_local, oc.total),
+                    oc.global_to_local,   pct(oc.global_to_local, oc.total),
+                    oc.tee_local,         pct(oc.tee_local, oc.total),
+                    oc.cmp_to_local,      pct(oc.cmp_to_local, oc.total),
+                    oc.dispatch_dispatch, pct(oc.dispatch_dispatch, oc.total),
+                    oc.dispatch_next,     pct(oc.dispatch_next, oc.total),
+                    oc.total,
+                });
+            }
+        } // if (wasmz.op_counts_enabled)
         instance.deinit();
     }
 
     if (instance.runStartFunction() catch |err|
         fatal("Failed to run start function: {s}", .{@errorName(err)})) |result|
     {
-        if (result == .trap) fatalTrap(result.trap, allocator, "start function trapped");
+        if (result == .trap) fatalTrap(result.trap, allocator, arc_module.value, "start function trapped");
     }
+    if (phase_diag.enabled) phase_diag.after_run_start_ns = std.time.nanoTimestamp();
     tracePhase(cli_args.mem_trace, &trace_prev, "after runStart");
 
     if (cli_args.reactor) {
         if (instance.initializeReactor() catch |err|
             fatal("Failed to call _initialize: {s}", .{@errorName(err)})) |res|
         {
-            if (res == .trap) fatalTrap(res.trap, allocator, "_initialize trapped");
+            if (res == .trap) fatalTrap(res.trap, allocator, arc_module.value, "_initialize trapped");
         }
     }
 
     if (cli_args.func_name == null) {
         if (arc_module.value.exports.get("_start")) |_| {
             tracePhase(cli_args.mem_trace, &trace_prev, "before _start");
+            if (phase_diag.enabled) phase_diag.enter_start_ns = std.time.nanoTimestamp();
             const result = instance.call("_start", &.{}) catch |err|
                 fatal("Failed to call _start: {s}", .{@errorName(err)});
-            if (result == .trap) fatalTrap(result.trap, allocator, "trap");
+            if (result == .trap) fatalTrap(result.trap, allocator, arc_module.value, "trap");
+            if (phase_diag.enabled) {
+                phase_diag.after_start_ns = std.time.nanoTimestamp();
+                stats.printPhaseDiag(&phase_diag, "_start return");
+            }
             tracePhase(cli_args.mem_trace, &trace_prev, "after _start");
             return;
         }
@@ -206,7 +323,7 @@ fn run(allocator: std.mem.Allocator) void {
 
     switch (result) {
         .ok => |val| if (val) |v| stdout.print("{d}\n", .{v.readAs(i32)}) catch {},
-        .trap => |t| fatalTrap(t, allocator, "trap"),
+        .trap => |t| fatalTrap(t, allocator, arc_module.value, "trap"),
     }
 }
 
@@ -221,6 +338,7 @@ const CliArgs = struct {
     mem_trace: bool,
     mem_limit_mb: ?u64,
     reactor: bool,
+    smart_compile: bool,
     eager_compile: bool,
     _parsed: arg_parse.Parsed,
     _wasm_args_parsed: [][]const u8,
@@ -232,6 +350,7 @@ const CliArgs = struct {
         arg_parse.Flag.boolFlag("mem-stats", "Print memory usage stats after execution"),
         arg_parse.Flag.boolFlag("mem-trace", "Print RSS snapshots at each execution phase"),
         arg_parse.Flag.boolFlag("reactor", "Initialize as reactor before calling --func"),
+        arg_parse.Flag.boolFlag("smart-compile", "Smart compile: eager < 3MB, lazy >= 3MB (default)"),
         arg_parse.Flag.boolFlag("eager-compile", "Compile all functions eagerly"),
         arg_parse.Flag.stringFlag("args", "Arguments to pass to the WASM module"),
         arg_parse.Flag.stringFlag("func", "Name of exported function to call"),
@@ -313,6 +432,7 @@ const CliArgs = struct {
             .mem_trace = parsed.getBool("mem-trace"),
             .mem_limit_mb = mem_limit_mb,
             .reactor = parsed.getBool("reactor"),
+            .smart_compile = parsed.getBool("smart-compile"),
             .eager_compile = parsed.getBool("eager-compile"),
             .wasi_args = wasi_args,
             .passthrough = passthrough,
@@ -351,9 +471,46 @@ fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
     std.process.exit(1);
 }
 
-fn fatalTrap(trap: wasmz.Trap, allocator: std.mem.Allocator, comptime context: []const u8) noreturn {
+inline fn pct(part: u64, total: u64) f64 {
+    if (total == 0) return 0.0;
+    return @as(f64, @floatFromInt(part)) / @as(f64, @floatFromInt(total)) * 100.0;
+}
+
+fn fatalTrap(trap: wasmz.Trap, allocator: std.mem.Allocator, module: *const Module, comptime context: []const u8) noreturn {
+    const red = "\x1b[31m";
+    const reset = "\x1b[0m";
     const msg = trap.allocPrint(allocator) catch "?";
-    std.debug.print("error: {s}: {s}\n", .{ context, msg });
+    std.debug.print("{s}{s}: {s}{s}\n", .{ red, context, msg, reset });
+    if (trap.stack_trace) |frames| {
+        std.debug.print("wasm backtrace:\n", .{});
+        for (frames, 0..) |frame, i| {
+            const func_name = blk: {
+                if (frame.func_idx < module.func_names.len) {
+                    if (module.func_names[frame.func_idx]) |name| break :blk name;
+                }
+                // Fall back to export name reverse-lookup
+                var iter = module.exports.iterator();
+                while (iter.next()) |entry| {
+                    switch (entry.value_ptr.*) {
+                        .function_index => |idx| {
+                            if (idx == frame.func_idx) break :blk entry.key_ptr.*;
+                        },
+                        else => {},
+                    }
+                }
+                // Fall back to import name
+                if (frame.func_idx < module.imported_funcs.len) {
+                    break :blk module.imported_funcs[frame.func_idx].func_name;
+                }
+                break :blk null;
+            };
+            if (func_name) |name| {
+                std.debug.print("  {d}: [func {d}] {s} +0x{x}\n", .{ i, frame.func_idx, name, frame.code_offset });
+            } else {
+                std.debug.print("  {d}: [func {d}] <unknown> +0x{x}\n", .{ i, frame.func_idx, frame.code_offset });
+            }
+        }
+    }
     std.process.exit(1);
 }
 

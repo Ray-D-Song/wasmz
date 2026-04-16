@@ -17,6 +17,57 @@ pub const MemTraceCtx = struct {
     prev_rss: *usize,
 };
 
+pub const PhaseDiagCtx = struct {
+    enabled: bool = false,
+    t0_ns: i128 = 0,
+    after_mmap_ns: i128 = 0,
+    after_compile_ns: i128 = 0,
+    after_store_ns: i128 = 0,
+    after_instantiate_ns: i128 = 0,
+    after_run_start_ns: i128 = 0,
+    enter_start_ns: i128 = 0,
+    after_start_ns: i128 = 0,
+};
+
+inline fn nsToMs(delta_ns: i128) f64 {
+    if (delta_ns <= 0) return 0.0;
+    return @as(f64, @floatFromInt(delta_ns)) / 1_000_000.0;
+}
+
+pub fn printPhaseDiag(ctx: *const PhaseDiagCtx, reason: []const u8) void {
+    if (!ctx.enabled) return;
+
+    const now_ns = std.time.nanoTimestamp();
+    const mmap_done = if (ctx.after_mmap_ns != 0) ctx.after_mmap_ns else now_ns;
+    const compile_done = if (ctx.after_compile_ns != 0) ctx.after_compile_ns else now_ns;
+    const store_done = if (ctx.after_store_ns != 0) ctx.after_store_ns else now_ns;
+    const instantiate_done = if (ctx.after_instantiate_ns != 0) ctx.after_instantiate_ns else now_ns;
+    const run_start_done = if (ctx.after_run_start_ns != 0) ctx.after_run_start_ns else now_ns;
+    const start_enter = if (ctx.enter_start_ns != 0) ctx.enter_start_ns else now_ns;
+    const start_done = if (ctx.after_start_ns != 0) ctx.after_start_ns else now_ns;
+
+    std.debug.print(
+        \\[phase-diag] wasmz exit={s}
+        \\[phase-diag]   open+mmap     : {d:8.3} ms
+        \\[phase-diag]   compile       : {d:8.3} ms
+        \\[phase-diag]   store+linker  : {d:8.3} ms
+        \\[phase-diag]   instantiate   : {d:8.3} ms
+        \\[phase-diag]   runStart      : {d:8.3} ms
+        \\[phase-diag]   _start        : {d:8.3} ms
+        \\[phase-diag]   total         : {d:8.3} ms
+        \\
+    , .{
+        reason,
+        nsToMs(mmap_done - ctx.t0_ns),
+        nsToMs(compile_done - mmap_done),
+        nsToMs(store_done - compile_done),
+        nsToMs(instantiate_done - store_done),
+        nsToMs(run_start_done - instantiate_done),
+        nsToMs(start_done - start_enter),
+        nsToMs(start_done - ctx.t0_ns),
+    });
+}
+
 pub fn onExitMemTrace(_: u32, data: ?*anyopaque) void {
     if (data) |d| {
         const ctx: *MemTraceCtx = @ptrCast(@alignCast(d));
@@ -58,11 +109,18 @@ pub const OnExitCtx = struct {
     instance: ?*Instance = null,
     // profiling
     do_profiling: bool = false,
+    // phase timing
+    phase_diag: ?*const PhaseDiagCtx = null,
 };
 
-pub fn onExitCombined(_: u32, data: ?*anyopaque) void {
+pub fn onExitCombined(exit_code: u32, data: ?*anyopaque) void {
     if (data == null) return;
     const ctx: *OnExitCtx = @ptrCast(@alignCast(data.?));
+    if (ctx.phase_diag) |diag| {
+        var reason_buf: [32]u8 = undefined;
+        const reason = std.fmt.bufPrint(&reason_buf, "proc_exit({d})", .{exit_code}) catch "proc_exit";
+        printPhaseDiag(diag, reason);
+    }
     if (ctx.do_profiling) profiling.printReport();
     if (ctx.mem_stats) {
         if (ctx.store != null and ctx.instance != null)
@@ -88,8 +146,9 @@ pub fn printMemStats(store: *Store, instance: *Instance) void {
     // ── runtime memory (store / instance) ────────────────────────────────────
     const linear_bytes = instance.memory.byteLen();
     const linear_pages = instance.memory.pageCount();
-    const gc_used = store.gc_heap.usedSize();
-    const gc_cap = store.gc_heap.totalSize();
+    const gc_heap = store.gc_heap;
+    const gc_used = if (gc_heap) |h| h.usedSize() else 0;
+    const gc_cap = if (gc_heap) |h| h.totalSize() else 0;
     const shared_bytes = store.memory_budget.shared_bytes;
 
     // ── VM stacks ─────────────────────────────────────────────────────────────
@@ -103,6 +162,12 @@ pub fn printMemStats(store: *Store, instance: *Instance) void {
         vm.val_stack_bytes + vm.call_stack_bytes;
     const module_total = ms.total();
     const grand_total = runtime_total + module_total;
+
+    // ── allocation counts ─────────────────────────────────────────────────────
+    const gc_alloc_count = if (gc_heap) |h| h.alloc_count else 0;
+    const vm_alloc_count = vm.vm_alloc_count;
+    const instance_alloc_count = instance.alloc_count;
+    const total_alloc_count = gc_alloc_count + vm_alloc_count + instance_alloc_count;
 
     // ── formatting helpers ────────────────────────────────────────────────────
     const mb = struct {
@@ -147,6 +212,14 @@ pub fn printMemStats(store: *Store, instance: *Instance) void {
         \\  ═════════════════════════════════════════
         \\  Grand total:       {d:.2} MB
         \\
+        \\  Allocations
+        \\  ─────────────────────────────────────────
+        \\  Instance:           {d}
+        \\  VM (val/call stack): {d}
+        \\  GC heap:            {d}
+        \\  ─────────────────────────────────────────
+        \\  Total:              {d}
+        \\
     ,
         .{
             // Runtime
@@ -163,6 +236,9 @@ pub fn printMemStats(store: *Store, instance: *Instance) void {
             mb(module_total),
             // Grand total
                      mb(grand_total),
+            // Allocation counts
+            instance_alloc_count,      vm_alloc_count,
+            gc_alloc_count,            total_alloc_count,
         },
     ) catch {};
     std.fs.File.stderr().writeAll(fbs.getWritten()) catch {};

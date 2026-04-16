@@ -5,7 +5,7 @@ const parser_mod = @import("parser");
 const payload_mod = @import("payload");
 const lower_mod = @import("../../compiler/lower.zig");
 const ir_mod = @import("../../compiler/ir.zig");
-const encode_mod = @import("../../compiler/encode.zig");
+const encode_mod = @import("../../compiler/encode/encode.zig");
 const handler_table_mod = @import("../../vm/handler_table.zig");
 const vm_mod = @import("../../vm/root.zig");
 const module_mod = @import("../../wasmz/module.zig");
@@ -317,7 +317,11 @@ fn expectUnaryBitsResult(comptime T: type, op: WasmOp, param: RawVal, expected_b
 fn expectUnaryTrap(op: WasmOp, param: RawVal, expected: TrapCode) !void {
     const exec_result = try executeUnaryOp(op, param);
     switch (exec_result) {
-        .trap => |trap| try testing.expectEqual(expected, trap.trapCode().?),
+        .trap => |trap| {
+            var t = trap;
+            defer t.deinit();
+            try testing.expectEqual(expected, t.trapCode().?);
+        },
         .ok => return error.ExpectedTrap,
     }
 }
