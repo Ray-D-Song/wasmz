@@ -1642,6 +1642,10 @@ pub const CompiledFunction = struct {
     /// Number of local variable slots (excluding parameters).
     /// Used to limit @memset in allocCalleeSlots to only the locals range.
     locals_count: u16,
+    /// True if any non-parameter local may be read before a definite write.
+    /// Lowering computes this conservatively; when false, call entry can skip
+    /// zero-initializing the Wasm locals range.
+    needs_zero: bool = true,
     /// True if this function has no internal calls (leaf function).
     /// Enables call_leaf superinstruction for callers.
     is_leaf: bool = false,
@@ -1748,6 +1752,10 @@ pub const EncodedFunction = struct {
     /// CatchHandlerEntry.target is a byte offset into `code` after encoding.
     /// Indexed by (handlers_start, handlers_len) embedded in the instruction's operand bytes.
     catch_handler_tables: []CatchHandlerEntry,
+    /// True if this function needs its locals zeroed at entry.
+    /// False when locals are SSA-style (all locals are written before first read).
+    /// Skipping the zeroing eliminates a @memset per call.
+    needs_zero: bool = true,
 
     pub fn deinit(self: *EncodedFunction, allocator: std.mem.Allocator) void {
         allocator.free(self.code);

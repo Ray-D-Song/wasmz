@@ -60,6 +60,16 @@ fn run(allocator: std.mem.Allocator) void {
     };
     defer cli_args.deinit(allocator);
 
+    const phase_diag_enabled = blk: {
+        const value = std.process.getEnvVarOwned(allocator, "WASMZ_PHASE_DIAG") catch break :blk false;
+        allocator.free(value);
+        break :blk true;
+    };
+    var phase_diag = stats.PhaseDiagCtx{
+        .enabled = phase_diag_enabled,
+        .t0_ns = if (phase_diag_enabled) std.time.nanoTimestamp() else 0,
+    };
+
     // ── mem-trace helpers ─────────────────────────────────────────────────────
     var trace_prev: usize = 0;
     const tracePhase = struct {
@@ -92,6 +102,7 @@ fn run(allocator: std.mem.Allocator) void {
     };
     defer mmap.unmap(mapped);
     const wasm_bytes = mapped.data;
+    if (phase_diag.enabled) phase_diag.after_mmap_ns = std.time.nanoTimestamp();
 
     tracePhase(cli_args.mem_trace, &trace_prev, "baseline (file mapped)");
 
@@ -113,6 +124,7 @@ fn run(allocator: std.mem.Allocator) void {
         var mod = m;
         mod.deinit();
     };
+    if (phase_diag.enabled) phase_diag.after_compile_ns = std.time.nanoTimestamp();
 
     tracePhase(cli_args.mem_trace, &trace_prev, "after compile");
 
@@ -134,12 +146,14 @@ fn run(allocator: std.mem.Allocator) void {
         wasi_host.?.addToLinker(&linker, allocator) catch |err|
             fatal("Failed to add WASI to linker: {s}", .{@errorName(err)});
     }
+    if (phase_diag.enabled) phase_diag.after_store_ns = std.time.nanoTimestamp();
 
     var instance = Instance.init(&store, arc_module.retain(), linker) catch |err| {
         wasmz.printInitError(arc_module, linker, err);
         std.process.exit(1);
     };
     instance.mem_trace = cli_args.mem_trace;
+    if (phase_diag.enabled) phase_diag.after_instantiate_ns = std.time.nanoTimestamp();
     tracePhase(cli_args.mem_trace, &trace_prev, "after instantiate");
 
     // Register a single combined on-exit callback (proc_exit path) that
@@ -151,6 +165,7 @@ fn run(allocator: std.mem.Allocator) void {
         .instance = &instance,
         .mem_trace = cli_args.mem_trace,
         .prev_rss = &trace_prev,
+        .phase_diag = if (phase_diag.enabled) &phase_diag else null,
     };
     if (wasi_host) |*h| h.setOnExit(stats.onExitCombined, &on_exit_ctx);
 
@@ -253,6 +268,7 @@ fn run(allocator: std.mem.Allocator) void {
     {
         if (result == .trap) fatalTrap(result.trap, allocator, arc_module.value, "start function trapped");
     }
+    if (phase_diag.enabled) phase_diag.after_run_start_ns = std.time.nanoTimestamp();
     tracePhase(cli_args.mem_trace, &trace_prev, "after runStart");
 
     if (cli_args.reactor) {
@@ -266,9 +282,14 @@ fn run(allocator: std.mem.Allocator) void {
     if (cli_args.func_name == null) {
         if (arc_module.value.exports.get("_start")) |_| {
             tracePhase(cli_args.mem_trace, &trace_prev, "before _start");
+            if (phase_diag.enabled) phase_diag.enter_start_ns = std.time.nanoTimestamp();
             const result = instance.call("_start", &.{}) catch |err|
                 fatal("Failed to call _start: {s}", .{@errorName(err)});
             if (result == .trap) fatalTrap(result.trap, allocator, arc_module.value, "trap");
+            if (phase_diag.enabled) {
+                phase_diag.after_start_ns = std.time.nanoTimestamp();
+                stats.printPhaseDiag(&phase_diag, "_start return");
+            }
             tracePhase(cli_args.mem_trace, &trace_prev, "after _start");
             return;
         }
