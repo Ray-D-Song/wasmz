@@ -6,6 +6,14 @@
 
 **wasmz** is a WebAssembly runtime written in [Zig](https://ziglang.org/), designed to be fast, compact, and easy to embed. It implements a full-featured interpreter with support for modern WebAssembly proposals.
 
+## Performance
+
+In my benchmarks, **wasmz** is currently the fastest WebAssembly interpreter I have tested. You can view the full benchmark report here: [https://ray-d-song.github.io/wasmz/bench.html](https://ray-d-song.github.io/wasmz/bench.html).
+
+The benchmark chapter also includes notes on the parser and interpreter optimizations used in wasmz.
+
+If you find workloads where wasmz has a clear disadvantage, please let me know. I will do my best to optimize them :)
+
 ## Real-World Testing
 
 wasmz passes real-world WebAssembly module tests:
@@ -46,40 +54,6 @@ wasmz supports all current WebAssembly proposals.
 - **Zig API** - Native Zig interface with full type safety
 - **C API** - Minimal C ABI for embedding in any language
 - **CLI tool** - Standalone command-line runner
-
-## Project Structure
-
-```
-wasmz/
-├── src/
-│   ├── root.zig          # Public API entry point
-│   ├── main.zig          # CLI implementation
-│   ├── capi.zig          # C API implementation
-│   ├── core/             # Core data types
-│   ├── parser/           # WASM binary parser
-│   ├── compiler/         # Stack-to-register compiler
-│   ├── engine/           # Execution engine
-│   ├── vm/               # Virtual machine
-│   ├── wasmz/            # High-level API
-│   └── wasi/             # WASI implementation
-├── include/
-│   └── wasmz.h           # C API header
-├── tests/                # Integration tests
-└── docs/                 # Documentation
-```
-
-## Dependencies
-
-wasmz has minimal dependencies:
-
-- **zigrc**: Reference counting implementation (inlined in `src/libs/`)
-- **libc**: Only for the C API
-
-No external libraries or system dependencies are required for the core runtime.
-
-## Zig Version
-
-wasmz requires **Zig 0.15.2** or compatible version.
 
 ## License
 

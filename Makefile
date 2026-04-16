@@ -45,4 +45,4 @@ bench:
 
 count-ops:
 	$(MAKE) install-debug
-	./profiling-qjs-fib.sh
+	./tests/profiling-qjs-fib.sh
