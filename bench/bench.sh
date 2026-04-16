@@ -28,7 +28,7 @@ TIMESTAMP="$(date '+%Y-%m-%d_%H-%M')"
 REPORT="$RESULTS_DIR/report-${TIMESTAMP}.md"
 HYPERFINE_DIR="$RESULTS_DIR/hyperfine"
 
-RUNS=10
+RUNS=20
 WARMUP=5
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
@@ -158,6 +158,19 @@ for r in data['results']:
 "
 }
 
+# Parse stddev from hyperfine JSON (in ms)
+parse_stddev_ms() {
+  local json_file="$1" name="$2"
+  python3 -c "
+import json
+data = json.load(open('$json_file'))
+for r in data['results']:
+    if r['command'] == '$name':
+        print('%.1f' % (r['stddev'] * 1000))
+        break
+"
+}
+
 # ─── preflight ────────────────────────────────────────────────────────────────
 info "Checking prerequisites..."
 command -v hyperfine >/dev/null || die "hyperfine not found — run: brew install hyperfine"
@@ -273,21 +286,32 @@ AVG_ESBUILD_WASM3=$(measure_avg_rss sh -c \
 AVG_ESBUILD_WASMI=$(measure_avg_rss sh -c \
   "\"$WASMI\" \"$ESBUILD_WASM\" --bundle --platform=node --sourcefile=source.js < \"$ESBUILD_SOURCE\" > /dev/null")
 
-# ─── 6. parse medians ─────────────────────────────────────────────────────────
+# ─── 6. parse medians & stddevs ───────────────────────────────────────────────
 MED_FIB_WASMZ=$(parse_median_ms "$HYPERFINE_DIR/fib.json" "wasmz")
 MED_FIB_WASM3=$(parse_median_ms "$HYPERFINE_DIR/fib.json" "wasm3")
 MED_FIB_WASMI=$(parse_median_ms "$HYPERFINE_DIR/fib.json" "wasmi")
 MED_FIB_WAMR=$(parse_median_ms "$HYPERFINE_DIR/fib.json" "wamr")
+STD_FIB_WASMZ=$(parse_stddev_ms "$HYPERFINE_DIR/fib.json" "wasmz")
+STD_FIB_WASM3=$(parse_stddev_ms "$HYPERFINE_DIR/fib.json" "wasm3")
+STD_FIB_WASMI=$(parse_stddev_ms "$HYPERFINE_DIR/fib.json" "wasmi")
+STD_FIB_WAMR=$(parse_stddev_ms "$HYPERFINE_DIR/fib.json" "wamr")
 
 MED_QJS_WASMZ=$(parse_median_ms "$HYPERFINE_DIR/quickjs.json" "wasmz")
 MED_QJS_WASM3=$(parse_median_ms "$HYPERFINE_DIR/quickjs.json" "wasm3")
 MED_QJS_WASMI=$(parse_median_ms "$HYPERFINE_DIR/quickjs.json" "wasmi")
 MED_QJS_WAMR=$(parse_median_ms "$HYPERFINE_DIR/quickjs.json" "wamr")
+STD_QJS_WASMZ=$(parse_stddev_ms "$HYPERFINE_DIR/quickjs.json" "wasmz")
+STD_QJS_WASM3=$(parse_stddev_ms "$HYPERFINE_DIR/quickjs.json" "wasm3")
+STD_QJS_WASMI=$(parse_stddev_ms "$HYPERFINE_DIR/quickjs.json" "wasmi")
+STD_QJS_WAMR=$(parse_stddev_ms "$HYPERFINE_DIR/quickjs.json" "wamr")
 
 MED_ESBUILD_WASMZ=$(parse_median_ms "$HYPERFINE_DIR/esbuild.json" "wasmz")
 MED_ESBUILD_WASM3=$(parse_median_ms "$HYPERFINE_DIR/esbuild.json" "wasm3")
 MED_ESBUILD_WASMI=$(parse_median_ms "$HYPERFINE_DIR/esbuild.json" "wasmi")
 MED_ESBUILD_WAMR=$(parse_median_ms "$HYPERFINE_DIR/esbuild.json" "wamr")
+STD_ESBUILD_WASMZ=$(parse_stddev_ms "$HYPERFINE_DIR/esbuild.json" "wasmz")
+STD_ESBUILD_WASM3=$(parse_stddev_ms "$HYPERFINE_DIR/esbuild.json" "wasm3")
+STD_ESBUILD_WASMI=$(parse_stddev_ms "$HYPERFINE_DIR/esbuild.json" "wasmi")
 
 # ─── 7. generate report ───────────────────────────────────────────────────────
 info "Generating report..."
@@ -322,31 +346,31 @@ cat << MDEOF
 
 ### fib(30) — pure C compiled to WASM
 
-| Runtime | Median (ms) |
-|---------|-------------|
-| wasmz   | ${MED_FIB_WASMZ} |
-| wasmi   | ${MED_FIB_WASMI} |
-| wasm3   | ${MED_FIB_WASM3} |
-| wamr    | ${MED_FIB_WAMR} |
+| Runtime | Median (ms) | ± stddev |
+|---------|-------------|----------|
+| wasmz   | ${MED_FIB_WASMZ} | ± ${STD_FIB_WASMZ} |
+| wasmi   | ${MED_FIB_WASMI} | ± ${STD_FIB_WASMI} |
+| wasm3   | ${MED_FIB_WASM3} | ± ${STD_FIB_WASM3} |
+| wamr    | ${MED_FIB_WAMR} | ± ${STD_FIB_WAMR} |
 
 ### QuickJS fib(25) — JS engine running inside WASM (1.4 MB module)
 
-| Runtime | Median (ms) |
-|---------|-------------|
-| wasmz   | ${MED_QJS_WASMZ} |
-| wasmi   | ${MED_QJS_WASMI} |
-| wasm3   | ${MED_QJS_WASM3} |
-| wamr    | ${MED_QJS_WAMR} |
+| Runtime | Median (ms) | ± stddev |
+|---------|-------------|----------|
+| wasmz   | ${MED_QJS_WASMZ} | ± ${STD_QJS_WASMZ} |
+| wasmi   | ${MED_QJS_WASMI} | ± ${STD_QJS_WASMI} |
+| wasm3   | ${MED_QJS_WASM3} | ± ${STD_QJS_WASM3} |
+| wamr    | ${MED_QJS_WAMR} | ± ${STD_QJS_WAMR} |
 
 ### esbuild — JS bundler running inside WASM (19 MB module)
 
 > Note: wamr is excluded from esbuild tests because it does not support stdin input and causes stack overflow with large workloads.
 
-| Runtime | Median (ms) |
-|---------|-------------|
-| wasmz   | ${MED_ESBUILD_WASMZ} |
-| wasmi   | ${MED_ESBUILD_WASMI} |
-| wasm3   | ${MED_ESBUILD_WASM3} |
+| Runtime | Median (ms) | ± stddev |
+|---------|-------------|----------|
+| wasmz   | ${MED_ESBUILD_WASMZ} | ± ${STD_ESBUILD_WASMZ} |
+| wasmi   | ${MED_ESBUILD_WASMI} | ± ${STD_ESBUILD_WASMI} |
+| wasm3   | ${MED_ESBUILD_WASM3} | ± ${STD_ESBUILD_WASM3} |
 
 ## Peak RSS (memory) — lower is better
 
