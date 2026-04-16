@@ -12,7 +12,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: recursive
+
+      - name: Init submodules
+        run: git submodule update --init --recursive
 
       - name: Install Zig 0.15.2
         uses: mlugg/setup-zig@v2
