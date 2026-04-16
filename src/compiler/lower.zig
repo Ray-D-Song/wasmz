@@ -1988,12 +1988,21 @@ pub const Lower = struct {
     /// Propagates r0_slot: if src is the current r0 accumulator, dst becomes
     /// the new r0_slot so downstream _imm_r fusions can still fire.
     fn emit_copy(self: *Lower, dst_slot: Slot, src_slot: Slot) !void {
-        // Propagate r0 tracking across copies: if the source was in r0, the
-        // destination now holds the same value, so it is also in r0.
+        if (dst_slot == src_slot) return;
         if (self.r0_slot == src_slot) {
             self.r0_slot = dst_slot;
         }
         try self.emit(.{ .copy = .{ .dst = dst_slot, .src = src_slot } });
+    }
+
+    /// Reuse or emit a copy: returns the actual slot that holds the value.
+    /// If dst == src, returns src (no copy needed). Otherwise emits copy and returns dst.
+    fn emit_copy_or_reuse(self: *Lower, dst_slot: Slot, src_slot: Slot) !Slot {
+        if (dst_slot == src_slot) {
+            return src_slot;
+        }
+        try self.emit_copy(dst_slot, src_slot);
+        return dst_slot;
     }
 
     /// Try to fold a binary op where both operands are compile-time constants.
@@ -2143,12 +2152,9 @@ pub const Lower = struct {
         // ── Identity: result == lhs ──
         const is_identity = comptime_is_identity_i32(op_tag, imm);
         if (is_identity) {
-            // Remove the const op, emit copy (or reuse slot).
             _ = self.compiled.ops.pop();
-            if (dst != lhs) {
-                try self.emit_copy(dst, lhs);
-            }
-            try self.stack.push(self.allocator, dst);
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
             return true;
         }
 
@@ -2200,10 +2206,8 @@ pub const Lower = struct {
         const is_identity = comptime_is_identity_i64(op_tag, imm);
         if (is_identity) {
             _ = self.compiled.ops.pop();
-            if (dst != lhs) {
-                try self.emit_copy(dst, lhs);
-            }
-            try self.stack.push(self.allocator, dst);
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
             return true;
         }
 
@@ -2215,6 +2219,8 @@ pub const Lower = struct {
             try self.stack.push(self.allocator, dst);
             return true;
         }
+
+        // ── Strength reduction: mul by power-of-2 → shl ──
 
         // ── Strength reduction: mul by power-of-2 → shl ──
         if (comptime std.mem.eql(u8, op_tag, "i64_mul")) {

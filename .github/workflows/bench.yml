@@ -16,10 +16,7 @@ jobs:
           fetch-depth: 0
 
       - name: Init submodules
-        run: |
-          git submodule update --init --recursive --force
-          ls -la bench/projects/wasm3/
-          ls bench/projects/wasm3/*.txt 2>/dev/null || echo "no txt files"
+        run: git submodule update --init --recursive --force
 
       - name: Install Zig 0.15.2
         uses: mlugg/setup-zig@v2
