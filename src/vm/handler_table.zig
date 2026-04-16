@@ -221,6 +221,7 @@ pub const handler_table: encode.HandlerTable = .{
     .memory_fill = &handlers.handle_memory_fill,
     // ── calls ───────────────────────────────────────────────────────────
     .call = &handlers_call.handle_call,
+    .call_to_local = &handlers_call.handle_call_to_local,
     .call_indirect = &handlers_call.handle_call_indirect,
     .return_call = &handlers_call.handle_return_call,
     .return_call_indirect = &handlers_call.handle_return_call_indirect,

@@ -272,6 +272,81 @@ pub fn handle_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *con
     }
 }
 
+// ── call_to_local ──────────────────────────────────────────────────────────────
+// Fused: call + local_set → result written directly to local slot.
+// Replaces: `call { dst=T } + local_set { local=L, src=T }` (handled by compiler)
+// Result: single instruction that writes result directly to local.
+
+pub fn handle_call_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsCallToLocal, ip);
+
+    const arg_slots = encode.readInlineArgs(encode.OpsCallToLocal, ip, ops.args_len);
+    const instr_stride = encode.varStride(encode.OpsCallToLocal, ops.args_len);
+
+    if (ops.func_idx < env.host_funcs.len) {
+        const host_func = env.host_funcs[ops.func_idx];
+        const result_len = env.composite_types[env.func_type_indices[ops.func_idx]].func_type.results().len;
+
+        const ret_val = invokeHostCallInline(frame.allocator, env.store, env.host_instance, host_func, arg_slots, slots, result_len, frame);
+
+        switch (frame.result) {
+            .trap => return,
+            .ok => {},
+        }
+
+        if (ret_val) |rv| {
+            slots[ops.local] = rv;
+        }
+        dispatch.next(ip, instr_stride, slots, frame, env, r0, fp0);
+    } else {
+        var t = profiling.ScopedTimer.start();
+        t.lap(&profiling.call_prof.ns_read_ops);
+
+        const was_pending = if (profiling.enabled) switch (env.functions[ops.func_idx]) {
+            .pending => true,
+            else => false,
+        } else false;
+        const callee = ensureLocalCompiled(ops.func_idx, env, frame) orelse return;
+        t.lap(&profiling.call_prof.ns_ensure_compiled);
+        if (profiling.enabled and was_pending) profiling.call_prof.lazy_compiles += 1;
+
+        const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
+        const sp_base = frame.val_sp;
+        const callee_slots = allocCalleeSlots(frame, callee_slots_len, arg_slots.len, callee.locals_count) orelse return;
+        t.lap(&profiling.call_prof.ns_alloc_slots);
+        if (profiling.enabled) profiling.call_prof.slots_len_sum += callee_slots_len;
+        const caller_slots_profiled = frame.callStackTop().slots.ptr;
+
+        for (arg_slots, 0..) |arg_slot, i| {
+            callee_slots[i] = caller_slots_profiled[arg_slot];
+        }
+        t.lap(&profiling.call_prof.ns_copy_args);
+
+        const cur = frame.callStackTop();
+        cur.ip = ip + instr_stride;
+        const callee_dst: ?ir.Slot = ops.local;
+
+        frame.callStackPush(.{
+            .ip = callee.code.ptr,
+            .slots = callee_slots,
+            .slots_sp_base = sp_base,
+            .dst = callee_dst,
+            .func = callee,
+        }) catch |err| {
+            frame.valStackFree(sp_base);
+            trapReturn(frame, switch (err) {
+                error.OutOfMemory => .OutOfMemory,
+                error.StackOverflow => .StackOverflow,
+            });
+            return;
+        };
+        t.lap(&profiling.call_prof.ns_push_dispatch);
+        if (profiling.enabled) profiling.call_prof.calls += 1;
+
+        dispatch.dispatch(callee.code.ptr, callee_slots.ptr, frame, env, 0, 0.0);
+    }
+}
+
 // ── call_indirect ────────────────────────────────────────────────────────────
 
 pub fn handle_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
