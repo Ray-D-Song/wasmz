@@ -4,3 +4,6 @@
 [submodule "bench/projects/wasm3"]
 	path = bench/projects/wasm3
 	url = https://github.com/wasm3/wasm3.git
+[submodule "bench/projects/wamr"]
+	path = bench/projects/wamr
+	url = https://github.com/bytecodealliance/wasm-micro-runtime.git
