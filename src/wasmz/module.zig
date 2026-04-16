@@ -255,9 +255,10 @@ const BuildState = struct {
     allocator: Allocator,
     engine: Engine,
     arena: std.heap.ArenaAllocator,
-    /// Arena for pending function body copies (compileReader path).
-    /// null when bodies borrow external bytes (compile(bytes) path).
-    body_arena: ?std.heap.ArenaAllocator = null,
+    /// When true, function bodies are individually heap-allocated (compileReader
+    /// path) and freed per-function after compilation.  When false, bodies are
+    /// borrowed from the caller's input (compile(bytes) / mmap path).
+    body_owned: bool = false,
 
     composite_types_list: std.ArrayListUnmanaged(CompositeType) = .empty,
     struct_layouts_list: std.ArrayListUnmanaged(?StructLayout) = .empty,
@@ -356,8 +357,6 @@ const BuildState = struct {
         while (names_iter.next()) |name| self.allocator.free(name.*);
         self.func_names_map.deinit(self.allocator);
 
-        // Free body arena if still owned (not transferred to Module via finish()).
-        if (self.body_arena) |*ba| ba.deinit();
         self.arena.deinit();
     }
 
@@ -617,17 +616,19 @@ const BuildState = struct {
         var params_slots: usize = 0;
         for (func_type.params()) |p| params_slots += if (p == .V128) 2 else 1;
         const locals_count: u16 = @intCast(reserved_slots - params_slots);
-        // If body_arena is set (compileReader path), dupe the body into the
-        // arena so it outlives the parser's transient buffer.  Otherwise
-        // (compile(bytes) path) borrow the slice directly from the caller's
-        // long-lived input.
-        const body: []const u8 = if (self.body_arena) |*ba|
-            try ba.allocator().dupe(u8, info.body)
+        // If body_owned is set (compileReader path), dupe the body into a
+        // per-function heap allocation so it can be freed immediately after
+        // compilation.  Otherwise (compile(bytes) path) borrow the slice
+        // directly from the caller's long-lived input.
+        const body_owned = self.body_owned;
+        const body: []const u8 = if (body_owned)
+            try self.allocator.dupe(u8, info.body)
         else
             info.body;
 
         try self.local_functions_list.append(self.allocator, .{ .pending = .{
             .body = body,
+            .body_owned = body_owned,
             .type_index = type_index,
             .reserved_slots = reserved_slots,
             .locals_count = locals_count,
@@ -762,10 +763,6 @@ const BuildState = struct {
         const exports = self.exports;
         self.exports = .empty;
 
-        // Transfer body_arena ownership to Module before returning.
-        const body_arena = self.body_arena;
-        self.body_arena = null;
-
         // Build the func_names slice: one entry per function in the full function
         // index space (imports first, then locals).  Entries are null for functions
         // with no name in the Name Section.  The map ownership is transferred here;
@@ -809,22 +806,12 @@ const BuildState = struct {
             .config = .{ .eh_mode = self.detected_eh_mode },
             .translator = null,
             .pending_count = @intCast(local_functions.len),
-            .body_arena = body_arena,
         };
     }
 };
 
 fn deinit_function_slots(allocator: Allocator, functions: []FunctionSlot) void {
-    for (functions) |*slot| {
-        switch (slot.*) {
-            .encoded => |*ef| ef.deinit(allocator),
-            // Pending body bytes are either borrowed (compile(bytes) path)
-            // or owned by the Module's body_arena (compileReader path).
-            // Either way they are NOT freed individually here.
-            .pending, .import => {},
-        }
-        slot.* = undefined;
-    }
+    for (functions) |*slot| slot.deinit(allocator);
 }
 
 /// Compiled WebAssembly module, holding all data required for runtime execution.
@@ -908,10 +895,6 @@ pub const Module = struct {
     /// Decremented by `compileFunctionAt`; used to release `translator` as
     /// soon as the last function body is compiled (O(1) check per compile).
     pending_count: u32,
-    /// Arena owning all pending function body copies (compileReader path).
-    /// null when bodies borrow external bytes (compile(bytes) / mmap path).
-    /// Freed in deinit; individual body slices are never freed separately.
-    body_arena: ?std.heap.ArenaAllocator = null,
 
     /// Compile WebAssembly bytecode held in memory into a Module.
     ///
@@ -920,7 +903,7 @@ pub const Module = struct {
     /// returned Module (typically via mmap or a long-lived allocation).
     pub fn compile(engine: Engine, bytes: []const u8) ModuleCompileError!Module {
         var state = BuildState.init(engine);
-        // body_arena stays null → bodies borrow from `bytes` directly.
+        // body_owned stays false → bodies borrow from `bytes` directly.
         defer state.deinit();
 
         var parser = Parser.init(state.parserAllocator());
@@ -955,9 +938,9 @@ pub const Module = struct {
         const allocator = engine.allocator();
 
         var state = BuildState.init(engine);
-        // Streaming path: parser buffers are transient, so we need an arena
-        // to hold durable copies of each function body.
-        state.body_arena = std.heap.ArenaAllocator.init(allocator);
+        // Streaming path: bodies are individually heap-allocated per function
+        // and freed immediately after each function is compiled.
+        state.body_owned = true;
         defer state.deinit();
 
         var parser = Parser.init(state.parserAllocator());
@@ -1129,8 +1112,10 @@ pub const Module = struct {
             &handler_table_mod.handler_table,
         );
         profiling.call_prof.ns_encode_ir += encode_timer.read();
-        // Body bytes are either borrowed (compile(bytes) path) or owned by
-        // body_arena (compileReader path).  No individual free needed.
+        // Free the body bytes now that compilation is complete, if they were
+        // individually allocated for this function (compileReader path).
+        // Borrowed bodies (compile(bytes) / mmap path) are left alone.
+        if (pending.body_owned) self.allocator.free(pending.body);
         var encoded_with_idx = encoded;
         encoded_with_idx.func_idx = func_index;
         slot.* = .{ .encoded = encoded_with_idx };
@@ -1253,9 +1238,6 @@ pub const Module = struct {
         if (self.translator) |*t| t.deinit();
         deinit_function_slots(self.allocator, self.functions);
         self.allocator.free(self.functions);
-        // Free the arena that holds all pending body copies (compileReader path).
-        // For the compile(bytes)/mmap path this is null (bodies are borrowed).
-        if (self.body_arena) |*ba| ba.deinit();
 
         deinit_exports(self.allocator, &self.exports);
         for (self.globals) |g| {
