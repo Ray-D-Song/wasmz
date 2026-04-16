@@ -3792,7 +3792,8 @@ pub const Lower = struct {
                             const args_start = c.args_start;
                             const args_len = c.args_len;
                             _ = self.compiled.ops.pop();
-                            self.compiled.call_args.shrinkRetainingCapacity(args_start);
+                            // Keep call_args data: return_call will encode the same
+                            // args_start..args_start+args_len slice.
                             try self.emit(.{ .return_call = .{
                                 .func_idx = func_idx,
                                 .args_start = args_start,

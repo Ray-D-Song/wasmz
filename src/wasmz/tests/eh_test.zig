@@ -84,7 +84,9 @@ test "EH new: throw_ref rethrows exception causing UnhandledException trap" {
     switch (exec_r) {
         .ok => return error.ExpectedTrap,
         .trap => |t| {
-            const code = t.trapCode() orelse return error.ExpectedTrapCode;
+            var trap = t;
+            defer trap.deinit();
+            const code = trap.trapCode() orelse return error.ExpectedTrapCode;
             try testing.expectEqual(TrapCode.UnhandledException, code);
         },
     }
