@@ -56,7 +56,7 @@ const Lower = lower_mod.Lower;
 const LowerLegacy = lower_legacy_mod.LowerLegacy;
 const LegacyWasmOp = lower_legacy_mod.LegacyWasmOp;
 const EngineConfig = engine_config_mod.Config;
-const encode_mod = @import("../compiler/encode.zig");
+const encode_mod = @import("../compiler/encode/encode.zig");
 const handler_table_mod = @import("../vm/handler_table.zig");
 
 /// Exported item from a Wasm module.
@@ -1160,6 +1160,475 @@ pub const Module = struct {
         // compileFunctionAt (which would scan the whole functions slice on
         // every call).
         self.releaseTranslator();
+    }
+
+    /// Scan the raw Wasm bytecode of a single pending function body and collect
+    /// all statically-known callee function indices into `out`.
+    ///
+    /// Recognised call instructions:
+    ///   0x10  call             → func_idx (varuint32)
+    ///   0x12  return_call      → func_idx (varuint32)
+    ///   0x11  call_indirect    → type_idx (skipped) + table_idx (skipped); signals via `has_indirect`
+    ///   0x13  return_call_indirect → same as call_indirect
+    ///
+    /// All other instructions are skipped by consuming their immediate operands
+    /// according to the Wasm binary encoding spec so that operand bytes are never
+    /// mistaken for opcodes.
+    ///
+    /// Returns true if the function contains at least one call_indirect /
+    /// return_call_indirect (so the caller knows to add table entries to the
+    /// reachable set).
+    fn scanDirectCallees(allocator: Allocator, body: []const u8, out: *std.ArrayListUnmanaged(u32)) error{OutOfMemory}!bool {
+        var pos: usize = 0;
+        var has_indirect = false;
+
+        // Read an unsigned LEB-128 varuint32; advances pos.
+        const readU32 = struct {
+            fn f(b: []const u8, p: *usize) u32 {
+                var result: u32 = 0;
+                var shift: u5 = 0;
+                while (p.* < b.len) {
+                    const byte = b[p.*];
+                    p.* += 1;
+                    result |= @as(u32, byte & 0x7f) << shift;
+                    if (byte & 0x80 == 0) break;
+                    shift += 7;
+                }
+                return result;
+            }
+        }.f;
+
+        // Read a signed LEB-128 varint32 (used by i32.const / i64.const / block types).
+        const skipS32 = struct {
+            fn f(b: []const u8, p: *usize) void {
+                while (p.* < b.len) {
+                    const byte = b[p.*];
+                    p.* += 1;
+                    if (byte & 0x80 == 0) break;
+                }
+            }
+        }.f;
+
+        // Skip a signed LEB-128 varint64 (i64.const).
+        const skipS64 = struct {
+            fn f(b: []const u8, p: *usize) void {
+                while (p.* < b.len) {
+                    const byte = b[p.*];
+                    p.* += 1;
+                    if (byte & 0x80 == 0) break;
+                }
+            }
+        }.f;
+
+        // Skip a memory immediate: align (u32) + offset (u32).
+        const skipMemImm = struct {
+            fn f(b: []const u8, p: *usize) void {
+                // align flags
+                _ = blk: {
+                    var r: u32 = 0;
+                    var s: u5 = 0;
+                    while (p.* < b.len) {
+                        const byte = b[p.*];
+                        p.* += 1;
+                        r |= @as(u32, byte & 0x7f) << s;
+                        if (byte & 0x80 == 0) break;
+                        s += 7;
+                    }
+                    break :blk r;
+                };
+                // offset
+                _ = blk: {
+                    var r: u32 = 0;
+                    var s: u5 = 0;
+                    while (p.* < b.len) {
+                        const byte = b[p.*];
+                        p.* += 1;
+                        r |= @as(u32, byte & 0x7f) << s;
+                        if (byte & 0x80 == 0) break;
+                        s += 7;
+                    }
+                    break :blk r;
+                };
+            }
+        }.f;
+
+        // Skip a heap type (block type / ref.null): s33 LEB.
+        const skipHeapType = struct {
+            fn f(b: []const u8, p: *usize) void {
+                if (p.* >= b.len) return;
+                const first = b[p.*];
+                p.* += 1;
+                // If the high bit is set it is a multi-byte s33.
+                if (first & 0x80 != 0) {
+                    while (p.* < b.len) {
+                        const byte = b[p.*];
+                        p.* += 1;
+                        if (byte & 0x80 == 0) break;
+                    }
+                }
+                // Otherwise it is a 1-byte value (already consumed).
+            }
+        }.f;
+
+        // Skip a Wasm block type: either a valtype byte (0x40/0x7f..0x70) or
+        // an s33 type index.  Same encoding as heap type for our purposes.
+        const skipBlockType = skipHeapType;
+
+        // Localcount-entry local declarations at the start of a function body.
+        // Format: local_count:u32 followed by local_count*(count:u32, type:byte).
+        // We call this once at entry to move pos past the locals header.
+        const skipLocals = struct {
+            fn f(b: []const u8, p: *usize) void {
+                var r: u32 = 0;
+                var s: u5 = 0;
+                while (p.* < b.len) {
+                    const byte = b[p.*];
+                    p.* += 1;
+                    r |= @as(u32, byte & 0x7f) << s;
+                    if (byte & 0x80 == 0) break;
+                    s += 7;
+                }
+                // r = number of local groups
+                var i: u32 = 0;
+                while (i < r) : (i += 1) {
+                    // skip count u32
+                    while (p.* < b.len) {
+                        const b2 = b[p.*];
+                        p.* += 1;
+                        if (b2 & 0x80 == 0) break;
+                    }
+                    // skip valtype byte
+                    if (p.* < b.len) p.* += 1;
+                }
+            }
+        }.f;
+
+        skipLocals(body, &pos);
+
+        while (pos < body.len) {
+            const op = body[pos];
+            pos += 1;
+
+            switch (op) {
+                // ── no immediate ────────────────────────────────────────────
+                0x00, // unreachable
+                0x01, // nop
+                0x05, // else
+                0x0b, // end
+                0x0f, // return
+                0x19, // catch_all
+                0x1a, // drop
+                0x1b, // select
+                0x0a, // throw_ref
+                0x45...0xc4, // most numeric ops (no immediates)
+                => {},
+
+                // ── block / loop / if / try: block type (s33 / valtype) ────
+                0x02, 0x03, 0x04, 0x06 => skipBlockType(body, &pos),
+
+                // ── try_table: block type + handler list ────────────────────
+                0x1f => {
+                    skipBlockType(body, &pos);
+                    // handler count
+                    const hcount = readU32(body, &pos);
+                    var h: u32 = 0;
+                    while (h < hcount) : (h += 1) {
+                        const kind = readU32(body, &pos);
+                        switch (kind) {
+                            0, 1 => _ = readU32(body, &pos), // catch: tag_idx + br_depth
+                            2, 3 => {}, // catch_all / catch_all_ref: br_depth only
+                            else => {},
+                        }
+                        _ = readU32(body, &pos); // br_depth
+                    }
+                },
+
+                // ── br / br_if / rethrow / delegate: depth u32 ─────────────
+                0x0c, 0x0d, 0x09, 0x18 => _ = readU32(body, &pos),
+
+                // ── br_table: n+1 depths ────────────────────────────────────
+                0x0e => {
+                    const n = readU32(body, &pos);
+                    var t: u32 = 0;
+                    while (t <= n) : (t += 1) _ = readU32(body, &pos);
+                },
+
+                // ── call / return_call → collect callee ─────────────────────
+                0x10, 0x12 => {
+                    const callee = readU32(body, &pos);
+                    try out.append(allocator, callee);
+                },
+
+                // ── call_indirect / return_call_indirect → indirect flag ─────
+                0x11, 0x13 => {
+                    _ = readU32(body, &pos); // type index
+                    _ = readU32(body, &pos); // table index
+                    has_indirect = true;
+                },
+
+                // ── call_ref / return_call_ref: type index ──────────────────
+                0x14, 0x15 => _ = readU32(body, &pos),
+
+                // ── catch / throw: tag index ─────────────────────────────────
+                0x07, 0x08 => _ = readU32(body, &pos),
+
+                // ── select with type: 1-byte count + valtype ────────────────
+                0x1c => {
+                    const cnt = readU32(body, &pos);
+                    pos += cnt; // each valtype is 1 byte
+                },
+
+                // ── local_get/set/tee, global_get/set, table_get/set ─────────
+                0x20...0x26 => _ = readU32(body, &pos),
+
+                // ── memory load/store instructions: align + offset ───────────
+                0x28...0x3e => skipMemImm(body, &pos),
+
+                // ── memory.size / memory.grow: reserved byte ────────────────
+                0x3f, 0x40 => _ = readU32(body, &pos),
+
+                // ── i32.const ────────────────────────────────────────────────
+                0x41 => skipS32(body, &pos),
+
+                // ── i64.const ────────────────────────────────────────────────
+                0x42 => skipS64(body, &pos),
+
+                // ── f32.const ────────────────────────────────────────────────
+                0x43 => pos += 4,
+
+                // ── f64.const ────────────────────────────────────────────────
+                0x44 => pos += 8,
+
+                // ── ref.null: heap type ──────────────────────────────────────
+                0xd0 => skipHeapType(body, &pos),
+
+                // ── ref.func: func index ─────────────────────────────────────
+                0xd2 => _ = readU32(body, &pos),
+
+                // ── ref.is_null, ref.as_non_null, ref.eq ────────────────────
+                0xd1, 0xd3, 0xd5 => {},
+
+                // ── prefix 0xfb (GC) ─────────────────────────────────────────
+                0xfb => {
+                    const sub = readU32(body, &pos);
+                    switch (sub) {
+                        // struct.new, struct.new_default, array.new,
+                        // array.new_default, array.get, array.get_s/u,
+                        // array.set, array.len, array.fill,
+                        // ref.test, ref.cast, br_on_cast, br_on_cast_fail,
+                        // any.convert_extern, extern.convert_any,
+                        // ref.i31, i31.get_s/u, struct.get, struct.get_s/u,
+                        // struct.set, array.new_fixed, array.new_data,
+                        // array.new_elem, array.init_data, array.init_elem,
+                        // array.copy — all take 1 or 2 type/field indices.
+                        // We conservatively skip up to 2 u32 operands for
+                        // instructions that have them; for simplicity we check
+                        // sub ranges known from the GC spec draft.
+                        0x00...0x01 => _ = readU32(body, &pos), // struct.new / struct.new_default
+                        0x07...0x08 => _ = readU32(body, &pos), // struct.get / struct.get_s
+                        0x09 => _ = readU32(body, &pos), // struct.get_u
+                        0x05, 0x06 => { // struct.set / (reserved)
+                            _ = readU32(body, &pos);
+                            _ = readU32(body, &pos);
+                        },
+                        0x0b => _ = readU32(body, &pos), // array.new
+                        0x0c => _ = readU32(body, &pos), // array.new_default
+                        0x0d => { // array.new_fixed
+                            _ = readU32(body, &pos);
+                            _ = readU32(body, &pos);
+                        },
+                        0x0e, 0x0f => { // array.new_data / array.new_elem
+                            _ = readU32(body, &pos);
+                            _ = readU32(body, &pos);
+                        },
+                        0x10...0x13 => _ = readU32(body, &pos), // array.get variants
+                        0x14 => _ = readU32(body, &pos), // array.set
+                        0x15 => {}, // array.len
+                        0x18 => { // array.copy
+                            _ = readU32(body, &pos);
+                            _ = readU32(body, &pos);
+                        },
+                        0x19, 0x1a => { // array.init_data/elem
+                            _ = readU32(body, &pos);
+                            _ = readU32(body, &pos);
+                        },
+                        0x14...0x17 => _ = readU32(body, &pos),
+                        0x1b, 0x1c => _ = readU32(body, &pos), // ref.test / ref.cast (nullable)
+                        0x1d, 0x1e => { // br_on_cast / br_on_cast_fail
+                            pos += 1; // flags byte
+                            _ = readU32(body, &pos);
+                            skipHeapType(body, &pos);
+                            skipHeapType(body, &pos);
+                        },
+                        0x1f...0x22 => {}, // any.convert_extern etc.
+                        0x29, 0x2a => {}, // i31.get_s/u
+                        0x28 => _ = readU32(body, &pos), // ref.i31
+                        else => {},
+                    }
+                },
+
+                // ── prefix 0xfc (misc / bulk memory / table) ─────────────────
+                0xfc => {
+                    const sub = readU32(body, &pos);
+                    switch (sub) {
+                        // i32.trunc_sat_f32_s ... f64.trunc_sat_f64_u (0–7): no extra imm
+                        0...7 => {},
+                        // memory.init: data_idx u32 + reserved u32
+                        8 => {
+                            _ = readU32(body, &pos);
+                            _ = readU32(body, &pos);
+                        },
+                        // data.drop: data_idx u32
+                        9 => _ = readU32(body, &pos),
+                        // memory.copy: 2 reserved u32
+                        10 => {
+                            _ = readU32(body, &pos);
+                            _ = readU32(body, &pos);
+                        },
+                        // memory.fill: reserved u32
+                        11 => _ = readU32(body, &pos),
+                        // table.init: elem_idx u32 + table_idx u32
+                        12 => {
+                            _ = readU32(body, &pos);
+                            _ = readU32(body, &pos);
+                        },
+                        // elem.drop: elem_idx u32
+                        13 => _ = readU32(body, &pos),
+                        // table.copy: dst_table u32 + src_table u32
+                        14 => {
+                            _ = readU32(body, &pos);
+                            _ = readU32(body, &pos);
+                        },
+                        // table.grow / table.size / table.fill: table_idx u32
+                        15, 16, 17 => _ = readU32(body, &pos),
+                        else => {},
+                    }
+                },
+
+                // ── prefix 0xfd (SIMD): sub-opcode + operands ────────────────
+                0xfd => {
+                    const sub = readU32(body, &pos);
+                    switch (sub) {
+                        // v128.load variants with memory immediate
+                        0...11, 84...91 => skipMemImm(body, &pos),
+                        // v128.store
+                        11 => skipMemImm(body, &pos),
+                        // v128.const: 16 bytes
+                        12 => pos += 16,
+                        // i8x16.shuffle: 16 lane bytes
+                        13 => pos += 16,
+                        // lane instructions: mem imm + 1-byte lane
+                        21...34 => {
+                            skipMemImm(body, &pos);
+                            pos += 1;
+                        },
+                        // extract_lane / replace_lane: 1-byte lane index
+                        23...42 => pos += 1,
+                        else => {},
+                    }
+                },
+
+                // ── prefix 0xfe (threads/atomics): sub-opcode + mem imm ──────
+                0xfe => {
+                    _ = readU32(body, &pos); // sub-opcode
+                    skipMemImm(body, &pos);
+                },
+
+                // ── everything else: no immediate (numeric/comparison/convert) ─
+                else => {},
+            }
+        }
+
+        return has_indirect;
+    }
+
+    /// Collect the set of all locally-defined function indices reachable from
+    /// `entry_func_idx` by following direct `call` / `return_call` edges and,
+    /// when a `call_indirect` is encountered, by adding all entries from the
+    /// relevant table(s).
+    ///
+    /// The result is written into `reachable` as a dense BitSet indexed by
+    /// func_idx.  Import slots are included in the index space but never
+    /// added to the reachable set (they are never `.pending`).
+    ///
+    /// Caller owns the returned BitSet and must call `deinit` when done.
+    fn collectReachable(
+        self: *const Module,
+        allocator: Allocator,
+        entry_func_idx: u32,
+    ) error{OutOfMemory}!std.DynamicBitSet {
+        const n = self.functions.len;
+        var reachable = try std.DynamicBitSet.initEmpty(allocator, n);
+        errdefer reachable.deinit();
+
+        var worklist = std.ArrayListUnmanaged(u32){};
+        defer worklist.deinit(allocator);
+
+        // Seed
+        try worklist.append(allocator, entry_func_idx);
+
+        var callees_buf = std.ArrayListUnmanaged(u32){};
+        defer callees_buf.deinit(allocator);
+
+        while (worklist.items.len > 0) {
+            const idx = worklist.pop();
+            if (idx >= n) continue;
+            if (reachable.isSet(idx)) continue;
+            reachable.set(idx);
+
+            // Only pending local functions have scannable bodies.
+            const body = switch (self.functions[idx]) {
+                .pending => |p| p.body,
+                .import, .encoded => continue,
+            };
+
+            callees_buf.clearRetainingCapacity();
+            const has_indirect = try scanDirectCallees(allocator, body, &callees_buf);
+
+            for (callees_buf.items) |callee| {
+                if (callee < n and !reachable.isSet(callee))
+                    try worklist.append(allocator, callee);
+            }
+
+            if (has_indirect) {
+                // Add every entry from every table as a potential callee.
+                for (self.tables) |table| {
+                    for (table) |func_idx| {
+                        if (func_idx < n and !reachable.isSet(func_idx))
+                            try worklist.append(allocator, func_idx);
+                    }
+                }
+            }
+        }
+
+        return reachable;
+    }
+
+    /// Warmup: compile all functions reachable from `entry_func_idx` before
+    /// the VM starts executing, eliminating lazy-compilation pauses on the
+    /// hot path.
+    ///
+    /// - If the engine was configured with `eager_compile = true` the module
+    ///   was already fully compiled during `Module.compile()`; this call is a
+    ///   no-op to avoid redundant work.
+    /// - Otherwise, the reachable set is collected with `collectReachable` and
+    ///   every pending slot in that set is compiled via `compileFunctionAt`.
+    /// - Successfully compiled functions have their raw Wasm body bytes freed
+    ///   (same behaviour as `compileAll`; `.body_owned` bodies are freed
+    ///   immediately, borrowed bodies are simply not referenced any more).
+    pub fn warmup(self: *Module, engine: Engine, entry_func_idx: u32) ModuleCompileError!void {
+        // eager_compile already compiled everything in Module.compile().
+        if (engine.config().eager_compile) return;
+
+        if (entry_func_idx >= self.functions.len) return;
+
+        var reachable = try self.collectReachable(self.allocator, entry_func_idx);
+        defer reachable.deinit();
+
+        var it = reachable.iterator(.{});
+        while (it.next()) |idx| {
+            try self.compileFunctionAt(engine, @intCast(idx));
+        }
     }
 
     /// Detailed memory breakdown for a compiled Module.

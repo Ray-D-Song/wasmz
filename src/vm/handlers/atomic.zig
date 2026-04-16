@@ -4,7 +4,7 @@
 /// atomic_notify, atomic_wait32, atomic_wait64
 const std = @import("std");
 const ir = @import("../../compiler/ir.zig");
-const encode = @import("../../compiler/encode.zig");
+const encode = @import("../../compiler/encode/encode.zig");
 const dispatch = @import("../dispatch.zig");
 const core = @import("core");
 
@@ -44,13 +44,13 @@ pub fn handle_atomic_fence(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
         threadlocal var dummy: u8 = 0;
     };
     _ = @atomicRmw(u8, &Fence.dummy, .Or, 0, .seq_cst);
-    dispatch.next(ip, stride(encode.OpsNone), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.ops.OpsNone), slots, frame, env, r0, fp0);
 }
 
 // ── atomic_load ──────────────────────────────────────────────────────────────
 
 pub fn handle_atomic_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    const ops = readOps(encode.OpsAtomicLoad, ip);
+    const ops = readOps(encode.ops.OpsAtomicLoad, ip);
     const mem = env.memory.bytes();
     const width: ir.AtomicWidth = @enumFromInt(ops.width);
     const ty: ir.AtomicType = @enumFromInt(ops.ty);
@@ -78,13 +78,13 @@ pub fn handle_atomic_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
         .i32 => RawVal.from(@as(i32, @bitCast(@as(u32, @truncate(val))))),
         .i64 => RawVal.from(@as(i64, @bitCast(val))),
     };
-    dispatch.next(ip, stride(encode.OpsAtomicLoad), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.ops.OpsAtomicLoad), slots, frame, env, r0, fp0);
 }
 
 // ── atomic_store ─────────────────────────────────────────────────────────────
 
 pub fn handle_atomic_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    const ops = readOps(encode.OpsAtomicStore, ip);
+    const ops = readOps(encode.ops.OpsAtomicStore, ip);
     const mem = env.memory.bytes();
     const width: ir.AtomicWidth = @enumFromInt(ops.width);
     const ty: ir.AtomicType = @enumFromInt(ops.ty);
@@ -112,13 +112,13 @@ pub fn handle_atomic_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
         .@"32" => @atomicStore(u32, @as(*u32, @ptrCast(@alignCast(raw_ptr))), @truncate(src_val), .seq_cst),
         .@"64" => @atomicStore(u64, @as(*u64, @ptrCast(@alignCast(raw_ptr))), src_val, .seq_cst),
     }
-    dispatch.next(ip, stride(encode.OpsAtomicStore), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.ops.OpsAtomicStore), slots, frame, env, r0, fp0);
 }
 
 // ── atomic_rmw ───────────────────────────────────────────────────────────────
 
 pub fn handle_atomic_rmw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    const ops = readOps(encode.OpsAtomicRmw, ip);
+    const ops = readOps(encode.ops.OpsAtomicRmw, ip);
     const mem = env.memory.bytes();
     const width: ir.AtomicWidth = @enumFromInt(ops.width);
     const ty: ir.AtomicType = @enumFromInt(ops.ty);
@@ -195,13 +195,13 @@ pub fn handle_atomic_rmw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
         .i32 => RawVal.from(@as(i32, @bitCast(@as(u32, @truncate(old))))),
         .i64 => RawVal.from(@as(i64, @bitCast(old))),
     };
-    dispatch.next(ip, stride(encode.OpsAtomicRmw), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.ops.OpsAtomicRmw), slots, frame, env, r0, fp0);
 }
 
 // ── atomic_cmpxchg ───────────────────────────────────────────────────────────
 
 pub fn handle_atomic_cmpxchg(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    const ops = readOps(encode.OpsAtomicCmpxchg, ip);
+    const ops = readOps(encode.ops.OpsAtomicCmpxchg, ip);
     const mem = env.memory.bytes();
     const width: ir.AtomicWidth = @enumFromInt(ops.width);
     const ty: ir.AtomicType = @enumFromInt(ops.ty);
@@ -260,13 +260,13 @@ pub fn handle_atomic_cmpxchg(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState,
         .i32 => RawVal.from(@as(i32, @bitCast(@as(u32, @truncate(old))))),
         .i64 => RawVal.from(@as(i64, @bitCast(old))),
     };
-    dispatch.next(ip, stride(encode.OpsAtomicCmpxchg), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.ops.OpsAtomicCmpxchg), slots, frame, env, r0, fp0);
 }
 
 // ── atomic_notify ────────────────────────────────────────────────────────────
 
 pub fn handle_atomic_notify(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    const ops = readOps(encode.OpsAtomicNotify, ip);
+    const ops = readOps(encode.ops.OpsAtomicNotify, ip);
     const mem = env.memory.bytes();
     const base = slots[ops.addr].readAs(u32);
     const ea = base +% ops.offset;
@@ -283,13 +283,13 @@ pub fn handle_atomic_notify(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
     const count = @as(u32, @bitCast(slots[ops.count].readAs(i32)));
     const woken = env.memory.notify(ea, count);
     slots[ops.dst] = RawVal.from(@as(i32, @bitCast(woken)));
-    dispatch.next(ip, stride(encode.OpsAtomicNotify), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.ops.OpsAtomicNotify), slots, frame, env, r0, fp0);
 }
 
 // ── atomic_wait32 ────────────────────────────────────────────────────────────
 
 pub fn handle_atomic_wait32(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    const ops = readOps(encode.OpsAtomicWait32, ip);
+    const ops = readOps(encode.ops.OpsAtomicWait32, ip);
 
     if (!env.memory.isShared()) {
         trapReturn(frame, .UnsharedMemoryWait);
@@ -313,13 +313,13 @@ pub fn handle_atomic_wait32(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
     const timeout_ns = slots[ops.timeout].readAs(i64);
     const result = env.memory.wait32(ea, expected, timeout_ns);
     slots[ops.dst] = RawVal.from(@as(i32, @intFromEnum(result)));
-    dispatch.next(ip, stride(encode.OpsAtomicWait32), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.ops.OpsAtomicWait32), slots, frame, env, r0, fp0);
 }
 
 // ── atomic_wait64 ────────────────────────────────────────────────────────────
 
 pub fn handle_atomic_wait64(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    const ops = readOps(encode.OpsAtomicWait64, ip);
+    const ops = readOps(encode.ops.OpsAtomicWait64, ip);
 
     if (!env.memory.isShared()) {
         trapReturn(frame, .UnsharedMemoryWait);
@@ -343,5 +343,5 @@ pub fn handle_atomic_wait64(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
     const timeout_ns = slots[ops.timeout].readAs(i64);
     const result = env.memory.wait64(ea, expected, timeout_ns);
     slots[ops.dst] = RawVal.from(@as(i32, @intFromEnum(result)));
-    dispatch.next(ip, stride(encode.OpsAtomicWait64), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.ops.OpsAtomicWait64), slots, frame, env, r0, fp0);
 }
