@@ -927,6 +927,18 @@ pub const Op = union(enum) {
         args_start: u32,
         args_len: u32,
     },
+    /// Fused: call + local_set → result written directly to local slot.
+    /// Replaces: `call { dst=T } + local_set { local=L, src=T }`
+    /// Into: single instruction that writes result directly to local, saving one dispatch.
+    call_to_local: struct {
+        /// Index of the local slot to write result to
+        local: Slot,
+        /// Index of the callee function in module.functions
+        func_idx: u32,
+        /// Starting offset of the argument slots in CompiledFunction.call_args
+        args_start: u32,
+        args_len: u32,
+    },
     /// Indirect function call via table.
     /// The callee function index is read at runtime from tables[table_index][index_slot].
     /// Runtime checks: TableOutOfBounds, IndirectCallToNull, BadSignature.

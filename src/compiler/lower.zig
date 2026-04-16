@@ -1860,6 +1860,29 @@ pub const Lower = struct {
         return true;
     }
 
+    /// Fuse: `call { dst=T } + local_set { local=L, src=T }` → `call_to_local { local=L }`
+    /// This saves one dispatch event per call whose result is immediately stored to a local.
+    pub fn try_fuse_call_to_local(self: *Lower, local: Slot, src: Slot) bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len == 0) return false;
+        const last = &ops[ops.len - 1];
+        switch (last.*) {
+            .call => |c| {
+                if (c.dst != src) return false;
+                last.* = .{
+                    .call_to_local = .{
+                        .local = local,
+                        .func_idx = c.func_idx,
+                        .args_start = c.args_start,
+                        .args_len = c.args_len,
+                    },
+                };
+            },
+            else => return false,
+        }
+        return true;
+    }
+
     // ── Constant folding & algebraic simplification helpers ──────────────────
 
     /// Attempt to fuse a preceding binop + local_tee into binop_tee_local.
@@ -3442,7 +3465,8 @@ pub const Lower = struct {
                     self.try_fuse_global_get_to_local(local_slot, src) or
                     self.try_fuse_load_to_local(local_slot, src) or
                     self.try_fuse_cmp_to_local(local_slot, src) or
-                    self.try_fuse_imm_to_local(local_slot, src))
+                    self.try_fuse_imm_to_local(local_slot, src) or
+                    self.try_fuse_call_to_local(local_slot, src))
                 {
                     // fused successfully
                 } else {
