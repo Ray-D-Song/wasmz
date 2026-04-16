@@ -6,6 +6,17 @@
 
 A WebAssembly runtime written in [Zig](https://ziglang.org/), designed to be fast, compact, and easy to embed.
 
+## Performance
+
+In my benchmarks, **wasmz** is currently the fastest WebAssembly interpreter I have tested.
+
+- Benchmark report: [https://ray-d-song.github.io/wasmz/bench.html](https://ray-d-song.github.io/wasmz/bench.html)
+- Full docs: [https://ray-d-song.github.io/wasmz/](https://ray-d-song.github.io/wasmz/)
+
+The benchmark chapter also includes notes on the parser and interpreter optimizations used in wasmz.
+
+If you find workloads where wasmz has a clear disadvantage, please let me know. I will do my best to optimize them :)
+
 ### Real-World Tested
 
 Validated with production WASM workloads:
@@ -39,36 +50,36 @@ Full implementation including:
 ## Quick Start
 
 ```bash
-# Clone and build
-git clone https://github.com/Ray-D-Song/wasmz.git
-cd wasmz
-make build
+# Install from the latest release
+curl -fsSL https://raw.githubusercontent.com/Ray-D-Song/wasmz/main/install.sh | bash
 
 # Run a WASM file
-./zig-out/bin/wasmz module.wasm
+wasmz module.wasm
 
 # Call a function with arguments
-./zig-out/bin/wasmz module.wasm add 3 4
+wasmz module.wasm add 3 4
 # Output: 7
 ```
 
 ## Installation
 
-### Prerequisites
+### Install from Release
 
-- **Zig 0.15.2** - Download from [ziglang.org](https://ziglang.org/download/)
-- **Git** - For cloning the repository
-- **make** - For build commands
+Linux / macOS:
 
-### Build Commands
+```bash
+curl -fsSL https://raw.githubusercontent.com/Ray-D-Song/wasmz/main/install.sh | bash
+```
 
-| Command | Description |
-|---------|-------------|
-| `make build` | ReleaseSafe build (recommended) |
-| `make build-debug` | Debug build (unoptimized) |
-| `make release` | ReleaseFast build (maximum performance) |
-| `make test` | Run all unit tests |
-| `make install` | Install to `~/.local/bin` |
+Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "iwr https://raw.githubusercontent.com/Ray-D-Song/wasmz/main/install.ps1 -UseBasicParsing | iex"
+```
+
+By default, these install to:
+- `~/.local/bin/wasmz` on Linux / macOS
+- `%LOCALAPPDATA%\wasmz\bin\wasmz.exe` on Windows
 
 ## CLI Usage
 
@@ -88,6 +99,31 @@ wasmz library.wasm --reactor --func process
 # Memory statistics
 wasmz program.wasm --mem-stats
 ```
+
+### Prerequisites
+
+- **Zig 0.15.2** - Download from [ziglang.org](https://ziglang.org/download/)
+- **Git** - For cloning the repository
+- **make** - For build commands
+
+### Build from Source
+
+```bash
+git clone https://github.com/Ray-D-Song/wasmz.git
+cd wasmz
+make build
+```
+
+### Build Commands
+
+| Command | Description |
+|---------|-------------|
+| `make build` | ReleaseSafe build (recommended) |
+| `make build-debug` | Debug build (unoptimized) |
+| `make release` | ReleaseFast build (maximum performance) |
+| `make test` | Run all unit tests |
+| `make install` | Install to `~/.local/bin` |
+| `make uninstall` | Remove `~/.local/bin/wasmz` |
 
 ## Zig API
 
@@ -132,39 +168,14 @@ Output:
 - `zig-out/lib/libwasmz.{so,dylib,dll}`
 - `zig-out/include/wasmz.h`
 
-## Project Structure
-
-```
-wasmz/
-├── src/
-│   ├── root.zig          # Public API entry point
-│   ├── main.zig          # CLI implementation
-│   ├── capi.zig          # C API implementation
-│   ├── core/             # Core data types
-│   ├── parser/           # WASM binary parser
-│   ├── compiler/         # Stack-to-register compiler
-│   ├── engine/           # Execution engine
-│   ├── vm/               # Virtual machine
-│   ├── wasmz/            # High-level API
-│   └── wasi/             # WASI implementation
-├── include/
-│   └── wasmz.h           # C API header
-├── tests/                # Integration tests
-└── docs/                 # Documentation
-```
-
-## Dependencies
-
-- **zigrc**: Reference counting implementation (inlined in `src/libs/`)
-- **libc**: Only for the C API
-
-No external libraries required for the core runtime.
-
 ## Documentation
 
-Full documentation available at [docs/src/SUMMARY.md](docs/src/SUMMARY.md):
+Full documentation is available online at [https://ray-d-song.github.io/wasmz/](https://ray-d-song.github.io/wasmz/).
+
+Source files live under [`docs/src`](docs/src), including:
 
 - [Introduction](docs/src/introduction.md)
+- [Benchmark Report](docs/src/bench.md)
 - [Installation](docs/src/installation.md)
 - [CLI Usage](docs/src/cli-usage.md)
 - [Zig API](docs/src/zig-api/README.md)
