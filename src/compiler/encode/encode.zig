@@ -1615,5 +1615,6 @@ pub fn encode(
         .br_table_targets = br_table_targets,
         .catch_handler_tables = catch_handler_tables,
         .is_leaf = cf.is_leaf,
+        .needs_zero = cf.needs_zero,
     };
 }

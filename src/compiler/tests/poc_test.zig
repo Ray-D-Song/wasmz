@@ -55,6 +55,22 @@ fn expect_convert_lowered(op: WasmOp, comptime tag: std.meta.Tag(Op)) !void {
     try testing.expectEqual(.ret, std.meta.activeTag(lower.compiled.ops.items[1]));
 }
 
+fn expect_needs_zero(
+    reserved_slots: ir.Slot,
+    locals_count: u16,
+    n_results: usize,
+    ops: []const WasmOp,
+    expected: bool,
+) !void {
+    var lower = Lower.initWithReservedSlots(testing.allocator, reserved_slots, locals_count);
+    defer lower.deinit();
+
+    try lower.pushFunctionFrame(n_results);
+    for (ops) |op| try lower.lowerOp(op);
+
+    try testing.expectEqual(expected, lower.compiled.needs_zero);
+}
+
 test "lower simple add function into slot IR" {
     var lower = Lower.initWithReservedSlots(testing.allocator, 2, 0);
     defer lower.deinit();
@@ -212,6 +228,57 @@ test "lower local_tee writes local and keeps the top stack value" {
         },
         else => return error.UnexpectedOpTag,
     }
+}
+
+test "needs_zero stays false when local is written before first read" {
+    const ops = [_]WasmOp{
+        .{ .i32_const = 7 },
+        .{ .local_set = 0 },
+        .{ .local_get = 0 },
+        .end,
+    };
+
+    try expect_needs_zero(1, 1, 1, &ops, false);
+}
+
+test "needs_zero becomes true when local is read before any write" {
+    const ops = [_]WasmOp{
+        .{ .local_get = 0 },
+        .end,
+    };
+
+    try expect_needs_zero(1, 1, 1, &ops, true);
+}
+
+test "needs_zero stays true when if without else initializes local on only one path" {
+    const ops = [_]WasmOp{
+        .{ .local_get = 0 },
+        .{ .if_ = null },
+        .{ .i32_const = 1 },
+        .{ .local_set = 1 },
+        .end,
+        .{ .local_get = 1 },
+        .end,
+    };
+
+    try expect_needs_zero(2, 1, 1, &ops, true);
+}
+
+test "needs_zero stays false when both if branches initialize the local" {
+    const ops = [_]WasmOp{
+        .{ .local_get = 0 },
+        .{ .if_ = null },
+        .{ .i32_const = 1 },
+        .{ .local_set = 1 },
+        .else_,
+        .{ .i32_const = 2 },
+        .{ .local_set = 1 },
+        .end,
+        .{ .local_get = 1 },
+        .end,
+    };
+
+    try expect_needs_zero(2, 1, 1, &ops, false);
 }
 
 test "lower drop consumes the top stack value without emitting IR" {

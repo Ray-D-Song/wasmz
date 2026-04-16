@@ -417,8 +417,9 @@ export fn wasmz_instance_memory_size(handle: ?*const wasmz_instance_t) usize {
 export fn wasmz_instance_memory_grow(handle: ?*wasmz_instance_t, pages: u32) c_int {
     const h = handle orelse return -1;
     const inst: *Instance = @ptrCast(@alignCast(h.ptr));
-    const res = inst.memory.grow(pages);
-    return res catch return -1;
+    const prev_pages = inst.memory.grow(pages);
+    if (prev_pages == std.math.maxInt(u32)) return -1;
+    return 0;
 }
 
 // ── Linker ─────────────────────────────────────────────────────────────────
@@ -463,68 +464,19 @@ export fn wasmz_linker_define_func(
     param_count: usize,
     result_kinds: ?[*]const ValKind,
     result_count: usize,
-    func: wasmz_func_t,
+    func: ?*anyopaque,
     host_data: ?*anyopaque,
 ) ?*wasmz_error_t {
-    const h = handle orelse return makeError("linker is null", .{});
-    const mod_name_input = module_name_ptr orelse return makeError("module_name is null", .{});
-    const func_name_input = func_name_ptr orelse return makeError("func_name is null", .{});
-    const linker: *Linker = @ptrCast(@alignCast(h.ptr));
-    const mod_slice = std.mem.span(mod_name_input);
-    const fn_slice = std.mem.span(func_name_input);
-
-    const param_types = alloc.alloc(ValType, param_count) catch
-        return makeError("out of memory", .{});
-    defer alloc.free(param_types);
-    for (0..param_count) |i| {
-        param_types[i] = switch (param_kinds.?(i)) {
-            .I32 => .I32,
-            .I64 => .I64,
-            .F32 => .F32,
-            .F64 => .F64,
-            .V128 => .V128,
-            .REF_NULL => .RefNull,
-            .REF_FUNC => .RefFunc,
-            .EXTERN_REF => .ExternRef,
-        };
-    }
-
-    const result_types = alloc.alloc(ValType, result_count) catch
-        return makeError("out of memory", .{});
-    defer alloc.free(result_types);
-    for (0..result_count) |i| {
-        result_types[i] = switch (result_kinds.?(i)) {
-            .I32 => .I32,
-            .I64 => .I64,
-            .F32 => .F32,
-            .F64 => .F64,
-            .V128 => .V128,
-            .REF_NULL => .RefNull,
-            .REF_FUNC => .RefFunc,
-            .EXTERN_REF => .ExternRef,
-        };
-    }
-
-    const wrapper = alloc.create(HostFuncWrapper) catch
-        return makeError("out of memory", .{});
-    wrapper.* = .{
-        .func = func,
-        .host_data = host_data,
-        .param_count = param_count,
-        .result_count = result_count,
-    };
-
-    const hf = HostFunc.init(
-        wrapper,
-        wrapperWrapper,
-        param_types,
-        result_types,
-    );
-
-    linker.define(alloc, mod_slice, fn_slice, hf) catch |err|
-        return makeError("linker define failed: {s}", .{@errorName(err)});
-
-    return null;
+    _ = handle;
+    _ = module_name_ptr;
+    _ = func_name_ptr;
+    _ = param_kinds;
+    _ = param_count;
+    _ = result_kinds;
+    _ = result_count;
+    _ = func;
+    _ = host_data;
+    return makeError("host functions stub", .{});
 }
 
 const HostFuncWrapper = struct {
@@ -630,7 +582,8 @@ export fn wasmz_context_memory(ctx: ?*anyopaque) ?[*]u8 {
 
 export fn wasmz_context_memory_size(ctx: ?*anyopaque) usize {
     const c: *HostContext = @ptrCast(@alignCast(ctx));
-    return c.memory() orelse &.{}.len;
+    const mem = c.memory() orelse return 0;
+    return mem.len;
 }
 
 export fn wasmz_context_read_memory(ctx: ?*anyopaque, addr: u32, len: usize, out: [*]u8) c_int {
@@ -651,14 +604,16 @@ export fn wasmz_context_read_value(ctx: ?*anyopaque, addr: u32, out: ?*anyopaque
     const c: *HostContext = @ptrCast(@alignCast(ctx));
     const o = out orelse return -1;
     const bytes = c.readBytes(addr, size) catch return -1;
-    @memcpy(o, bytes.ptr[0..size]);
+    const out_slice = @as([*]u8, @ptrCast(o));
+    @memcpy(out_slice[0..size], bytes);
     return 0;
 }
 
 export fn wasmz_context_write_value(ctx: ?*anyopaque, addr: u32, value: ?*const anyopaque, size: usize) c_int {
     const c: *HostContext = @ptrCast(@alignCast(ctx));
     const v = value orelse return -1;
-    c.writeBytes(addr, @as([*]const u8, @ptrCast(v))[0..size]) catch return -1;
+    const v_slice = @as([*]const u8, @ptrCast(v));
+    c.writeBytes(addr, v_slice[0..size]) catch return -1;
     return 0;
 }
 
@@ -666,7 +621,7 @@ export fn wasmz_context_trap(ctx: ?*anyopaque, msg_ptr: ?[*:0]const u8) void {
     const c: *HostContext = @ptrCast(@alignCast(ctx));
     const m = msg_ptr orelse return;
     const msg = std.mem.span(m);
-    const trap = Trap.userMessage(msg);
+    const trap = Trap.hostMessage(msg);
     c.pending_trap = trap;
 }
 
@@ -675,25 +630,28 @@ export fn wasmz_context_trap(ctx: ?*anyopaque, msg_ptr: ?[*:0]const u8) void {
 export fn wasmz_module_has_memory(handle: ?*const wasmz_module_t) c_int {
     const h = handle orelse return 0;
     const arc: *const ArcModule = @ptrCast(@alignCast(h.ptr));
-    return if (arc.value.memory != null) 1 else 0;
+    const m = arc.value.memory;
+    return if (m != null) 1 else 0;
 }
 
 export fn wasmz_module_memory_min(handle: ?*const wasmz_module_t) u32 {
     const h = handle orelse return 0;
     const arc: *const ArcModule = @ptrCast(@alignCast(h.ptr));
-    return arc.value.memory.?.min_pages orelse 0;
+    const m = arc.value.memory orelse return 0;
+    return m.min_pages;
 }
 
 export fn wasmz_module_memory_max(handle: ?*const wasmz_module_t) u32 {
     const h = handle orelse return std.math.maxInt(u32);
     const arc: *const ArcModule = @ptrCast(@alignCast(h.ptr));
-    return arc.value.memory.?.max_pages orelse std.math.maxInt(u32);
+    const m = arc.value.memory;
+    return m.?.max_pages orelse std.math.maxInt(u32);
 }
 
 export fn wasmz_module_export_count(handle: ?*const wasmz_module_t) usize {
     const h = handle orelse return 0;
     const arc: *const ArcModule = @ptrCast(@alignCast(h.ptr));
-    return arc.value.exports.size();
+    return arc.value.exports.count();
 }
 
 export fn wasmz_module_export_name(handle: ?*const wasmz_module_t, index: usize) ?[*]const u8 {

@@ -43,6 +43,7 @@ const OperatorInformation = payload_mod.OperatorInformation;
 const OperatorCode = payload_mod.OperatorCode;
 
 const Allocator = std.mem.Allocator;
+const LocalInitSet = std.DynamicBitSetUnmanaged;
 const Slot = ir.Slot;
 const Op = ir.Op;
 const CompiledFunction = ir.CompiledFunction;
@@ -211,6 +212,11 @@ pub const ControlFrame = struct {
     /// Used at `end` to decide whether the false path needs explicit
     /// zero-init of result slots (for if-without-else with results).
     has_else: bool = false,
+    /// Definite-init state of non-parameter locals at block entry.
+    entry_local_init: LocalInitSet = .{},
+    /// Intersection of all branch states that can reach this frame's end.
+    branch_local_init: LocalInitSet = .{},
+    has_branch_local_init: bool = false,
 };
 
 // ── Input op enum ─────────────────────────────────────────────────────────────
@@ -725,6 +731,10 @@ pub const Lower = struct {
     /// Slot of the most recent call's destination (if any has result).
     /// Used to detect when call + local_set can fuse to call_to_local.
     pending_call_dst: ?Slot = null,
+    /// Definite-init state for non-parameter locals in the current path.
+    local_init: LocalInitSet = .{},
+    /// Disabled once we see unsupported control flow or a read-before-write.
+    local_init_analysis_active: bool = false,
 
     pub fn init(allocator: Allocator) Lower {
         return .{ .allocator = allocator, .pending_call_dst = null };
@@ -736,6 +746,7 @@ pub const Lower = struct {
             .compiled = .{
                 .slots_len = reserved_slots,
                 .locals_count = locals_count,
+                .needs_zero = locals_count > 0,
                 .ops = .empty,
                 .call_args = .empty,
                 .br_table_targets = .empty,
@@ -747,14 +758,113 @@ pub const Lower = struct {
         };
     }
 
+    inline fn trackedLocalCount(self: *const Lower) usize {
+        return self.compiled.locals_count;
+    }
+
+    inline fn firstTrackedLocalSlot(self: *const Lower) Slot {
+        return self.reserved_slots - @as(Slot, self.compiled.locals_count);
+    }
+
+    fn trackedLocalIndex(self: *const Lower, local: u32) ?usize {
+        const local_slot: Slot = @intCast(local);
+        const first = self.firstTrackedLocalSlot();
+        if (local_slot < first or local_slot >= self.reserved_slots) return null;
+        return local_slot - first;
+    }
+
+    fn initLocalInitAnalysis(self: *Lower) !void {
+        self.local_init_analysis_active = false;
+        self.compiled.needs_zero = self.compiled.locals_count > 0;
+        if (self.compiled.locals_count == 0) return;
+        try self.local_init.resize(self.allocator, self.trackedLocalCount(), false);
+        self.local_init.unsetAll();
+        self.local_init_analysis_active = true;
+        self.compiled.needs_zero = false;
+    }
+
+    fn disableLocalInitAnalysis(self: *Lower) void {
+        self.local_init_analysis_active = false;
+        self.compiled.needs_zero = self.compiled.locals_count > 0;
+    }
+
+    fn copyLocalInitIntoCurrent(self: *Lower, src: LocalInitSet) void {
+        if (!self.local_init_analysis_active) return;
+        self.local_init.unsetAll();
+        self.local_init.setUnion(src);
+    }
+
+    fn recordLocalRead(self: *Lower, local: u32) void {
+        if (!self.local_init_analysis_active) return;
+        const idx = self.trackedLocalIndex(local) orelse return;
+        if (!self.local_init.isSet(idx)) self.disableLocalInitAnalysis();
+    }
+
+    fn recordLocalWrite(self: *Lower, local: u32) void {
+        if (!self.local_init_analysis_active) return;
+        const idx = self.trackedLocalIndex(local) orelse return;
+        self.local_init.set(idx);
+    }
+
+    fn initFrameLocalInit(self: *Lower, frame: *ControlFrame) !void {
+        if (!self.local_init_analysis_active) return;
+        frame.entry_local_init = try self.local_init.clone(self.allocator);
+    }
+
+    fn mergeCurrentLocalInitIntoFrame(self: *Lower, frame: *ControlFrame) !void {
+        if (!self.local_init_analysis_active) return;
+        if (frame.kind == .loop or frame.is_function_frame) return;
+        if (!frame.has_branch_local_init) {
+            frame.branch_local_init = try self.local_init.clone(self.allocator);
+            frame.has_branch_local_init = true;
+            return;
+        }
+        frame.branch_local_init.setIntersection(self.local_init);
+    }
+
+    fn finalizeFrameLocalInit(self: *Lower, frame: *ControlFrame, was_unreachable: bool) !void {
+        if (!self.local_init_analysis_active or frame.is_function_frame) return;
+
+        switch (frame.kind) {
+            .if_ => {
+                if (frame.has_else) {
+                    if (!was_unreachable) {
+                        try self.mergeCurrentLocalInitIntoFrame(frame);
+                    }
+                    if (frame.has_branch_local_init) {
+                        self.copyLocalInitIntoCurrent(frame.branch_local_init);
+                    }
+                } else {
+                    if (was_unreachable) {
+                        self.copyLocalInitIntoCurrent(frame.entry_local_init);
+                    } else {
+                        self.local_init.setIntersection(frame.entry_local_init);
+                    }
+                    if (frame.has_branch_local_init) {
+                        self.local_init.setIntersection(frame.branch_local_init);
+                    }
+                }
+            },
+            .block, .loop, .try_table => {
+                if (frame.has_branch_local_init) {
+                    if (was_unreachable) {
+                        self.copyLocalInitIntoCurrent(frame.branch_local_init);
+                    } else {
+                        self.local_init.setIntersection(frame.branch_local_init);
+                    }
+                }
+            },
+        }
+    }
+
     /// Push the implicit function-level block frame onto the control stack.
     /// Must be called once after init, before lowering any ops.
     /// `n_results` is the number of values this function returns (0 for void).
     /// The frame uses `kind = .block`; `br depth` that resolves to this frame
     /// is treated as a `return` (just like the function's final `end`).
     pub fn pushFunctionFrame(self: *Lower, n_results: usize) !void {
+        try self.initLocalInitAnalysis();
         var result_slots: SmallSlotList = .empty;
-        errdefer result_slots.deinit(self.allocator);
         // Allocate a result slot for each return value.
         // These slots are not used for the normal fall-through `end` path
         // (which emits `ret` directly), but `br` targeting this frame will
@@ -763,13 +873,20 @@ pub const Lower = struct {
         while (i < n_results) : (i += 1) {
             try result_slots.append(self.allocator, self.alloc_slot());
         }
-        try self.control_stack.append(self.allocator, .{
+        var frame: ControlFrame = .{
             .kind = .block,
             .stack_height = 0,
             .result_slots = result_slots,
             .target_pc = 0, // forward — patched when the function `end` is processed
             .is_function_frame = true,
-        });
+        };
+        errdefer {
+            frame.result_slots.deinit(self.allocator);
+            frame.entry_local_init.deinit(self.allocator);
+            frame.branch_local_init.deinit(self.allocator);
+        }
+        try self.initFrameLocalInit(&frame);
+        try self.control_stack.append(self.allocator, frame);
     }
 
     pub fn deinit(self: *Lower) void {
@@ -782,9 +899,12 @@ pub const Lower = struct {
             frame.patch_sites.deinit(self.allocator);
             frame.result_slots.deinit(self.allocator);
             frame.param_slots.deinit(self.allocator);
+            frame.entry_local_init.deinit(self.allocator);
+            frame.branch_local_init.deinit(self.allocator);
         }
         self.control_stack.deinit(self.allocator);
         self.free_slots.deinit(self.allocator);
+        self.local_init.deinit(self.allocator);
     }
 
     /// Reset this Lower for reuse on a new function body, retaining all
@@ -804,6 +924,7 @@ pub const Lower = struct {
         self.compiled.catch_handler_tables.clearRetainingCapacity();
         self.compiled.slots_len = reserved_slots;
         self.compiled.locals_count = locals_count;
+        self.compiled.needs_zero = locals_count > 0;
 
         // Clear and deinit each ControlFrame's inner lists.
         // We free the per-frame inner lists (they are typically tiny) and clear
@@ -812,6 +933,8 @@ pub const Lower = struct {
             frame.patch_sites.deinit(self.allocator);
             frame.result_slots.deinit(self.allocator);
             frame.param_slots.deinit(self.allocator);
+            frame.entry_local_init.deinit(self.allocator);
+            frame.branch_local_init.deinit(self.allocator);
         }
         self.control_stack.clearRetainingCapacity();
 
@@ -823,6 +946,7 @@ pub const Lower = struct {
         self.unreachable_depth = 0;
         self.r0_slot = null;
         self.pending_call_dst = null;
+        self.local_init_analysis_active = false;
         // Recycle the free-list capacity but discard stale slot numbers.
         self.free_slots.clearRetainingCapacity();
     }
@@ -2899,13 +3023,21 @@ pub const Lower = struct {
                     try self.stack.push(self.allocator, ps);
                 }
 
-                try self.control_stack.append(self.allocator, .{
+                var frame: ControlFrame = .{
                     .kind = .block,
                     .stack_height = height_after_params,
                     .result_slots = slots.results,
                     .param_slots = slots.params,
                     .target_pc = 0, // forward — filled at end
-                });
+                };
+                errdefer {
+                    frame.result_slots.deinit(self.allocator);
+                    frame.param_slots.deinit(self.allocator);
+                    frame.entry_local_init.deinit(self.allocator);
+                    frame.branch_local_init.deinit(self.allocator);
+                }
+                try self.initFrameLocalInit(&frame);
+                try self.control_stack.append(self.allocator, frame);
             },
 
             .loop => |block_type| {
@@ -2927,13 +3059,21 @@ pub const Lower = struct {
 
                 // The loop target is right here (top of the loop body).
                 const loop_header_pc = self.current_pc();
-                try self.control_stack.append(self.allocator, .{
+                var frame: ControlFrame = .{
                     .kind = .loop,
                     .stack_height = height_after_params,
                     .result_slots = slots.results,
                     .param_slots = slots.params,
                     .target_pc = loop_header_pc,
-                });
+                };
+                errdefer {
+                    frame.result_slots.deinit(self.allocator);
+                    frame.param_slots.deinit(self.allocator);
+                    frame.entry_local_init.deinit(self.allocator);
+                    frame.branch_local_init.deinit(self.allocator);
+                }
+                try self.initFrameLocalInit(&frame);
+                try self.control_stack.append(self.allocator, frame);
             },
 
             .if_ => |block_type| {
@@ -2962,7 +3102,7 @@ pub const Lower = struct {
                 }
                 const jiz_pc = self.current_pc() - 1; // index of the jump_if_z or fused op
 
-                try self.control_stack.append(self.allocator, .{
+                var frame: ControlFrame = .{
                     .kind = .if_,
                     .stack_height = height_after_params,
                     .result_slots = slots.results,
@@ -2974,7 +3114,16 @@ pub const Lower = struct {
                         try ps.append(self.allocator, jiz_pc);
                         break :blk ps;
                     },
-                });
+                };
+                errdefer {
+                    frame.patch_sites.deinit(self.allocator);
+                    frame.result_slots.deinit(self.allocator);
+                    frame.param_slots.deinit(self.allocator);
+                    frame.entry_local_init.deinit(self.allocator);
+                    frame.branch_local_init.deinit(self.allocator);
+                }
+                try self.initFrameLocalInit(&frame);
+                try self.control_stack.append(self.allocator, frame);
             },
 
             .else_ => {
@@ -2995,6 +3144,9 @@ pub const Lower = struct {
                         _ = self.stack.pop();
                     }
                 }
+                if (!was_unreachable) {
+                    try self.mergeCurrentLocalInitIntoFrame(frame);
+                }
 
                 // Emit an unconditional jump to skip the else-body (from end of then-body).
                 const then_end_jump_pc = self.current_pc();
@@ -3013,132 +3165,16 @@ pub const Lower = struct {
                 for (frame.param_slots.items()) |ps| {
                     try self.stack.push(self.allocator, ps);
                 }
+                self.copyLocalInitIntoCurrent(frame.entry_local_init);
             },
 
             .end => {
-                if (self.control_stack.items.len == 0) {
-                    // The final `end` of the function body — emit return.
-                    // This path is taken only when no implicit function frame was pushed
-                    // (legacy code path kept for safety).
-                    if (!was_unreachable) {
-                        const value = self.stack.pop();
-                        try self.emit(.{ .ret = .{ .value = value } });
-                    } else {
-                        // Even for unreachable code, emit a sentinel ret so the M3 code
-                        // buffer always ends with a valid terminator (never actually executed).
-                        try self.emit(.{ .ret = .{ .value = null } });
-                    }
-                    return;
-                }
-
-                var frame = self.control_stack.pop().?;
-                defer frame.patch_sites.deinit(self.allocator);
-                defer frame.result_slots.deinit(self.allocator);
-                defer frame.param_slots.deinit(self.allocator);
-
-                // ── Function-level implicit frame ─────────────────────────────
-                // When the implicit function frame is popped we emit `ret` instead
-                // of a continuation jump, exactly like the `control_stack.len == 0`
-                // path above.  Any `br` that targeted this frame already emitted a
-                // `copy` + forward `jump` that will be patched to land right here,
-                // just before the `ret`.
-                if (frame.is_function_frame) {
-                    // Patch all forward jumps (from `br depth` targeting the function
-                    // frame) to land at the upcoming `ret`.
-                    const ret_pc = self.current_pc();
-                    self.patch_forward_jumps(&frame, ret_pc);
-                    if (!was_unreachable) {
-                        const value = self.stack.pop();
-                        try self.emit(.{ .ret = .{ .value = value } });
-                    } else {
-                        // Emit a sentinel ret so the M3 code buffer always ends with a
-                        // valid terminator (this ret is never actually executed).
-                        try self.emit(.{ .ret = .{ .value = null } });
-                    }
-                    return;
-                }
-
-                // Copy block results from the stack top into the result slots.
-                // Skip this when coming from unreachable code — the br/return already
-                // copied values into result_slots and the stack has been trimmed.
-                if (!was_unreachable) {
-                    // Stack top = last result (result_slots[N-1]); bottom of N values = first result.
-                    const n = frame.result_slots.items().len;
-                    var ri: usize = n;
-                    while (ri > 0) {
-                        ri -= 1;
-                        if (self.stack.peek()) |src| {
-                            try self.emit_copy(frame.result_slots.items()[ri], src);
-                            _ = self.stack.pop();
-                        }
-                    }
-                }
-
-                // ── If-without-else zero-init ────────────────────────────────
-                // When an `if` block has result types but no `else` branch, the
-                // false path (jump_if_z) lands directly at `end`.  The result
-                // slots were never written on the false path and must be
-                // explicitly zero-initialised (the Wasm spec says the implicit
-                // else produces default zero values).
-                //
-                // Layout:
-                //   [then-body result copies]
-                //   jump → continuation         ← skip false-path zeroing
-                // false_path:
-                //   const_i64 0 → result_slots[0..N]
-                // continuation:                 ← both paths merge here
-                if (frame.kind == .if_ and !frame.has_else and frame.result_slots.items().len > 0) {
-                    // Emit a jump from the then-path over the false-path zeroing.
-                    const then_skip_pc = self.current_pc();
-                    try self.emit(.{ .jump = .{ .target = 0 } }); // placeholder, patched below
-
-                    // Patch jump_if_z (and any other forward jumps) to land here.
-                    const false_path_pc = self.current_pc();
-                    self.patch_forward_jumps(&frame, false_path_pc);
-
-                    // Emit explicit zero-init for each result slot.
-                    for (frame.result_slots.items()) |rs| {
-                        try self.emit(.{ .const_i64 = .{ .dst = rs, .value = 0 } });
-                    }
-
-                    // Patch the then-skip jump to land here (continuation).
-                    const continuation_pc = self.current_pc();
-                    switch (self.compiled.ops.items[then_skip_pc]) {
-                        .jump => |*j| j.target = continuation_pc,
-                        else => unreachable,
-                    }
-
-                    // Clear patch_sites so the normal patch_forward_jumps below is a no-op.
-                    frame.patch_sites.clearRetainingCapacity();
-                }
-
-                // For try_table: emit try_table_leave (normal-exit jump) and
-                // backpatch try_table_enter.end_target to point here.
-                if (frame.kind == .try_table) {
-                    // Record pc of try_table_leave as a patch site (forward jump to continuation).
-                    const leave_pc = self.current_pc();
-                    try self.emit(.{ .try_table_leave = .{ .target = 0 } });
-                    try frame.patch_sites.append(self.allocator, leave_pc);
-
-                    // Backpatch try_table_enter.end_target.
-                    if (frame.try_table_enter_pc) |epc| {
-                        switch (self.compiled.ops.items[epc]) {
-                            .try_table_enter => |*e| e.end_target = leave_pc,
-                            else => unreachable,
-                        }
-                    }
-                }
-
-                // The continuation starts at the next op.
-                const end_pc = self.current_pc();
-                self.patch_forward_jumps(&frame, end_pc);
-
-                // Restore value stack and push result slots.
-                try self.unwind_stack_to_frame(&frame);
+                try self.lowerOpEnd(was_unreachable);
             },
 
             .br => |depth| {
                 const frame = try self.frame_at_depth(depth);
+                try self.mergeCurrentLocalInitIntoFrame(frame);
                 _ = try self.emit_branch_to(frame);
                 // After an unconditional br the rest of the block is unreachable;
                 // reset the stack to the frame's height so further ops (up to the
@@ -3151,6 +3187,7 @@ pub const Lower = struct {
             .br_if => |depth| {
                 const cond = try self.pop_slot();
                 const frame = try self.frame_at_depth(depth);
+                try self.mergeCurrentLocalInitIntoFrame(frame);
 
                 // For a loop: br_if passes params; for block/if: passes results.
                 const target_slots = if (frame.kind == .loop)
@@ -3438,9 +3475,13 @@ pub const Lower = struct {
 
                 // Process indexed arms.
                 for (all_targets[0..n_indexed]) |depth| {
+                    const frame = try self.frame_at_depth(depth);
+                    try self.mergeCurrentLocalInitIntoFrame(frame);
                     try reserve_and_patch(self, depth);
                 }
                 // Process default arm (at br_table_targets[targets_start + n_indexed]).
+                const default_frame = try self.frame_at_depth(default_depth);
+                try self.mergeCurrentLocalInitIntoFrame(default_frame);
                 try reserve_and_patch(self, default_depth);
 
                 // Emit the jump_table op. Indexed targets: [targets_start .. targets_start + n_indexed],
@@ -3465,6 +3506,7 @@ pub const Lower = struct {
             // ── Locals & constants ────────────────────────────────────────────
 
             .local_get => |local| {
+                self.recordLocalRead(local);
                 try self.stack.push(self.allocator, self.local_to_slot(local));
             },
             .local_set => |local| {
@@ -3483,6 +3525,7 @@ pub const Lower = struct {
                 } else {
                     try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
                 }
+                self.recordLocalWrite(local);
             },
             .local_tee => |local| {
                 const src = self.stack.peek() orelse return error.StackUnderflow;
@@ -3490,6 +3533,7 @@ pub const Lower = struct {
                 if (!self.try_fuse_local_tee(local_slot, src)) {
                     try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
                 }
+                self.recordLocalWrite(local);
             },
             // ── Globals ──────────────────────────────────────────────────────────
             .global_get => |global_idx| {
@@ -4703,6 +4747,7 @@ pub const Lower = struct {
 
             // ── GC Control Flow instructions ────────────────────────────────────────────
             .br_on_null => |br_depth| {
+                self.disableLocalInitAnalysis();
                 // br_on_null: if ref is null, branch; else continue with ref on stack
                 const frame = try self.frame_at_depth(br_depth);
                 const ref = try self.pop_slot();
@@ -4736,6 +4781,7 @@ pub const Lower = struct {
                 try self.stack.push(self.allocator, ref);
             },
             .br_on_non_null => |br_depth| {
+                self.disableLocalInitAnalysis();
                 // br_on_non_null: if ref is non-null, branch (with ref on stack); else continue
                 const frame = try self.frame_at_depth(br_depth);
                 const ref = try self.pop_slot();
@@ -4763,6 +4809,7 @@ pub const Lower = struct {
                 // So for the null case (continuation), we don't push ref back
             },
             .br_on_cast => |inst| {
+                self.disableLocalInitAnalysis();
                 const frame = try self.frame_at_depth(inst.br_depth);
                 const ref = try self.pop_slot();
 
@@ -4788,6 +4835,7 @@ pub const Lower = struct {
                 try self.stack.push(self.allocator, ref);
             },
             .br_on_cast_fail => |inst| {
+                self.disableLocalInitAnalysis();
                 const frame = try self.frame_at_depth(inst.br_depth);
                 const ref = try self.pop_slot();
 
@@ -4931,6 +4979,7 @@ pub const Lower = struct {
             // The CatchHandlerEntry.target field is patched via the outer frame's patch_sites
             // using the encoding:  0x4000_0000 | catch_handler_tables_index.
             .try_table => |inst| {
+                self.disableLocalInitAnalysis();
                 // Allocate result slots for the block type (try_table has no params per spec).
                 const slots = try self.resolve_block_slots(inst.block_type);
 
@@ -5214,6 +5263,7 @@ pub const Lower = struct {
             // ── Locals & globals ─────────────────────────────────────────────
             .local_get => {
                 const local = info.local_index orelse return error.UnsupportedOperator;
+                self.recordLocalRead(local);
                 try self.stack.push(self.allocator, self.local_to_slot(local));
             },
             .local_set => {
@@ -5232,6 +5282,7 @@ pub const Lower = struct {
                 } else {
                     try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
                 }
+                self.recordLocalWrite(local);
             },
             .local_tee => {
                 const local = info.local_index orelse return error.UnsupportedOperator;
@@ -5240,6 +5291,7 @@ pub const Lower = struct {
                 if (!self.try_fuse_local_tee(local_slot, src)) {
                     try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
                 }
+                self.recordLocalWrite(local);
             },
             .global_get => {
                 const global_idx = info.global_index orelse return error.UnsupportedOperator;
@@ -5775,6 +5827,8 @@ pub const Lower = struct {
         defer frame.patch_sites.deinit(self.allocator);
         defer frame.result_slots.deinit(self.allocator);
         defer frame.param_slots.deinit(self.allocator);
+        defer frame.entry_local_init.deinit(self.allocator);
+        defer frame.branch_local_init.deinit(self.allocator);
 
         if (frame.is_function_frame) {
             const ret_pc = self.current_pc();
@@ -5839,6 +5893,7 @@ pub const Lower = struct {
         self.patch_forward_jumps(&frame, end_pc);
 
         try self.unwind_stack_to_frame(&frame);
+        try self.finalizeFrameLocalInit(&frame, was_unreachable);
 
         for (frame.result_slots.items()) |slot| self.recycle_slot(slot);
         for (frame.param_slots.items()) |slot| self.recycle_slot(slot);
