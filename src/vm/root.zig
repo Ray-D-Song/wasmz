@@ -122,6 +122,11 @@ pub const VM = struct {
         params: []const RawVal,
         env: ExecEnv,
     ) Allocator.Error!ExecResult {
+        // Lazily initialize GC heap for modules that need it (GC types or EH).
+        if (env.module.has_gc_types or env.module.config.eh_mode != .none) {
+            _ = try env.store.ensureGcHeap();
+        }
+
         // Build the M3 ExecEnv (same layout, just a pointer wrapper).
         const m3_env = dispatch_mod.ExecEnv{
             .store = env.store,

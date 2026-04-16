@@ -129,7 +129,7 @@ fn dispatchException(
                     const dst_slots = tgt_func.eh_dst_slots[dst_start .. dst_start + n];
                     var i: u32 = 0;
                     while (i < n) : (i += 1) {
-                        tgt_slots[dst_slots[i]] = store.gc_heap.exceptionArg(exn_ref, i);
+                        tgt_slots[dst_slots[i]] = store.gc_heap.?.exceptionArg(exn_ref, i);
                     }
                 },
                 .catch_tag_ref => {
@@ -138,7 +138,7 @@ fn dispatchException(
                     const dst_slots = tgt_func.eh_dst_slots[dst_start .. dst_start + n];
                     var i: u32 = 0;
                     while (i < n) : (i += 1) {
-                        tgt_slots[dst_slots[i]] = store.gc_heap.exceptionArg(exn_ref, i);
+                        tgt_slots[dst_slots[i]] = store.gc_heap.?.exceptionArg(exn_ref, i);
                     }
                     tgt_slots[h.dst_ref] = RawVal.fromGcRef(exn_ref);
                 },
@@ -178,7 +178,7 @@ pub fn handle_throw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *co
 
     // Allocate exception on GC heap
     const exn_ref: GcRef = blk: {
-        if (env.store.gc_heap.allocException(ops.tag_index, exc_args)) |r| {
+        if (env.store.gc_heap.?.allocException(ops.tag_index, exc_args)) |r| {
             frame.allocator.free(exc_args);
             break :blk r;
         }
@@ -187,9 +187,9 @@ pub fn handle_throw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *co
             trapReturn(frame, .OutOfMemory);
             return;
         };
-        env.store.gc_heap.collect(roots, env.composite_types, env.struct_layouts, env.array_layouts);
+        env.store.gc_heap.?.collect(roots, env.composite_types, env.struct_layouts, env.array_layouts);
         frame.allocator.free(roots);
-        const ref = env.store.gc_heap.allocException(ops.tag_index, exc_args) orelse {
+        const ref = env.store.gc_heap.?.allocException(ops.tag_index, exc_args) orelse {
             frame.allocator.free(exc_args);
             trapReturn(frame, .OutOfMemory);
             return;
@@ -217,7 +217,7 @@ pub fn handle_throw_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
         trapReturn(frame, .NullReference);
         return;
     }
-    const tag_index = env.store.gc_heap.exceptionTagIndex(exn_ref);
+    const tag_index = env.store.gc_heap.?.exceptionTagIndex(exn_ref);
 
     if (dispatchException(tag_index, exn_ref, frame, env.store, env)) {
         const cur = frame.callStackTop();

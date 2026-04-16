@@ -20,7 +20,8 @@ pub const Store = struct {
     engine: Engine,
     /// GC heap for WASM GC objects (structs, arrays, i31).
     /// Shared across all instances created from this store.
-    gc_heap: GcHeap,
+    /// Lazily initialized on first need (when a module with GC types is instantiated).
+    gc_heap: ?GcHeap = null,
     user_data: ?*anyopaque = null,
     runtime_instance_count: usize = 0,
     /// Memory budget: tracks and optionally limits total memory use.
@@ -32,14 +33,10 @@ pub const Store = struct {
 
     pub fn init(allocator: Allocator, engine: Engine) std.mem.Allocator.Error!Store {
         const limit: ?u64 = engine.config().*.mem_limit_bytes;
-        var store = Store{
+        return .{
             .allocator = allocator,
-            // clone increments the Arc reference count, ensuring the Store holds an independent reference.
             .engine = engine.clone(),
-            // Initialize GC heap with default size (4KB, grows on demand).
-            // Budget pointer is set to null here and patched to &self.memory_budget
-            // by the caller via Store.linkBudget() after the store reaches its final location.
-            .gc_heap = try GcHeap.initDefault(allocator, null),
+            .gc_heap = null,
             .memory_budget = .{
                 .limit_bytes = limit,
                 .linear_bytes = 0,
@@ -47,9 +44,19 @@ pub const Store = struct {
                 .shared_bytes = 0,
             },
         };
-        // Record the initial GC heap capacity in the budget.
-        store.memory_budget.gc_capacity_bytes = store.gc_heap.totalSize();
-        return store;
+    }
+
+    /// Initializes the GC heap on first use. Safe to call multiple times.
+    /// Returns the gc_heap pointer for convenience.
+    pub fn ensureGcHeap(self: *Store) std.mem.Allocator.Error!*GcHeap {
+        if (self.gc_heap == null) {
+            self.gc_heap = try GcHeap.initDefault(self.allocator, null);
+            if (self.memory_budget.limit_bytes != null) {
+                self.gc_heap.?.budget = &self.memory_budget;
+            }
+            self.memory_budget.gc_capacity_bytes = self.gc_heap.?.totalSize();
+        }
+        return &self.gc_heap.?;
     }
 
     /// Must be called once, after the Store has been placed at its permanent
@@ -57,8 +64,10 @@ pub const Store = struct {
     /// This patches the GC heap's budget pointer so it refers to the store's
     /// own MemoryBudget field rather than a now-invalid stack temporary.
     pub fn linkBudget(self: *Store) void {
-        if (self.memory_budget.limit_bytes != null) {
-            self.gc_heap.budget = &self.memory_budget;
+        if (self.gc_heap) |*gc_heap| {
+            if (self.memory_budget.limit_bytes != null) {
+                gc_heap.budget = &self.memory_budget;
+            }
         }
     }
 
@@ -81,7 +90,9 @@ pub const Store = struct {
     }
 
     pub fn deinit(self: *Store) void {
-        self.gc_heap.deinit();
+        if (self.gc_heap) |*gc_heap| {
+            gc_heap.deinit();
+        }
         self.engine.deinit();
         self.* = undefined;
     }

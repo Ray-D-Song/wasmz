@@ -157,9 +157,13 @@ pub const Instance = struct {
             if (global_init.init_expr) |init_expr| {
                 // Deferred const expr — evaluate at runtime.
                 // Pass imported_global_values so global.get can resolve imported globals.
+                const gc_heap = if (module.has_gc_types)
+                    try store.ensureGcHeap()
+                else
+                    unreachable; // Should not have GC const expr without GC types
                 const value = evaluateGcConstExpr(
                     store.allocator,
-                    &store.gc_heap,
+                    gc_heap,
                     init_expr,
                     imported_global_values,
                     globals[0..i],
@@ -329,9 +333,13 @@ pub const Instance = struct {
         for (module.globals, 0..) |global_init, i| {
             if (global_init.init_expr) |init_expr| {
                 // Deferred const expr — evaluate at runtime.
+                const gc_heap = if (module.has_gc_types)
+                    try store.ensureGcHeap()
+                else
+                    unreachable; // Should not have GC const expr without GC types
                 const value = evaluateGcConstExpr(
                     store.allocator,
-                    &store.gc_heap,
+                    gc_heap,
                     init_expr,
                     imported_global_values_shared,
                     globals[0..i],
