@@ -29,7 +29,7 @@ REPORT="$RESULTS_DIR/report-${TIMESTAMP}.md"
 HYPERFINE_DIR="$RESULTS_DIR/hyperfine"
 
 RUNS=10
-WARMUP=2
+WARMUP=5
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 die()  { echo "ERROR: $*" >&2; exit 1; }
