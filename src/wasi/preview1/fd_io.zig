@@ -7,6 +7,21 @@ const Allocator = std.mem.Allocator;
 const RawVal = core.RawVal;
 const HostContext = wasmz.HostContext;
 
+fn wasiInode(inode: anytype) u64 {
+    const T = @TypeOf(inode);
+    const info = @typeInfo(T);
+    if (info != .int) @compileError("inode must be an integer");
+
+    return switch (info.int.signedness) {
+        .unsigned => @as(u64, @intCast(inode)),
+        .signed => blk: {
+            const UnsignedT = std.meta.Int(.unsigned, @bitSizeOf(T));
+            const raw: UnsignedT = @bitCast(inode);
+            break :blk @as(u64, @intCast(raw));
+        },
+    };
+}
+
 pub const WriteError = error{Io};
 
 pub const Output = struct {
@@ -460,7 +475,7 @@ pub const FdIO = struct {
 
                     const result: types.Filestat = .{
                         .dev = 0,
-                        .ino = file_stat.inode,
+                        .ino = wasiInode(file_stat.inode),
                         .filetype = switch (file_stat.kind) {
                             .file => .regular_file,
                             .directory => .directory,
@@ -487,7 +502,7 @@ pub const FdIO = struct {
 
                     const result: types.Filestat = .{
                         .dev = 0,
-                        .ino = dir_stat.inode,
+                        .ino = wasiInode(dir_stat.inode),
                         .filetype = .directory,
                         .nlink = 1,
                         .size = dir_stat.size,
@@ -1174,7 +1189,7 @@ pub const FdIO = struct {
 
         const result = types.Filestat{
             .dev = 0,
-            .ino = stat.inode,
+            .ino = wasiInode(stat.inode),
             .filetype = switch (stat.kind) {
                 .file => .regular_file,
                 .directory => .directory,
