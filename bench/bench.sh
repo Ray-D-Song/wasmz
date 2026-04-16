@@ -127,9 +127,11 @@ PYEOF
 
 # File size in bytes
 binary_size() {
+  local target
+  target="$(readlink -f "$1" 2>/dev/null || echo "$1")"
   case "$(uname -s)" in
-    Darwin*) stat -f "%z" "$1" ;;
-    *)       stat -c "%s" "$1" ;;
+    Darwin*) stat -f "%z" "$target" ;;
+    *)       stat -c "%s" "$target" ;;
   esac
 }
 
