@@ -9,7 +9,13 @@ PROJECTS_DIR="$BENCH_DIR/projects"
 WASMZ="$REPO_DIR/zig-out/bin/wasmz"
 WASM3="$PROJECTS_DIR/wasm3/build/wasm3"
 WASMI="$PROJECTS_DIR/wasmi/target/release/wasmi"
-WAMR="$PROJECTS_DIR/wamr/product-mini/platforms/linux/build/iwasm"
+get_wamr_platform() {
+    case "$(uname -s)" in
+        Darwin*) echo "darwin" ;;
+        *)       echo "linux" ;;
+    esac
+}
+WAMR="$PROJECTS_DIR/wamr/product-mini/platforms/$(get_wamr_platform)/build/iwasm"
 BUILD_SCRIPT="$BENCH_DIR/build.sh"
 
 FIB_WASM="$BENCH_DIR/workloads/fib30.wasm"
@@ -212,16 +218,15 @@ hyperfine --style none --warmup "$WARMUP" --runs "$RUNS" \
 
 # ─── 4. esbuild bundling ──────────────────────────────────────────────────────
 info "Benchmarking esbuild [19MB WASM, JS bundler]..."
+ESBUILD_DIR="$(dirname "$ESBUILD_SOURCE")"
 hyperfine --style none --warmup "$WARMUP" --runs "$RUNS" \
   --export-json "$HYPERFINE_DIR/esbuild.json" \
   --command-name "wasmz" \
-    "sh -c '$WASMZ $ESBUILD_WASM --args \"--bundle --platform=node --sourcefile=source.js\" < $ESBUILD_SOURCE > /dev/null'" \
+    "sh -c 'cd $ESBUILD_DIR && $WASMZ $ESBUILD_WASM --args \"--bundle --platform=node --sourcefile=source.js\" < $ESBUILD_SOURCE > /dev/null'" \
   --command-name "wasm3" \
-    "sh -c '$WASM3 $ESBUILD_WASM --bundle --platform=node --sourcefile=source.js < $ESBUILD_SOURCE > /dev/null'" \
+    "sh -c 'cd $ESBUILD_DIR && $WASM3 $ESBUILD_WASM --bundle --platform=node --sourcefile=source.js < $ESBUILD_SOURCE > /dev/null'" \
   --command-name "wasmi" \
-    "sh -c '$WASMI $ESBUILD_WASM --bundle --platform=node --sourcefile=source.js < $ESBUILD_SOURCE > /dev/null'" \
-  --command-name "wamr" \
-    "sh -c '$WAMR $ESBUILD_WASM --bundle --platform=node --sourcefile=source.js < $ESBUILD_SOURCE > /dev/null'"
+    "sh -c 'cd $ESBUILD_DIR && $WASMI $ESBUILD_WASM --bundle --platform=node --sourcefile=source.js < $ESBUILD_SOURCE > /dev/null'"
 
 # ─── 5. peak RSS ──────────────────────────────────────────────────────────────
 info "Measuring peak RSS for fib(30)..."
@@ -244,8 +249,6 @@ RSS_ESBUILD_WASM3=$(measure_rss sh -c \
   "\"$WASM3\" \"$ESBUILD_WASM\" --bundle --platform=node --sourcefile=source.js < \"$ESBUILD_SOURCE\" > /dev/null")
 RSS_ESBUILD_WASMI=$(measure_rss sh -c \
   "\"$WASMI\" \"$ESBUILD_WASM\" --bundle --platform=node --sourcefile=source.js < \"$ESBUILD_SOURCE\" > /dev/null")
-RSS_ESBUILD_WAMR=$(measure_rss sh -c \
-  "\"$WAMR\" \"$ESBUILD_WASM\" --bundle --platform=node --sourcefile=source.js < \"$ESBUILD_SOURCE\" > /dev/null")
 
 # ─── 5b. time-averaged RSS (ps sampled every SAMPLE_INTERVAL_MS during one run) ─
 info "Measuring time-averaged RSS for fib(30)..."
@@ -267,8 +270,6 @@ AVG_ESBUILD_WASM3=$(measure_avg_rss sh -c \
   "\"$WASM3\" \"$ESBUILD_WASM\" --bundle --platform=node --sourcefile=source.js < \"$ESBUILD_SOURCE\" > /dev/null")
 AVG_ESBUILD_WASMI=$(measure_avg_rss sh -c \
   "\"$WASMI\" \"$ESBUILD_WASM\" --bundle --platform=node --sourcefile=source.js < \"$ESBUILD_SOURCE\" > /dev/null")
-AVG_ESBUILD_WAMR=$(measure_avg_rss sh -c \
-  "\"$WAMR\" \"$ESBUILD_WASM\" --bundle --platform=node --sourcefile=source.js < \"$ESBUILD_SOURCE\" > /dev/null")
 
 # ─── 6. parse medians ─────────────────────────────────────────────────────────
 MED_FIB_WASMZ=$(parse_median_ms "$HYPERFINE_DIR/fib.json" "wasmz")
@@ -337,12 +338,13 @@ cat << MDEOF
 
 ### esbuild — JS bundler running inside WASM (19 MB module)
 
+> Note: wamr is excluded from esbuild tests because it does not support stdin input and causes stack overflow with large workloads.
+
 | Runtime | Median (ms) |
 |---------|-------------|
 | wasmz   | ${MED_ESBUILD_WASMZ} |
 | wasmi   | ${MED_ESBUILD_WASMI} |
 | wasm3   | ${MED_ESBUILD_WASM3} |
-| wamr    | ${MED_ESBUILD_WAMR} |
 
 ## Peak RSS (memory) — lower is better
 
@@ -370,12 +372,13 @@ cat << MDEOF
 
 ### esbuild bundling
 
+> Note: wamr is excluded due to stdin/stack limitations.
+
 | Runtime | Peak RSS | Avg RSS |
 |---------|----------|---------|
 | wasmz   | $(human_bytes ${RSS_ESBUILD_WASMZ:-0}) | $(human_bytes ${AVG_ESBUILD_WASMZ:-0}) |
 | wasmi   | $(human_bytes ${RSS_ESBUILD_WASMI:-0}) | $(human_bytes ${AVG_ESBUILD_WASMI:-0}) |
 | wasm3   | $(human_bytes ${RSS_ESBUILD_WASM3:-0}) | $(human_bytes ${AVG_ESBUILD_WASM3:-0}) |
-| wamr    | $(human_bytes ${RSS_ESBUILD_WAMR:-0}) | $(human_bytes ${AVG_ESBUILD_WAMR:-0}) |
 MDEOF
 } > "$REPORT"
 

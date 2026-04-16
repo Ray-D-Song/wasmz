@@ -11,7 +11,15 @@ WASM3_BIN="$WASM3_DIR/build/wasm3"
 WASMI_DIR="$PROJECTS_DIR/wasmi"
 WASMI_BIN="$WASMI_DIR/target/release/wasmi"
 WAMR_DIR="$PROJECTS_DIR/wamr"
-WAMR_BIN="$WAMR_DIR/product-mini/platforms/linux/build/iwasm"
+
+get_wamr_platform() {
+    case "$(uname -s)" in
+        Darwin*) echo "darwin" ;;
+        *)       echo "linux" ;;
+    esac
+}
+
+WAMR_BIN="$WAMR_DIR/product-mini/platforms/$(get_wamr_platform)/build/iwasm"
 
 NCPU=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
@@ -46,10 +54,29 @@ build_wasmi() {
 
 build_wamr() {
     info "Building wamr..."
-    mkdir -p "$WAMR_DIR/product-mini/platforms/linux/build"
-    cd "$WAMR_DIR/product-mini/platforms/linux/build"
+
+    local WAMR_TARGET=""
+    local WAMR_PLATFORM="linux"
+    case "$(uname -s)" in
+        Darwin*)
+            WAMR_PLATFORM="darwin"
+            case "$(uname -m)" in
+                arm64*)  WAMR_TARGET="AARCH64" ;;
+                x86_64*) WAMR_TARGET="X86_64" ;;
+            esac
+            ;;
+        Linux*)
+            case "$(uname -m)" in
+                aarch64*) WAMR_TARGET="AARCH64" ;;
+                x86_64*)  WAMR_TARGET="X86_64" ;;
+            esac
+            ;;
+    esac
+
+    mkdir -p "$WAMR_DIR/product-mini/platforms/$WAMR_PLATFORM/build"
+    cd "$WAMR_DIR/product-mini/platforms/$WAMR_PLATFORM/build"
     cmake .. \
-        -DWAMR_BUILD_TARGET=X86_64 \
+        -DWAMR_BUILD_TARGET=$WAMR_TARGET \
         -DWAMR_BUILD_INTERP=1 \
         -DWAMR_BUILD_AOT=0 \
         -DWAMR_BUILD_FAST_JIT=0 \
