@@ -1,5 +1,37 @@
 # Installation
 
+## Install from Release
+
+Install the latest published GitHub release directly into your user directory:
+
+### Linux / macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Ray-D-Song/wasmz/main/install.sh | bash
+```
+
+By default, this installs `wasmz` to `~/.local/bin`.
+
+### Windows
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "iwr https://raw.githubusercontent.com/Ray-D-Song/wasmz/main/install.ps1 -UseBasicParsing | iex"
+```
+
+By default, this installs `wasmz.exe` to `%LOCALAPPDATA%\wasmz\bin`.
+
+You can also download the installer scripts and run them locally:
+
+```bash
+./install.sh --help
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+These scripts install the latest stable GitHub release by default, and also support installing a specific tag.
+
 ## Prerequisites
 
 - **Zig 0.15.2** - Download from [ziglang.org](https://ziglang.org/download/)

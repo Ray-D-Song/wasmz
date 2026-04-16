@@ -1,6 +1,7 @@
 # Summary
 
 - [Introduction](./introduction.md)
+- [Benchmark](./bench.md)
 - [Getting Started](./getting-started.md)
   - [Installation](./installation.md)
   - [CLI Usage](./cli-usage.md)

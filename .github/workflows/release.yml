@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '**'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Release (${{ matrix.asset_suffix }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-macos
+            runner: macos-latest
+            asset_suffix: macos-x86_64
+            binary_name: wasmz
+            archive_kind: tar.gz
+          - target: aarch64-macos
+            runner: macos-latest
+            asset_suffix: macos-arm64
+            binary_name: wasmz
+            archive_kind: tar.gz
+          - target: x86_64-windows
+            runner: windows-latest
+            asset_suffix: windows-x86_64
+            binary_name: wasmz.exe
+            archive_kind: zip
+          - target: aarch64-windows
+            runner: windows-latest
+            asset_suffix: windows-arm64
+            binary_name: wasmz.exe
+            archive_kind: zip
+          - target: x86_64-linux-musl
+            runner: ubuntu-latest
+            asset_suffix: linux-x86_64
+            binary_name: wasmz
+            archive_kind: tar.gz
+          - target: aarch64-linux-musl
+            runner: ubuntu-latest
+            asset_suffix: linux-arm64
+            binary_name: wasmz
+            archive_kind: tar.gz
+          - target: riscv64-linux-musl
+            runner: ubuntu-latest
+            asset_suffix: linux-riscv64
+            binary_name: wasmz
+            archive_kind: tar.gz
+          - target: loongarch64-linux-musl
+            runner: ubuntu-latest
+            asset_suffix: linux-loongarch64
+            binary_name: wasmz
+            archive_kind: tar.gz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Zig 0.15.2
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build
+        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+
+      - name: Stage release files
+        shell: bash
+        run: |
+          mkdir -p dist/package
+          cp "zig-out/bin/${{ matrix.binary_name }}" "dist/package/${{ matrix.binary_name }}"
+
+      - name: Create tarball
+        if: matrix.archive_kind == 'tar.gz'
+        shell: bash
+        env:
+          ARCHIVE_NAME: wasmz-${{ github.ref_name }}-${{ matrix.asset_suffix }}.${{ matrix.archive_kind }}
+        run: |
+          tar -C dist/package -czf "dist/${ARCHIVE_NAME}" "${{ matrix.binary_name }}"
+
+      - name: Create zip
+        if: matrix.archive_kind == 'zip'
+        shell: pwsh
+        env:
+          ARCHIVE_NAME: wasmz-${{ github.ref_name }}-${{ matrix.asset_suffix }}.${{ matrix.archive_kind }}
+        run: |
+          Compress-Archive -Path "dist/package/${{ matrix.binary_name }}" -DestinationPath "dist/${env:ARCHIVE_NAME}"
+
+      - name: Upload packaged artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.asset_suffix }}
+          path: dist/wasmz-${{ github.ref_name }}-${{ matrix.asset_suffix }}.${{ matrix.archive_kind }}
+          retention-days: 7
+
+  publish:
+    name: Publish Release
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

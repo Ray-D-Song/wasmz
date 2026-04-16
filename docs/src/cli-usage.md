@@ -58,7 +58,10 @@ $ wasmz library.wasm --reactor --func process -- input.txt
 | `--func <name>` | Exported function to call |
 | `--reactor` | Call `_initialize` before the function |
 | `--mem-stats` | Print memory usage after execution |
+| `--mem-trace` | Print RSS snapshots at each execution phase |
 | `--mem-limit <MB>` | Set memory limit in megabytes |
+| `--eager-compile` | Compile all functions eagerly at load time |
+| `--smart-compile` | Auto-select compile mode: eager for modules < 3 MB, lazy otherwise |
 
 ## Memory Statistics
 
@@ -73,6 +76,41 @@ Memory usage:
   ────────────────────────────────
   Total:          1.12 MB
 ```
+
+## Memory Tracing
+
+Use `--mem-trace` to print RSS snapshots at each execution phase (open, compile, instantiate, run):
+
+```bash
+$ wasmz program.wasm --mem-trace
+[mem-trace] baseline (file mapped)    RSS 12.3 MB  (+12.3 MB)
+[mem-trace] after compile             RSS 18.7 MB  (+6.4 MB)
+[mem-trace] after instantiate         RSS 20.1 MB  (+1.4 MB)
+[mem-trace] after _start              RSS 21.5 MB  (+1.4 MB)
+```
+
+Set the `WASMZ_PHASE_DIAG=1` environment variable to print detailed wall-clock timing for each phase to stderr:
+
+```bash
+$ WASMZ_PHASE_DIAG=1 wasmz program.wasm
+[phase-diag] wasmz exit=_start return
+[phase-diag]   open+mmap     :    0.342 ms
+[phase-diag]   compile       :   12.101 ms
+[phase-diag]   store+linker  :    0.082 ms
+[phase-diag]   instantiate   :    1.203 ms
+[phase-diag]   runStart      :    0.004 ms
+[phase-diag]   _start        :  245.881 ms
+[phase-diag]   total         :  259.613 ms
+```
+
+## Compilation Modes
+
+By default, wasmz compiles functions lazily (on first call). Two flags control this behaviour:
+
+| Flag | Description |
+|------|-------------|
+| `--eager-compile` | Compile every function during module load. Higher startup cost, zero lazy overhead at runtime. |
+| `--smart-compile` | Automatically choose: eager for modules &lt; 3 MB, lazy otherwise (good default for interactive use). |
 
 ## Error Handling
 

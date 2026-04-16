@@ -39,6 +39,11 @@ const Config = struct {
     
     /// Memory limit in bytes (null = unlimited)
     mem_limit_bytes: ?u64 = null,
+
+    /// When true, all local functions are compiled up front during Module.compile()
+    /// instead of lazily on first call. Trades higher startup cost for zero
+    /// lazy-compilation overhead at runtime.
+    eager_compile: bool = false,
 };
 ```
 
@@ -48,6 +53,7 @@ const Config = struct {
 |-------|------|---------|-------------|
 | `legacy_exceptions` | `bool` | `false` | Use legacy EH proposal |
 | `mem_limit_bytes` | `?u64` | `null` | Max memory allocation |
+| `eager_compile` | `bool` | `false` | Compile all functions at load time |
 
 ### Example: Memory Limit
 
@@ -64,6 +70,16 @@ For modules using the older exception handling proposal:
 ```zig
 var engine = try wasmz.Engine.init(allocator, .{
     .legacy_exceptions = true,
+});
+```
+
+### Example: Eager Compilation
+
+Compile all functions up front for zero lazy overhead at runtime (useful for small modules or batch workloads):
+
+```zig
+var engine = try wasmz.Engine.init(allocator, .{
+    .eager_compile = true,
 });
 ```
 

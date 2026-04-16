@@ -1,5 +1,5 @@
 [book]
-title = "Wasmz - Fast and Compact Wasm runtime"
+title = "Wasmz - 最快的Wasm解释器"
 authors = ["Ray-D-Song"]
 language = "en"
 
