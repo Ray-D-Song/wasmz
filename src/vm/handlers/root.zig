@@ -112,7 +112,7 @@ fn currentRssLinux() usize {
     _ = it.next(); // skip "size"
     const rss_str = it.next() orelse return 0;
     const rss_pages = std.fmt.parseInt(usize, rss_str, 10) catch return 0;
-    return rss_pages * std.mem.page_size;
+    return rss_pages * std.heap.pageSize();
 }
 
 fn currentRssWindows() usize {

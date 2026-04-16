@@ -317,7 +317,11 @@ fn expectUnaryBitsResult(comptime T: type, op: WasmOp, param: RawVal, expected_b
 fn expectUnaryTrap(op: WasmOp, param: RawVal, expected: TrapCode) !void {
     const exec_result = try executeUnaryOp(op, param);
     switch (exec_result) {
-        .trap => |trap| try testing.expectEqual(expected, trap.trapCode().?),
+        .trap => |trap| {
+            var t = trap;
+            defer t.deinit();
+            try testing.expectEqual(expected, t.trapCode().?);
+        },
         .ok => return error.ExpectedTrap,
     }
 }
