@@ -32,6 +32,8 @@ const Instance = wasmz.Instance;
 const RawVal = wasmz.RawVal;
 const Linker = wasmz.Linker;
 const op_counts = wasmz.op_counts;
+
+const SMART_SIZE_THRESHOLD: u64 = 3 * 1024 * 1024;
 pub fn main() void {
     if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
         var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -93,10 +95,15 @@ fn run(allocator: std.mem.Allocator) void {
 
     tracePhase(cli_args.mem_trace, &trace_prev, "baseline (file mapped)");
 
+    const use_eager_compile = if (cli_args.smart_compile)
+        wasm_bytes.len < SMART_SIZE_THRESHOLD
+    else
+        cli_args.eager_compile;
+
     var engine = Engine.init(allocator, .{
         .legacy_exceptions = cli_args.legacy_exceptions,
         .mem_limit_bytes = if (cli_args.mem_limit_mb) |mb| mb * 1024 * 1024 else null,
-        .eager_compile = cli_args.eager_compile,
+        .eager_compile = use_eager_compile,
     }) catch |err| fatal("Failed to initialize engine: {s}", .{@errorName(err)});
     defer engine.deinit();
 
@@ -310,6 +317,7 @@ const CliArgs = struct {
     mem_trace: bool,
     mem_limit_mb: ?u64,
     reactor: bool,
+    smart_compile: bool,
     eager_compile: bool,
     _parsed: arg_parse.Parsed,
     _wasm_args_parsed: [][]const u8,
@@ -321,6 +329,7 @@ const CliArgs = struct {
         arg_parse.Flag.boolFlag("mem-stats", "Print memory usage stats after execution"),
         arg_parse.Flag.boolFlag("mem-trace", "Print RSS snapshots at each execution phase"),
         arg_parse.Flag.boolFlag("reactor", "Initialize as reactor before calling --func"),
+        arg_parse.Flag.boolFlag("smart-compile", "Smart compile: eager < 3MB, lazy >= 3MB (default)"),
         arg_parse.Flag.boolFlag("eager-compile", "Compile all functions eagerly"),
         arg_parse.Flag.stringFlag("args", "Arguments to pass to the WASM module"),
         arg_parse.Flag.stringFlag("func", "Name of exported function to call"),
@@ -402,6 +411,7 @@ const CliArgs = struct {
             .mem_trace = parsed.getBool("mem-trace"),
             .mem_limit_mb = mem_limit_mb,
             .reactor = parsed.getBool("reactor"),
+            .smart_compile = parsed.getBool("smart-compile"),
             .eager_compile = parsed.getBool("eager-compile"),
             .wasi_args = wasi_args,
             .passthrough = passthrough,

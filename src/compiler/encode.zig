@@ -216,6 +216,9 @@ pub const OpsCall = extern struct { dst: Slot, dst_valid: u16, func_idx: u32, ar
 /// call_to_local — fused call + local_set: args_len inline Slot arg slots follow
 pub const OpsCallToLocal = extern struct { local: Slot, func_idx: u32, args_len: u32 };
 
+/// call_leaf — leaf call: inline execute callee, no call dispatch
+pub const OpsCallLeaf = extern struct { func_idx: u32, args_len: u32 };
+
 /// call_indirect — args_len inline Slot arg slots follow immediately after this struct
 pub const OpsCallIndirect = extern struct { dst: Slot, index: Slot, dst_valid: u16, _pad: u16 = 0, type_index: u32, table_index: u32, args_len: u32 };
 
@@ -846,6 +849,7 @@ pub fn instrSize(op: Op) usize {
 
         .call => |inst| @sizeOf(OpsCall) + @as(usize, inst.args_len) * @sizeOf(Slot),
         .call_to_local => |inst| @sizeOf(OpsCallToLocal) + @as(usize, inst.args_len) * @sizeOf(Slot),
+        .call_leaf => |inst| @sizeOf(OpsCallLeaf) + @as(usize, inst.args_len) * @sizeOf(Slot),
         .call_indirect => |inst| @sizeOf(OpsCallIndirect) + @as(usize, inst.args_len) * @sizeOf(Slot),
         .return_call => |inst| @sizeOf(OpsReturnCall) + @as(usize, inst.args_len) * @sizeOf(Slot),
         .return_call_indirect => |inst| @sizeOf(OpsReturnCallIndirect) + @as(usize, inst.args_len) * @sizeOf(Slot),
@@ -1131,6 +1135,7 @@ pub const HandlerTable = struct {
     // calls
     call: Handler,
     call_to_local: Handler,
+    call_leaf: Handler,
     call_indirect: Handler,
     return_call: Handler,
     return_call_indirect: Handler,
@@ -1889,6 +1894,13 @@ pub fn encode(
                     .args_len = inst.args_len,
                 });
                 writeInlineArgs(ops_ptr, OpsCallToLocal, cf.call_args.items, inst.args_start, inst.args_len);
+            },
+            .call_leaf => |inst| {
+                writeOps(OpsCallLeaf, ops_ptr, .{
+                    .func_idx = inst.func_idx,
+                    .args_len = inst.args_len,
+                });
+                writeInlineArgs(ops_ptr, OpsCallLeaf, cf.call_args.items, inst.args_start, inst.args_len);
             },
             .call_indirect => |inst| {
                 writeOps(OpsCallIndirect, ops_ptr, .{
@@ -2913,6 +2925,7 @@ pub fn encode(
         .eh_dst_slots = eh_dst_slots,
         .br_table_targets = br_table_targets,
         .catch_handler_tables = catch_handler_tables,
+        .is_leaf = cf.is_leaf,
     };
 }
 
@@ -3113,6 +3126,7 @@ fn handlerFor(op: Op, t: *const HandlerTable) Handler {
         .memory_fill => t.memory_fill,
         .call => t.call,
         .call_to_local => t.call_to_local,
+        .call_leaf => t.call_leaf,
         .call_indirect => t.call_indirect,
         .return_call => t.return_call,
         .return_call_indirect => t.return_call_indirect,
