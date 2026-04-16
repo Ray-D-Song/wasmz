@@ -719,6 +719,12 @@ pub const Op = union(enum) {
     i32_const_to_local: ConstToLocal(i32),
     i64_const_to_local: ConstToLocal(i64),
 
+    // ── Superinstruction: i32_imm + local_set → imm_to_local ──────────────────
+    // Combines: (const_i32 writes to tmp) + (local_set copies tmp to local)
+    // Into: single instruction that writes imm directly to local, preserving src.
+    i32_imm_to_local: struct { local: Slot, src: Slot, imm: i32 },
+    i64_imm_to_local: struct { local: Slot, src: Slot, imm: i64 },
+
     // ── Fused: global_get + local_set → global_get_to_local ──
     global_get_to_local: struct {
         local: Slot,

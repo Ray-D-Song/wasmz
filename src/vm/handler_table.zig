@@ -494,6 +494,9 @@ pub const handler_table: encode.HandlerTable = .{
     // ── Fused: const-to-local ────────────────────────────────────────────────
     .i32_const_to_local = &handlers.handle_i32_const_to_local,
     .i64_const_to_local = &handlers.handle_i64_const_to_local,
+    // ── Superinstruction: imm + local_set → imm_to_local ────────────────────
+    .i32_imm_to_local = &handlers.handle_i32_imm_to_local,
+    .i64_imm_to_local = &handlers.handle_i64_imm_to_local,
     // ── Fused: global_get-to-local ────────────────────────────────────────────
     .global_get_to_local = &handlers.handle_global_get_to_local,
     // ── Fused: load-to-local ──────────────────────────────────────────────────
