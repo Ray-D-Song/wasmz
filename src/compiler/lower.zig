@@ -722,9 +722,12 @@ pub const Lower = struct {
     /// `_r` variant which reads lhs from r0 instead of slots[lhs].
     /// Set to null whenever r0 may have been clobbered (branches, calls, copies, etc.).
     r0_slot: ?Slot = null,
+    /// Slot of the most recent call's destination (if any has result).
+    /// Used to detect when call + local_set can fuse to call_to_local.
+    pending_call_dst: ?Slot = null,
 
     pub fn init(allocator: Allocator) Lower {
-        return .{ .allocator = allocator };
+        return .{ .allocator = allocator, .pending_call_dst = null };
     }
 
     pub fn initWithReservedSlots(allocator: Allocator, reserved_slots: Slot, locals_count: u16) Lower {
@@ -740,6 +743,7 @@ pub const Lower = struct {
             },
             .next_slot = reserved_slots,
             .reserved_slots = reserved_slots,
+            .pending_call_dst = null,
         };
     }
 
@@ -818,6 +822,7 @@ pub const Lower = struct {
         self.is_unreachable = false;
         self.unreachable_depth = 0;
         self.r0_slot = null;
+        self.pending_call_dst = null;
         // Recycle the free-list capacity but discard stale slot numbers.
         self.free_slots.clearRetainingCapacity();
     }
@@ -3774,6 +3779,33 @@ pub const Lower = struct {
 
             .ret => {
                 const value = self.stack.pop();
+
+                // TCO: if returning the result of a call, convert to return_call
+                // This eliminates the return dispatch by reusing the current frame.
+                if (value) |v| tco: {
+                    const ops = self.compiled.ops.items;
+                    if (ops.len == 0) break :tco;
+                    const last = &ops[ops.len - 1];
+                    switch (last.*) {
+                        .call => |c| if (c.dst == v) {
+                            const func_idx = c.func_idx;
+                            const args_start = c.args_start;
+                            const args_len = c.args_len;
+                            _ = self.compiled.ops.pop();
+                            self.compiled.call_args.shrinkRetainingCapacity(args_start);
+                            try self.emit(.{ .return_call = .{
+                                .func_idx = func_idx,
+                                .args_start = args_start,
+                                .args_len = args_len,
+                            } });
+                            self.is_unreachable = true;
+                            self.pending_call_dst = null;
+                            return;
+                        },
+                        else => {},
+                    }
+                }
+
                 // Peephole I: if the last emitted op is a fusable binop whose
                 // dst is the value being returned, fold binop+ret into a single
                 // _ret superinstruction, saving one dispatch event.
@@ -3835,6 +3867,7 @@ pub const Lower = struct {
                     .args_start = args_start,
                     .args_len = inst.n_params,
                 } });
+                self.pending_call_dst = dst;
 
                 // If the call produces a result, push the result slot.
                 if (dst) |s| try self.stack.push(self.allocator, s);
@@ -5805,6 +5838,23 @@ pub const Lower = struct {
     }
 
     pub fn finish(self: *Lower) CompiledFunction {
+        self.detectLeaf();
         return self.compiled;
+    }
+
+    /// Detect if this function is a leaf function (no internal calls).
+    /// Sets compiled.is_leaf based on whether any .call ops exist.
+    pub fn detectLeaf(self: *Lower) void {
+        const ops = self.compiled.ops.items;
+        for (ops) |op| {
+            switch (op) {
+                .call, .call_indirect, .call_ref, .return_call, .return_call_indirect, .return_call_ref => {
+                    self.compiled.is_leaf = false;
+                    return;
+                },
+                else => {},
+            }
+        }
+        self.compiled.is_leaf = true;
     }
 };

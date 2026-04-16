@@ -939,6 +939,16 @@ pub const Op = union(enum) {
         args_start: u32,
         args_len: u32,
     },
+    /// Leaf call: call a leaf function (no other calls) and inline execute its body.
+    /// This eliminates both the call dispatch AND the return dispatch, saving two dispatches.
+    /// The callee must be a leaf function (no call instructions in its body).
+    call_leaf: struct {
+        /// Index of the callee function in module.functions
+        func_idx: u32,
+        /// Starting offset of the argument slots in CompiledFunction.call_args
+        args_start: u32,
+        args_len: u32,
+    },
     /// Indirect function call via table.
     /// The callee function index is read at runtime from tables[table_index][index_slot].
     /// Runtime checks: TableOutOfBounds, IndirectCallToNull, BadSignature.
@@ -1508,6 +1518,9 @@ pub const CompiledFunction = struct {
     /// Number of local variable slots (excluding parameters).
     /// Used to limit @memset in allocCalleeSlots to only the locals range.
     locals_count: u16,
+    /// True if this function has no internal calls (leaf function).
+    /// Enables call_leaf superinstruction for callers.
+    is_leaf: bool = false,
     ops: std.ArrayListUnmanaged(Op),
     /// All call instruction argument slots are stored here (concatenated in call order).
     /// Op.call indexes into the corresponding argument slot segment using (args_start, args_len).
@@ -1597,6 +1610,9 @@ pub const EncodedFunction = struct {
     /// (imports + locals).  Set by Module.compileFunctionAt so that call
     /// stack walks can report which function a frame belongs to.
     func_idx: u32 = 0,
+    /// True if this function has no internal calls (leaf function).
+    /// Enables call_leaf superinstruction for callers.
+    is_leaf: bool = false,
     /// Destination slot lists for exception handler catch arms (catch_tag / catch_tag_ref).
     /// CatchHandlerEntry.dst_slots_start/dst_slots_len index into this array.
     eh_dst_slots: []Slot,

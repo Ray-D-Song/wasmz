@@ -347,6 +347,82 @@ pub fn handle_call_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
     }
 }
 
+// ── call_leaf ──────────────────────────────────────────────────────────────────
+// Leaf call: inline execute the callee's instructions directly.
+// This eliminates both the call dispatch AND the return dispatch,
+// saving two dispatch events per call.
+// The callee must be a leaf function with no internal calls.
+
+pub fn handle_call_leaf(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    const ops = readOps(encode.OpsCallLeaf, ip);
+
+    const arg_slots = encode.readInlineArgs(encode.OpsCallLeaf, ip, ops.args_len);
+    const instr_stride = encode.varStride(encode.OpsCallLeaf, ops.args_len);
+
+    dispatch.countOp("call_ret");
+    if (ops.func_idx < env.host_funcs.len) {
+        const host_func = env.host_funcs[ops.func_idx];
+        const result_len = env.composite_types[env.func_type_indices[ops.func_idx]].func_type.results().len;
+
+        _ = invokeHostCallInline(frame.allocator, env.store, env.host_instance, host_func, arg_slots, slots, result_len, frame);
+
+        switch (frame.result) {
+            .trap => return,
+            .ok => {},
+        }
+
+        dispatch.countOp("call_ret");
+        dispatch.next(ip, instr_stride, slots, frame, env, r0, fp0);
+    } else {
+        var t = profiling.ScopedTimer.start();
+        t.lap(&profiling.call_prof.ns_read_ops);
+
+        const was_pending = if (profiling.enabled) switch (env.functions[ops.func_idx]) {
+            .pending => true,
+            else => false,
+        } else false;
+        const callee = ensureLocalCompiled(ops.func_idx, env, frame) orelse return;
+        t.lap(&profiling.call_prof.ns_ensure_compiled);
+        if (profiling.enabled and was_pending) profiling.call_prof.lazy_compiles += 1;
+
+        const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
+        const sp_base = frame.val_sp;
+        const callee_slots = allocCalleeSlots(frame, callee_slots_len, arg_slots.len, callee.locals_count) orelse return;
+        t.lap(&profiling.call_prof.ns_alloc_slots);
+        if (profiling.enabled) profiling.call_prof.slots_len_sum += callee_slots_len;
+        const caller_slots_profiled = frame.callStackTop().slots.ptr;
+
+        for (arg_slots, 0..) |arg_slot, i| {
+            callee_slots[i] = caller_slots_profiled[arg_slot];
+        }
+        t.lap(&profiling.call_prof.ns_copy_args);
+
+        dispatch.countOp("call_ret");
+        const cur = frame.callStackTop();
+        cur.ip = ip + instr_stride;
+
+        frame.callStackPush(.{
+            .ip = callee.code.ptr,
+            .slots = callee_slots,
+            .slots_sp_base = sp_base,
+            .dst = null,
+            .func = callee,
+        }) catch |err| {
+            frame.valStackFree(sp_base);
+            trapReturn(frame, switch (err) {
+                error.OutOfMemory => .OutOfMemory,
+                error.StackOverflow => .StackOverflow,
+            });
+            return;
+        };
+        t.lap(&profiling.call_prof.ns_push_dispatch);
+        if (profiling.enabled) profiling.call_prof.calls += 1;
+
+        const h: dispatch.Handler = std.mem.bytesAsValue(dispatch.Handler, callee.code.ptr[0..@sizeOf(dispatch.Handler)]).*;
+        @call(.always_tail, h, .{ callee.code.ptr, callee_slots.ptr, frame, env, 0, 0.0 });
+    }
+}
+
 // ── call_indirect ────────────────────────────────────────────────────────────
 
 pub fn handle_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
