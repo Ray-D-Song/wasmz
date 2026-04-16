@@ -135,6 +135,9 @@ fn run(allocator: std.mem.Allocator) void {
     instance.mem_trace = cli_args.mem_trace;
     tracePhase(cli_args.mem_trace, &trace_prev, "after instantiate");
 
+    // Initialize bigram/trigram profiling if enabled
+    wasmz.initNgramCounts(allocator);
+
     // Register a single combined on-exit callback (proc_exit path) that
     // handles mem-trace, mem-stats, and profiling in one slot.
     var on_exit_ctx = stats.OnExitCtx{
@@ -236,6 +239,10 @@ fn run(allocator: std.mem.Allocator) void {
                     oc.dispatch_next,     pct(oc.dispatch_next, oc.total),
                     oc.total,
                 });
+
+                // Print bigram/trigram stats
+                wasmz.printNgramStats(20);
+                wasmz.deinitNgramCounts();
             }
         } // if (wasmz.op_counts_enabled)
         instance.deinit();

@@ -1773,6 +1773,93 @@ pub const Lower = struct {
         return true;
     }
 
+    /// Attempt to fuse a preceding `i32_add_imm`/`i64_add_imm` + `local_set` into
+    /// `i32_imm_to_local`/`i64_imm_to_local`. This is a superinstruction that
+    /// combines: (const_i32 writes to tmp) + (local_set copies tmp to local)
+    /// into a single instruction that writes imm directly to local, preserving src.
+    pub fn try_fuse_imm_to_local(self: *Lower, local: Slot, src: Slot) bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len == 0) return false;
+        const last = &ops[ops.len - 1];
+        switch (last.*) {
+            .i32_add_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i32_sub_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i32_mul_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i32_and_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i32_or_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i32_xor_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i32_shl_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i32_shr_s_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i32_shr_u_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i64_add_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i64_sub_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i64_mul_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i64_and_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i64_or_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i64_xor_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i64_shl_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i64_shr_s_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i64_shr_u_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            else => return false,
+        }
+        if (self.r0_slot == src) self.r0_slot = null;
+        return true;
+    }
+
     // ── Constant folding & algebraic simplification helpers ──────────────────
 
     /// Attempt to fuse a preceding binop + local_tee into binop_tee_local.
@@ -3354,7 +3441,8 @@ pub const Lower = struct {
                     self.try_fuse_const_to_local(local_slot, src) or
                     self.try_fuse_global_get_to_local(local_slot, src) or
                     self.try_fuse_load_to_local(local_slot, src) or
-                    self.try_fuse_cmp_to_local(local_slot, src))
+                    self.try_fuse_cmp_to_local(local_slot, src) or
+                    self.try_fuse_imm_to_local(local_slot, src))
                 {
                     // fused successfully
                 } else {
@@ -5073,7 +5161,8 @@ pub const Lower = struct {
                     self.try_fuse_const_to_local(local_slot, src) or
                     self.try_fuse_global_get_to_local(local_slot, src) or
                     self.try_fuse_load_to_local(local_slot, src) or
-                    self.try_fuse_cmp_to_local(local_slot, src))
+                    self.try_fuse_cmp_to_local(local_slot, src) or
+                    self.try_fuse_imm_to_local(local_slot, src))
                 {
                     // fused successfully
                 } else {

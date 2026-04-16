@@ -131,6 +131,14 @@ pub const OpsConstToLocal32 = extern struct { local: Slot, _pad: u16 = 0, value:
 /// i64_const_to_local: fused const_i64 + local_set.
 pub const OpsConstToLocal64 = extern struct { local: Slot, _pad: [6]u8 = [_]u8{0} ** 6, value: i64 };
 
+/// fused: i32_imm + local_set → imm_to_local (superinstruction)
+/// Writes the immediate to local directly, skipping the temp slot.
+/// Layout: { local: Slot, src: Slot, imm: i32 }
+pub const OpsImm32ToLocal = extern struct { local: Slot, src: Slot, imm: i32 };
+
+/// fused: i64_imm + local_set → imm_to_local (superinstruction)
+pub const OpsImm64ToLocal = extern struct { local: Slot, src: Slot, _pad: [6]u8 = [_]u8{0} ** 6, imm: i64 };
+
 /// global_get_to_local: fused global_get + local_set.
 pub const OpsGlobalGetToLocal = extern struct { local: Slot, _pad: u16 = 0, global_idx: u32 };
 
@@ -728,6 +736,13 @@ pub fn instrSize(op: Op) usize {
 
         .i64_const_to_local,
         => @sizeOf(OpsConstToLocal64),
+
+        // fused imm-to-local (superinstruction: i32_imm + local_set)
+        .i32_imm_to_local,
+        => @sizeOf(OpsImm32ToLocal),
+
+        .i64_imm_to_local,
+        => @sizeOf(OpsImm64ToLocal),
 
         // fused global_get-to-local
         .global_get_to_local,
@@ -1385,6 +1400,9 @@ pub const HandlerTable = struct {
     // fused const-to-local
     i32_const_to_local: Handler,
     i64_const_to_local: Handler,
+    // superinstruction: imm + local_set → imm_to_local
+    i32_imm_to_local: Handler,
+    i64_imm_to_local: Handler,
     // fused global_get-to-local
     global_get_to_local: Handler,
     // fused load-to-local
@@ -2621,6 +2639,25 @@ pub fn encode(
                 });
             },
 
+            // ── Superinstruction: imm + local_set → imm_to_local ───────────────
+            .i32_imm_to_local,
+            => |inst| {
+                writeOps(OpsImm32ToLocal, ops_ptr, .{
+                    .local = inst.local,
+                    .src = inst.src,
+                    .imm = inst.imm,
+                });
+            },
+
+            .i64_imm_to_local,
+            => |inst| {
+                writeOps(OpsImm64ToLocal, ops_ptr, .{
+                    .local = inst.local,
+                    .src = inst.src,
+                    .imm = inst.imm,
+                });
+            },
+
             // ── Fused: global_get-to-local ────────────────────────────────────
             .global_get_to_local,
             => |inst| {
@@ -3337,6 +3374,9 @@ fn handlerFor(op: Op, t: *const HandlerTable) Handler {
         // fused const-to-local
         .i32_const_to_local => t.i32_const_to_local,
         .i64_const_to_local => t.i64_const_to_local,
+        // superinstruction: imm + local_set → imm_to_local
+        .i32_imm_to_local => t.i32_imm_to_local,
+        .i64_imm_to_local => t.i64_imm_to_local,
         // fused global_get-to-local
         .global_get_to_local => t.global_get_to_local,
         // fused load-to-local

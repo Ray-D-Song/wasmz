@@ -49,6 +49,11 @@ pub const op_counts_enabled = @import("vm/root.zig").op_counts_enabled;
 pub const OpCounts = @import("vm/root.zig").OpCounts;
 pub const op_counts = @import("vm/root.zig").op_counts;
 
+/// Bigram/trigram stats (only active when profiling is enabled).
+pub const printNgramStats = @import("vm/root.zig").printNgramStats;
+pub const initNgramCounts = @import("vm/root.zig").initNgramCounts;
+pub const deinitNgramCounts = @import("vm/root.zig").deinitNgramCounts;
+
 // Include all submodule tests in the coverage of `zig build test`
 test {
     _ = @import("engine/func_ty.zig");

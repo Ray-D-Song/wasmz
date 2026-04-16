@@ -25,6 +25,19 @@ const core = @import("core");
 const store_mod = @import("../wasmz/store.zig");
 const host_mod = @import("../wasmz/host.zig");
 const module_mod = @import("../wasmz/module.zig");
+const encode = @import("../compiler/encode.zig");
+const handlers_root = @import("./handlers/root.zig");
+pub const ngram_mod = @import("bigram_trigram.zig");
+
+inline fn readOps(comptime T: type, ip: [*]u8) T {
+    if (@sizeOf(T) == 0) return .{};
+    const bytes = ip[HANDLER_SIZE..][0..@sizeOf(T)];
+    return std.mem.bytesAsValue(T, bytes).*;
+}
+
+inline fn stride(comptime OpsT: type) usize {
+    return HANDLER_SIZE + @sizeOf(OpsT);
+}
 
 const Allocator = std.mem.Allocator;
 pub const RawVal = vm_root.RawVal;
@@ -360,7 +373,7 @@ pub const DispatchState = struct {
 /// Using `inline` ensures the tail call is always visible to the Zig backend.
 pub inline fn next(
     ip: [*]u8,
-    stride: usize,
+    cur_stride: usize,
     slots: [*]RawVal,
     frame: *DispatchState,
     env: *const ExecEnv,
@@ -369,9 +382,47 @@ pub inline fn next(
 ) void {
     countOp("total");
     countOp("dispatch_next");
-    const next_ip = ip + stride;
+    const next_ip = ip + cur_stride;
     const h: Handler = std.mem.bytesAsValue(Handler, next_ip[0..@sizeOf(Handler)]).*;
     @call(.always_tail, h, .{ next_ip, slots, frame, env, r0, fp0 });
+}
+
+/// Advance `ip` by `stride` bytes, read next handler, and check if it's a hot
+/// local_set handler that can be fused with this operation.
+/// If fused, execute local_set inline and skip one dispatch.
+/// Otherwise, dispatch normally.
+pub inline fn nextWithLocalSetFusion(
+    ip: [*]u8,
+    cur_stride: usize,
+    slots: [*]RawVal,
+    frame: *DispatchState,
+    env: *const ExecEnv,
+    r0: u64,
+    fp0: f64,
+    value: RawVal,
+) void {
+    countOp("total");
+    const next_ip = ip + cur_stride;
+    const h: Handler = std.mem.bytesAsValue(Handler, next_ip[0..@sizeOf(Handler)]).*;
+
+    // Check if next handler is handle_local_set
+    const is_local_set = @intFromPtr(h) == @intFromPtr(&handlers_root.handle_local_set);
+    if (is_local_set) {
+        // Fused: inline execute local_set and skip one dispatch
+        countOp("dispatch_next");
+        const local_set_ops = readOps(encode.OpsLocalSet, next_ip);
+        slots[local_set_ops.local] = value;
+
+        // Advance to the instruction after local_set
+        const next_stride = stride(encode.OpsLocalSet);
+        const after_next_ip = next_ip + next_stride;
+        const h2: Handler = std.mem.bytesAsValue(Handler, after_next_ip[0..@sizeOf(Handler)]).*;
+        @call(.always_tail, h2, .{ after_next_ip, slots, frame, env, r0, fp0 });
+    } else {
+        // Not fused: dispatch normally
+        countOp("dispatch_next");
+        @call(.always_tail, h, .{ next_ip, slots, frame, env, r0, fp0 });
+    }
 }
 
 /// Convenience: read the handler pointer embedded at `ip` and tail-call it
@@ -440,10 +491,23 @@ pub const OpCounts = if (op_counts_enabled) struct {
 
 pub var op_counts: OpCounts = .{};
 
+var prev_prev_op: ngram_mod.OpName = .unknown;
+var prev_op: ngram_mod.OpName = .unknown;
+
 /// Increment a field of `op_counts` by 1. Compiles to a no-op when profiling is disabled.
+/// Also records bigram/trigram if profiling is enabled.
 pub inline fn countOp(comptime field: []const u8) void {
     if (op_counts_enabled) {
         @field(op_counts, field) += 1;
+        const curr = ngram_mod.strToOpName(field);
+        if (ngram_mod.bigram_enabled) {
+            ngram_mod.bigram_counts.record(prev_op, curr);
+        }
+        if (ngram_mod.trigram_enabled) {
+            ngram_mod.trigram_counts.record(prev_prev_op, prev_op, curr);
+        }
+        prev_prev_op = prev_op;
+        prev_op = curr;
     }
 }
 

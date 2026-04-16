@@ -42,6 +42,13 @@ pub const OpCounts = dispatch_mod.OpCounts;
 /// Non-null only when profiling is enabled (`-Dprofiling=true` / `make build-debug`).
 pub const op_counts = &dispatch_mod.op_counts;
 
+/// Bigram/trigram stats (only active when profiling is enabled).
+pub const bigram_enabled = dispatch_mod.ngram_mod.bigram_enabled;
+pub const trigram_enabled = dispatch_mod.ngram_mod.trigram_enabled;
+pub const printNgramStats = dispatch_mod.ngram_mod.printNgramStats;
+pub const initNgramCounts = dispatch_mod.ngram_mod.initNgramCounts;
+pub const deinitNgramCounts = dispatch_mod.ngram_mod.deinitNgramCounts;
+
 pub const ExecEnv = struct {
     store: *Store,
     host_instance: *HostInstance,
