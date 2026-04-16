@@ -3,7 +3,7 @@
 /// throw, throw_ref, try_table_enter, try_table_leave + dispatchException helper
 const std = @import("std");
 const ir = @import("../../compiler/ir.zig");
-const encode = @import("../../compiler/encode.zig");
+const encode = @import("../../compiler/encode/encode.zig");
 const dispatch = @import("../dispatch.zig");
 const core = @import("core");
 const gc_mod = @import("../gc/root.zig");
@@ -163,10 +163,10 @@ fn dispatchException(
 // ── throw ────────────────────────────────────────────────────────────────────
 
 pub fn handle_throw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    const ops = readOps(encode.OpsThrow, ip);
+    const ops = readOps(encode.ops.OpsThrow, ip);
 
     // Read inline arg slots directly from the bytecode stream (zero pointer chasing)
-    const arg_slots = encode.readInlineArgs(encode.OpsThrow, ip, ops.args_len);
+    const arg_slots = encode.readInlineArgs(encode.ops.OpsThrow, ip, ops.args_len);
 
     const exc_args = frame.allocator.alloc(RawVal, arg_slots.len) catch {
         trapReturn(frame, .OutOfMemory);
@@ -210,7 +210,7 @@ pub fn handle_throw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *co
 // ── throw_ref ────────────────────────────────────────────────────────────────
 
 pub fn handle_throw_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    const ops = readOps(encode.OpsThrowRef, ip);
+    const ops = readOps(encode.ops.OpsThrowRef, ip);
 
     const exn_ref = slots[ops.ref].readAsGcRef();
     if (exn_ref.asHeapIndex() == null) {
@@ -230,7 +230,7 @@ pub fn handle_throw_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
 // ── try_table_enter ──────────────────────────────────────────────────────────
 
 pub fn handle_try_table_enter(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    const ops = readOps(encode.OpsTryTableEnter, ip);
+    const ops = readOps(encode.ops.OpsTryTableEnter, ip);
 
     frame.eh_stack.append(frame.allocator, .{
         .call_stack_depth = frame.call_depth,
@@ -241,13 +241,13 @@ pub fn handle_try_table_enter(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
         trapReturn(frame, .OutOfMemory);
         return;
     };
-    dispatch.next(ip, stride(encode.OpsTryTableEnter), slots, frame, env, r0, fp0);
+    dispatch.next(ip, stride(encode.ops.OpsTryTableEnter), slots, frame, env, r0, fp0);
 }
 
 // ── try_table_leave ──────────────────────────────────────────────────────────
 
 pub fn handle_try_table_leave(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
-    const ops = readOps(encode.OpsTryTableLeave, ip);
+    const ops = readOps(encode.ops.OpsTryTableLeave, ip);
 
     _ = frame.eh_stack.pop();
 

@@ -524,6 +524,16 @@ pub const Op = union(enum) {
     i64_le_u_imm: BinaryOpImm(i64),
     i64_ge_s_imm: BinaryOpImm(i64),
     i64_ge_u_imm: BinaryOpImm(i64),
+    // f32 arithmetic-imm: rhs is an f32 literal embedded in the instruction
+    f32_add_imm: BinaryOpImm(f32),
+    f32_sub_imm: BinaryOpImm(f32),
+    f32_mul_imm: BinaryOpImm(f32),
+    f32_div_imm: BinaryOpImm(f32),
+    // f64 arithmetic-imm: rhs is an f64 literal embedded in the instruction
+    f64_add_imm: BinaryOpImm(f64),
+    f64_sub_imm: BinaryOpImm(f64),
+    f64_mul_imm: BinaryOpImm(f64),
+    f64_div_imm: BinaryOpImm(f64),
 
     // ── r0 variants: lhs comes from r0 accumulator, no lhs slot in encoding ──
     // i32 arithmetic-imm r0: lhs = r0
@@ -575,6 +585,20 @@ pub const Op = union(enum) {
     i64_ge_u_jump_if_false: CompareJumpOp(i64),
     // i64 eqz-jump (unary: jumps when src != 0, i.e. when eqz is false)
     i64_eqz_jump_if_false: struct { src: Slot, target: u32 },
+    // f32 compare-jump variants
+    f32_eq_jump_if_false: CompareJumpOp(f32),
+    f32_ne_jump_if_false: CompareJumpOp(f32),
+    f32_lt_jump_if_false: CompareJumpOp(f32),
+    f32_gt_jump_if_false: CompareJumpOp(f32),
+    f32_le_jump_if_false: CompareJumpOp(f32),
+    f32_ge_jump_if_false: CompareJumpOp(f32),
+    // f64 compare-jump variants
+    f64_eq_jump_if_false: CompareJumpOp(f64),
+    f64_ne_jump_if_false: CompareJumpOp(f64),
+    f64_lt_jump_if_false: CompareJumpOp(f64),
+    f64_gt_jump_if_false: CompareJumpOp(f64),
+    f64_le_jump_if_false: CompareJumpOp(f64),
+    f64_ge_jump_if_false: CompareJumpOp(f64),
 
     // ── Fused: compare + jump_if_true (J: cmp + br_if → cmp_jump_if_true) ────
     // Peephole J: replaces the 2-op pattern:
@@ -607,6 +631,20 @@ pub const Op = union(enum) {
     i64_ge_u_jump_if_true: CompareJumpOp(i64),
     // i64 eqz-jump-if-true (unary: jumps when src == 0, i.e. when eqz is true)
     i64_eqz_jump_if_true: struct { src: Slot, target: u32 },
+    // f32 compare-jump-if-true variants
+    f32_eq_jump_if_true: CompareJumpOp(f32),
+    f32_ne_jump_if_true: CompareJumpOp(f32),
+    f32_lt_jump_if_true: CompareJumpOp(f32),
+    f32_gt_jump_if_true: CompareJumpOp(f32),
+    f32_le_jump_if_true: CompareJumpOp(f32),
+    f32_ge_jump_if_true: CompareJumpOp(f32),
+    // f64 compare-jump-if-true variants
+    f64_eq_jump_if_true: CompareJumpOp(f64),
+    f64_ne_jump_if_true: CompareJumpOp(f64),
+    f64_lt_jump_if_true: CompareJumpOp(f64),
+    f64_gt_jump_if_true: CompareJumpOp(f64),
+    f64_le_jump_if_true: CompareJumpOp(f64),
+    f64_ge_jump_if_true: CompareJumpOp(f64),
 
     // ── Fused: binop result to local (D: binop + local_set → binop_to_local) ─
     i32_add_to_local: BinaryOpToLocal(i32),
@@ -628,6 +666,16 @@ pub const Op = union(enum) {
     i64_shl_to_local: BinaryOpToLocal(i64),
     i64_shr_s_to_local: BinaryOpToLocal(i64),
     i64_shr_u_to_local: BinaryOpToLocal(i64),
+    // f32 binop-to-local variants
+    f32_add_to_local: BinaryOpToLocal(f32),
+    f32_sub_to_local: BinaryOpToLocal(f32),
+    f32_mul_to_local: BinaryOpToLocal(f32),
+    f32_div_to_local: BinaryOpToLocal(f32),
+    // f64 binop-to-local variants
+    f64_add_to_local: BinaryOpToLocal(f64),
+    f64_sub_to_local: BinaryOpToLocal(f64),
+    f64_mul_to_local: BinaryOpToLocal(f64),
+    f64_div_to_local: BinaryOpToLocal(f64),
 
     // ── Fused: binop + local_tee → binop_tee_local ────────────────────────
     i32_add_tee_local: BinaryOpTeeLocal(i32),
@@ -648,6 +696,16 @@ pub const Op = union(enum) {
     i64_shl_tee_local: BinaryOpTeeLocal(i64),
     i64_shr_s_tee_local: BinaryOpTeeLocal(i64),
     i64_shr_u_tee_local: BinaryOpTeeLocal(i64),
+    // f32 binop-tee-local variants
+    f32_add_tee_local: BinaryOpTeeLocal(f32),
+    f32_sub_tee_local: BinaryOpTeeLocal(f32),
+    f32_mul_tee_local: BinaryOpTeeLocal(f32),
+    f32_div_tee_local: BinaryOpTeeLocal(f32),
+    // f64 binop-tee-local variants
+    f64_add_tee_local: BinaryOpTeeLocal(f64),
+    f64_sub_tee_local: BinaryOpTeeLocal(f64),
+    f64_mul_tee_local: BinaryOpTeeLocal(f64),
+    f64_div_tee_local: BinaryOpTeeLocal(f64),
 
     // ── Fused: comparison + local_set (cmp_to_local) ──────────────────────
     i32_eq_to_local: CompareOpToLocal(i32),
@@ -670,6 +728,20 @@ pub const Op = union(enum) {
     i64_le_u_to_local: CompareOpToLocal(i64),
     i64_ge_s_to_local: CompareOpToLocal(i64),
     i64_ge_u_to_local: CompareOpToLocal(i64),
+    // f32 compare-to-local variants
+    f32_eq_to_local: CompareOpToLocal(f32),
+    f32_ne_to_local: CompareOpToLocal(f32),
+    f32_lt_to_local: CompareOpToLocal(f32),
+    f32_gt_to_local: CompareOpToLocal(f32),
+    f32_le_to_local: CompareOpToLocal(f32),
+    f32_ge_to_local: CompareOpToLocal(f32),
+    // f64 compare-to-local variants
+    f64_eq_to_local: CompareOpToLocal(f64),
+    f64_ne_to_local: CompareOpToLocal(f64),
+    f64_lt_to_local: CompareOpToLocal(f64),
+    f64_gt_to_local: CompareOpToLocal(f64),
+    f64_le_to_local: CompareOpToLocal(f64),
+    f64_ge_to_local: CompareOpToLocal(f64),
 
     // ── Fused: binop-imm-to-local (E: const + binop + local_set → binop_imm_to_local) ──
     // i32 arithmetic-imm-to-local
@@ -692,6 +764,16 @@ pub const Op = union(enum) {
     i64_shl_imm_to_local: BinaryOpImmToLocal(i64),
     i64_shr_s_imm_to_local: BinaryOpImmToLocal(i64),
     i64_shr_u_imm_to_local: BinaryOpImmToLocal(i64),
+    // f32 arithmetic-imm-to-local
+    f32_add_imm_to_local: BinaryOpImmToLocal(f32),
+    f32_sub_imm_to_local: BinaryOpImmToLocal(f32),
+    f32_mul_imm_to_local: BinaryOpImmToLocal(f32),
+    f32_div_imm_to_local: BinaryOpImmToLocal(f32),
+    // f64 arithmetic-imm-to-local
+    f64_add_imm_to_local: BinaryOpImmToLocal(f64),
+    f64_sub_imm_to_local: BinaryOpImmToLocal(f64),
+    f64_mul_imm_to_local: BinaryOpImmToLocal(f64),
+    f64_div_imm_to_local: BinaryOpImmToLocal(f64),
 
     // ── Fused: local inplace (H: local_get + binop_imm + local_set, same local) ──
     // i32 local-inplace
@@ -714,6 +796,16 @@ pub const Op = union(enum) {
     i64_shl_local_inplace: LocalInplace(i64),
     i64_shr_s_local_inplace: LocalInplace(i64),
     i64_shr_u_local_inplace: LocalInplace(i64),
+    // f32 local-inplace
+    f32_add_local_inplace: LocalInplace(f32),
+    f32_sub_local_inplace: LocalInplace(f32),
+    f32_mul_local_inplace: LocalInplace(f32),
+    f32_div_local_inplace: LocalInplace(f32),
+    // f64 local-inplace
+    f64_add_local_inplace: LocalInplace(f64),
+    f64_sub_local_inplace: LocalInplace(f64),
+    f64_mul_local_inplace: LocalInplace(f64),
+    f64_div_local_inplace: LocalInplace(f64),
 
     // ── Fused: const + local_set → const_to_local (just write constant to local) ──
     i32_const_to_local: ConstToLocal(i32),
@@ -758,6 +850,20 @@ pub const Op = union(enum) {
     i64_le_u_imm_jump_if_false: CompareImmJumpOp(i64),
     i64_ge_s_imm_jump_if_false: CompareImmJumpOp(i64),
     i64_ge_u_imm_jump_if_false: CompareImmJumpOp(i64),
+    // f32 compare-imm-jump
+    f32_eq_imm_jump_if_false: CompareImmJumpOp(f32),
+    f32_ne_imm_jump_if_false: CompareImmJumpOp(f32),
+    f32_lt_imm_jump_if_false: CompareImmJumpOp(f32),
+    f32_gt_imm_jump_if_false: CompareImmJumpOp(f32),
+    f32_le_imm_jump_if_false: CompareImmJumpOp(f32),
+    f32_ge_imm_jump_if_false: CompareImmJumpOp(f32),
+    // f64 compare-imm-jump
+    f64_eq_imm_jump_if_false: CompareImmJumpOp(f64),
+    f64_ne_imm_jump_if_false: CompareImmJumpOp(f64),
+    f64_lt_imm_jump_if_false: CompareImmJumpOp(f64),
+    f64_gt_imm_jump_if_false: CompareImmJumpOp(f64),
+    f64_le_imm_jump_if_false: CompareImmJumpOp(f64),
+    f64_ge_imm_jump_if_false: CompareImmJumpOp(f64),
 
     // ── Fused: compare-imm + jump_if_true (J-imm: const + compare + br_if, true branch) ─
     // i32 compare-imm-jump, true-branch
@@ -782,6 +888,20 @@ pub const Op = union(enum) {
     i64_le_u_imm_jump_if_true: CompareImmJumpOp(i64),
     i64_ge_s_imm_jump_if_true: CompareImmJumpOp(i64),
     i64_ge_u_imm_jump_if_true: CompareImmJumpOp(i64),
+    // f32 compare-imm-jump, true-branch
+    f32_eq_imm_jump_if_true: CompareImmJumpOp(f32),
+    f32_ne_imm_jump_if_true: CompareImmJumpOp(f32),
+    f32_lt_imm_jump_if_true: CompareImmJumpOp(f32),
+    f32_gt_imm_jump_if_true: CompareImmJumpOp(f32),
+    f32_le_imm_jump_if_true: CompareImmJumpOp(f32),
+    f32_ge_imm_jump_if_true: CompareImmJumpOp(f32),
+    // f64 compare-imm-jump, true-branch
+    f64_eq_imm_jump_if_true: CompareImmJumpOp(f64),
+    f64_ne_imm_jump_if_true: CompareImmJumpOp(f64),
+    f64_lt_imm_jump_if_true: CompareImmJumpOp(f64),
+    f64_gt_imm_jump_if_true: CompareImmJumpOp(f64),
+    f64_le_imm_jump_if_true: CompareImmJumpOp(f64),
+    f64_ge_imm_jump_if_true: CompareImmJumpOp(f64),
 
     // ── SIMD operations ───────────────────────────────────────────────────────
     simd_unary: SimdUnaryOp,
@@ -874,6 +994,10 @@ pub const Op = union(enum) {
     i32_sub_ret: struct { lhs: Slot, rhs: Slot },
     i64_add_ret: struct { lhs: Slot, rhs: Slot },
     i64_sub_ret: struct { lhs: Slot, rhs: Slot },
+    f32_add_ret: struct { lhs: Slot, rhs: Slot },
+    f32_sub_ret: struct { lhs: Slot, rhs: Slot },
+    f64_add_ret: struct { lhs: Slot, rhs: Slot },
+    f64_sub_ret: struct { lhs: Slot, rhs: Slot },
 
     // ── Memory load/store instructions ──────────────────────────────────────────
     // All load/store instructions share the same memory immediate: (align, offset).

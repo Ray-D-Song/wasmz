@@ -25,7 +25,7 @@ const core = @import("core");
 const store_mod = @import("../wasmz/store.zig");
 const host_mod = @import("../wasmz/host.zig");
 const module_mod = @import("../wasmz/module.zig");
-const encode = @import("../compiler/encode.zig");
+const encode = @import("../compiler/encode/encode.zig");
 const handlers_root = @import("./handlers/root.zig");
 
 inline fn readOps(comptime T: type, ip: [*]u8) T {
@@ -409,11 +409,11 @@ pub inline fn nextWithLocalSetFusion(
     if (is_local_set) {
         // Fused: inline execute local_set and skip one dispatch
         countOp("dispatch_next");
-        const local_set_ops = readOps(encode.OpsLocalSet, next_ip);
+        const local_set_ops = readOps(encode.ops.OpsLocalSet, next_ip);
         slots[local_set_ops.local] = value;
 
         // Advance to the instruction after local_set
-        const next_stride = stride(encode.OpsLocalSet);
+        const next_stride = stride(encode.ops.OpsLocalSet);
         const after_next_ip = next_ip + next_stride;
         const h2: Handler = std.mem.bytesAsValue(Handler, after_next_ip[0..@sizeOf(Handler)]).*;
         @call(.always_tail, h2, .{ after_next_ip, slots, frame, env, r0, fp0 });
