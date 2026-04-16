@@ -5632,6 +5632,8 @@ pub const Lower = struct {
             } else {
                 try self.emit(.{ .ret = .{ .value = null } });
             }
+            for (frame.result_slots.items()) |slot| self.recycle_slot(slot);
+            for (frame.param_slots.items()) |slot| self.recycle_slot(slot);
             return;
         }
 
@@ -5684,6 +5686,9 @@ pub const Lower = struct {
         self.patch_forward_jumps(&frame, end_pc);
 
         try self.unwind_stack_to_frame(&frame);
+
+        for (frame.result_slots.items()) |slot| self.recycle_slot(slot);
+        for (frame.param_slots.items()) |slot| self.recycle_slot(slot);
     }
 
     pub fn finish(self: *Lower) CompiledFunction {
