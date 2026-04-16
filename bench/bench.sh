@@ -9,7 +9,7 @@ PROJECTS_DIR="$BENCH_DIR/projects"
 WASMZ="$REPO_DIR/zig-out/bin/wasmz"
 WASM3="$PROJECTS_DIR/wasm3/build/wasm3"
 WASMI="$PROJECTS_DIR/wasmi/target/release/wasmi"
-WAMR="$PROJECTS_DIR/wamr/product-mini/platforms/linux/build/wamr"
+WAMR="$PROJECTS_DIR/wamr/product-mini/platforms/linux/build/iwasm"
 BUILD_SCRIPT="$BENCH_DIR/build.sh"
 
 FIB_WASM="$BENCH_DIR/workloads/fib30.wasm"

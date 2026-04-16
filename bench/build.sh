@@ -11,7 +11,7 @@ WASM3_BIN="$WASM3_DIR/build/wasm3"
 WASMI_DIR="$PROJECTS_DIR/wasmi"
 WASMI_BIN="$WASMI_DIR/target/release/wasmi"
 WAMR_DIR="$PROJECTS_DIR/wamr"
-WAMR_BIN="$WAMR_DIR/product-mini/platforms/linux/build/wamr"
+WAMR_BIN="$WAMR_DIR/product-mini/platforms/linux/build/iwasm"
 
 NCPU=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
