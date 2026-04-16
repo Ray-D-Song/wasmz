@@ -281,6 +281,9 @@ const BuildState = struct {
     tags_list: std.ArrayListUnmanaged(TagDef) = .empty,
     local_functions_list: std.ArrayListUnmanaged(FunctionSlot) = .empty,
     detected_eh_mode: EHMode = .none,
+    /// Set to true when the module defines any struct or array types.
+    /// Used to lazily initialize the GC heap only when needed.
+    has_gc_types: bool = false,
     /// Sparse map: func_idx → name string (owned, heap-allocated).
     /// Populated from the Wasm Name Section when a function_name_entry is parsed.
     func_names_map: std.AutoHashMapUnmanaged(u32, []const u8) = .empty,
@@ -376,6 +379,7 @@ const BuildState = struct {
                         try self.direct_parents_list.append(self.allocator, null);
                     },
                     .struct_type, .array_type => {
+                        self.has_gc_types = true;
                         const composite_type = try translate_mod.wasmCompositeTypeFromTypeEntry(self.allocator, entry);
                         try self.composite_types_list.append(self.allocator, composite_type);
 
@@ -806,6 +810,7 @@ const BuildState = struct {
             .config = .{ .eh_mode = self.detected_eh_mode },
             .translator = null,
             .pending_count = @intCast(local_functions.len),
+            .has_gc_types = self.has_gc_types,
         };
     }
 };
@@ -895,6 +900,9 @@ pub const Module = struct {
     /// Decremented by `compileFunctionAt`; used to release `translator` as
     /// soon as the last function body is compiled (O(1) check per compile).
     pending_count: u32,
+    /// True when the module defines any struct or array types.
+    /// Used to lazily initialize the GC heap only when needed.
+    has_gc_types: bool,
 
     /// Compile WebAssembly bytecode held in memory into a Module.
     ///

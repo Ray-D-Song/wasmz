@@ -88,8 +88,9 @@ pub fn printMemStats(store: *Store, instance: *Instance) void {
     // ── runtime memory (store / instance) ────────────────────────────────────
     const linear_bytes = instance.memory.byteLen();
     const linear_pages = instance.memory.pageCount();
-    const gc_used = store.gc_heap.usedSize();
-    const gc_cap = store.gc_heap.totalSize();
+    const gc_heap = store.gc_heap;
+    const gc_used = if (gc_heap) |h| h.usedSize() else 0;
+    const gc_cap = if (gc_heap) |h| h.totalSize() else 0;
     const shared_bytes = store.memory_budget.shared_bytes;
 
     // ── VM stacks ─────────────────────────────────────────────────────────────
@@ -105,7 +106,7 @@ pub fn printMemStats(store: *Store, instance: *Instance) void {
     const grand_total = runtime_total + module_total;
 
     // ── allocation counts ─────────────────────────────────────────────────────
-    const gc_alloc_count = store.gc_heap.alloc_count;
+    const gc_alloc_count = if (gc_heap) |h| h.alloc_count else 0;
     const vm_alloc_count = vm.vm_alloc_count;
     const instance_alloc_count = instance.alloc_count;
     const total_alloc_count = gc_alloc_count + vm_alloc_count + instance_alloc_count;
