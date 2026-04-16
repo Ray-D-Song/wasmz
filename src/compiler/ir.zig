@@ -1509,8 +1509,13 @@ pub const CompiledFunction = struct {
 /// compiler to stream the original Wasm input without retaining the full
 /// module in memory solely for lazy compilation.
 pub const PendingFunction = struct {
-    /// Raw Wasm bytecode of the function body (owned by the pending slot).
+    /// Raw Wasm bytecode of the function body.
     body: []const u8,
+    /// When true, `body` was allocated with the module allocator and must be
+    /// freed with `allocator.free(body)` after compilation.  When false, `body`
+    /// is a borrowed slice into the caller's long-lived input buffer and must
+    /// NOT be freed (compile(bytes) / mmap path).
+    body_owned: bool,
     /// Index into Module.composite_types giving the function's FuncType.
     type_index: u32,
     /// Total value-stack slots needed (params + locals).
@@ -1539,14 +1544,13 @@ pub const FunctionSlot = union(enum) {
 
     /// Free any owned heap memory held by this slot.
     ///
-    /// NOTE: `.pending` bodies are NOT freed here.  They are either borrowed
-    /// from the caller's mmap'd input (compile(bytes) path) or owned by the
-    /// Module's body_arena (compileReader path).  Use `Module.deinit()` to
-    /// release them in bulk.
+    /// For `.pending` slots whose `body_owned` flag is true, the body bytes are
+    /// freed here.  Borrowed bodies (compile(bytes) / mmap path) are left alone.
     pub fn deinit(self: *FunctionSlot, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .encoded => |*ef| ef.deinit(allocator),
-            .pending, .import => {},
+            .pending => |*pf| if (pf.body_owned) allocator.free(pf.body),
+            .import => {},
         }
         self.* = undefined;
     }
