@@ -1,7 +1,7 @@
 BIN      := wasmz
 INSTALL  := $(HOME)/.local/bin
 
-.PHONY: build-debug build release install install-debug install-release test clib bench
+.PHONY: build-debug build release install install-debug install-release uninstall test clib bench
 
 build-debug:
 	zig build -Doptimize=Debug -Dprofiling=true
@@ -29,6 +29,10 @@ install-release: release
 	mkdir -p $(INSTALL)
 	cp zig-out/bin/$(BIN) $(INSTALL)/$(BIN)
 	@echo "Installed $(INSTALL)/$(BIN)"
+
+uninstall:
+	rm -f $(INSTALL)/$(BIN)
+	@echo "Removed $(INSTALL)/$(BIN)"
 
 test:
 	zig build test
