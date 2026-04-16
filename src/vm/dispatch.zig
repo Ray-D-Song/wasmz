@@ -27,7 +27,6 @@ const host_mod = @import("../wasmz/host.zig");
 const module_mod = @import("../wasmz/module.zig");
 const encode = @import("../compiler/encode.zig");
 const handlers_root = @import("./handlers/root.zig");
-pub const ngram_mod = @import("bigram_trigram.zig");
 
 inline fn readOps(comptime T: type, ip: [*]u8) T {
     if (@sizeOf(T) == 0) return .{};
@@ -491,23 +490,10 @@ pub const OpCounts = if (op_counts_enabled) struct {
 
 pub var op_counts: OpCounts = .{};
 
-var prev_prev_op: ngram_mod.OpName = .unknown;
-var prev_op: ngram_mod.OpName = .unknown;
-
 /// Increment a field of `op_counts` by 1. Compiles to a no-op when profiling is disabled.
-/// Also records bigram/trigram if profiling is enabled.
 pub inline fn countOp(comptime field: []const u8) void {
     if (op_counts_enabled) {
         @field(op_counts, field) += 1;
-        const curr = ngram_mod.strToOpName(field);
-        if (ngram_mod.bigram_enabled) {
-            ngram_mod.bigram_counts.record(prev_op, curr);
-        }
-        if (ngram_mod.trigram_enabled) {
-            ngram_mod.trigram_counts.record(prev_prev_op, prev_op, curr);
-        }
-        prev_prev_op = prev_op;
-        prev_op = curr;
     }
 }
 
