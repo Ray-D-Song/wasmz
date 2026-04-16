@@ -43,6 +43,7 @@ const OperatorInformation = payload_mod.OperatorInformation;
 const OperatorCode = payload_mod.OperatorCode;
 
 const Allocator = std.mem.Allocator;
+const LocalInitSet = std.DynamicBitSetUnmanaged;
 const Slot = ir.Slot;
 const Op = ir.Op;
 const CompiledFunction = ir.CompiledFunction;
@@ -131,6 +132,11 @@ pub const SmallPatchList = struct {
         return self.inline_buf[0..self.len];
     }
 
+    pub fn itemsMut(self: *SmallPatchList) []u32 {
+        if (self.overflow) |*ov| return ov.items;
+        return self.inline_buf[0..self.len];
+    }
+
     pub fn append(self: *SmallPatchList, allocator: Allocator, site: u32) !void {
         if (self.overflow) |*ov| {
             try ov.append(allocator, site);
@@ -206,6 +212,11 @@ pub const ControlFrame = struct {
     /// Used at `end` to decide whether the false path needs explicit
     /// zero-init of result slots (for if-without-else with results).
     has_else: bool = false,
+    /// Definite-init state of non-parameter locals at block entry.
+    entry_local_init: LocalInitSet = .{},
+    /// Intersection of all branch states that can reach this frame's end.
+    branch_local_init: LocalInitSet = .{},
+    has_branch_local_init: bool = false,
 };
 
 // ── Input op enum ─────────────────────────────────────────────────────────────
@@ -711,9 +722,22 @@ pub const Lower = struct {
     is_unreachable: bool = false,
     /// Nesting depth of blocks opened while in unreachable state.
     unreachable_depth: u32 = 0,
+    /// r0 accumulator tracking: the slot whose value was most recently written into
+    /// the r0 register (i.e. the `dst` of the last _imm or _r instruction).
+    /// When the next _imm instruction's `lhs` equals this slot we emit the cheaper
+    /// `_r` variant which reads lhs from r0 instead of slots[lhs].
+    /// Set to null whenever r0 may have been clobbered (branches, calls, copies, etc.).
+    r0_slot: ?Slot = null,
+    /// Slot of the most recent call's destination (if any has result).
+    /// Used to detect when call + local_set can fuse to call_to_local.
+    pending_call_dst: ?Slot = null,
+    /// Definite-init state for non-parameter locals in the current path.
+    local_init: LocalInitSet = .{},
+    /// Disabled once we see unsupported control flow or a read-before-write.
+    local_init_analysis_active: bool = false,
 
     pub fn init(allocator: Allocator) Lower {
-        return .{ .allocator = allocator };
+        return .{ .allocator = allocator, .pending_call_dst = null };
     }
 
     pub fn initWithReservedSlots(allocator: Allocator, reserved_slots: Slot, locals_count: u16) Lower {
@@ -722,6 +746,7 @@ pub const Lower = struct {
             .compiled = .{
                 .slots_len = reserved_slots,
                 .locals_count = locals_count,
+                .needs_zero = locals_count > 0,
                 .ops = .empty,
                 .call_args = .empty,
                 .br_table_targets = .empty,
@@ -729,7 +754,107 @@ pub const Lower = struct {
             },
             .next_slot = reserved_slots,
             .reserved_slots = reserved_slots,
+            .pending_call_dst = null,
         };
+    }
+
+    inline fn trackedLocalCount(self: *const Lower) usize {
+        return self.compiled.locals_count;
+    }
+
+    inline fn firstTrackedLocalSlot(self: *const Lower) Slot {
+        return self.reserved_slots - @as(Slot, self.compiled.locals_count);
+    }
+
+    fn trackedLocalIndex(self: *const Lower, local: u32) ?usize {
+        const local_slot: Slot = @intCast(local);
+        const first = self.firstTrackedLocalSlot();
+        if (local_slot < first or local_slot >= self.reserved_slots) return null;
+        return local_slot - first;
+    }
+
+    fn initLocalInitAnalysis(self: *Lower) !void {
+        self.local_init_analysis_active = false;
+        self.compiled.needs_zero = self.compiled.locals_count > 0;
+        if (self.compiled.locals_count == 0) return;
+        try self.local_init.resize(self.allocator, self.trackedLocalCount(), false);
+        self.local_init.unsetAll();
+        self.local_init_analysis_active = true;
+        self.compiled.needs_zero = false;
+    }
+
+    fn disableLocalInitAnalysis(self: *Lower) void {
+        self.local_init_analysis_active = false;
+        self.compiled.needs_zero = self.compiled.locals_count > 0;
+    }
+
+    fn copyLocalInitIntoCurrent(self: *Lower, src: LocalInitSet) void {
+        if (!self.local_init_analysis_active) return;
+        self.local_init.unsetAll();
+        self.local_init.setUnion(src);
+    }
+
+    fn recordLocalRead(self: *Lower, local: u32) void {
+        if (!self.local_init_analysis_active) return;
+        const idx = self.trackedLocalIndex(local) orelse return;
+        if (!self.local_init.isSet(idx)) self.disableLocalInitAnalysis();
+    }
+
+    fn recordLocalWrite(self: *Lower, local: u32) void {
+        if (!self.local_init_analysis_active) return;
+        const idx = self.trackedLocalIndex(local) orelse return;
+        self.local_init.set(idx);
+    }
+
+    fn initFrameLocalInit(self: *Lower, frame: *ControlFrame) !void {
+        if (!self.local_init_analysis_active) return;
+        frame.entry_local_init = try self.local_init.clone(self.allocator);
+    }
+
+    fn mergeCurrentLocalInitIntoFrame(self: *Lower, frame: *ControlFrame) !void {
+        if (!self.local_init_analysis_active) return;
+        if (frame.kind == .loop or frame.is_function_frame) return;
+        if (!frame.has_branch_local_init) {
+            frame.branch_local_init = try self.local_init.clone(self.allocator);
+            frame.has_branch_local_init = true;
+            return;
+        }
+        frame.branch_local_init.setIntersection(self.local_init);
+    }
+
+    fn finalizeFrameLocalInit(self: *Lower, frame: *ControlFrame, was_unreachable: bool) !void {
+        if (!self.local_init_analysis_active or frame.is_function_frame) return;
+
+        switch (frame.kind) {
+            .if_ => {
+                if (frame.has_else) {
+                    if (!was_unreachable) {
+                        try self.mergeCurrentLocalInitIntoFrame(frame);
+                    }
+                    if (frame.has_branch_local_init) {
+                        self.copyLocalInitIntoCurrent(frame.branch_local_init);
+                    }
+                } else {
+                    if (was_unreachable) {
+                        self.copyLocalInitIntoCurrent(frame.entry_local_init);
+                    } else {
+                        self.local_init.setIntersection(frame.entry_local_init);
+                    }
+                    if (frame.has_branch_local_init) {
+                        self.local_init.setIntersection(frame.branch_local_init);
+                    }
+                }
+            },
+            .block, .loop, .try_table => {
+                if (frame.has_branch_local_init) {
+                    if (was_unreachable) {
+                        self.copyLocalInitIntoCurrent(frame.branch_local_init);
+                    } else {
+                        self.local_init.setIntersection(frame.branch_local_init);
+                    }
+                }
+            },
+        }
     }
 
     /// Push the implicit function-level block frame onto the control stack.
@@ -738,8 +863,8 @@ pub const Lower = struct {
     /// The frame uses `kind = .block`; `br depth` that resolves to this frame
     /// is treated as a `return` (just like the function's final `end`).
     pub fn pushFunctionFrame(self: *Lower, n_results: usize) !void {
+        try self.initLocalInitAnalysis();
         var result_slots: SmallSlotList = .empty;
-        errdefer result_slots.deinit(self.allocator);
         // Allocate a result slot for each return value.
         // These slots are not used for the normal fall-through `end` path
         // (which emits `ret` directly), but `br` targeting this frame will
@@ -748,13 +873,20 @@ pub const Lower = struct {
         while (i < n_results) : (i += 1) {
             try result_slots.append(self.allocator, self.alloc_slot());
         }
-        try self.control_stack.append(self.allocator, .{
+        var frame: ControlFrame = .{
             .kind = .block,
             .stack_height = 0,
             .result_slots = result_slots,
             .target_pc = 0, // forward — patched when the function `end` is processed
             .is_function_frame = true,
-        });
+        };
+        errdefer {
+            frame.result_slots.deinit(self.allocator);
+            frame.entry_local_init.deinit(self.allocator);
+            frame.branch_local_init.deinit(self.allocator);
+        }
+        try self.initFrameLocalInit(&frame);
+        try self.control_stack.append(self.allocator, frame);
     }
 
     pub fn deinit(self: *Lower) void {
@@ -767,9 +899,12 @@ pub const Lower = struct {
             frame.patch_sites.deinit(self.allocator);
             frame.result_slots.deinit(self.allocator);
             frame.param_slots.deinit(self.allocator);
+            frame.entry_local_init.deinit(self.allocator);
+            frame.branch_local_init.deinit(self.allocator);
         }
         self.control_stack.deinit(self.allocator);
         self.free_slots.deinit(self.allocator);
+        self.local_init.deinit(self.allocator);
     }
 
     /// Reset this Lower for reuse on a new function body, retaining all
@@ -789,6 +924,7 @@ pub const Lower = struct {
         self.compiled.catch_handler_tables.clearRetainingCapacity();
         self.compiled.slots_len = reserved_slots;
         self.compiled.locals_count = locals_count;
+        self.compiled.needs_zero = locals_count > 0;
 
         // Clear and deinit each ControlFrame's inner lists.
         // We free the per-frame inner lists (they are typically tiny) and clear
@@ -797,6 +933,8 @@ pub const Lower = struct {
             frame.patch_sites.deinit(self.allocator);
             frame.result_slots.deinit(self.allocator);
             frame.param_slots.deinit(self.allocator);
+            frame.entry_local_init.deinit(self.allocator);
+            frame.branch_local_init.deinit(self.allocator);
         }
         self.control_stack.clearRetainingCapacity();
 
@@ -806,6 +944,9 @@ pub const Lower = struct {
         self.composite_types = &.{};
         self.is_unreachable = false;
         self.unreachable_depth = 0;
+        self.r0_slot = null;
+        self.pending_call_dst = null;
+        self.local_init_analysis_active = false;
         // Recycle the free-list capacity but discard stale slot numbers.
         self.free_slots.clearRetainingCapacity();
     }
@@ -988,6 +1129,8 @@ pub const Lower = struct {
                     .br_on_cast => |*j| j.target = target_pc,
                     .br_on_cast_fail => |*j| j.target = target_pc,
                     .try_table_leave => |*j| j.target = target_pc,
+                    // Peephole K: fused copy+conditional-jump
+                    .copy_jump_if_nz => |*j| j.target = target_pc,
                     // Fused compare-jump ops (Peephole F)
                     .i32_eq_jump_if_false => |*j| j.target = target_pc,
                     .i32_ne_jump_if_false => |*j| j.target = target_pc,
@@ -1012,6 +1155,30 @@ pub const Lower = struct {
                     .i64_ge_s_jump_if_false => |*j| j.target = target_pc,
                     .i64_ge_u_jump_if_false => |*j| j.target = target_pc,
                     .i64_eqz_jump_if_false => |*j| j.target = target_pc,
+                    // Fused compare-jump ops, true-branch variant (Peephole J)
+                    .jump_if_nz => |*j| j.target = target_pc,
+                    .i32_eq_jump_if_true => |*j| j.target = target_pc,
+                    .i32_ne_jump_if_true => |*j| j.target = target_pc,
+                    .i32_lt_s_jump_if_true => |*j| j.target = target_pc,
+                    .i32_lt_u_jump_if_true => |*j| j.target = target_pc,
+                    .i32_gt_s_jump_if_true => |*j| j.target = target_pc,
+                    .i32_gt_u_jump_if_true => |*j| j.target = target_pc,
+                    .i32_le_s_jump_if_true => |*j| j.target = target_pc,
+                    .i32_le_u_jump_if_true => |*j| j.target = target_pc,
+                    .i32_ge_s_jump_if_true => |*j| j.target = target_pc,
+                    .i32_ge_u_jump_if_true => |*j| j.target = target_pc,
+                    .i32_eqz_jump_if_true => |*j| j.target = target_pc,
+                    .i64_eq_jump_if_true => |*j| j.target = target_pc,
+                    .i64_ne_jump_if_true => |*j| j.target = target_pc,
+                    .i64_lt_s_jump_if_true => |*j| j.target = target_pc,
+                    .i64_lt_u_jump_if_true => |*j| j.target = target_pc,
+                    .i64_gt_s_jump_if_true => |*j| j.target = target_pc,
+                    .i64_gt_u_jump_if_true => |*j| j.target = target_pc,
+                    .i64_le_s_jump_if_true => |*j| j.target = target_pc,
+                    .i64_le_u_jump_if_true => |*j| j.target = target_pc,
+                    .i64_ge_s_jump_if_true => |*j| j.target = target_pc,
+                    .i64_ge_u_jump_if_true => |*j| j.target = target_pc,
+                    .i64_eqz_jump_if_true => |*j| j.target = target_pc,
                     // Fused compare-imm-jump ops (Peephole G)
                     .i32_eq_imm_jump_if_false => |*j| j.target = target_pc,
                     .i32_ne_imm_jump_if_false => |*j| j.target = target_pc,
@@ -1033,6 +1200,27 @@ pub const Lower = struct {
                     .i64_le_u_imm_jump_if_false => |*j| j.target = target_pc,
                     .i64_ge_s_imm_jump_if_false => |*j| j.target = target_pc,
                     .i64_ge_u_imm_jump_if_false => |*j| j.target = target_pc,
+                    // Fused compare-imm-jump ops, true-branch variant (Peephole J-imm)
+                    .i32_eq_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i32_ne_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i32_lt_s_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i32_lt_u_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i32_gt_s_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i32_gt_u_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i32_le_s_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i32_le_u_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i32_ge_s_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i32_ge_u_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i64_eq_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i64_ne_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i64_lt_s_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i64_lt_u_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i64_gt_s_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i64_gt_u_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i64_le_s_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i64_le_u_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i64_ge_s_imm_jump_if_true => |*j| j.target = target_pc,
+                    .i64_ge_u_imm_jump_if_true => |*j| j.target = target_pc,
                     else => unreachable,
                 }
             }
@@ -1061,7 +1249,7 @@ pub const Lower = struct {
             while (ri > 0) {
                 ri -= 1;
                 const src = self.stack.peek() orelse return error.StackUnderflow;
-                try self.emit(.{ .copy = .{ .dst = target_slots[ri], .src = src } });
+                try self.emit_copy(target_slots[ri], src);
                 _ = self.stack.pop();
             }
         }
@@ -1330,7 +1518,7 @@ pub const Lower = struct {
     ///
     /// NOTE: Do NOT call this for `local_tee` because the value must also
     /// remain on the stack.
-    fn try_fuse_local_set(self: *Lower, local: Slot, src: Slot) bool {
+    pub fn try_fuse_local_set(self: *Lower, local: Slot, src: Slot) bool {
         const ops = self.compiled.ops.items;
         if (ops.len == 0) return false;
         const last = &ops[ops.len - 1];
@@ -1562,7 +1750,356 @@ pub const Lower = struct {
         return true;
     }
 
+    /// Attempt to fuse a preceding `i32_xx_cmp`/`i64_xx_cmp` + `local_set` into
+    /// `i32_eq_to_local`/`i64_eq_to_local` etc.
+    pub fn try_fuse_cmp_to_local(self: *Lower, local: Slot, src: Slot) bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len == 0) return false;
+        const last = &ops[ops.len - 1];
+        switch (last.*) {
+            .i32_eq => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i32_eq_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i32_ne => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i32_ne_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i32_lt_s => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i32_lt_s_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i32_lt_u => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i32_lt_u_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i32_gt_s => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i32_gt_s_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i32_gt_u => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i32_gt_u_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i32_le_s => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i32_le_s_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i32_le_u => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i32_le_u_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i32_ge_s => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i32_ge_s_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i32_ge_u => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i32_ge_u_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i64_eq => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i64_eq_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i64_ne => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i64_ne_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i64_lt_s => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i64_lt_s_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i64_lt_u => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i64_lt_u_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i64_gt_s => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i64_gt_s_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i64_gt_u => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i64_gt_u_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i64_le_s => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i64_le_s_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i64_le_u => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i64_le_u_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i64_ge_s => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i64_ge_s_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            .i64_ge_u => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i64_ge_u_to_local = .{ .local = local, .lhs = c.lhs, .rhs = c.rhs } };
+            },
+            else => return false,
+        }
+        if (self.r0_slot == src) self.r0_slot = null;
+        return true;
+    }
+
+    /// Attempt to fuse a preceding `const_i32`/`const_i64` + `local_set` into
+    /// `i32_const_to_local`/`i64_const_to_local`.
+    pub fn try_fuse_const_to_local(self: *Lower, local: Slot, src: Slot) bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len == 0) return false;
+        const last = &ops[ops.len - 1];
+        switch (last.*) {
+            .const_i32 => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i32_const_to_local = .{ .local = local, .value = c.value } };
+            },
+            .const_i64 => |c| {
+                if (c.dst != src) return false;
+                last.* = .{ .i64_const_to_local = .{ .local = local, .value = c.value } };
+            },
+            else => return false,
+        }
+        if (self.r0_slot == src) self.r0_slot = null;
+        return true;
+    }
+
+    /// Attempt to fuse a preceding `global_get` + `local_set` into
+    /// `global_get_to_local`.
+    pub fn try_fuse_global_get_to_local(self: *Lower, local: Slot, src: Slot) bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len == 0) return false;
+        const last = &ops[ops.len - 1];
+        switch (last.*) {
+            .global_get => |g| {
+                if (g.dst != src) return false;
+                last.* = .{ .global_get_to_local = .{ .local = local, .global_idx = g.global_idx } };
+            },
+            else => return false,
+        }
+        if (self.r0_slot == src) self.r0_slot = null;
+        return true;
+    }
+
+    /// Attempt to fuse a preceding `i32_load`/`i64_load` + `local_set` into
+    /// `i32_load_to_local`/`i64_load_to_local`.
+    pub fn try_fuse_load_to_local(self: *Lower, local: Slot, src: Slot) bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len == 0) return false;
+        const last = &ops[ops.len - 1];
+        switch (last.*) {
+            .i32_load => |l| {
+                if (l.dst != src) return false;
+                last.* = .{ .i32_load_to_local = .{ .local = local, .addr = l.addr, .offset = l.offset } };
+            },
+            .i64_load => |l| {
+                if (l.dst != src) return false;
+                last.* = .{ .i64_load_to_local = .{ .local = local, .addr = l.addr, .offset = l.offset } };
+            },
+            else => return false,
+        }
+        if (self.r0_slot == src) self.r0_slot = null;
+        return true;
+    }
+
+    /// Attempt to fuse a preceding `i32_add_imm`/`i64_add_imm` + `local_set` into
+    /// `i32_imm_to_local`/`i64_imm_to_local`. This is a superinstruction that
+    /// combines: (const_i32 writes to tmp) + (local_set copies tmp to local)
+    /// into a single instruction that writes imm directly to local, preserving src.
+    pub fn try_fuse_imm_to_local(self: *Lower, local: Slot, src: Slot) bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len == 0) return false;
+        const last = &ops[ops.len - 1];
+        switch (last.*) {
+            .i32_add_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i32_sub_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i32_mul_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i32_and_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i32_or_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i32_xor_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i32_shl_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i32_shr_s_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i32_shr_u_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i64_add_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i64_sub_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i64_mul_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i64_and_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i64_or_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i64_xor_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i64_shl_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i64_shr_s_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            .i64_shr_u_imm => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_imm_to_local = .{ .local = local, .src = src, .imm = b.imm } };
+            },
+            else => return false,
+        }
+        if (self.r0_slot == src) self.r0_slot = null;
+        return true;
+    }
+
+    /// Fuse: `call { dst=T } + local_set { local=L, src=T }` → `call_to_local { local=L }`
+    /// This saves one dispatch event per call whose result is immediately stored to a local.
+    pub fn try_fuse_call_to_local(self: *Lower, local: Slot, src: Slot) bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len == 0) return false;
+        const last = &ops[ops.len - 1];
+        switch (last.*) {
+            .call => |c| {
+                if (c.dst != src) return false;
+                last.* = .{
+                    .call_to_local = .{
+                        .local = local,
+                        .func_idx = c.func_idx,
+                        .args_start = c.args_start,
+                        .args_len = c.args_len,
+                    },
+                };
+            },
+            else => return false,
+        }
+        return true;
+    }
+
     // ── Constant folding & algebraic simplification helpers ──────────────────
+
+    /// Attempt to fuse a preceding binop + local_tee into binop_tee_local.
+    /// `local` is the target local slot, `src` is the value on the value-stack
+    /// (which `local_tee` peeks at — it does NOT pop it).
+    pub fn try_fuse_local_tee(self: *Lower, local: Slot, src: Slot) bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len == 0) return false;
+        const last = &ops[ops.len - 1];
+        switch (last.*) {
+            .i32_add => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_add_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_sub => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_sub_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_mul => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_mul_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_and => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_and_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_or => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_or_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_xor => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_xor_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_shl => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_shl_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_shr_s => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_shr_s_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i32_shr_u => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i32_shr_u_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            // i64 variants
+            .i64_add => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_add_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_sub => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_sub_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_mul => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_mul_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_and => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_and_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_or => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_or_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_xor => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_xor_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_shl => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_shl_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_shr_s => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_shr_s_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            .i64_shr_u => |b| {
+                if (b.dst != src) return false;
+                last.* = .{ .i64_shr_u_tee_local = .{ .dst = src, .local = local, .lhs = b.lhs, .rhs = b.rhs } };
+            },
+            else => return false,
+        }
+        if (self.r0_slot == src) self.r0_slot = null;
+        return true;
+    }
 
     /// Recycle a temporary slot back to the free-list.
     fn recycle_slot(self: *Lower, slot: Slot) void {
@@ -1572,8 +2109,24 @@ pub const Lower = struct {
     }
 
     /// Emit a copy instruction: dst = src (using the existing `copy` op).
+    /// Propagates r0_slot: if src is the current r0 accumulator, dst becomes
+    /// the new r0_slot so downstream _imm_r fusions can still fire.
     fn emit_copy(self: *Lower, dst_slot: Slot, src_slot: Slot) !void {
+        if (dst_slot == src_slot) return;
+        if (self.r0_slot == src_slot) {
+            self.r0_slot = dst_slot;
+        }
         try self.emit(.{ .copy = .{ .dst = dst_slot, .src = src_slot } });
+    }
+
+    /// Reuse or emit a copy: returns the actual slot that holds the value.
+    /// If dst == src, returns src (no copy needed). Otherwise emits copy and returns dst.
+    fn emit_copy_or_reuse(self: *Lower, dst_slot: Slot, src_slot: Slot) !Slot {
+        if (dst_slot == src_slot) {
+            return src_slot;
+        }
+        try self.emit_copy(dst_slot, src_slot);
+        return dst_slot;
     }
 
     /// Try to fold a binary op where both operands are compile-time constants.
@@ -1723,12 +2276,9 @@ pub const Lower = struct {
         // ── Identity: result == lhs ──
         const is_identity = comptime_is_identity_i32(op_tag, imm);
         if (is_identity) {
-            // Remove the const op, emit copy (or reuse slot).
             _ = self.compiled.ops.pop();
-            if (dst != lhs) {
-                try self.emit_copy(dst, lhs);
-            }
-            try self.stack.push(self.allocator, dst);
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
             return true;
         }
 
@@ -1780,10 +2330,8 @@ pub const Lower = struct {
         const is_identity = comptime_is_identity_i64(op_tag, imm);
         if (is_identity) {
             _ = self.compiled.ops.pop();
-            if (dst != lhs) {
-                try self.emit_copy(dst, lhs);
-            }
-            try self.stack.push(self.allocator, dst);
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
             return true;
         }
 
@@ -1795,6 +2343,8 @@ pub const Lower = struct {
             try self.stack.push(self.allocator, dst);
             return true;
         }
+
+        // ── Strength reduction: mul by power-of-2 → shl ──
 
         // ── Strength reduction: mul by power-of-2 → shl ──
         if (comptime std.mem.eql(u8, op_tag, "i64_mul")) {
@@ -2123,7 +2673,13 @@ pub const Lower = struct {
     pub fn lower_binary_op(
         self: *Lower,
         comptime op_tag: []const u8,
+        prev_r0: ?Slot,
     ) !void {
+        // Clear now so all exit paths (const folding, simplification, fallthrough)
+        // leave r0_slot in the correct state unless we explicitly set it below.
+        // (lowerOp already cleared self.r0_slot before calling us; this is a no-op
+        // but kept for clarity.)
+        self.r0_slot = null;
         const rhs = try self.pop_slot();
         const lhs = try self.pop_slot();
         const dst = self.alloc_slot();
@@ -2149,27 +2705,63 @@ pub const Lower = struct {
                 switch (ops[ops.len - 1]) {
                     .const_i32 => |c| if (ImmType == i32 and c.dst == rhs) {
                         // ── Algebraic simplification & strength reduction ──
-                        if (try self.try_simplify_imm_i32(op_tag, lhs, c.value, dst))
+                        if (try self.try_simplify_imm_i32(op_tag, lhs, c.value, dst)) {
+                            self.r0_slot = null;
                             return;
+                        }
                         // Remove the const_i32 and emit the fused imm op instead.
                         _ = self.compiled.ops.pop();
+                        // ── r0 variant: if lhs is already in r0, skip the lhs slot ──
+                        const r_tag = imm_tag ++ "_r";
+                        if (comptime @hasField(Op, r_tag)) {
+                            if (prev_r0) |r0| {
+                                if (r0 == lhs) {
+                                    try self.emit(@unionInit(Op, r_tag, .{
+                                        .dst = dst,
+                                        .imm = c.value,
+                                    }));
+                                    self.r0_slot = dst;
+                                    try self.stack.push(self.allocator, dst);
+                                    return;
+                                }
+                            }
+                        }
                         try self.emit(@unionInit(Op, imm_tag, .{
                             .dst = dst,
                             .lhs = lhs,
                             .imm = c.value,
                         }));
+                        self.r0_slot = dst;
                         try self.stack.push(self.allocator, dst);
                         return;
                     },
                     .const_i64 => |c| if (ImmType == i64 and c.dst == rhs) {
-                        if (try self.try_simplify_imm_i64(op_tag, lhs, c.value, dst))
+                        if (try self.try_simplify_imm_i64(op_tag, lhs, c.value, dst)) {
+                            self.r0_slot = null;
                             return;
+                        }
                         _ = self.compiled.ops.pop();
+                        // ── r0 variant: if lhs is already in r0, skip the lhs slot ──
+                        const r_tag = imm_tag ++ "_r";
+                        if (comptime @hasField(Op, r_tag)) {
+                            if (prev_r0) |r0| {
+                                if (r0 == lhs) {
+                                    try self.emit(@unionInit(Op, r_tag, .{
+                                        .dst = dst,
+                                        .imm = c.value,
+                                    }));
+                                    self.r0_slot = dst;
+                                    try self.stack.push(self.allocator, dst);
+                                    return;
+                                }
+                            }
+                        }
                         try self.emit(@unionInit(Op, imm_tag, .{
                             .dst = dst,
                             .lhs = lhs,
                             .imm = c.value,
                         }));
+                        self.r0_slot = dst;
                         try self.stack.push(self.allocator, dst);
                         return;
                     },
@@ -2178,6 +2770,12 @@ pub const Lower = struct {
             }
         }
 
+        self.r0_slot = null;
+        // Integer-producing binops write their result to the r0 register at runtime.
+        // Track which slot holds r0 so downstream copy/imm_r can eliminate redundant reads.
+        if (comptime std.mem.startsWith(u8, op_tag, "i32_") or std.mem.startsWith(u8, op_tag, "i64_")) {
+            self.r0_slot = dst;
+        }
         try self.emit(@unionInit(Op, op_tag, .{
             .dst = dst,
             .lhs = lhs,
@@ -2206,6 +2804,13 @@ pub const Lower = struct {
             .src = src,
         }));
 
+        // Integer-producing unary ops write r0 at runtime.
+        if (comptime std.mem.startsWith(u8, op_tag, "i32_") or std.mem.startsWith(u8, op_tag, "i64_")) {
+            self.r0_slot = dst;
+        } else {
+            self.r0_slot = null;
+        }
+
         try self.stack.push(self.allocator, dst);
     }
 
@@ -2221,6 +2826,13 @@ pub const Lower = struct {
             .dst = dst,
             .src = src,
         }));
+
+        // Integer-producing conversions write r0 at runtime.
+        if (comptime std.mem.startsWith(u8, op_tag, "i32_") or std.mem.startsWith(u8, op_tag, "i64_")) {
+            self.r0_slot = dst;
+        } else {
+            self.r0_slot = null;
+        }
 
         try self.stack.push(self.allocator, dst);
     }
@@ -2277,6 +2889,8 @@ pub const Lower = struct {
             .lhs = lhs,
             .rhs = rhs,
         }));
+        // All comparison ops produce i32, which is written to r0 at runtime.
+        self.r0_slot = dst;
 
         try self.stack.push(self.allocator, dst);
     }
@@ -2357,6 +2971,12 @@ pub const Lower = struct {
             }
         }
 
+        // Capture and clear r0 accumulator state.
+        // lower_binary_op will receive it as prev_r0 and may set self.r0_slot again
+        // if it emits an _imm or _r instruction.  All other op arms leave r0_slot=null.
+        const saved_r0 = self.r0_slot;
+        self.r0_slot = null;
+
         switch (op) {
             .unreachable_ => {
                 try self.emit(.unreachable_);
@@ -2369,6 +2989,7 @@ pub const Lower = struct {
 
             .drop => {
                 _ = try self.pop_slot();
+                self.r0_slot = null;
             },
 
             // ── Structured control flow ───────────────────────────────────────
@@ -2392,7 +3013,7 @@ pub const Lower = struct {
                     while (pi > 0) {
                         pi -= 1;
                         const src = try self.pop_slot();
-                        try self.emit(.{ .copy = .{ .dst = slots.params.items()[pi], .src = src } });
+                        try self.emit_copy(slots.params.items()[pi], src);
                     }
                 }
                 // Record the stack height AFTER consuming params (before block body).
@@ -2402,13 +3023,21 @@ pub const Lower = struct {
                     try self.stack.push(self.allocator, ps);
                 }
 
-                try self.control_stack.append(self.allocator, .{
+                var frame: ControlFrame = .{
                     .kind = .block,
                     .stack_height = height_after_params,
                     .result_slots = slots.results,
                     .param_slots = slots.params,
                     .target_pc = 0, // forward — filled at end
-                });
+                };
+                errdefer {
+                    frame.result_slots.deinit(self.allocator);
+                    frame.param_slots.deinit(self.allocator);
+                    frame.entry_local_init.deinit(self.allocator);
+                    frame.branch_local_init.deinit(self.allocator);
+                }
+                try self.initFrameLocalInit(&frame);
+                try self.control_stack.append(self.allocator, frame);
             },
 
             .loop => |block_type| {
@@ -2420,7 +3049,7 @@ pub const Lower = struct {
                     while (pi > 0) {
                         pi -= 1;
                         const src = try self.pop_slot();
-                        try self.emit(.{ .copy = .{ .dst = slots.params.items()[pi], .src = src } });
+                        try self.emit_copy(slots.params.items()[pi], src);
                     }
                 }
                 const height_after_params = self.stack.len();
@@ -2430,13 +3059,21 @@ pub const Lower = struct {
 
                 // The loop target is right here (top of the loop body).
                 const loop_header_pc = self.current_pc();
-                try self.control_stack.append(self.allocator, .{
+                var frame: ControlFrame = .{
                     .kind = .loop,
                     .stack_height = height_after_params,
                     .result_slots = slots.results,
                     .param_slots = slots.params,
                     .target_pc = loop_header_pc,
-                });
+                };
+                errdefer {
+                    frame.result_slots.deinit(self.allocator);
+                    frame.param_slots.deinit(self.allocator);
+                    frame.entry_local_init.deinit(self.allocator);
+                    frame.branch_local_init.deinit(self.allocator);
+                }
+                try self.initFrameLocalInit(&frame);
+                try self.control_stack.append(self.allocator, frame);
             },
 
             .if_ => |block_type| {
@@ -2449,7 +3086,7 @@ pub const Lower = struct {
                     while (pi > 0) {
                         pi -= 1;
                         const src = try self.pop_slot();
-                        try self.emit(.{ .copy = .{ .dst = slots.params.items()[pi], .src = src } });
+                        try self.emit_copy(slots.params.items()[pi], src);
                     }
                 }
                 const height_after_params = self.stack.len();
@@ -2465,7 +3102,7 @@ pub const Lower = struct {
                 }
                 const jiz_pc = self.current_pc() - 1; // index of the jump_if_z or fused op
 
-                try self.control_stack.append(self.allocator, .{
+                var frame: ControlFrame = .{
                     .kind = .if_,
                     .stack_height = height_after_params,
                     .result_slots = slots.results,
@@ -2477,7 +3114,16 @@ pub const Lower = struct {
                         try ps.append(self.allocator, jiz_pc);
                         break :blk ps;
                     },
-                });
+                };
+                errdefer {
+                    frame.patch_sites.deinit(self.allocator);
+                    frame.result_slots.deinit(self.allocator);
+                    frame.param_slots.deinit(self.allocator);
+                    frame.entry_local_init.deinit(self.allocator);
+                    frame.branch_local_init.deinit(self.allocator);
+                }
+                try self.initFrameLocalInit(&frame);
+                try self.control_stack.append(self.allocator, frame);
             },
 
             .else_ => {
@@ -2494,9 +3140,12 @@ pub const Lower = struct {
                     while (ri > 0) {
                         ri -= 1;
                         const src = self.stack.peek() orelse break;
-                        try self.emit(.{ .copy = .{ .dst = frame.result_slots.items()[ri], .src = src } });
+                        try self.emit_copy(frame.result_slots.items()[ri], src);
                         _ = self.stack.pop();
                     }
+                }
+                if (!was_unreachable) {
+                    try self.mergeCurrentLocalInitIntoFrame(frame);
                 }
 
                 // Emit an unconditional jump to skip the else-body (from end of then-body).
@@ -2516,132 +3165,16 @@ pub const Lower = struct {
                 for (frame.param_slots.items()) |ps| {
                     try self.stack.push(self.allocator, ps);
                 }
+                self.copyLocalInitIntoCurrent(frame.entry_local_init);
             },
 
             .end => {
-                if (self.control_stack.items.len == 0) {
-                    // The final `end` of the function body — emit return.
-                    // This path is taken only when no implicit function frame was pushed
-                    // (legacy code path kept for safety).
-                    if (!was_unreachable) {
-                        const value = self.stack.pop();
-                        try self.emit(.{ .ret = .{ .value = value } });
-                    } else {
-                        // Even for unreachable code, emit a sentinel ret so the M3 code
-                        // buffer always ends with a valid terminator (never actually executed).
-                        try self.emit(.{ .ret = .{ .value = null } });
-                    }
-                    return;
-                }
-
-                var frame = self.control_stack.pop().?;
-                defer frame.patch_sites.deinit(self.allocator);
-                defer frame.result_slots.deinit(self.allocator);
-                defer frame.param_slots.deinit(self.allocator);
-
-                // ── Function-level implicit frame ─────────────────────────────
-                // When the implicit function frame is popped we emit `ret` instead
-                // of a continuation jump, exactly like the `control_stack.len == 0`
-                // path above.  Any `br` that targeted this frame already emitted a
-                // `copy` + forward `jump` that will be patched to land right here,
-                // just before the `ret`.
-                if (frame.is_function_frame) {
-                    // Patch all forward jumps (from `br depth` targeting the function
-                    // frame) to land at the upcoming `ret`.
-                    const ret_pc = self.current_pc();
-                    self.patch_forward_jumps(&frame, ret_pc);
-                    if (!was_unreachable) {
-                        const value = self.stack.pop();
-                        try self.emit(.{ .ret = .{ .value = value } });
-                    } else {
-                        // Emit a sentinel ret so the M3 code buffer always ends with a
-                        // valid terminator (this ret is never actually executed).
-                        try self.emit(.{ .ret = .{ .value = null } });
-                    }
-                    return;
-                }
-
-                // Copy block results from the stack top into the result slots.
-                // Skip this when coming from unreachable code — the br/return already
-                // copied values into result_slots and the stack has been trimmed.
-                if (!was_unreachable) {
-                    // Stack top = last result (result_slots[N-1]); bottom of N values = first result.
-                    const n = frame.result_slots.items().len;
-                    var ri: usize = n;
-                    while (ri > 0) {
-                        ri -= 1;
-                        if (self.stack.peek()) |src| {
-                            try self.emit(.{ .copy = .{ .dst = frame.result_slots.items()[ri], .src = src } });
-                            _ = self.stack.pop();
-                        }
-                    }
-                }
-
-                // ── If-without-else zero-init ────────────────────────────────
-                // When an `if` block has result types but no `else` branch, the
-                // false path (jump_if_z) lands directly at `end`.  The result
-                // slots were never written on the false path and must be
-                // explicitly zero-initialised (the Wasm spec says the implicit
-                // else produces default zero values).
-                //
-                // Layout:
-                //   [then-body result copies]
-                //   jump → continuation         ← skip false-path zeroing
-                // false_path:
-                //   const_i64 0 → result_slots[0..N]
-                // continuation:                 ← both paths merge here
-                if (frame.kind == .if_ and !frame.has_else and frame.result_slots.items().len > 0) {
-                    // Emit a jump from the then-path over the false-path zeroing.
-                    const then_skip_pc = self.current_pc();
-                    try self.emit(.{ .jump = .{ .target = 0 } }); // placeholder, patched below
-
-                    // Patch jump_if_z (and any other forward jumps) to land here.
-                    const false_path_pc = self.current_pc();
-                    self.patch_forward_jumps(&frame, false_path_pc);
-
-                    // Emit explicit zero-init for each result slot.
-                    for (frame.result_slots.items()) |rs| {
-                        try self.emit(.{ .const_i64 = .{ .dst = rs, .value = 0 } });
-                    }
-
-                    // Patch the then-skip jump to land here (continuation).
-                    const continuation_pc = self.current_pc();
-                    switch (self.compiled.ops.items[then_skip_pc]) {
-                        .jump => |*j| j.target = continuation_pc,
-                        else => unreachable,
-                    }
-
-                    // Clear patch_sites so the normal patch_forward_jumps below is a no-op.
-                    frame.patch_sites.clearRetainingCapacity();
-                }
-
-                // For try_table: emit try_table_leave (normal-exit jump) and
-                // backpatch try_table_enter.end_target to point here.
-                if (frame.kind == .try_table) {
-                    // Record pc of try_table_leave as a patch site (forward jump to continuation).
-                    const leave_pc = self.current_pc();
-                    try self.emit(.{ .try_table_leave = .{ .target = 0 } });
-                    try frame.patch_sites.append(self.allocator, leave_pc);
-
-                    // Backpatch try_table_enter.end_target.
-                    if (frame.try_table_enter_pc) |epc| {
-                        switch (self.compiled.ops.items[epc]) {
-                            .try_table_enter => |*e| e.end_target = leave_pc,
-                            else => unreachable,
-                        }
-                    }
-                }
-
-                // The continuation starts at the next op.
-                const end_pc = self.current_pc();
-                self.patch_forward_jumps(&frame, end_pc);
-
-                // Restore value stack and push result slots.
-                try self.unwind_stack_to_frame(&frame);
+                try self.lowerOpEnd(was_unreachable);
             },
 
             .br => |depth| {
                 const frame = try self.frame_at_depth(depth);
+                try self.mergeCurrentLocalInitIntoFrame(frame);
                 _ = try self.emit_branch_to(frame);
                 // After an unconditional br the rest of the block is unreachable;
                 // reset the stack to the frame's height so further ops (up to the
@@ -2654,6 +3187,7 @@ pub const Lower = struct {
             .br_if => |depth| {
                 const cond = try self.pop_slot();
                 const frame = try self.frame_at_depth(depth);
+                try self.mergeCurrentLocalInitIntoFrame(frame);
 
                 // For a loop: br_if passes params; for block/if: passes results.
                 const target_slots = if (frame.kind == .loop)
@@ -2673,7 +3207,7 @@ pub const Lower = struct {
                         // stack[stack_len - 1 - (target_slots.len - 1 - ri)]
                         // = stack[stack_len - target_slots.len + ri]
                         const src = self.stack.slots.items[stack_len - target_slots.len + ri];
-                        try self.emit(.{ .copy = .{ .dst = target_slots[ri], .src = src } });
+                        try self.emit_copy(target_slots[ri], src);
                     }
                 }
 
@@ -2692,6 +3226,7 @@ pub const Lower = struct {
 
                 // Now emit the actual branch to the target frame.
                 const branch_jump_pc = self.current_pc();
+                const is_forward = frame.kind != .loop;
                 if (frame.kind == .loop) {
                     try self.emit(.{ .jump = .{ .target = frame.target_pc } });
                 } else {
@@ -2699,54 +3234,196 @@ pub const Lower = struct {
                     try self.add_patch_site(frame, branch_jump_pc);
                 }
 
-                // Patch the jump_if_z (or fused compare-jump) to skip just past the unconditional jump.
-                const continue_pc = self.current_pc();
-                switch (self.compiled.ops.items[jiz_pc]) {
-                    .jump_if_z => |*j| j.target = continue_pc,
-                    .i32_eq_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_ne_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_lt_s_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_lt_u_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_gt_s_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_gt_u_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_le_s_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_le_u_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_ge_s_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_ge_u_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_eqz_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_eq_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_ne_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_lt_s_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_lt_u_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_gt_s_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_gt_u_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_le_s_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_le_u_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_ge_s_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_ge_u_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_eqz_jump_if_false => |*j| j.target = continue_pc,
-                    // Fused compare-imm-jump ops (Peephole G)
-                    .i32_eq_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_ne_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_lt_s_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_lt_u_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_gt_s_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_gt_u_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_le_s_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_le_u_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_ge_s_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i32_ge_u_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_eq_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_ne_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_lt_s_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_lt_u_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_gt_s_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_gt_u_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_le_s_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_le_u_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_ge_s_imm_jump_if_false => |*j| j.target = continue_pc,
-                    .i64_ge_u_imm_jump_if_false => |*j| j.target = continue_pc,
-                    else => unreachable,
+                // ── Peephole J: fuse jump_if_false + jump → jump_if_true ──────
+                // When no value copies were emitted between jiz_pc and branch_jump_pc
+                // (they are exactly adjacent), fold the two ops into one jump_if_true.
+                const peephole_j_fused = fused: {
+                    if (branch_jump_pc != jiz_pc + 1) break :fused false;
+                    const branch_target = self.compiled.ops.items[branch_jump_pc].jump.target;
+                    _ = self.compiled.ops.pop(); // remove the jump at branch_jump_pc
+
+                    // Replace jiz_pc op with the _jump_if_true equivalent.
+                    const jiz_op = self.compiled.ops.items[jiz_pc];
+                    const fused_op: Op = switch (jiz_op) {
+                        .jump_if_z => |j| .{ .jump_if_nz = .{ .cond = j.cond, .target = branch_target } },
+                        .i32_eq_jump_if_false => |j| .{ .i32_eq_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i32_ne_jump_if_false => |j| .{ .i32_ne_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i32_lt_s_jump_if_false => |j| .{ .i32_lt_s_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i32_lt_u_jump_if_false => |j| .{ .i32_lt_u_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i32_gt_s_jump_if_false => |j| .{ .i32_gt_s_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i32_gt_u_jump_if_false => |j| .{ .i32_gt_u_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i32_le_s_jump_if_false => |j| .{ .i32_le_s_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i32_le_u_jump_if_false => |j| .{ .i32_le_u_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i32_ge_s_jump_if_false => |j| .{ .i32_ge_s_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i32_ge_u_jump_if_false => |j| .{ .i32_ge_u_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i32_eqz_jump_if_false => |j| .{ .i32_eqz_jump_if_true = .{ .src = j.src, .target = branch_target } },
+                        .i64_eq_jump_if_false => |j| .{ .i64_eq_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i64_ne_jump_if_false => |j| .{ .i64_ne_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i64_lt_s_jump_if_false => |j| .{ .i64_lt_s_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i64_lt_u_jump_if_false => |j| .{ .i64_lt_u_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i64_gt_s_jump_if_false => |j| .{ .i64_gt_s_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i64_gt_u_jump_if_false => |j| .{ .i64_gt_u_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i64_le_s_jump_if_false => |j| .{ .i64_le_s_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i64_le_u_jump_if_false => |j| .{ .i64_le_u_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i64_ge_s_jump_if_false => |j| .{ .i64_ge_s_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i64_ge_u_jump_if_false => |j| .{ .i64_ge_u_jump_if_true = .{ .lhs = j.lhs, .rhs = j.rhs, .target = branch_target } },
+                        .i64_eqz_jump_if_false => |j| .{ .i64_eqz_jump_if_true = .{ .src = j.src, .target = branch_target } },
+                        // Fused compare-imm-jump, true-branch (Peephole J-imm, i32)
+                        .i32_eq_imm_jump_if_false => |j| .{ .i32_eq_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i32_ne_imm_jump_if_false => |j| .{ .i32_ne_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i32_lt_s_imm_jump_if_false => |j| .{ .i32_lt_s_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i32_lt_u_imm_jump_if_false => |j| .{ .i32_lt_u_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i32_gt_s_imm_jump_if_false => |j| .{ .i32_gt_s_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i32_gt_u_imm_jump_if_false => |j| .{ .i32_gt_u_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i32_le_s_imm_jump_if_false => |j| .{ .i32_le_s_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i32_le_u_imm_jump_if_false => |j| .{ .i32_le_u_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i32_ge_s_imm_jump_if_false => |j| .{ .i32_ge_s_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i32_ge_u_imm_jump_if_false => |j| .{ .i32_ge_u_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        // Fused compare-imm-jump, true-branch (Peephole J-imm, i64)
+                        .i64_eq_imm_jump_if_false => |j| .{ .i64_eq_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i64_ne_imm_jump_if_false => |j| .{ .i64_ne_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i64_lt_s_imm_jump_if_false => |j| .{ .i64_lt_s_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i64_lt_u_imm_jump_if_false => |j| .{ .i64_lt_u_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i64_gt_s_imm_jump_if_false => |j| .{ .i64_gt_s_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i64_gt_u_imm_jump_if_false => |j| .{ .i64_gt_u_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i64_le_s_imm_jump_if_false => |j| .{ .i64_le_s_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i64_le_u_imm_jump_if_false => |j| .{ .i64_le_u_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i64_ge_s_imm_jump_if_false => |j| .{ .i64_ge_s_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        .i64_ge_u_imm_jump_if_false => |j| .{ .i64_ge_u_imm_jump_if_true = .{ .lhs = j.lhs, .imm = j.imm, .target = branch_target } },
+                        else => {
+                            // Can't fuse (e.g. imm variant) — undo the pop and fall through.
+                            try self.compiled.ops.append(self.allocator, .{ .jump = .{ .target = branch_target } });
+                            break :fused false;
+                        },
+                    };
+                    self.compiled.ops.items[jiz_pc] = fused_op;
+
+                    // For forward jumps: the patch site currently points to branch_jump_pc
+                    // (which we just popped). Replace it with jiz_pc so the resolver
+                    // patches the fused op's target instead.
+                    if (is_forward) {
+                        const sites = frame.patch_sites.itemsMut();
+                        for (sites) |*site| {
+                            if (site.* == branch_jump_pc) {
+                                site.* = jiz_pc;
+                                break;
+                            }
+                        }
+                    }
+                    break :fused true; // fusion succeeded — no need for the normal patching below
+                };
+
+                // ── Peephole K: fuse copy + jump_if_nz → copy_jump_if_nz ──────
+                // When Peephole J didn't fire (because a copy sits between jiz_pc and
+                // branch_jump_pc) and we have exactly one copy immediately before the
+                // jump_if_z/jump_if_nz, fuse copy+jump into a single copy_jump_if_nz op.
+                //
+                // Pattern before fusion (forward br_if with single result, after F/J tries):
+                //   copy      { dst=result_slot, src=val_slot }   ← at jiz_pc - 1
+                //   jump_if_z { cond=cond_slot,  target=skip  }   ← at jiz_pc
+                //   jump      { target=block_end }                 ← at branch_jump_pc
+                //   skip: ...
+                //
+                // Pattern after fusion:
+                //   copy_jump_if_nz { dst=result_slot, src=val_slot, cond=cond_slot, target=block_end }
+                //   skip: ...  (jump_if_z and jump are gone; copy_jump_if_nz is at jiz_pc - 1)
+                //
+                // Condition: Peephole J did NOT fire AND the preceding op is `copy` AND
+                // the jump_if_z source is a plain `jump_if_z` (not a fused compare-jump,
+                // since those carry their own cond evaluation).
+                const peephole_k_fused = fused_k: {
+                    if (peephole_j_fused) break :fused_k false;
+                    // Need: jiz_pc > 0, ops[jiz_pc-1] is `copy`, ops[jiz_pc] is plain `jump_if_z`.
+                    if (jiz_pc == 0) break :fused_k false;
+                    const copy_candidate = self.compiled.ops.items[jiz_pc - 1];
+                    const jiz_candidate = self.compiled.ops.items[jiz_pc];
+                    const cp = switch (copy_candidate) {
+                        .copy => |c| c,
+                        else => break :fused_k false,
+                    };
+                    // Only fuse the plain jump_if_z → jump_if_nz path (not fused compare-jumps).
+                    const cond_slot: Slot = switch (jiz_candidate) {
+                        .jump_if_z => |j| j.cond,
+                        else => break :fused_k false,
+                    };
+                    // Safety: ensure the copy dst is not the condition slot itself.
+                    if (cp.dst == cond_slot) break :fused_k false;
+                    // We need the branch target from branch_jump_pc (already emitted).
+                    const branch_target = self.compiled.ops.items[branch_jump_pc].jump.target;
+                    // Remove jump at branch_jump_pc and jump_if_z at jiz_pc.
+                    _ = self.compiled.ops.pop(); // remove jump (branch_jump_pc)
+                    _ = self.compiled.ops.pop(); // remove jump_if_z (jiz_pc)
+                    // Replace copy at (jiz_pc - 1) with the fused op.
+                    self.compiled.ops.items[jiz_pc - 1] = .{ .copy_jump_if_nz = .{
+                        .dst = cp.dst,
+                        .src = cp.src,
+                        .cond = cond_slot,
+                        .target = branch_target,
+                    } };
+                    // For forward jumps: patch site now points to the fused op (jiz_pc - 1).
+                    if (is_forward) {
+                        const sites = frame.patch_sites.itemsMut();
+                        for (sites) |*site| {
+                            if (site.* == branch_jump_pc) {
+                                site.* = jiz_pc - 1;
+                                break;
+                            }
+                        }
+                    }
+                    break :fused_k true;
+                };
+
+                if (!peephole_k_fused and !peephole_j_fused) {
+                    // Patch the jump_if_z (or fused compare-jump) to skip just past the unconditional jump.
+                    const continue_pc = self.current_pc();
+
+                    switch (self.compiled.ops.items[jiz_pc]) {
+                        .jump_if_z => |*j| j.target = continue_pc,
+                        .i32_eq_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_ne_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_lt_s_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_lt_u_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_gt_s_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_gt_u_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_le_s_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_le_u_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_ge_s_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_ge_u_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_eqz_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_eq_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_ne_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_lt_s_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_lt_u_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_gt_s_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_gt_u_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_le_s_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_le_u_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_ge_s_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_ge_u_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_eqz_jump_if_false => |*j| j.target = continue_pc,
+                        // Fused compare-imm-jump ops (Peephole G)
+                        .i32_eq_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_ne_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_lt_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_lt_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_gt_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_gt_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_le_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_le_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_ge_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i32_ge_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_eq_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_ne_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_lt_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_lt_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_gt_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_gt_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_le_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_le_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_ge_s_imm_jump_if_false => |*j| j.target = continue_pc,
+                        .i64_ge_u_imm_jump_if_false => |*j| j.target = continue_pc,
+                        else => unreachable,
+                    }
                 }
             },
 
@@ -2798,9 +3475,13 @@ pub const Lower = struct {
 
                 // Process indexed arms.
                 for (all_targets[0..n_indexed]) |depth| {
+                    const frame = try self.frame_at_depth(depth);
+                    try self.mergeCurrentLocalInitIntoFrame(frame);
                     try reserve_and_patch(self, depth);
                 }
                 // Process default arm (at br_table_targets[targets_start + n_indexed]).
+                const default_frame = try self.frame_at_depth(default_depth);
+                try self.mergeCurrentLocalInitIntoFrame(default_frame);
                 try reserve_and_patch(self, default_depth);
 
                 // Emit the jump_table op. Indexed targets: [targets_start .. targets_start + n_indexed],
@@ -2825,19 +3506,34 @@ pub const Lower = struct {
             // ── Locals & constants ────────────────────────────────────────────
 
             .local_get => |local| {
+                self.recordLocalRead(local);
                 try self.stack.push(self.allocator, self.local_to_slot(local));
             },
             .local_set => |local| {
                 const src = try self.pop_slot();
                 const local_slot: Slot = @intCast(local);
                 // ── Peephole D: i32_xxx + local_set → i32_xxx_to_local ────────
-                if (!self.try_fuse_local_set(local_slot, src)) {
+                if (self.try_fuse_local_set(local_slot, src) or
+                    self.try_fuse_const_to_local(local_slot, src) or
+                    self.try_fuse_global_get_to_local(local_slot, src) or
+                    self.try_fuse_load_to_local(local_slot, src) or
+                    self.try_fuse_cmp_to_local(local_slot, src) or
+                    self.try_fuse_imm_to_local(local_slot, src) or
+                    self.try_fuse_call_to_local(local_slot, src))
+                {
+                    // fused successfully
+                } else {
                     try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
                 }
+                self.recordLocalWrite(local);
             },
             .local_tee => |local| {
                 const src = self.stack.peek() orelse return error.StackUnderflow;
-                try self.emit(.{ .local_set = .{ .local = @intCast(local), .src = src } });
+                const local_slot: Slot = @intCast(local);
+                if (!self.try_fuse_local_tee(local_slot, src)) {
+                    try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
+                }
+                self.recordLocalWrite(local);
             },
             // ── Globals ──────────────────────────────────────────────────────────
             .global_get => |global_idx| {
@@ -2852,6 +3548,7 @@ pub const Lower = struct {
             .i32_const => |value| {
                 const dst = self.alloc_slot();
                 try self.emit(.{ .const_i32 = .{ .dst = dst, .value = value } });
+                self.r0_slot = dst;
                 try self.stack.push(self.allocator, dst);
             },
 
@@ -2860,6 +3557,7 @@ pub const Lower = struct {
             .i64_const => |value| {
                 const dst = self.alloc_slot();
                 try self.emit(.{ .const_i64 = .{ .dst = dst, .value = value } });
+                self.r0_slot = dst;
                 try self.stack.push(self.allocator, dst);
             },
             .f32_const => |value| {
@@ -2881,59 +3579,59 @@ pub const Lower = struct {
             // ── i32 arithmetic operations (binary) ──────────────────────────────
             // Using helper function to reduce boilerplate
 
-            .i32_add => try self.lower_binary_op("i32_add"),
-            .i32_sub => try self.lower_binary_op("i32_sub"),
-            .i32_mul => try self.lower_binary_op("i32_mul"),
-            .i32_div_s => try self.lower_binary_op("i32_div_s"),
-            .i32_div_u => try self.lower_binary_op("i32_div_u"),
-            .i32_rem_s => try self.lower_binary_op("i32_rem_s"),
-            .i32_rem_u => try self.lower_binary_op("i32_rem_u"),
-            .i32_and => try self.lower_binary_op("i32_and"),
-            .i32_or => try self.lower_binary_op("i32_or"),
-            .i32_xor => try self.lower_binary_op("i32_xor"),
-            .i32_shl => try self.lower_binary_op("i32_shl"),
-            .i32_shr_s => try self.lower_binary_op("i32_shr_s"),
-            .i32_shr_u => try self.lower_binary_op("i32_shr_u"),
-            .i32_rotl => try self.lower_binary_op("i32_rotl"),
-            .i32_rotr => try self.lower_binary_op("i32_rotr"),
+            .i32_add => try self.lower_binary_op("i32_add", saved_r0),
+            .i32_sub => try self.lower_binary_op("i32_sub", saved_r0),
+            .i32_mul => try self.lower_binary_op("i32_mul", saved_r0),
+            .i32_div_s => try self.lower_binary_op("i32_div_s", saved_r0),
+            .i32_div_u => try self.lower_binary_op("i32_div_u", saved_r0),
+            .i32_rem_s => try self.lower_binary_op("i32_rem_s", saved_r0),
+            .i32_rem_u => try self.lower_binary_op("i32_rem_u", saved_r0),
+            .i32_and => try self.lower_binary_op("i32_and", saved_r0),
+            .i32_or => try self.lower_binary_op("i32_or", saved_r0),
+            .i32_xor => try self.lower_binary_op("i32_xor", saved_r0),
+            .i32_shl => try self.lower_binary_op("i32_shl", saved_r0),
+            .i32_shr_s => try self.lower_binary_op("i32_shr_s", saved_r0),
+            .i32_shr_u => try self.lower_binary_op("i32_shr_u", saved_r0),
+            .i32_rotl => try self.lower_binary_op("i32_rotl", saved_r0),
+            .i32_rotr => try self.lower_binary_op("i32_rotr", saved_r0),
 
             // ── i64 arithmetic operations (binary) ──────────────────────────────
 
-            .i64_add => try self.lower_binary_op("i64_add"),
-            .i64_sub => try self.lower_binary_op("i64_sub"),
-            .i64_mul => try self.lower_binary_op("i64_mul"),
-            .i64_div_s => try self.lower_binary_op("i64_div_s"),
-            .i64_div_u => try self.lower_binary_op("i64_div_u"),
-            .i64_rem_s => try self.lower_binary_op("i64_rem_s"),
-            .i64_rem_u => try self.lower_binary_op("i64_rem_u"),
-            .i64_and => try self.lower_binary_op("i64_and"),
-            .i64_or => try self.lower_binary_op("i64_or"),
-            .i64_xor => try self.lower_binary_op("i64_xor"),
-            .i64_shl => try self.lower_binary_op("i64_shl"),
-            .i64_shr_s => try self.lower_binary_op("i64_shr_s"),
-            .i64_shr_u => try self.lower_binary_op("i64_shr_u"),
-            .i64_rotl => try self.lower_binary_op("i64_rotl"),
-            .i64_rotr => try self.lower_binary_op("i64_rotr"),
+            .i64_add => try self.lower_binary_op("i64_add", saved_r0),
+            .i64_sub => try self.lower_binary_op("i64_sub", saved_r0),
+            .i64_mul => try self.lower_binary_op("i64_mul", saved_r0),
+            .i64_div_s => try self.lower_binary_op("i64_div_s", saved_r0),
+            .i64_div_u => try self.lower_binary_op("i64_div_u", saved_r0),
+            .i64_rem_s => try self.lower_binary_op("i64_rem_s", saved_r0),
+            .i64_rem_u => try self.lower_binary_op("i64_rem_u", saved_r0),
+            .i64_and => try self.lower_binary_op("i64_and", saved_r0),
+            .i64_or => try self.lower_binary_op("i64_or", saved_r0),
+            .i64_xor => try self.lower_binary_op("i64_xor", saved_r0),
+            .i64_shl => try self.lower_binary_op("i64_shl", saved_r0),
+            .i64_shr_s => try self.lower_binary_op("i64_shr_s", saved_r0),
+            .i64_shr_u => try self.lower_binary_op("i64_shr_u", saved_r0),
+            .i64_rotl => try self.lower_binary_op("i64_rotl", saved_r0),
+            .i64_rotr => try self.lower_binary_op("i64_rotr", saved_r0),
 
             // ── f32 arithmetic operations (binary) ──────────────────────────────
 
-            .f32_add => try self.lower_binary_op("f32_add"),
-            .f32_sub => try self.lower_binary_op("f32_sub"),
-            .f32_mul => try self.lower_binary_op("f32_mul"),
-            .f32_div => try self.lower_binary_op("f32_div"),
-            .f32_min => try self.lower_binary_op("f32_min"),
-            .f32_max => try self.lower_binary_op("f32_max"),
-            .f32_copysign => try self.lower_binary_op("f32_copysign"),
+            .f32_add => try self.lower_binary_op("f32_add", saved_r0),
+            .f32_sub => try self.lower_binary_op("f32_sub", saved_r0),
+            .f32_mul => try self.lower_binary_op("f32_mul", saved_r0),
+            .f32_div => try self.lower_binary_op("f32_div", saved_r0),
+            .f32_min => try self.lower_binary_op("f32_min", saved_r0),
+            .f32_max => try self.lower_binary_op("f32_max", saved_r0),
+            .f32_copysign => try self.lower_binary_op("f32_copysign", saved_r0),
 
             // ── f64 arithmetic operations (binary) ──────────────────────────────
 
-            .f64_add => try self.lower_binary_op("f64_add"),
-            .f64_sub => try self.lower_binary_op("f64_sub"),
-            .f64_mul => try self.lower_binary_op("f64_mul"),
-            .f64_div => try self.lower_binary_op("f64_div"),
-            .f64_min => try self.lower_binary_op("f64_min"),
-            .f64_max => try self.lower_binary_op("f64_max"),
-            .f64_copysign => try self.lower_binary_op("f64_copysign"),
+            .f64_add => try self.lower_binary_op("f64_add", saved_r0),
+            .f64_sub => try self.lower_binary_op("f64_sub", saved_r0),
+            .f64_mul => try self.lower_binary_op("f64_mul", saved_r0),
+            .f64_div => try self.lower_binary_op("f64_div", saved_r0),
+            .f64_min => try self.lower_binary_op("f64_min", saved_r0),
+            .f64_max => try self.lower_binary_op("f64_max", saved_r0),
+            .f64_copysign => try self.lower_binary_op("f64_copysign", saved_r0),
 
             // ── i32 unary operations ────────────────────────────────────────────
 
@@ -3131,6 +3829,68 @@ pub const Lower = struct {
 
             .ret => {
                 const value = self.stack.pop();
+
+                // TCO: if returning the result of a call, convert to return_call
+                // This eliminates the return dispatch by reusing the current frame.
+                if (value) |v| tco: {
+                    const ops = self.compiled.ops.items;
+                    if (ops.len == 0) break :tco;
+                    const last = &ops[ops.len - 1];
+                    switch (last.*) {
+                        .call => |c| if (c.dst == v) {
+                            const func_idx = c.func_idx;
+                            const args_start = c.args_start;
+                            const args_len = c.args_len;
+                            _ = self.compiled.ops.pop();
+                            // Keep call_args data: return_call will encode the same
+                            // args_start..args_start+args_len slice.
+                            try self.emit(.{ .return_call = .{
+                                .func_idx = func_idx,
+                                .args_start = args_start,
+                                .args_len = args_len,
+                            } });
+                            self.is_unreachable = true;
+                            self.pending_call_dst = null;
+                            return;
+                        },
+                        else => {},
+                    }
+                }
+
+                // Peephole I: if the last emitted op is a fusable binop whose
+                // dst is the value being returned, fold binop+ret into a single
+                // _ret superinstruction, saving one dispatch event.
+                if (value) |v| fuse: {
+                    const ops = self.compiled.ops.items;
+                    if (ops.len == 0) break :fuse;
+                    switch (ops[ops.len - 1]) {
+                        .i32_add => |c| if (c.dst == v) {
+                            _ = self.compiled.ops.pop();
+                            try self.emit(.{ .i32_add_ret = .{ .lhs = c.lhs, .rhs = c.rhs } });
+                            self.is_unreachable = true;
+                            return;
+                        },
+                        .i32_sub => |c| if (c.dst == v) {
+                            _ = self.compiled.ops.pop();
+                            try self.emit(.{ .i32_sub_ret = .{ .lhs = c.lhs, .rhs = c.rhs } });
+                            self.is_unreachable = true;
+                            return;
+                        },
+                        .i64_add => |c| if (c.dst == v) {
+                            _ = self.compiled.ops.pop();
+                            try self.emit(.{ .i64_add_ret = .{ .lhs = c.lhs, .rhs = c.rhs } });
+                            self.is_unreachable = true;
+                            return;
+                        },
+                        .i64_sub => |c| if (c.dst == v) {
+                            _ = self.compiled.ops.pop();
+                            try self.emit(.{ .i64_sub_ret = .{ .lhs = c.lhs, .rhs = c.rhs } });
+                            self.is_unreachable = true;
+                            return;
+                        },
+                        else => {},
+                    }
+                }
                 try self.emit(.{ .ret = .{ .value = value } });
                 self.is_unreachable = true;
             },
@@ -3158,6 +3918,7 @@ pub const Lower = struct {
                     .args_start = args_start,
                     .args_len = inst.n_params,
                 } });
+                self.pending_call_dst = dst;
 
                 // If the call produces a result, push the result slot.
                 if (dst) |s| try self.stack.push(self.allocator, s);
@@ -3256,30 +4017,35 @@ pub const Lower = struct {
                 const addr = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .i32_load = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
+                self.r0_slot = dst;
                 try self.stack.push(self.allocator, dst);
             },
             .i32_load8_s => |inst| {
                 const addr = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .i32_load8_s = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
+                self.r0_slot = dst;
                 try self.stack.push(self.allocator, dst);
             },
             .i32_load8_u => |inst| {
                 const addr = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .i32_load8_u = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
+                self.r0_slot = dst;
                 try self.stack.push(self.allocator, dst);
             },
             .i32_load16_s => |inst| {
                 const addr = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .i32_load16_s = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
+                self.r0_slot = dst;
                 try self.stack.push(self.allocator, dst);
             },
             .i32_load16_u => |inst| {
                 const addr = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .i32_load16_u = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
+                self.r0_slot = dst;
                 try self.stack.push(self.allocator, dst);
             },
 
@@ -3981,6 +4747,7 @@ pub const Lower = struct {
 
             // ── GC Control Flow instructions ────────────────────────────────────────────
             .br_on_null => |br_depth| {
+                self.disableLocalInitAnalysis();
                 // br_on_null: if ref is null, branch; else continue with ref on stack
                 const frame = try self.frame_at_depth(br_depth);
                 const ref = try self.pop_slot();
@@ -4014,6 +4781,7 @@ pub const Lower = struct {
                 try self.stack.push(self.allocator, ref);
             },
             .br_on_non_null => |br_depth| {
+                self.disableLocalInitAnalysis();
                 // br_on_non_null: if ref is non-null, branch (with ref on stack); else continue
                 const frame = try self.frame_at_depth(br_depth);
                 const ref = try self.pop_slot();
@@ -4041,6 +4809,7 @@ pub const Lower = struct {
                 // So for the null case (continuation), we don't push ref back
             },
             .br_on_cast => |inst| {
+                self.disableLocalInitAnalysis();
                 const frame = try self.frame_at_depth(inst.br_depth);
                 const ref = try self.pop_slot();
 
@@ -4066,6 +4835,7 @@ pub const Lower = struct {
                 try self.stack.push(self.allocator, ref);
             },
             .br_on_cast_fail => |inst| {
+                self.disableLocalInitAnalysis();
                 const frame = try self.frame_at_depth(inst.br_depth);
                 const ref = try self.pop_slot();
 
@@ -4209,6 +4979,7 @@ pub const Lower = struct {
             // The CatchHandlerEntry.target field is patched via the outer frame's patch_sites
             // using the encoding:  0x4000_0000 | catch_handler_tables_index.
             .try_table => |inst| {
+                self.disableLocalInitAnalysis();
                 // Allocate result slots for the block type (try_table has no params per spec).
                 const slots = try self.resolve_block_slots(inst.block_type);
 
@@ -4442,6 +5213,10 @@ pub const Lower = struct {
             else => {},
         }
 
+        // Capture and clear r0 accumulator state (mirrors lowerOp).
+        const saved_r0 = self.r0_slot;
+        self.r0_slot = null;
+
         // ── Dispatch directly from OperatorCode ──────────────────────────────
         switch (info.code) {
             .unreachable_ => {
@@ -4488,6 +5263,7 @@ pub const Lower = struct {
             // ── Locals & globals ─────────────────────────────────────────────
             .local_get => {
                 const local = info.local_index orelse return error.UnsupportedOperator;
+                self.recordLocalRead(local);
                 try self.stack.push(self.allocator, self.local_to_slot(local));
             },
             .local_set => {
@@ -4495,14 +5271,27 @@ pub const Lower = struct {
                 const src = try self.pop_slot();
                 const local_slot: Slot = @intCast(local);
                 // ── Peephole D: i32_xxx + local_set → i32_xxx_to_local ────────
-                if (!self.try_fuse_local_set(local_slot, src)) {
+                if (self.try_fuse_local_set(local_slot, src) or
+                    self.try_fuse_const_to_local(local_slot, src) or
+                    self.try_fuse_global_get_to_local(local_slot, src) or
+                    self.try_fuse_load_to_local(local_slot, src) or
+                    self.try_fuse_cmp_to_local(local_slot, src) or
+                    self.try_fuse_imm_to_local(local_slot, src))
+                {
+                    // fused successfully
+                } else {
                     try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
                 }
+                self.recordLocalWrite(local);
             },
             .local_tee => {
                 const local = info.local_index orelse return error.UnsupportedOperator;
                 const src = self.stack.peek() orelse return error.StackUnderflow;
-                try self.emit(.{ .local_set = .{ .local = @intCast(local), .src = src } });
+                const local_slot: Slot = @intCast(local);
+                if (!self.try_fuse_local_tee(local_slot, src)) {
+                    try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
+                }
+                self.recordLocalWrite(local);
             },
             .global_get => {
                 const global_idx = info.global_index orelse return error.UnsupportedOperator;
@@ -4543,56 +5332,56 @@ pub const Lower = struct {
             },
 
             // ── i32 binary ───────────────────────────────────────────────────
-            .i32_add => try self.lower_binary_op("i32_add"),
-            .i32_sub => try self.lower_binary_op("i32_sub"),
-            .i32_mul => try self.lower_binary_op("i32_mul"),
-            .i32_div_s => try self.lower_binary_op("i32_div_s"),
-            .i32_div_u => try self.lower_binary_op("i32_div_u"),
-            .i32_rem_s => try self.lower_binary_op("i32_rem_s"),
-            .i32_rem_u => try self.lower_binary_op("i32_rem_u"),
-            .i32_and => try self.lower_binary_op("i32_and"),
-            .i32_or => try self.lower_binary_op("i32_or"),
-            .i32_xor => try self.lower_binary_op("i32_xor"),
-            .i32_shl => try self.lower_binary_op("i32_shl"),
-            .i32_shr_s => try self.lower_binary_op("i32_shr_s"),
-            .i32_shr_u => try self.lower_binary_op("i32_shr_u"),
-            .i32_rotl => try self.lower_binary_op("i32_rotl"),
-            .i32_rotr => try self.lower_binary_op("i32_rotr"),
+            .i32_add => try self.lower_binary_op("i32_add", saved_r0),
+            .i32_sub => try self.lower_binary_op("i32_sub", saved_r0),
+            .i32_mul => try self.lower_binary_op("i32_mul", saved_r0),
+            .i32_div_s => try self.lower_binary_op("i32_div_s", saved_r0),
+            .i32_div_u => try self.lower_binary_op("i32_div_u", saved_r0),
+            .i32_rem_s => try self.lower_binary_op("i32_rem_s", saved_r0),
+            .i32_rem_u => try self.lower_binary_op("i32_rem_u", saved_r0),
+            .i32_and => try self.lower_binary_op("i32_and", saved_r0),
+            .i32_or => try self.lower_binary_op("i32_or", saved_r0),
+            .i32_xor => try self.lower_binary_op("i32_xor", saved_r0),
+            .i32_shl => try self.lower_binary_op("i32_shl", saved_r0),
+            .i32_shr_s => try self.lower_binary_op("i32_shr_s", saved_r0),
+            .i32_shr_u => try self.lower_binary_op("i32_shr_u", saved_r0),
+            .i32_rotl => try self.lower_binary_op("i32_rotl", saved_r0),
+            .i32_rotr => try self.lower_binary_op("i32_rotr", saved_r0),
 
             // ── i64 binary ───────────────────────────────────────────────────
-            .i64_add => try self.lower_binary_op("i64_add"),
-            .i64_sub => try self.lower_binary_op("i64_sub"),
-            .i64_mul => try self.lower_binary_op("i64_mul"),
-            .i64_div_s => try self.lower_binary_op("i64_div_s"),
-            .i64_div_u => try self.lower_binary_op("i64_div_u"),
-            .i64_rem_s => try self.lower_binary_op("i64_rem_s"),
-            .i64_rem_u => try self.lower_binary_op("i64_rem_u"),
-            .i64_and => try self.lower_binary_op("i64_and"),
-            .i64_or => try self.lower_binary_op("i64_or"),
-            .i64_xor => try self.lower_binary_op("i64_xor"),
-            .i64_shl => try self.lower_binary_op("i64_shl"),
-            .i64_shr_s => try self.lower_binary_op("i64_shr_s"),
-            .i64_shr_u => try self.lower_binary_op("i64_shr_u"),
-            .i64_rotl => try self.lower_binary_op("i64_rotl"),
-            .i64_rotr => try self.lower_binary_op("i64_rotr"),
+            .i64_add => try self.lower_binary_op("i64_add", saved_r0),
+            .i64_sub => try self.lower_binary_op("i64_sub", saved_r0),
+            .i64_mul => try self.lower_binary_op("i64_mul", saved_r0),
+            .i64_div_s => try self.lower_binary_op("i64_div_s", saved_r0),
+            .i64_div_u => try self.lower_binary_op("i64_div_u", saved_r0),
+            .i64_rem_s => try self.lower_binary_op("i64_rem_s", saved_r0),
+            .i64_rem_u => try self.lower_binary_op("i64_rem_u", saved_r0),
+            .i64_and => try self.lower_binary_op("i64_and", saved_r0),
+            .i64_or => try self.lower_binary_op("i64_or", saved_r0),
+            .i64_xor => try self.lower_binary_op("i64_xor", saved_r0),
+            .i64_shl => try self.lower_binary_op("i64_shl", saved_r0),
+            .i64_shr_s => try self.lower_binary_op("i64_shr_s", saved_r0),
+            .i64_shr_u => try self.lower_binary_op("i64_shr_u", saved_r0),
+            .i64_rotl => try self.lower_binary_op("i64_rotl", saved_r0),
+            .i64_rotr => try self.lower_binary_op("i64_rotr", saved_r0),
 
             // ── f32 binary ───────────────────────────────────────────────────
-            .f32_add => try self.lower_binary_op("f32_add"),
-            .f32_sub => try self.lower_binary_op("f32_sub"),
-            .f32_mul => try self.lower_binary_op("f32_mul"),
-            .f32_div => try self.lower_binary_op("f32_div"),
-            .f32_min => try self.lower_binary_op("f32_min"),
-            .f32_max => try self.lower_binary_op("f32_max"),
-            .f32_copysign => try self.lower_binary_op("f32_copysign"),
+            .f32_add => try self.lower_binary_op("f32_add", saved_r0),
+            .f32_sub => try self.lower_binary_op("f32_sub", saved_r0),
+            .f32_mul => try self.lower_binary_op("f32_mul", saved_r0),
+            .f32_div => try self.lower_binary_op("f32_div", saved_r0),
+            .f32_min => try self.lower_binary_op("f32_min", saved_r0),
+            .f32_max => try self.lower_binary_op("f32_max", saved_r0),
+            .f32_copysign => try self.lower_binary_op("f32_copysign", saved_r0),
 
             // ── f64 binary ───────────────────────────────────────────────────
-            .f64_add => try self.lower_binary_op("f64_add"),
-            .f64_sub => try self.lower_binary_op("f64_sub"),
-            .f64_mul => try self.lower_binary_op("f64_mul"),
-            .f64_div => try self.lower_binary_op("f64_div"),
-            .f64_min => try self.lower_binary_op("f64_min"),
-            .f64_max => try self.lower_binary_op("f64_max"),
-            .f64_copysign => try self.lower_binary_op("f64_copysign"),
+            .f64_add => try self.lower_binary_op("f64_add", saved_r0),
+            .f64_sub => try self.lower_binary_op("f64_sub", saved_r0),
+            .f64_mul => try self.lower_binary_op("f64_mul", saved_r0),
+            .f64_div => try self.lower_binary_op("f64_div", saved_r0),
+            .f64_min => try self.lower_binary_op("f64_min", saved_r0),
+            .f64_max => try self.lower_binary_op("f64_max", saved_r0),
+            .f64_copysign => try self.lower_binary_op("f64_copysign", saved_r0),
 
             // ── i32 unary ────────────────────────────────────────────────────
             .i32_clz => try self.lower_unary_op("i32_clz"),
@@ -5038,6 +5827,8 @@ pub const Lower = struct {
         defer frame.patch_sites.deinit(self.allocator);
         defer frame.result_slots.deinit(self.allocator);
         defer frame.param_slots.deinit(self.allocator);
+        defer frame.entry_local_init.deinit(self.allocator);
+        defer frame.branch_local_init.deinit(self.allocator);
 
         if (frame.is_function_frame) {
             const ret_pc = self.current_pc();
@@ -5048,6 +5839,8 @@ pub const Lower = struct {
             } else {
                 try self.emit(.{ .ret = .{ .value = null } });
             }
+            for (frame.result_slots.items()) |slot| self.recycle_slot(slot);
+            for (frame.param_slots.items()) |slot| self.recycle_slot(slot);
             return;
         }
 
@@ -5057,7 +5850,7 @@ pub const Lower = struct {
             while (ri > 0) {
                 ri -= 1;
                 if (self.stack.peek()) |src| {
-                    try self.emit(.{ .copy = .{ .dst = frame.result_slots.items()[ri], .src = src } });
+                    try self.emit_copy(frame.result_slots.items()[ri], src);
                     _ = self.stack.pop();
                 }
             }
@@ -5100,9 +5893,30 @@ pub const Lower = struct {
         self.patch_forward_jumps(&frame, end_pc);
 
         try self.unwind_stack_to_frame(&frame);
+        try self.finalizeFrameLocalInit(&frame, was_unreachable);
+
+        for (frame.result_slots.items()) |slot| self.recycle_slot(slot);
+        for (frame.param_slots.items()) |slot| self.recycle_slot(slot);
     }
 
     pub fn finish(self: *Lower) CompiledFunction {
+        self.detectLeaf();
         return self.compiled;
+    }
+
+    /// Detect if this function is a leaf function (no internal calls).
+    /// Sets compiled.is_leaf based on whether any .call ops exist.
+    pub fn detectLeaf(self: *Lower) void {
+        const ops = self.compiled.ops.items;
+        for (ops) |op| {
+            switch (op) {
+                .call, .call_indirect, .call_ref, .return_call, .return_call_indirect, .return_call_ref => {
+                    self.compiled.is_leaf = false;
+                    return;
+                },
+                else => {},
+            }
+        }
+        self.compiled.is_leaf = true;
     }
 };

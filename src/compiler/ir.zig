@@ -70,6 +70,18 @@ pub fn BinaryOpImm(comptime T: type) type {
     };
 }
 
+/// r0 variant of BinaryOpImm: lhs is read from the r0 accumulator register,
+/// so no `lhs` slot field is needed.  Saves one 16-bit field per instruction
+/// and one memory load per execution.
+pub fn BinaryOpImmR0(comptime T: type) type {
+    return struct {
+        dst: Slot,
+        imm: T,
+
+        pub const ValueType = T;
+    };
+}
+
 /// Fused: compare + jump_if_z — replaces `i32_xxx_cmp { dst=C, lhs=A, rhs=B }` + `jump_if_z { cond=C, rel=R }`.
 /// Jumps to `target` (op-index, converted to relative byte offset at encode time)
 /// when the comparison is FALSE (i.e. jump when compare result == 0).
@@ -96,6 +108,32 @@ pub fn BinaryOpToLocal(comptime T: type) type {
     };
 }
 
+/// Fused: binop + local_tee — writes result to both a stack slot and a local.
+/// `{ dst: Slot, local: Slot, lhs: Slot, rhs: Slot }` — 8 bytes → stride 16.
+pub fn BinaryOpTeeLocal(comptime T: type) type {
+    return struct {
+        dst: Slot,
+        local: Slot,
+        lhs: Slot,
+        rhs: Slot,
+
+        pub const ValueType = T;
+    };
+}
+
+/// Fused: comparison + local_set — writes i32 comparison result directly into a local slot.
+/// `{ local: Slot, lhs: Slot, rhs: Slot }` — 12 bytes → stride 24.
+pub fn CompareOpToLocal(comptime InputT: type) type {
+    return struct {
+        local: Slot,
+        lhs: Slot,
+        rhs: Slot,
+
+        pub const InputType = InputT;
+        pub const ValueType = i32;
+    };
+}
+
 /// Fused: const + binop + local_set → binop_imm_to_local (Candidate E).
 /// i32: `{ local: Slot, lhs: Slot, imm: i32 }` — 12 bytes → stride 24.
 /// i64: `{ local: Slot, lhs: Slot, imm: i64 }` (encoder adds padding) → stride 32.
@@ -116,6 +154,17 @@ pub fn LocalInplace(comptime T: type) type {
     return struct {
         local: Slot,
         imm: T,
+
+        pub const ValueType = T;
+    };
+}
+
+/// Fused: const + local_set → write constant directly to local.
+/// Same layout as LocalInplace but different semantic name for clarity.
+pub fn ConstToLocal(comptime T: type) type {
+    return struct {
+        local: Slot,
+        value: T,
 
         pub const ValueType = T;
     };
@@ -475,6 +524,38 @@ pub const Op = union(enum) {
     i64_le_u_imm: BinaryOpImm(i64),
     i64_ge_s_imm: BinaryOpImm(i64),
     i64_ge_u_imm: BinaryOpImm(i64),
+    // f32 arithmetic-imm: rhs is an f32 literal embedded in the instruction
+    f32_add_imm: BinaryOpImm(f32),
+    f32_sub_imm: BinaryOpImm(f32),
+    f32_mul_imm: BinaryOpImm(f32),
+    f32_div_imm: BinaryOpImm(f32),
+    // f64 arithmetic-imm: rhs is an f64 literal embedded in the instruction
+    f64_add_imm: BinaryOpImm(f64),
+    f64_sub_imm: BinaryOpImm(f64),
+    f64_mul_imm: BinaryOpImm(f64),
+    f64_div_imm: BinaryOpImm(f64),
+
+    // ── r0 variants: lhs comes from r0 accumulator, no lhs slot in encoding ──
+    // i32 arithmetic-imm r0: lhs = r0
+    i32_add_imm_r: BinaryOpImmR0(i32),
+    i32_sub_imm_r: BinaryOpImmR0(i32),
+    i32_mul_imm_r: BinaryOpImmR0(i32),
+    i32_and_imm_r: BinaryOpImmR0(i32),
+    i32_or_imm_r: BinaryOpImmR0(i32),
+    i32_xor_imm_r: BinaryOpImmR0(i32),
+    i32_shl_imm_r: BinaryOpImmR0(i32),
+    i32_shr_s_imm_r: BinaryOpImmR0(i32),
+    i32_shr_u_imm_r: BinaryOpImmR0(i32),
+    // i64 arithmetic-imm r0: lhs = r0
+    i64_add_imm_r: BinaryOpImmR0(i64),
+    i64_sub_imm_r: BinaryOpImmR0(i64),
+    i64_mul_imm_r: BinaryOpImmR0(i64),
+    i64_and_imm_r: BinaryOpImmR0(i64),
+    i64_or_imm_r: BinaryOpImmR0(i64),
+    i64_xor_imm_r: BinaryOpImmR0(i64),
+    i64_shl_imm_r: BinaryOpImmR0(i64),
+    i64_shr_s_imm_r: BinaryOpImmR0(i64),
+    i64_shr_u_imm_r: BinaryOpImmR0(i64),
 
     // ── Fused: compare + jump_if_z (F: cmp + branch → cmp_jump) ─────────────
     // Jumps to rel_target (from instruction start) when the comparison is FALSE.
@@ -504,6 +585,66 @@ pub const Op = union(enum) {
     i64_ge_u_jump_if_false: CompareJumpOp(i64),
     // i64 eqz-jump (unary: jumps when src != 0, i.e. when eqz is false)
     i64_eqz_jump_if_false: struct { src: Slot, target: u32 },
+    // f32 compare-jump variants
+    f32_eq_jump_if_false: CompareJumpOp(f32),
+    f32_ne_jump_if_false: CompareJumpOp(f32),
+    f32_lt_jump_if_false: CompareJumpOp(f32),
+    f32_gt_jump_if_false: CompareJumpOp(f32),
+    f32_le_jump_if_false: CompareJumpOp(f32),
+    f32_ge_jump_if_false: CompareJumpOp(f32),
+    // f64 compare-jump variants
+    f64_eq_jump_if_false: CompareJumpOp(f64),
+    f64_ne_jump_if_false: CompareJumpOp(f64),
+    f64_lt_jump_if_false: CompareJumpOp(f64),
+    f64_gt_jump_if_false: CompareJumpOp(f64),
+    f64_le_jump_if_false: CompareJumpOp(f64),
+    f64_ge_jump_if_false: CompareJumpOp(f64),
+
+    // ── Fused: compare + jump_if_true (J: cmp + br_if → cmp_jump_if_true) ────
+    // Peephole J: replaces the 2-op pattern:
+    //   compare_jump_if_false → continue_pc
+    //   jump → target
+    // with a single op that jumps to `target` when the comparison is TRUE.
+    // i32 compare-jump-if-true variants
+    i32_eq_jump_if_true: CompareJumpOp(i32),
+    i32_ne_jump_if_true: CompareJumpOp(i32),
+    i32_lt_s_jump_if_true: CompareJumpOp(i32),
+    i32_lt_u_jump_if_true: CompareJumpOp(i32),
+    i32_gt_s_jump_if_true: CompareJumpOp(i32),
+    i32_gt_u_jump_if_true: CompareJumpOp(i32),
+    i32_le_s_jump_if_true: CompareJumpOp(i32),
+    i32_le_u_jump_if_true: CompareJumpOp(i32),
+    i32_ge_s_jump_if_true: CompareJumpOp(i32),
+    i32_ge_u_jump_if_true: CompareJumpOp(i32),
+    // i32 eqz-jump-if-true (unary: jumps when src == 0, i.e. when eqz is true)
+    i32_eqz_jump_if_true: struct { src: Slot, target: u32 },
+    // i64 compare-jump-if-true variants
+    i64_eq_jump_if_true: CompareJumpOp(i64),
+    i64_ne_jump_if_true: CompareJumpOp(i64),
+    i64_lt_s_jump_if_true: CompareJumpOp(i64),
+    i64_lt_u_jump_if_true: CompareJumpOp(i64),
+    i64_gt_s_jump_if_true: CompareJumpOp(i64),
+    i64_gt_u_jump_if_true: CompareJumpOp(i64),
+    i64_le_s_jump_if_true: CompareJumpOp(i64),
+    i64_le_u_jump_if_true: CompareJumpOp(i64),
+    i64_ge_s_jump_if_true: CompareJumpOp(i64),
+    i64_ge_u_jump_if_true: CompareJumpOp(i64),
+    // i64 eqz-jump-if-true (unary: jumps when src == 0, i.e. when eqz is true)
+    i64_eqz_jump_if_true: struct { src: Slot, target: u32 },
+    // f32 compare-jump-if-true variants
+    f32_eq_jump_if_true: CompareJumpOp(f32),
+    f32_ne_jump_if_true: CompareJumpOp(f32),
+    f32_lt_jump_if_true: CompareJumpOp(f32),
+    f32_gt_jump_if_true: CompareJumpOp(f32),
+    f32_le_jump_if_true: CompareJumpOp(f32),
+    f32_ge_jump_if_true: CompareJumpOp(f32),
+    // f64 compare-jump-if-true variants
+    f64_eq_jump_if_true: CompareJumpOp(f64),
+    f64_ne_jump_if_true: CompareJumpOp(f64),
+    f64_lt_jump_if_true: CompareJumpOp(f64),
+    f64_gt_jump_if_true: CompareJumpOp(f64),
+    f64_le_jump_if_true: CompareJumpOp(f64),
+    f64_ge_jump_if_true: CompareJumpOp(f64),
 
     // ── Fused: binop result to local (D: binop + local_set → binop_to_local) ─
     i32_add_to_local: BinaryOpToLocal(i32),
@@ -525,6 +666,82 @@ pub const Op = union(enum) {
     i64_shl_to_local: BinaryOpToLocal(i64),
     i64_shr_s_to_local: BinaryOpToLocal(i64),
     i64_shr_u_to_local: BinaryOpToLocal(i64),
+    // f32 binop-to-local variants
+    f32_add_to_local: BinaryOpToLocal(f32),
+    f32_sub_to_local: BinaryOpToLocal(f32),
+    f32_mul_to_local: BinaryOpToLocal(f32),
+    f32_div_to_local: BinaryOpToLocal(f32),
+    // f64 binop-to-local variants
+    f64_add_to_local: BinaryOpToLocal(f64),
+    f64_sub_to_local: BinaryOpToLocal(f64),
+    f64_mul_to_local: BinaryOpToLocal(f64),
+    f64_div_to_local: BinaryOpToLocal(f64),
+
+    // ── Fused: binop + local_tee → binop_tee_local ────────────────────────
+    i32_add_tee_local: BinaryOpTeeLocal(i32),
+    i32_sub_tee_local: BinaryOpTeeLocal(i32),
+    i32_mul_tee_local: BinaryOpTeeLocal(i32),
+    i32_and_tee_local: BinaryOpTeeLocal(i32),
+    i32_or_tee_local: BinaryOpTeeLocal(i32),
+    i32_xor_tee_local: BinaryOpTeeLocal(i32),
+    i32_shl_tee_local: BinaryOpTeeLocal(i32),
+    i32_shr_s_tee_local: BinaryOpTeeLocal(i32),
+    i32_shr_u_tee_local: BinaryOpTeeLocal(i32),
+    i64_add_tee_local: BinaryOpTeeLocal(i64),
+    i64_sub_tee_local: BinaryOpTeeLocal(i64),
+    i64_mul_tee_local: BinaryOpTeeLocal(i64),
+    i64_and_tee_local: BinaryOpTeeLocal(i64),
+    i64_or_tee_local: BinaryOpTeeLocal(i64),
+    i64_xor_tee_local: BinaryOpTeeLocal(i64),
+    i64_shl_tee_local: BinaryOpTeeLocal(i64),
+    i64_shr_s_tee_local: BinaryOpTeeLocal(i64),
+    i64_shr_u_tee_local: BinaryOpTeeLocal(i64),
+    // f32 binop-tee-local variants
+    f32_add_tee_local: BinaryOpTeeLocal(f32),
+    f32_sub_tee_local: BinaryOpTeeLocal(f32),
+    f32_mul_tee_local: BinaryOpTeeLocal(f32),
+    f32_div_tee_local: BinaryOpTeeLocal(f32),
+    // f64 binop-tee-local variants
+    f64_add_tee_local: BinaryOpTeeLocal(f64),
+    f64_sub_tee_local: BinaryOpTeeLocal(f64),
+    f64_mul_tee_local: BinaryOpTeeLocal(f64),
+    f64_div_tee_local: BinaryOpTeeLocal(f64),
+
+    // ── Fused: comparison + local_set (cmp_to_local) ──────────────────────
+    i32_eq_to_local: CompareOpToLocal(i32),
+    i32_ne_to_local: CompareOpToLocal(i32),
+    i32_lt_s_to_local: CompareOpToLocal(i32),
+    i32_lt_u_to_local: CompareOpToLocal(i32),
+    i32_gt_s_to_local: CompareOpToLocal(i32),
+    i32_gt_u_to_local: CompareOpToLocal(i32),
+    i32_le_s_to_local: CompareOpToLocal(i32),
+    i32_le_u_to_local: CompareOpToLocal(i32),
+    i32_ge_s_to_local: CompareOpToLocal(i32),
+    i32_ge_u_to_local: CompareOpToLocal(i32),
+    i64_eq_to_local: CompareOpToLocal(i64),
+    i64_ne_to_local: CompareOpToLocal(i64),
+    i64_lt_s_to_local: CompareOpToLocal(i64),
+    i64_lt_u_to_local: CompareOpToLocal(i64),
+    i64_gt_s_to_local: CompareOpToLocal(i64),
+    i64_gt_u_to_local: CompareOpToLocal(i64),
+    i64_le_s_to_local: CompareOpToLocal(i64),
+    i64_le_u_to_local: CompareOpToLocal(i64),
+    i64_ge_s_to_local: CompareOpToLocal(i64),
+    i64_ge_u_to_local: CompareOpToLocal(i64),
+    // f32 compare-to-local variants
+    f32_eq_to_local: CompareOpToLocal(f32),
+    f32_ne_to_local: CompareOpToLocal(f32),
+    f32_lt_to_local: CompareOpToLocal(f32),
+    f32_gt_to_local: CompareOpToLocal(f32),
+    f32_le_to_local: CompareOpToLocal(f32),
+    f32_ge_to_local: CompareOpToLocal(f32),
+    // f64 compare-to-local variants
+    f64_eq_to_local: CompareOpToLocal(f64),
+    f64_ne_to_local: CompareOpToLocal(f64),
+    f64_lt_to_local: CompareOpToLocal(f64),
+    f64_gt_to_local: CompareOpToLocal(f64),
+    f64_le_to_local: CompareOpToLocal(f64),
+    f64_ge_to_local: CompareOpToLocal(f64),
 
     // ── Fused: binop-imm-to-local (E: const + binop + local_set → binop_imm_to_local) ──
     // i32 arithmetic-imm-to-local
@@ -547,6 +764,16 @@ pub const Op = union(enum) {
     i64_shl_imm_to_local: BinaryOpImmToLocal(i64),
     i64_shr_s_imm_to_local: BinaryOpImmToLocal(i64),
     i64_shr_u_imm_to_local: BinaryOpImmToLocal(i64),
+    // f32 arithmetic-imm-to-local
+    f32_add_imm_to_local: BinaryOpImmToLocal(f32),
+    f32_sub_imm_to_local: BinaryOpImmToLocal(f32),
+    f32_mul_imm_to_local: BinaryOpImmToLocal(f32),
+    f32_div_imm_to_local: BinaryOpImmToLocal(f32),
+    // f64 arithmetic-imm-to-local
+    f64_add_imm_to_local: BinaryOpImmToLocal(f64),
+    f64_sub_imm_to_local: BinaryOpImmToLocal(f64),
+    f64_mul_imm_to_local: BinaryOpImmToLocal(f64),
+    f64_div_imm_to_local: BinaryOpImmToLocal(f64),
 
     // ── Fused: local inplace (H: local_get + binop_imm + local_set, same local) ──
     // i32 local-inplace
@@ -569,6 +796,36 @@ pub const Op = union(enum) {
     i64_shl_local_inplace: LocalInplace(i64),
     i64_shr_s_local_inplace: LocalInplace(i64),
     i64_shr_u_local_inplace: LocalInplace(i64),
+    // f32 local-inplace
+    f32_add_local_inplace: LocalInplace(f32),
+    f32_sub_local_inplace: LocalInplace(f32),
+    f32_mul_local_inplace: LocalInplace(f32),
+    f32_div_local_inplace: LocalInplace(f32),
+    // f64 local-inplace
+    f64_add_local_inplace: LocalInplace(f64),
+    f64_sub_local_inplace: LocalInplace(f64),
+    f64_mul_local_inplace: LocalInplace(f64),
+    f64_div_local_inplace: LocalInplace(f64),
+
+    // ── Fused: const + local_set → const_to_local (just write constant to local) ──
+    i32_const_to_local: ConstToLocal(i32),
+    i64_const_to_local: ConstToLocal(i64),
+
+    // ── Superinstruction: i32_imm + local_set → imm_to_local ──────────────────
+    // Combines: (const_i32 writes to tmp) + (local_set copies tmp to local)
+    // Into: single instruction that writes imm directly to local, preserving src.
+    i32_imm_to_local: struct { local: Slot, src: Slot, imm: i32 },
+    i64_imm_to_local: struct { local: Slot, src: Slot, imm: i64 },
+
+    // ── Fused: global_get + local_set → global_get_to_local ──
+    global_get_to_local: struct {
+        local: Slot,
+        global_idx: u32,
+    },
+
+    // ── Fused: i32/i64 load + local_set → load_to_local ──
+    i32_load_to_local: struct { local: Slot, addr: Slot, offset: u32 },
+    i64_load_to_local: struct { local: Slot, addr: Slot, offset: u32 },
 
     // ── Fused: compare-imm + jump_if_false (G: const + compare + br_if) ─────
     // i32 compare-imm-jump
@@ -593,6 +850,58 @@ pub const Op = union(enum) {
     i64_le_u_imm_jump_if_false: CompareImmJumpOp(i64),
     i64_ge_s_imm_jump_if_false: CompareImmJumpOp(i64),
     i64_ge_u_imm_jump_if_false: CompareImmJumpOp(i64),
+    // f32 compare-imm-jump
+    f32_eq_imm_jump_if_false: CompareImmJumpOp(f32),
+    f32_ne_imm_jump_if_false: CompareImmJumpOp(f32),
+    f32_lt_imm_jump_if_false: CompareImmJumpOp(f32),
+    f32_gt_imm_jump_if_false: CompareImmJumpOp(f32),
+    f32_le_imm_jump_if_false: CompareImmJumpOp(f32),
+    f32_ge_imm_jump_if_false: CompareImmJumpOp(f32),
+    // f64 compare-imm-jump
+    f64_eq_imm_jump_if_false: CompareImmJumpOp(f64),
+    f64_ne_imm_jump_if_false: CompareImmJumpOp(f64),
+    f64_lt_imm_jump_if_false: CompareImmJumpOp(f64),
+    f64_gt_imm_jump_if_false: CompareImmJumpOp(f64),
+    f64_le_imm_jump_if_false: CompareImmJumpOp(f64),
+    f64_ge_imm_jump_if_false: CompareImmJumpOp(f64),
+
+    // ── Fused: compare-imm + jump_if_true (J-imm: const + compare + br_if, true branch) ─
+    // i32 compare-imm-jump, true-branch
+    i32_eq_imm_jump_if_true: CompareImmJumpOp(i32),
+    i32_ne_imm_jump_if_true: CompareImmJumpOp(i32),
+    i32_lt_s_imm_jump_if_true: CompareImmJumpOp(i32),
+    i32_lt_u_imm_jump_if_true: CompareImmJumpOp(i32),
+    i32_gt_s_imm_jump_if_true: CompareImmJumpOp(i32),
+    i32_gt_u_imm_jump_if_true: CompareImmJumpOp(i32),
+    i32_le_s_imm_jump_if_true: CompareImmJumpOp(i32),
+    i32_le_u_imm_jump_if_true: CompareImmJumpOp(i32),
+    i32_ge_s_imm_jump_if_true: CompareImmJumpOp(i32),
+    i32_ge_u_imm_jump_if_true: CompareImmJumpOp(i32),
+    // i64 compare-imm-jump, true-branch
+    i64_eq_imm_jump_if_true: CompareImmJumpOp(i64),
+    i64_ne_imm_jump_if_true: CompareImmJumpOp(i64),
+    i64_lt_s_imm_jump_if_true: CompareImmJumpOp(i64),
+    i64_lt_u_imm_jump_if_true: CompareImmJumpOp(i64),
+    i64_gt_s_imm_jump_if_true: CompareImmJumpOp(i64),
+    i64_gt_u_imm_jump_if_true: CompareImmJumpOp(i64),
+    i64_le_s_imm_jump_if_true: CompareImmJumpOp(i64),
+    i64_le_u_imm_jump_if_true: CompareImmJumpOp(i64),
+    i64_ge_s_imm_jump_if_true: CompareImmJumpOp(i64),
+    i64_ge_u_imm_jump_if_true: CompareImmJumpOp(i64),
+    // f32 compare-imm-jump, true-branch
+    f32_eq_imm_jump_if_true: CompareImmJumpOp(f32),
+    f32_ne_imm_jump_if_true: CompareImmJumpOp(f32),
+    f32_lt_imm_jump_if_true: CompareImmJumpOp(f32),
+    f32_gt_imm_jump_if_true: CompareImmJumpOp(f32),
+    f32_le_imm_jump_if_true: CompareImmJumpOp(f32),
+    f32_ge_imm_jump_if_true: CompareImmJumpOp(f32),
+    // f64 compare-imm-jump, true-branch
+    f64_eq_imm_jump_if_true: CompareImmJumpOp(f64),
+    f64_ne_imm_jump_if_true: CompareImmJumpOp(f64),
+    f64_lt_imm_jump_if_true: CompareImmJumpOp(f64),
+    f64_gt_imm_jump_if_true: CompareImmJumpOp(f64),
+    f64_le_imm_jump_if_true: CompareImmJumpOp(f64),
+    f64_ge_imm_jump_if_true: CompareImmJumpOp(f64),
 
     // ── SIMD operations ───────────────────────────────────────────────────────
     simd_unary: SimdUnaryOp,
@@ -643,10 +952,26 @@ pub const Op = union(enum) {
         cond: Slot,
         target: u32,
     },
+    /// Jump if `cond` slot holds a non-zero i32. `target` is an op index.
+    /// Peephole J: replaces `jump_if_z cond → skip` + `jump → target`.
+    jump_if_nz: struct {
+        cond: Slot,
+        target: u32,
+    },
     /// Copy `src` slot into `dst` slot (used to write block results).
     copy: struct {
         dst: Slot,
         src: Slot,
+    },
+    /// Peephole K: fused copy + conditional jump (br_if with single result value).
+    /// Equivalent to wasm3's PreserveSetSlot: copy src→dst, then jump to `target` if cond != 0.
+    /// Replaces the two-instruction sequence: `copy { dst, src }` + `jump_if_nz { cond, target }`.
+    copy_jump_if_nz: struct {
+        dst: Slot,
+        src: Slot,
+        cond: Slot,
+        /// Op-index of the jump target (converted to relative byte offset by encoder).
+        target: u32,
     },
     /// Read value from global and write it into `dst` slot
     global_get: struct {
@@ -661,6 +986,18 @@ pub const Op = union(enum) {
     ret: struct {
         value: ?Slot,
     },
+
+    // ── Fused binop+ret: compute result and return immediately ─────────────────
+    // Peephole I: final binop whose result is immediately returned.
+    // Saves one dispatch event per non-base recursive call.
+    i32_add_ret: struct { lhs: Slot, rhs: Slot },
+    i32_sub_ret: struct { lhs: Slot, rhs: Slot },
+    i64_add_ret: struct { lhs: Slot, rhs: Slot },
+    i64_sub_ret: struct { lhs: Slot, rhs: Slot },
+    f32_add_ret: struct { lhs: Slot, rhs: Slot },
+    f32_sub_ret: struct { lhs: Slot, rhs: Slot },
+    f64_add_ret: struct { lhs: Slot, rhs: Slot },
+    f64_sub_ret: struct { lhs: Slot, rhs: Slot },
 
     // ── Memory load/store instructions ──────────────────────────────────────────
     // All load/store instructions share the same memory immediate: (align, offset).
@@ -708,6 +1045,28 @@ pub const Op = union(enum) {
     call: struct {
         /// result slot (void functions have null)
         dst: ?Slot,
+        /// Index of the callee function in module.functions
+        func_idx: u32,
+        /// Starting offset of the argument slots in CompiledFunction.call_args
+        args_start: u32,
+        args_len: u32,
+    },
+    /// Fused: call + local_set → result written directly to local slot.
+    /// Replaces: `call { dst=T } + local_set { local=L, src=T }`
+    /// Into: single instruction that writes result directly to local, saving one dispatch.
+    call_to_local: struct {
+        /// Index of the local slot to write result to
+        local: Slot,
+        /// Index of the callee function in module.functions
+        func_idx: u32,
+        /// Starting offset of the argument slots in CompiledFunction.call_args
+        args_start: u32,
+        args_len: u32,
+    },
+    /// Leaf call: call a leaf function (no other calls) and inline execute its body.
+    /// This eliminates both the call dispatch AND the return dispatch, saving two dispatches.
+    /// The callee must be a leaf function (no call instructions in its body).
+    call_leaf: struct {
         /// Index of the callee function in module.functions
         func_idx: u32,
         /// Starting offset of the argument slots in CompiledFunction.call_args
@@ -1283,6 +1642,13 @@ pub const CompiledFunction = struct {
     /// Number of local variable slots (excluding parameters).
     /// Used to limit @memset in allocCalleeSlots to only the locals range.
     locals_count: u16,
+    /// True if any non-parameter local may be read before a definite write.
+    /// Lowering computes this conservatively; when false, call entry can skip
+    /// zero-initializing the Wasm locals range.
+    needs_zero: bool = true,
+    /// True if this function has no internal calls (leaf function).
+    /// Enables call_leaf superinstruction for callers.
+    is_leaf: bool = false,
     ops: std.ArrayListUnmanaged(Op),
     /// All call instruction argument slots are stored here (concatenated in call order).
     /// Op.call indexes into the corresponding argument slot segment using (args_start, args_len).
@@ -1302,8 +1668,13 @@ pub const CompiledFunction = struct {
 /// compiler to stream the original Wasm input without retaining the full
 /// module in memory solely for lazy compilation.
 pub const PendingFunction = struct {
-    /// Raw Wasm bytecode of the function body (owned by the pending slot).
+    /// Raw Wasm bytecode of the function body.
     body: []const u8,
+    /// When true, `body` was allocated with the module allocator and must be
+    /// freed with `allocator.free(body)` after compilation.  When false, `body`
+    /// is a borrowed slice into the caller's long-lived input buffer and must
+    /// NOT be freed (compile(bytes) / mmap path).
+    body_owned: bool,
     /// Index into Module.composite_types giving the function's FuncType.
     type_index: u32,
     /// Total value-stack slots needed (params + locals).
@@ -1332,14 +1703,13 @@ pub const FunctionSlot = union(enum) {
 
     /// Free any owned heap memory held by this slot.
     ///
-    /// NOTE: `.pending` bodies are NOT freed here.  They are either borrowed
-    /// from the caller's mmap'd input (compile(bytes) path) or owned by the
-    /// Module's body_arena (compileReader path).  Use `Module.deinit()` to
-    /// release them in bulk.
+    /// For `.pending` slots whose `body_owned` flag is true, the body bytes are
+    /// freed here.  Borrowed bodies (compile(bytes) / mmap path) are left alone.
     pub fn deinit(self: *FunctionSlot, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .encoded => |*ef| ef.deinit(allocator),
-            .pending, .import => {},
+            .pending => |*pf| if (pf.body_owned) allocator.free(pf.body),
+            .import => {},
         }
         self.* = undefined;
     }
@@ -1364,6 +1734,13 @@ pub const EncodedFunction = struct {
     /// Number of local variable slots (excluding parameters).
     /// Used to limit @memset in allocCalleeSlots to only the locals range.
     locals_count: u16,
+    /// The Wasm function index in the module's full function index space
+    /// (imports + locals).  Set by Module.compileFunctionAt so that call
+    /// stack walks can report which function a frame belongs to.
+    func_idx: u32 = 0,
+    /// True if this function has no internal calls (leaf function).
+    /// Enables call_leaf superinstruction for callers.
+    is_leaf: bool = false,
     /// Destination slot lists for exception handler catch arms (catch_tag / catch_tag_ref).
     /// CatchHandlerEntry.dst_slots_start/dst_slots_len index into this array.
     eh_dst_slots: []Slot,
@@ -1375,6 +1752,10 @@ pub const EncodedFunction = struct {
     /// CatchHandlerEntry.target is a byte offset into `code` after encoding.
     /// Indexed by (handlers_start, handlers_len) embedded in the instruction's operand bytes.
     catch_handler_tables: []CatchHandlerEntry,
+    /// True if this function needs its locals zeroed at entry.
+    /// False when locals are SSA-style (all locals are written before first read).
+    /// Skipping the zeroing eliminates a @memset per call.
+    needs_zero: bool = true,
 
     pub fn deinit(self: *EncodedFunction, allocator: std.mem.Allocator) void {
         allocator.free(self.code);

@@ -15,11 +15,16 @@ playgrounds/
 tests/gc/build/
 
 package/
+!tests/quickjs/package/
+!tests/esbuild/package/
 
 node_modules
 
 # Large wasm binary files
 *.wasm
+!bench/workloads/*.wasm
+!tests/quickjs/package/*.wasm
+!tests/esbuild/package/*.wasm
 
 # SQLite amalgamation (downloaded, not committed)
 tests/sqlite/fixtures/sqlite_wasm/lib/sqlite3.*

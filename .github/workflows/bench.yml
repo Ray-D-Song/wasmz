@@ -1,0 +1,36 @@
+name: Bench
+
+on:
+  push:
+
+jobs:
+  bench:
+    name: Bench
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Init submodules
+        run: git submodule update --init --recursive --force
+
+      - name: Install Zig 0.15.2
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake gcc g++ hyperfine
+
+      - name: Build projects
+        run: ./bench/build.sh all
+
+      - name: Run benchmarks
+        run: make bench

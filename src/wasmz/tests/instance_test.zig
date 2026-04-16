@@ -241,7 +241,9 @@ test "Instance.call: memory out-of-bounds returns trap" {
 
     const oob_addr = RawVal.from(@as(i32, 65533));
     const exec_r = try instance.call("f", &.{oob_addr});
-    try testing.expectEqual(TrapCode.MemoryOutOfBounds, exec_r.trap.trapCode().?);
+    var trap0 = exec_r.trap;
+    defer trap0.deinit();
+    try testing.expectEqual(TrapCode.MemoryOutOfBounds, trap0.trapCode().?);
 }
 
 test "Instance: host function import (env.add_one) is called correctly" {
@@ -351,7 +353,9 @@ test "Instance: host function trap propagates to caller" {
     defer instance.deinit();
 
     const exec_r = try instance.call("run", &.{RawVal.from(@as(i32, 0))});
-    try testing.expectEqual(TrapCode.UnreachableCodeReached, exec_r.trap.trapCode().?);
+    var trap1 = exec_r.trap;
+    defer trap1.deinit();
+    try testing.expectEqual(TrapCode.UnreachableCodeReached, trap1.trapCode().?);
 }
 
 test "Instance.call: unreachable instruction returns UnreachableCodeReached trap" {
@@ -375,7 +379,9 @@ test "Instance.call: unreachable instruction returns UnreachableCodeReached trap
     defer instance.deinit();
 
     const exec_r = try instance.call("f", &.{});
-    try testing.expectEqual(TrapCode.UnreachableCodeReached, exec_r.trap.trapCode().?);
+    var trap2 = exec_r.trap;
+    defer trap2.deinit();
+    try testing.expectEqual(TrapCode.UnreachableCodeReached, trap2.trapCode().?);
 }
 
 test "Instance.init returns ImportNotSatisfied when import is missing" {
@@ -683,5 +689,7 @@ test "Instance.call: elem.drop makes table.init trap" {
     defer instance.deinit();
 
     const exec_r = try instance.call("drop_then_init", &.{});
-    try testing.expectEqual(TrapCode.TableOutOfBounds, exec_r.trap.trapCode().?);
+    var trap3 = exec_r.trap;
+    defer trap3.deinit();
+    try testing.expectEqual(TrapCode.TableOutOfBounds, trap3.trapCode().?);
 }

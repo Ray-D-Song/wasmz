@@ -20,6 +20,161 @@ pub const EnvVar = env_args.EnvVar;
 pub const Output = fd_io.Output;
 pub const ClockSource = clock.ClockSource;
 
+const WasiDiagOp = enum {
+    args_sizes_get,
+    args_get,
+    environ_sizes_get,
+    environ_get,
+    clock_time_get,
+    fd_fdstat_get,
+    fd_prestat_get,
+    fd_prestat_dir_name,
+    fd_read,
+    fd_seek,
+    fd_write,
+    path_open,
+    poll_oneoff,
+    proc_exit,
+};
+
+const WasiDiag = struct {
+    enabled: bool = false,
+    args_sizes_get_count: u64 = 0,
+    args_sizes_get_ns: u64 = 0,
+    args_get_count: u64 = 0,
+    args_get_ns: u64 = 0,
+    environ_sizes_get_count: u64 = 0,
+    environ_sizes_get_ns: u64 = 0,
+    environ_get_count: u64 = 0,
+    environ_get_ns: u64 = 0,
+    clock_time_get_count: u64 = 0,
+    clock_time_get_ns: u64 = 0,
+    fd_fdstat_get_count: u64 = 0,
+    fd_fdstat_get_ns: u64 = 0,
+    fd_prestat_get_count: u64 = 0,
+    fd_prestat_get_ns: u64 = 0,
+    fd_prestat_dir_name_count: u64 = 0,
+    fd_prestat_dir_name_ns: u64 = 0,
+    fd_read_count: u64 = 0,
+    fd_read_ns: u64 = 0,
+    fd_seek_count: u64 = 0,
+    fd_seek_ns: u64 = 0,
+    fd_write_count: u64 = 0,
+    fd_write_ns: u64 = 0,
+    path_open_count: u64 = 0,
+    path_open_ns: u64 = 0,
+    poll_oneoff_count: u64 = 0,
+    poll_oneoff_ns: u64 = 0,
+    proc_exit_count: u64 = 0,
+    proc_exit_ns: u64 = 0,
+
+    fn record(self: *WasiDiag, op: WasiDiagOp, delta_ns: i128) void {
+        if (!self.enabled) return;
+        const ns: u64 = if (delta_ns <= 0) 0 else @intCast(delta_ns);
+        switch (op) {
+            .args_sizes_get => {
+                self.args_sizes_get_count += 1;
+                self.args_sizes_get_ns += ns;
+            },
+            .args_get => {
+                self.args_get_count += 1;
+                self.args_get_ns += ns;
+            },
+            .environ_sizes_get => {
+                self.environ_sizes_get_count += 1;
+                self.environ_sizes_get_ns += ns;
+            },
+            .environ_get => {
+                self.environ_get_count += 1;
+                self.environ_get_ns += ns;
+            },
+            .clock_time_get => {
+                self.clock_time_get_count += 1;
+                self.clock_time_get_ns += ns;
+            },
+            .fd_fdstat_get => {
+                self.fd_fdstat_get_count += 1;
+                self.fd_fdstat_get_ns += ns;
+            },
+            .fd_prestat_get => {
+                self.fd_prestat_get_count += 1;
+                self.fd_prestat_get_ns += ns;
+            },
+            .fd_prestat_dir_name => {
+                self.fd_prestat_dir_name_count += 1;
+                self.fd_prestat_dir_name_ns += ns;
+            },
+            .fd_read => {
+                self.fd_read_count += 1;
+                self.fd_read_ns += ns;
+            },
+            .fd_seek => {
+                self.fd_seek_count += 1;
+                self.fd_seek_ns += ns;
+            },
+            .fd_write => {
+                self.fd_write_count += 1;
+                self.fd_write_ns += ns;
+            },
+            .path_open => {
+                self.path_open_count += 1;
+                self.path_open_ns += ns;
+            },
+            .poll_oneoff => {
+                self.poll_oneoff_count += 1;
+                self.poll_oneoff_ns += ns;
+            },
+            .proc_exit => {
+                self.proc_exit_count += 1;
+                self.proc_exit_ns += ns;
+            },
+        }
+    }
+
+    fn print(self: *const WasiDiag) void {
+        if (!self.enabled) return;
+        std.debug.print(
+            \\[wasi-diag] wasmz summary
+            \\[wasi-diag]   args_sizes_get      count={d:>4}  total={d:8.3} ms
+            \\[wasi-diag]   args_get            count={d:>4}  total={d:8.3} ms
+            \\[wasi-diag]   environ_sizes_get   count={d:>4}  total={d:8.3} ms
+            \\[wasi-diag]   environ_get         count={d:>4}  total={d:8.3} ms
+            \\[wasi-diag]   clock_time_get      count={d:>4}  total={d:8.3} ms
+            \\[wasi-diag]   fd_fdstat_get       count={d:>4}  total={d:8.3} ms
+            \\[wasi-diag]   fd_prestat_get      count={d:>4}  total={d:8.3} ms
+            \\[wasi-diag]   fd_prestat_dir_name count={d:>4}  total={d:8.3} ms
+            \\[wasi-diag]   fd_read             count={d:>4}  total={d:8.3} ms
+            \\[wasi-diag]   fd_seek             count={d:>4}  total={d:8.3} ms
+            \\[wasi-diag]   fd_write            count={d:>4}  total={d:8.3} ms
+            \\[wasi-diag]   path_open           count={d:>4}  total={d:8.3} ms
+            \\[wasi-diag]   poll_oneoff         count={d:>4}  total={d:8.3} ms
+            \\[wasi-diag]   proc_exit           count={d:>4}  total={d:8.3} ms
+            \\
+        , .{
+            self.args_sizes_get_count, @as(f64, @floatFromInt(self.args_sizes_get_ns)) / 1_000_000.0,
+            self.args_get_count, @as(f64, @floatFromInt(self.args_get_ns)) / 1_000_000.0,
+            self.environ_sizes_get_count, @as(f64, @floatFromInt(self.environ_sizes_get_ns)) / 1_000_000.0,
+            self.environ_get_count, @as(f64, @floatFromInt(self.environ_get_ns)) / 1_000_000.0,
+            self.clock_time_get_count, @as(f64, @floatFromInt(self.clock_time_get_ns)) / 1_000_000.0,
+            self.fd_fdstat_get_count, @as(f64, @floatFromInt(self.fd_fdstat_get_ns)) / 1_000_000.0,
+            self.fd_prestat_get_count, @as(f64, @floatFromInt(self.fd_prestat_get_ns)) / 1_000_000.0,
+            self.fd_prestat_dir_name_count, @as(f64, @floatFromInt(self.fd_prestat_dir_name_ns)) / 1_000_000.0,
+            self.fd_read_count, @as(f64, @floatFromInt(self.fd_read_ns)) / 1_000_000.0,
+            self.fd_seek_count, @as(f64, @floatFromInt(self.fd_seek_ns)) / 1_000_000.0,
+            self.fd_write_count, @as(f64, @floatFromInt(self.fd_write_ns)) / 1_000_000.0,
+            self.path_open_count, @as(f64, @floatFromInt(self.path_open_ns)) / 1_000_000.0,
+            self.poll_oneoff_count, @as(f64, @floatFromInt(self.poll_oneoff_ns)) / 1_000_000.0,
+            self.proc_exit_count, @as(f64, @floatFromInt(self.proc_exit_ns)) / 1_000_000.0,
+        });
+    }
+};
+
+fn envFlag(allocator: Allocator, name: []const u8) bool {
+    const value = std.process.getEnvVarOwned(allocator, name) catch return false;
+    allocator.free(value);
+    return true;
+}
+
 pub const Host = struct {
     allocator: Allocator,
     /// Lazily initialized on first fd_* or path_* call.
@@ -32,12 +187,17 @@ pub const Host = struct {
     /// Signature: fn(exit_code: u32, data: ?*anyopaque) void
     on_exit: ?*const fn (u32, ?*anyopaque) void = null,
     on_exit_data: ?*anyopaque = null,
+    diag: WasiDiag = .{},
 
     pub fn init(allocator: Allocator) Host {
-        return .{ .allocator = allocator };
+        return .{
+            .allocator = allocator,
+            .diag = .{ .enabled = envFlag(allocator, "WASMZ_WASI_DIAG") },
+        };
     }
 
     pub fn deinit(self: *Host) void {
+        self.diag.print();
         if (self.fd_io) |p| {
             p.deinit();
             self.allocator.destroy(p);
@@ -188,21 +348,29 @@ pub const Host = struct {
 
 fn args_sizes_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
+    const t0 = if (host.diag.enabled) std.time.nanoTimestamp() else 0;
+    defer host.diag.record(.args_sizes_get, std.time.nanoTimestamp() - t0);
     return host.getEnvArgs().argsSizesGet(ctx, params, results);
 }
 
 fn args_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
+    const t0 = if (host.diag.enabled) std.time.nanoTimestamp() else 0;
+    defer host.diag.record(.args_get, std.time.nanoTimestamp() - t0);
     return host.getEnvArgs().argsGet(ctx, params, results);
 }
 
 fn environ_sizes_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
+    const t0 = if (host.diag.enabled) std.time.nanoTimestamp() else 0;
+    defer host.diag.record(.environ_sizes_get, std.time.nanoTimestamp() - t0);
     return host.getEnvArgs().environSizesGet(ctx, params, results);
 }
 
 fn environ_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
+    const t0 = if (host.diag.enabled) std.time.nanoTimestamp() else 0;
+    defer host.diag.record(.environ_get, std.time.nanoTimestamp() - t0);
     return host.getEnvArgs().environGet(ctx, params, results);
 }
 
@@ -213,16 +381,22 @@ fn clock_res_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawV
 
 fn clock_time_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
+    const t0 = if (host.diag.enabled) std.time.nanoTimestamp() else 0;
+    defer host.diag.record(.clock_time_get, std.time.nanoTimestamp() - t0);
     return host.getClock().clockTimeGet(ctx, params, results);
 }
 
 fn fd_write(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
+    const t0 = if (host.diag.enabled) std.time.nanoTimestamp() else 0;
+    defer host.diag.record(.fd_write, std.time.nanoTimestamp() - t0);
     return host.getFdIO().fdWrite(ctx, params, results);
 }
 
 fn fd_seek(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
+    const t0 = if (host.diag.enabled) std.time.nanoTimestamp() else 0;
+    defer host.diag.record(.fd_seek, std.time.nanoTimestamp() - t0);
     return host.getFdIO().fdSeek(ctx, params, results);
 }
 
@@ -233,6 +407,8 @@ fn fd_filestat_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const Ra
 
 fn fd_read(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
+    const t0 = if (host.diag.enabled) std.time.nanoTimestamp() else 0;
+    defer host.diag.record(.fd_read, std.time.nanoTimestamp() - t0);
     return host.getFdIO().fdRead(ctx, params, results);
 }
 
@@ -248,6 +424,8 @@ fn fd_pread(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, r
 
 fn path_open(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
+    const t0 = if (host.diag.enabled) std.time.nanoTimestamp() else 0;
+    defer host.diag.record(.path_open, std.time.nanoTimestamp() - t0);
     return host.getFdIO().pathOpen(ctx, params, results);
 }
 
@@ -258,16 +436,22 @@ fn fd_close(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, r
 
 fn fd_fdstat_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
+    const t0 = if (host.diag.enabled) std.time.nanoTimestamp() else 0;
+    defer host.diag.record(.fd_fdstat_get, std.time.nanoTimestamp() - t0);
     return host.getFdIO().fdFdstatGet(ctx, params, results);
 }
 
 fn fd_prestat_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
+    const t0 = if (host.diag.enabled) std.time.nanoTimestamp() else 0;
+    defer host.diag.record(.fd_prestat_get, std.time.nanoTimestamp() - t0);
     return host.getFdIO().fdPrestatGet(ctx, params, results);
 }
 
 fn fd_prestat_dir_name(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
+    const t0 = if (host.diag.enabled) std.time.nanoTimestamp() else 0;
+    defer host.diag.record(.fd_prestat_dir_name, std.time.nanoTimestamp() - t0);
     return host.getFdIO().fdPrestatDirName(ctx, params, results);
 }
 
@@ -419,6 +603,8 @@ fn proc_exit(host_data: ?*anyopaque, _: *HostContext, params: []const RawVal, _:
     const code: u32 = @bitCast(rval);
     if (host_data) |data| {
         const host: *Host = @ptrCast(@alignCast(data));
+        host.diag.record(.proc_exit, 0);
+        host.diag.print();
         if (host.on_exit) |cb| cb(code, host.on_exit_data);
     }
     std.process.exit(@intCast(code));
@@ -440,6 +626,9 @@ fn sched_yield(_: ?*anyopaque, _: *HostContext, _: []const RawVal, results: []Ra
 /// poll_oneoff: Concurrently poll for the occurrence of a set of events
 /// params: in_ptr(i32), out_ptr(i32), nsubscriptions(i32), nevents_ptr(i32)
 fn poll_oneoff(_: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
+    const host: *Host = @ptrCast(@alignCast(ctx.host_data_ptr.?));
+    const t0 = if (host.diag.enabled) std.time.nanoTimestamp() else 0;
+    defer host.diag.record(.poll_oneoff, std.time.nanoTimestamp() - t0);
     const in_ptr = params[0].readAs(u32);
     const out_ptr = params[1].readAs(u32);
     const nsubscriptions = params[2].readAs(u32);

@@ -116,6 +116,8 @@ pub const Instance = struct {
     /// When true, memory.grow events log RSS snapshots to stderr.
     /// Controlled by the --mem-trace CLI flag; defaults to false.
     mem_trace: bool = false,
+    /// Number of allocations performed by this instance (excluding VM).
+    alloc_count: usize = 0,
 
     /// Instantiate a Module.
     ///
@@ -131,6 +133,7 @@ pub const Instance = struct {
     pub fn init(store: *Store, arc: ArcModule, imports: Linker) InstanceError!Instance {
         const module = arc.value;
         const allocator = store.allocator;
+        var instance_alloc_count: usize = 0;
 
         // ── 0. resolve imported global values ───────────────────────────────────
         // Build a flat slice of RawVal for each imported global, in the order they
@@ -139,6 +142,7 @@ pub const Instance = struct {
         // reference imported globals).  Missing imported globals default to zero.
         const imported_global_values = try allocator.alloc(RawVal, module.imported_globals.len);
         defer allocator.free(imported_global_values);
+        instance_alloc_count += 1;
         for (module.imported_globals, 0..) |def, i| {
             imported_global_values[i] = imports.getGlobal(def.module_name, def.global_name) orelse
                 RawVal.fromBits64(0);
@@ -147,14 +151,19 @@ pub const Instance = struct {
         // ── 1. copy globals ──────────────────────────────────────────
         const globals = try allocator.alloc(Global, module.globals.len);
         errdefer allocator.free(globals);
+        instance_alloc_count += 1;
 
         for (module.globals, 0..) |global_init, i| {
             if (global_init.init_expr) |init_expr| {
                 // Deferred const expr — evaluate at runtime.
                 // Pass imported_global_values so global.get can resolve imported globals.
+                const gc_heap = if (module.has_gc_types)
+                    try store.ensureGcHeap()
+                else
+                    unreachable; // Should not have GC const expr without GC types
                 const value = evaluateGcConstExpr(
                     store.allocator,
-                    &store.gc_heap,
+                    gc_heap,
                     init_expr,
                     imported_global_values,
                     globals[0..i],
@@ -181,18 +190,21 @@ pub const Instance = struct {
             if (mem_def.shared) {
                 const max = mem_def.max_pages orelse return error.SharedMemoryMissingMax;
                 const shared = try SharedMemory.init(allocator, mem_def.min_pages, max);
+                instance_alloc_count += 1;
                 break :blk Memory.initShared(shared);
             } else {
                 break :blk try Memory.initOwnedWithMax(allocator, mem_def.min_pages, mem_def.max_pages);
             }
         } else Memory.initEmpty();
         errdefer mem.deinit();
+        if (module.memory != null) instance_alloc_count += 1;
 
         // ── 3. resolve host functions ────────────────────────────────────────────
         // Build a flat slice parallel to module.imported_funcs, looking up each
         // import by (module_name, func_name) in the provided Imports map.
         const host_funcs = try allocator.alloc(HostFunc, module.imported_funcs.len);
         errdefer allocator.free(host_funcs);
+        instance_alloc_count += 1;
 
         for (module.imported_funcs, 0..) |def, i| {
             const hf = imports.get(def.module_name, def.func_name) orelse {
@@ -219,6 +231,7 @@ pub const Instance = struct {
         const data_segments_dropped = try allocator.alloc(bool, module.data_segments.len);
         errdefer allocator.free(data_segments_dropped);
         @memset(data_segments_dropped, false);
+        instance_alloc_count += 1;
 
         // ── 4a. apply active data segments to linear memory (WASM spec §4.5.4) ──
         // Active segments are copied into linear memory at instantiation time and
@@ -245,6 +258,7 @@ pub const Instance = struct {
         const elem_segments_dropped = try allocator.alloc(bool, module.elem_segments.len);
         errdefer allocator.free(elem_segments_dropped);
         @memset(elem_segments_dropped, false);
+        instance_alloc_count += 1;
 
         store.registerInstance();
         errdefer store.unregisterInstance();
@@ -262,6 +276,7 @@ pub const Instance = struct {
             .data_segments_dropped = data_segments_dropped,
             .elem_segments_dropped = elem_segments_dropped,
             .vm = VM.init(allocator),
+            .alloc_count = instance_alloc_count,
         };
     }
 
@@ -291,6 +306,7 @@ pub const Instance = struct {
     ) InstanceError!Instance {
         const module = arc.value;
         const allocator = store.allocator;
+        var instance_alloc_count: usize = 0;
 
         // ── Validate that the module declares a shared memory ──────────────────
         const mem_def = module.memory orelse return error.ModuleMemoryNotShared;
@@ -304,6 +320,7 @@ pub const Instance = struct {
         // Resolve imported global values first for use in global.get const exprs.
         const imported_global_values_shared = try allocator.alloc(RawVal, module.imported_globals.len);
         defer allocator.free(imported_global_values_shared);
+        instance_alloc_count += 1;
         for (module.imported_globals, 0..) |def, i| {
             imported_global_values_shared[i] = imports.getGlobal(def.module_name, def.global_name) orelse
                 RawVal.fromBits64(0);
@@ -311,13 +328,18 @@ pub const Instance = struct {
 
         const globals = try allocator.alloc(Global, module.globals.len);
         errdefer allocator.free(globals);
+        instance_alloc_count += 1;
 
         for (module.globals, 0..) |global_init, i| {
             if (global_init.init_expr) |init_expr| {
                 // Deferred const expr — evaluate at runtime.
+                const gc_heap = if (module.has_gc_types)
+                    try store.ensureGcHeap()
+                else
+                    unreachable; // Should not have GC const expr without GC types
                 const value = evaluateGcConstExpr(
                     store.allocator,
-                    &store.gc_heap,
+                    gc_heap,
                     init_expr,
                     imported_global_values_shared,
                     globals[0..i],
@@ -340,10 +362,12 @@ pub const Instance = struct {
         // ── 2. wrap the provided shared memory (increments refcount) ───────────
         var mem = Memory.initShared(shared);
         errdefer mem.deinit();
+        instance_alloc_count += 1;
 
         // ── 3. resolve host functions ──────────────────────────────────────────
         const host_funcs = try allocator.alloc(HostFunc, module.imported_funcs.len);
         errdefer allocator.free(host_funcs);
+        instance_alloc_count += 1;
 
         for (module.imported_funcs, 0..) |def, i| {
             const hf = imports.get(def.module_name, def.func_name) orelse return error.ImportNotSatisfied;
@@ -368,6 +392,7 @@ pub const Instance = struct {
         const data_segments_dropped = try allocator.alloc(bool, module.data_segments.len);
         errdefer allocator.free(data_segments_dropped);
         @memset(data_segments_dropped, false);
+        instance_alloc_count += 1;
 
         // ── 4a. apply active data segments to linear memory (WASM spec §4.5.4) ──
         {
@@ -386,6 +411,7 @@ pub const Instance = struct {
         const elem_segments_dropped = try allocator.alloc(bool, module.elem_segments.len);
         errdefer allocator.free(elem_segments_dropped);
         @memset(elem_segments_dropped, false);
+        instance_alloc_count += 1;
 
         store.registerInstance();
         errdefer store.unregisterInstance();
@@ -403,6 +429,7 @@ pub const Instance = struct {
             .data_segments_dropped = data_segments_dropped,
             .elem_segments_dropped = elem_segments_dropped,
             .vm = VM.init(allocator),
+            .alloc_count = instance_alloc_count,
         };
     }
 
@@ -416,6 +443,8 @@ pub const Instance = struct {
         call_stack_bytes: usize,
         /// Number of frames in the call stack.
         call_stack_frames: usize,
+        /// Number of allocations performed by the VM.
+        vm_alloc_count: usize,
     };
 
     /// Return the byte sizes of the VM's persistent val_stack and call_stack.
@@ -426,6 +455,7 @@ pub const Instance = struct {
             .val_stack_slots = self.vm.val_stack.len,
             .call_stack_bytes = self.vm.call_stack.len * @sizeOf(CallFrameT),
             .call_stack_frames = self.vm.call_stack.len,
+            .vm_alloc_count = self.vm.alloc_count,
         };
     }
 

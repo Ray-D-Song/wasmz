@@ -5,7 +5,7 @@ const host_mod = @import("../wasmz/host.zig");
 const module_mod = @import("../wasmz/module.zig");
 const store_mod = @import("../wasmz/store.zig");
 const gc_mod = @import("./gc/root.zig");
-const dispatch_mod = @import("dispatch.zig");
+const dispatch_mod = @import("./dispatch.zig");
 
 const EncodedFunction = ir.EncodedFunction;
 const FunctionSlot = ir.FunctionSlot;
@@ -36,6 +36,11 @@ pub const ExecResult = union(enum) {
     /// Runtime trap (MemoryOutOfBounds, UnreachableCodeReached, etc.)
     trap: Trap,
 };
+
+pub const op_counts_enabled = dispatch_mod.op_counts_enabled;
+pub const OpCounts = dispatch_mod.OpCounts;
+/// Non-null only when profiling is enabled (`-Dprofiling=true` / `make build-debug`).
+pub const op_counts = &dispatch_mod.op_counts;
 
 pub const ExecEnv = struct {
     store: *Store,
@@ -80,6 +85,8 @@ pub const VM = struct {
     /// Persistent call-stack: fixed-size slice allocated once and reused.
     /// Using a raw slice + depth counter avoids ArrayList overhead on every push/pop.
     call_stack: []dispatch_mod.CallFrame = &[_]dispatch_mod.CallFrame{},
+    /// Number of allocations performed by this VM.
+    alloc_count: usize = 0,
 
     pub fn init(allocator: Allocator) VM {
         return .{ .allocator = allocator };
@@ -95,9 +102,11 @@ pub const VM = struct {
     fn ensureBuffers(self: *VM) Allocator.Error!void {
         if (self.val_stack.len == 0) {
             self.val_stack = try self.allocator.alloc(RawVal, dispatch_mod.DEFAULT_VAL_STACK_SLOTS);
+            self.alloc_count += 1;
         }
         if (self.call_stack.len == 0) {
             self.call_stack = try self.allocator.alloc(dispatch_mod.CallFrame, dispatch_mod.DEFAULT_CALL_STACK_DEPTH);
+            self.alloc_count += 1;
         }
     }
 
@@ -113,6 +122,11 @@ pub const VM = struct {
         params: []const RawVal,
         env: ExecEnv,
     ) Allocator.Error!ExecResult {
+        // Lazily initialize GC heap for modules that need it (GC types or EH).
+        if (env.module.has_gc_types or env.module.config.eh_mode != .none) {
+            _ = try env.store.ensureGcHeap();
+        }
+
         // Build the M3 ExecEnv (same layout, just a pointer wrapper).
         const m3_env = dispatch_mod.ExecEnv{
             .store = env.store,
@@ -184,7 +198,7 @@ pub const VM = struct {
 
         const ip = func.code.ptr;
         const h: dispatch_mod.Handler = @as(*const dispatch_mod.Handler, @ptrCast(ip)).*;
-        h(ip, entry_slots.ptr, &frame, &m3_env);
+        h(ip, entry_slots.ptr, &frame, &m3_env, 0, 0.0);
 
         return frame.result;
     }

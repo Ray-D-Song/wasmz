@@ -19,12 +19,24 @@
 ///   that returns, reads the result.
 const std = @import("std");
 const ir = @import("../compiler/ir.zig");
-const vm_root = @import("root.zig");
+const vm_root = @import("./root.zig");
 const gc_mod = @import("gc/root.zig");
 const core = @import("core");
 const store_mod = @import("../wasmz/store.zig");
 const host_mod = @import("../wasmz/host.zig");
 const module_mod = @import("../wasmz/module.zig");
+const encode = @import("../compiler/encode/encode.zig");
+const handlers_root = @import("./handlers/root.zig");
+
+inline fn readOps(comptime T: type, ip: [*]u8) T {
+    if (@sizeOf(T) == 0) return .{};
+    const bytes = ip[HANDLER_SIZE..][0..@sizeOf(T)];
+    return std.mem.bytesAsValue(T, bytes).*;
+}
+
+inline fn stride(comptime OpsT: type) usize {
+    return HANDLER_SIZE + @sizeOf(OpsT);
+}
 
 const Allocator = std.mem.Allocator;
 pub const RawVal = vm_root.RawVal;
@@ -62,15 +74,30 @@ const CompiledElemSegment = module_mod.CompiledElemSegment;
 ///   slots — base pointer of the *current* call frame's register file.
 ///   frame — mutable shared dispatch state (call stack, EH stack, result).
 ///   env   — read-only execution environment (globals, memory, functions …).
+///   r0    — integer accumulator: holds the most recent i32/i64 result.
+///            Handlers that produce an integer result write it here AND into
+///            the destination slot so that the next handler can read either.
+///            Handlers that do not produce an integer result pass through the
+///            incoming r0 unchanged.
+///   fp0   — float accumulator: holds the most recent f32/f64 result
+///            (f32 values are bit-cast to f64 for uniform storage).
+///            Same write-both semantics as r0.
 ///
 /// Calling convention: `.C` + `@call(.always_tail, …)` produces true TCO.
 /// Because C calling convention is used the function must return `void`; the
 /// execution result is communicated through `frame.result`.
+///
+/// The r0/fp0 accumulators mirror the wasm3 M3 model: they allow the CPU to
+/// keep the top-of-stack integer/float value in a hardware register across
+/// instruction boundaries, avoiding a slot load on every back-to-back
+/// arithmetic instruction.
 pub const Handler = *const fn (
     ip: [*]u8,
     slots: [*]RawVal,
     frame: *DispatchState,
     env: *const ExecEnv,
+    r0: u64,
+    fp0: f64,
 ) callconv(.c) void;
 
 // ── Execution environment (read-only) ─────────────────────────────────────────
@@ -307,6 +334,31 @@ pub const DispatchState = struct {
     pub inline fn valStackFree(self: *DispatchState, sp_base: usize) void {
         self.val_sp = sp_base;
     }
+
+    /// Capture the current Wasm call stack into a freshly-allocated slice of
+    /// `StackFrame` values, ordered innermost-first (index 0 = currently
+    /// executing function, last index = entry frame).
+    ///
+    /// Returns null if allocation fails (the trap is still reported; the stack
+    /// trace is just omitted).
+    pub fn captureStackTrace(self: *const DispatchState) ?[]core.StackFrame {
+        if (self.call_depth == 0) return null;
+        const frames = self.allocator.alloc(core.StackFrame, self.call_depth) catch return null;
+        var i: usize = 0;
+        // Walk innermost → outermost (call_depth-1 downto 0)
+        while (i < self.call_depth) : (i += 1) {
+            const cf = &self.call_stack[self.call_depth - 1 - i];
+            const code_offset: usize = if (@intFromPtr(cf.ip) >= @intFromPtr(cf.func.code.ptr))
+                @intFromPtr(cf.ip) - @intFromPtr(cf.func.code.ptr)
+            else
+                0;
+            frames[i] = .{
+                .func_idx = cf.func.func_idx,
+                .code_offset = code_offset,
+            };
+        }
+        return frames;
+    }
 };
 
 // ── Dispatch helper ───────────────────────────────────────────────────────────
@@ -320,14 +372,56 @@ pub const DispatchState = struct {
 /// Using `inline` ensures the tail call is always visible to the Zig backend.
 pub inline fn next(
     ip: [*]u8,
-    stride: usize,
+    cur_stride: usize,
     slots: [*]RawVal,
     frame: *DispatchState,
     env: *const ExecEnv,
+    r0: u64,
+    fp0: f64,
 ) void {
-    const next_ip = ip + stride;
+    countOp("total");
+    countOp("dispatch_next");
+    const next_ip = ip + cur_stride;
     const h: Handler = std.mem.bytesAsValue(Handler, next_ip[0..@sizeOf(Handler)]).*;
-    @call(.always_tail, h, .{ next_ip, slots, frame, env });
+    @call(.always_tail, h, .{ next_ip, slots, frame, env, r0, fp0 });
+}
+
+/// Advance `ip` by `stride` bytes, read next handler, and check if it's a hot
+/// local_set handler that can be fused with this operation.
+/// If fused, execute local_set inline and skip one dispatch.
+/// Otherwise, dispatch normally.
+pub inline fn nextWithLocalSetFusion(
+    ip: [*]u8,
+    cur_stride: usize,
+    slots: [*]RawVal,
+    frame: *DispatchState,
+    env: *const ExecEnv,
+    r0: u64,
+    fp0: f64,
+    value: RawVal,
+) void {
+    countOp("total");
+    const next_ip = ip + cur_stride;
+    const h: Handler = std.mem.bytesAsValue(Handler, next_ip[0..@sizeOf(Handler)]).*;
+
+    // Check if next handler is handle_local_set
+    const is_local_set = @intFromPtr(h) == @intFromPtr(&handlers_root.handle_local_set);
+    if (is_local_set) {
+        // Fused: inline execute local_set and skip one dispatch
+        countOp("dispatch_next");
+        const local_set_ops = readOps(encode.ops.OpsLocalSet, next_ip);
+        slots[local_set_ops.local] = value;
+
+        // Advance to the instruction after local_set
+        const next_stride = stride(encode.ops.OpsLocalSet);
+        const after_next_ip = next_ip + next_stride;
+        const h2: Handler = std.mem.bytesAsValue(Handler, after_next_ip[0..@sizeOf(Handler)]).*;
+        @call(.always_tail, h2, .{ after_next_ip, slots, frame, env, r0, fp0 });
+    } else {
+        // Not fused: dispatch normally
+        countOp("dispatch_next");
+        @call(.always_tail, h, .{ next_ip, slots, frame, env, r0, fp0 });
+    }
 }
 
 /// Convenience: read the handler pointer embedded at `ip` and tail-call it
@@ -339,9 +433,74 @@ pub inline fn dispatch(
     slots: [*]RawVal,
     frame: *DispatchState,
     env: *const ExecEnv,
+    r0: u64,
+    fp0: f64,
 ) void {
+    countOp("total");
+    countOp("dispatch_dispatch");
     const h: Handler = std.mem.bytesAsValue(Handler, ip[0..@sizeOf(Handler)]).*;
-    @call(.always_tail, h, .{ ip, slots, frame, env });
+    @call(.always_tail, h, .{ ip, slots, frame, env, r0, fp0 });
+}
+
+// ── Runtime op counters (for profiling) ──────────────────────────────────────
+//
+// Only compiled in when `-Dprofiling=true` (i.e. `make build-debug`).
+// In release builds this struct is zero-sized and all increment calls are no-ops.
+
+const build_options = @import("build_options");
+
+pub const op_counts_enabled = build_options.profiling;
+
+pub const OpCounts = if (op_counts_enabled) struct {
+    copy: u64 = 0,
+    local_get: u64 = 0,
+    local_set: u64 = 0,
+    copy_jump_if_nz: u64 = 0,
+    jump: u64 = 0,
+    call_ret: u64 = 0,
+    global: u64 = 0,
+    constant: u64 = 0,
+    imm: u64 = 0,
+    imm_r: u64 = 0,
+    unary: u64 = 0,
+    conv: u64 = 0,
+    cmp: u64 = 0,
+    binop: u64 = 0,
+    ref_select: u64 = 0,
+    mem_table: u64 = 0,
+    simd: u64 = 0,
+    atomic: u64 = 0,
+    trap_unreachable: u64 = 0,
+    i32_to_local: u64 = 0,
+    i64_to_local: u64 = 0,
+    f32_to_local: u64 = 0,
+    f64_to_local: u64 = 0,
+    i32_imm_to_local: u64 = 0,
+    i64_imm_to_local: u64 = 0,
+    f32_imm_to_local: u64 = 0,
+    f64_imm_to_local: u64 = 0,
+    i32_local_inplace: u64 = 0,
+    i64_local_inplace: u64 = 0,
+    f32_local_inplace: u64 = 0,
+    f64_local_inplace: u64 = 0,
+    const_to_local: u64 = 0,
+    load_to_local: u64 = 0,
+    global_to_local: u64 = 0,
+    tee_local: u64 = 0,
+    cmp_to_local: u64 = 0,
+    misc: u64 = 0,
+    total: u64 = 0,
+    dispatch_dispatch: u64 = 0,
+    dispatch_next: u64 = 0,
+} else struct {};
+
+pub var op_counts: OpCounts = .{};
+
+/// Increment a field of `op_counts` by 1. Compiles to a no-op when profiling is disabled.
+pub inline fn countOp(comptime field: []const u8) void {
+    if (op_counts_enabled) {
+        @field(op_counts, field) += 1;
+    }
 }
 
 // ── Instruction operand sizes ─────────────────────────────────────────────────

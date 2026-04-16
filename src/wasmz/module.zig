@@ -56,7 +56,7 @@ const Lower = lower_mod.Lower;
 const LowerLegacy = lower_legacy_mod.LowerLegacy;
 const LegacyWasmOp = lower_legacy_mod.LegacyWasmOp;
 const EngineConfig = engine_config_mod.Config;
-const encode_mod = @import("../compiler/encode.zig");
+const encode_mod = @import("../compiler/encode/encode.zig");
 const handler_table_mod = @import("../vm/handler_table.zig");
 
 /// Exported item from a Wasm module.
@@ -255,9 +255,10 @@ const BuildState = struct {
     allocator: Allocator,
     engine: Engine,
     arena: std.heap.ArenaAllocator,
-    /// Arena for pending function body copies (compileReader path).
-    /// null when bodies borrow external bytes (compile(bytes) path).
-    body_arena: ?std.heap.ArenaAllocator = null,
+    /// When true, function bodies are individually heap-allocated (compileReader
+    /// path) and freed per-function after compilation.  When false, bodies are
+    /// borrowed from the caller's input (compile(bytes) / mmap path).
+    body_owned: bool = false,
 
     composite_types_list: std.ArrayListUnmanaged(CompositeType) = .empty,
     struct_layouts_list: std.ArrayListUnmanaged(?StructLayout) = .empty,
@@ -280,6 +281,12 @@ const BuildState = struct {
     tags_list: std.ArrayListUnmanaged(TagDef) = .empty,
     local_functions_list: std.ArrayListUnmanaged(FunctionSlot) = .empty,
     detected_eh_mode: EHMode = .none,
+    /// Set to true when the module defines any struct or array types.
+    /// Used to lazily initialize the GC heap only when needed.
+    has_gc_types: bool = false,
+    /// Sparse map: func_idx → name string (owned, heap-allocated).
+    /// Populated from the Wasm Name Section when a function_name_entry is parsed.
+    func_names_map: std.AutoHashMapUnmanaged(u32, []const u8) = .empty,
 
     fn init(engine: Engine) BuildState {
         const allocator = engine.allocator();
@@ -348,8 +355,11 @@ const BuildState = struct {
         deinit_function_slots(self.allocator, self.local_functions_list.items);
         self.local_functions_list.deinit(self.allocator);
 
-        // Free body arena if still owned (not transferred to Module via finish()).
-        if (self.body_arena) |*ba| ba.deinit();
+        // Free name strings stored in func_names_map (these are always duped).
+        var names_iter = self.func_names_map.valueIterator();
+        while (names_iter.next()) |name| self.allocator.free(name.*);
+        self.func_names_map.deinit(self.allocator);
+
         self.arena.deinit();
     }
 
@@ -369,6 +379,7 @@ const BuildState = struct {
                         try self.direct_parents_list.append(self.allocator, null);
                     },
                     .struct_type, .array_type => {
+                        self.has_gc_types = true;
                         const composite_type = try translate_mod.wasmCompositeTypeFromTypeEntry(self.allocator, entry);
                         try self.composite_types_list.append(self.allocator, composite_type);
 
@@ -555,6 +566,18 @@ const BuildState = struct {
             .function_info => |info| {
                 try self.handleFunctionInfo(info);
             },
+            .function_name_entry => |entry| {
+                // Store function names from the Wasm Name Section.
+                // Duplicate the name string so it outlives the parser's transient buffer.
+                for (entry.names) |naming| {
+                    const duped = try self.allocator.dupe(u8, naming.name);
+                    errdefer self.allocator.free(duped);
+                    // If a duplicate entry exists (shouldn't happen in valid wasm), free the old one.
+                    if (try self.func_names_map.fetchPut(self.allocator, naming.index, duped)) |old| {
+                        self.allocator.free(old.value);
+                    }
+                }
+            },
             else => {},
         }
     }
@@ -597,17 +620,19 @@ const BuildState = struct {
         var params_slots: usize = 0;
         for (func_type.params()) |p| params_slots += if (p == .V128) 2 else 1;
         const locals_count: u16 = @intCast(reserved_slots - params_slots);
-        // If body_arena is set (compileReader path), dupe the body into the
-        // arena so it outlives the parser's transient buffer.  Otherwise
-        // (compile(bytes) path) borrow the slice directly from the caller's
-        // long-lived input.
-        const body: []const u8 = if (self.body_arena) |*ba|
-            try ba.allocator().dupe(u8, info.body)
+        // If body_owned is set (compileReader path), dupe the body into a
+        // per-function heap allocation so it can be freed immediately after
+        // compilation.  Otherwise (compile(bytes) path) borrow the slice
+        // directly from the caller's long-lived input.
+        const body_owned = self.body_owned;
+        const body: []const u8 = if (body_owned)
+            try self.allocator.dupe(u8, info.body)
         else
             info.body;
 
         try self.local_functions_list.append(self.allocator, .{ .pending = .{
             .body = body,
+            .body_owned = body_owned,
             .type_index = type_index,
             .reserved_slots = reserved_slots,
             .locals_count = locals_count,
@@ -742,9 +767,26 @@ const BuildState = struct {
         const exports = self.exports;
         self.exports = .empty;
 
-        // Transfer body_arena ownership to Module before returning.
-        const body_arena = self.body_arena;
-        self.body_arena = null;
+        // Build the func_names slice: one entry per function in the full function
+        // index space (imports first, then locals).  Entries are null for functions
+        // with no name in the Name Section.  The map ownership is transferred here;
+        // the BuildState no longer frees the values.
+        const func_names = try self.allocator.alloc(?[]const u8, functions.len);
+        errdefer {
+            for (func_names) |n| if (n) |s| self.allocator.free(s);
+            self.allocator.free(func_names);
+        }
+        @memset(func_names, null);
+        var names_iter = self.func_names_map.iterator();
+        while (names_iter.next()) |entry| {
+            const idx = entry.key_ptr.*;
+            if (idx < func_names.len) {
+                func_names[idx] = entry.value_ptr.*;
+                entry.value_ptr.* = ""; // prevent double-free in BuildState.deinit
+            } else {
+                self.allocator.free(entry.value_ptr.*);
+            }
+        }
 
         return .{
             .allocator = self.allocator,
@@ -764,25 +806,17 @@ const BuildState = struct {
             .array_layouts = array_layouts,
             .type_ancestors = type_ancestors_outer,
             .tags = tags,
+            .func_names = func_names,
             .config = .{ .eh_mode = self.detected_eh_mode },
             .translator = null,
             .pending_count = @intCast(local_functions.len),
-            .body_arena = body_arena,
+            .has_gc_types = self.has_gc_types,
         };
     }
 };
 
 fn deinit_function_slots(allocator: Allocator, functions: []FunctionSlot) void {
-    for (functions) |*slot| {
-        switch (slot.*) {
-            .encoded => |*ef| ef.deinit(allocator),
-            // Pending body bytes are either borrowed (compile(bytes) path)
-            // or owned by the Module's body_arena (compileReader path).
-            // Either way they are NOT freed individually here.
-            .pending, .import => {},
-        }
-        slot.* = undefined;
-    }
+    for (functions) |*slot| slot.deinit(allocator);
 }
 
 /// Compiled WebAssembly module, holding all data required for runtime execution.
@@ -851,6 +885,12 @@ pub const Module = struct {
     /// Exception tags defined in the Tag Section (and imported tag entries).
     /// tags[i].type_index is the FuncType index for tag i.
     tags: []TagDef,
+    /// Function names from the Wasm Name Section (custom section), indexed by
+    /// func_idx (the full Wasm function index space: imports first, then locals).
+    /// Each entry is either a heap-allocated name string or null when no name was
+    /// provided for that function index.
+    /// Empty slice when the module contains no Name Section.
+    func_names: []?[]const u8,
     /// Module-level configuration.
     config: ModuleConfig,
     /// Reusable compilation state for lazy function compilation.
@@ -860,10 +900,9 @@ pub const Module = struct {
     /// Decremented by `compileFunctionAt`; used to release `translator` as
     /// soon as the last function body is compiled (O(1) check per compile).
     pending_count: u32,
-    /// Arena owning all pending function body copies (compileReader path).
-    /// null when bodies borrow external bytes (compile(bytes) / mmap path).
-    /// Freed in deinit; individual body slices are never freed separately.
-    body_arena: ?std.heap.ArenaAllocator = null,
+    /// True when the module defines any struct or array types.
+    /// Used to lazily initialize the GC heap only when needed.
+    has_gc_types: bool,
 
     /// Compile WebAssembly bytecode held in memory into a Module.
     ///
@@ -872,7 +911,7 @@ pub const Module = struct {
     /// returned Module (typically via mmap or a long-lived allocation).
     pub fn compile(engine: Engine, bytes: []const u8) ModuleCompileError!Module {
         var state = BuildState.init(engine);
-        // body_arena stays null → bodies borrow from `bytes` directly.
+        // body_owned stays false → bodies borrow from `bytes` directly.
         defer state.deinit();
 
         var parser = Parser.init(state.parserAllocator());
@@ -907,9 +946,9 @@ pub const Module = struct {
         const allocator = engine.allocator();
 
         var state = BuildState.init(engine);
-        // Streaming path: parser buffers are transient, so we need an arena
-        // to hold durable copies of each function body.
-        state.body_arena = std.heap.ArenaAllocator.init(allocator);
+        // Streaming path: bodies are individually heap-allocated per function
+        // and freed immediately after each function is compiled.
+        state.body_owned = true;
         defer state.deinit();
 
         var parser = Parser.init(state.parserAllocator());
@@ -1081,9 +1120,13 @@ pub const Module = struct {
             &handler_table_mod.handler_table,
         );
         profiling.call_prof.ns_encode_ir += encode_timer.read();
-        // Body bytes are either borrowed (compile(bytes) path) or owned by
-        // body_arena (compileReader path).  No individual free needed.
-        slot.* = .{ .encoded = encoded };
+        // Free the body bytes now that compilation is complete, if they were
+        // individually allocated for this function (compileReader path).
+        // Borrowed bodies (compile(bytes) / mmap path) are left alone.
+        if (pending.body_owned) self.allocator.free(pending.body);
+        var encoded_with_idx = encoded;
+        encoded_with_idx.func_idx = func_index;
+        slot.* = .{ .encoded = encoded_with_idx };
 
         // Decrement the pending counter and release the reusable translator
         // buffers as soon as the last pending slot is compiled.  This frees
@@ -1125,6 +1168,475 @@ pub const Module = struct {
         // compileFunctionAt (which would scan the whole functions slice on
         // every call).
         self.releaseTranslator();
+    }
+
+    /// Scan the raw Wasm bytecode of a single pending function body and collect
+    /// all statically-known callee function indices into `out`.
+    ///
+    /// Recognised call instructions:
+    ///   0x10  call             → func_idx (varuint32)
+    ///   0x12  return_call      → func_idx (varuint32)
+    ///   0x11  call_indirect    → type_idx (skipped) + table_idx (skipped); signals via `has_indirect`
+    ///   0x13  return_call_indirect → same as call_indirect
+    ///
+    /// All other instructions are skipped by consuming their immediate operands
+    /// according to the Wasm binary encoding spec so that operand bytes are never
+    /// mistaken for opcodes.
+    ///
+    /// Returns true if the function contains at least one call_indirect /
+    /// return_call_indirect (so the caller knows to add table entries to the
+    /// reachable set).
+    fn scanDirectCallees(allocator: Allocator, body: []const u8, out: *std.ArrayListUnmanaged(u32)) error{OutOfMemory}!bool {
+        var pos: usize = 0;
+        var has_indirect = false;
+
+        // Read an unsigned LEB-128 varuint32; advances pos.
+        const readU32 = struct {
+            fn f(b: []const u8, p: *usize) u32 {
+                var result: u32 = 0;
+                var shift: u5 = 0;
+                while (p.* < b.len) {
+                    const byte = b[p.*];
+                    p.* += 1;
+                    result |= @as(u32, byte & 0x7f) << shift;
+                    if (byte & 0x80 == 0) break;
+                    shift += 7;
+                }
+                return result;
+            }
+        }.f;
+
+        // Read a signed LEB-128 varint32 (used by i32.const / i64.const / block types).
+        const skipS32 = struct {
+            fn f(b: []const u8, p: *usize) void {
+                while (p.* < b.len) {
+                    const byte = b[p.*];
+                    p.* += 1;
+                    if (byte & 0x80 == 0) break;
+                }
+            }
+        }.f;
+
+        // Skip a signed LEB-128 varint64 (i64.const).
+        const skipS64 = struct {
+            fn f(b: []const u8, p: *usize) void {
+                while (p.* < b.len) {
+                    const byte = b[p.*];
+                    p.* += 1;
+                    if (byte & 0x80 == 0) break;
+                }
+            }
+        }.f;
+
+        // Skip a memory immediate: align (u32) + offset (u32).
+        const skipMemImm = struct {
+            fn f(b: []const u8, p: *usize) void {
+                // align flags
+                _ = blk: {
+                    var r: u32 = 0;
+                    var s: u5 = 0;
+                    while (p.* < b.len) {
+                        const byte = b[p.*];
+                        p.* += 1;
+                        r |= @as(u32, byte & 0x7f) << s;
+                        if (byte & 0x80 == 0) break;
+                        s += 7;
+                    }
+                    break :blk r;
+                };
+                // offset
+                _ = blk: {
+                    var r: u32 = 0;
+                    var s: u5 = 0;
+                    while (p.* < b.len) {
+                        const byte = b[p.*];
+                        p.* += 1;
+                        r |= @as(u32, byte & 0x7f) << s;
+                        if (byte & 0x80 == 0) break;
+                        s += 7;
+                    }
+                    break :blk r;
+                };
+            }
+        }.f;
+
+        // Skip a heap type (block type / ref.null): s33 LEB.
+        const skipHeapType = struct {
+            fn f(b: []const u8, p: *usize) void {
+                if (p.* >= b.len) return;
+                const first = b[p.*];
+                p.* += 1;
+                // If the high bit is set it is a multi-byte s33.
+                if (first & 0x80 != 0) {
+                    while (p.* < b.len) {
+                        const byte = b[p.*];
+                        p.* += 1;
+                        if (byte & 0x80 == 0) break;
+                    }
+                }
+                // Otherwise it is a 1-byte value (already consumed).
+            }
+        }.f;
+
+        // Skip a Wasm block type: either a valtype byte (0x40/0x7f..0x70) or
+        // an s33 type index.  Same encoding as heap type for our purposes.
+        const skipBlockType = skipHeapType;
+
+        // Localcount-entry local declarations at the start of a function body.
+        // Format: local_count:u32 followed by local_count*(count:u32, type:byte).
+        // We call this once at entry to move pos past the locals header.
+        const skipLocals = struct {
+            fn f(b: []const u8, p: *usize) void {
+                var r: u32 = 0;
+                var s: u5 = 0;
+                while (p.* < b.len) {
+                    const byte = b[p.*];
+                    p.* += 1;
+                    r |= @as(u32, byte & 0x7f) << s;
+                    if (byte & 0x80 == 0) break;
+                    s += 7;
+                }
+                // r = number of local groups
+                var i: u32 = 0;
+                while (i < r) : (i += 1) {
+                    // skip count u32
+                    while (p.* < b.len) {
+                        const b2 = b[p.*];
+                        p.* += 1;
+                        if (b2 & 0x80 == 0) break;
+                    }
+                    // skip valtype byte
+                    if (p.* < b.len) p.* += 1;
+                }
+            }
+        }.f;
+
+        skipLocals(body, &pos);
+
+        while (pos < body.len) {
+            const op = body[pos];
+            pos += 1;
+
+            switch (op) {
+                // ── no immediate ────────────────────────────────────────────
+                0x00, // unreachable
+                0x01, // nop
+                0x05, // else
+                0x0b, // end
+                0x0f, // return
+                0x19, // catch_all
+                0x1a, // drop
+                0x1b, // select
+                0x0a, // throw_ref
+                0x45...0xc4, // most numeric ops (no immediates)
+                => {},
+
+                // ── block / loop / if / try: block type (s33 / valtype) ────
+                0x02, 0x03, 0x04, 0x06 => skipBlockType(body, &pos),
+
+                // ── try_table: block type + handler list ────────────────────
+                0x1f => {
+                    skipBlockType(body, &pos);
+                    // handler count
+                    const hcount = readU32(body, &pos);
+                    var h: u32 = 0;
+                    while (h < hcount) : (h += 1) {
+                        const kind = readU32(body, &pos);
+                        switch (kind) {
+                            0, 1 => _ = readU32(body, &pos), // catch: tag_idx + br_depth
+                            2, 3 => {}, // catch_all / catch_all_ref: br_depth only
+                            else => {},
+                        }
+                        _ = readU32(body, &pos); // br_depth
+                    }
+                },
+
+                // ── br / br_if / rethrow / delegate: depth u32 ─────────────
+                0x0c, 0x0d, 0x09, 0x18 => _ = readU32(body, &pos),
+
+                // ── br_table: n+1 depths ────────────────────────────────────
+                0x0e => {
+                    const n = readU32(body, &pos);
+                    var t: u32 = 0;
+                    while (t <= n) : (t += 1) _ = readU32(body, &pos);
+                },
+
+                // ── call / return_call → collect callee ─────────────────────
+                0x10, 0x12 => {
+                    const callee = readU32(body, &pos);
+                    try out.append(allocator, callee);
+                },
+
+                // ── call_indirect / return_call_indirect → indirect flag ─────
+                0x11, 0x13 => {
+                    _ = readU32(body, &pos); // type index
+                    _ = readU32(body, &pos); // table index
+                    has_indirect = true;
+                },
+
+                // ── call_ref / return_call_ref: type index ──────────────────
+                0x14, 0x15 => _ = readU32(body, &pos),
+
+                // ── catch / throw: tag index ─────────────────────────────────
+                0x07, 0x08 => _ = readU32(body, &pos),
+
+                // ── select with type: 1-byte count + valtype ────────────────
+                0x1c => {
+                    const cnt = readU32(body, &pos);
+                    pos += cnt; // each valtype is 1 byte
+                },
+
+                // ── local_get/set/tee, global_get/set, table_get/set ─────────
+                0x20...0x26 => _ = readU32(body, &pos),
+
+                // ── memory load/store instructions: align + offset ───────────
+                0x28...0x3e => skipMemImm(body, &pos),
+
+                // ── memory.size / memory.grow: reserved byte ────────────────
+                0x3f, 0x40 => _ = readU32(body, &pos),
+
+                // ── i32.const ────────────────────────────────────────────────
+                0x41 => skipS32(body, &pos),
+
+                // ── i64.const ────────────────────────────────────────────────
+                0x42 => skipS64(body, &pos),
+
+                // ── f32.const ────────────────────────────────────────────────
+                0x43 => pos += 4,
+
+                // ── f64.const ────────────────────────────────────────────────
+                0x44 => pos += 8,
+
+                // ── ref.null: heap type ──────────────────────────────────────
+                0xd0 => skipHeapType(body, &pos),
+
+                // ── ref.func: func index ─────────────────────────────────────
+                0xd2 => _ = readU32(body, &pos),
+
+                // ── ref.is_null, ref.as_non_null, ref.eq ────────────────────
+                0xd1, 0xd3, 0xd5 => {},
+
+                // ── prefix 0xfb (GC) ─────────────────────────────────────────
+                0xfb => {
+                    const sub = readU32(body, &pos);
+                    switch (sub) {
+                        // struct.new, struct.new_default, array.new,
+                        // array.new_default, array.get, array.get_s/u,
+                        // array.set, array.len, array.fill,
+                        // ref.test, ref.cast, br_on_cast, br_on_cast_fail,
+                        // any.convert_extern, extern.convert_any,
+                        // ref.i31, i31.get_s/u, struct.get, struct.get_s/u,
+                        // struct.set, array.new_fixed, array.new_data,
+                        // array.new_elem, array.init_data, array.init_elem,
+                        // array.copy — all take 1 or 2 type/field indices.
+                        // We conservatively skip up to 2 u32 operands for
+                        // instructions that have them; for simplicity we check
+                        // sub ranges known from the GC spec draft.
+                        0x00...0x01 => _ = readU32(body, &pos), // struct.new / struct.new_default
+                        0x07...0x08 => _ = readU32(body, &pos), // struct.get / struct.get_s
+                        0x09 => _ = readU32(body, &pos), // struct.get_u
+                        0x05, 0x06 => { // struct.set / (reserved)
+                            _ = readU32(body, &pos);
+                            _ = readU32(body, &pos);
+                        },
+                        0x0b => _ = readU32(body, &pos), // array.new
+                        0x0c => _ = readU32(body, &pos), // array.new_default
+                        0x0d => { // array.new_fixed
+                            _ = readU32(body, &pos);
+                            _ = readU32(body, &pos);
+                        },
+                        0x0e, 0x0f => { // array.new_data / array.new_elem
+                            _ = readU32(body, &pos);
+                            _ = readU32(body, &pos);
+                        },
+                        0x10...0x13 => _ = readU32(body, &pos), // array.get variants
+                        0x14 => _ = readU32(body, &pos), // array.set
+                        0x15 => {}, // array.len
+                        0x18 => { // array.copy
+                            _ = readU32(body, &pos);
+                            _ = readU32(body, &pos);
+                        },
+                        0x19, 0x1a => { // array.init_data/elem
+                            _ = readU32(body, &pos);
+                            _ = readU32(body, &pos);
+                        },
+                        0x14...0x17 => _ = readU32(body, &pos),
+                        0x1b, 0x1c => _ = readU32(body, &pos), // ref.test / ref.cast (nullable)
+                        0x1d, 0x1e => { // br_on_cast / br_on_cast_fail
+                            pos += 1; // flags byte
+                            _ = readU32(body, &pos);
+                            skipHeapType(body, &pos);
+                            skipHeapType(body, &pos);
+                        },
+                        0x1f...0x22 => {}, // any.convert_extern etc.
+                        0x29, 0x2a => {}, // i31.get_s/u
+                        0x28 => _ = readU32(body, &pos), // ref.i31
+                        else => {},
+                    }
+                },
+
+                // ── prefix 0xfc (misc / bulk memory / table) ─────────────────
+                0xfc => {
+                    const sub = readU32(body, &pos);
+                    switch (sub) {
+                        // i32.trunc_sat_f32_s ... f64.trunc_sat_f64_u (0–7): no extra imm
+                        0...7 => {},
+                        // memory.init: data_idx u32 + reserved u32
+                        8 => {
+                            _ = readU32(body, &pos);
+                            _ = readU32(body, &pos);
+                        },
+                        // data.drop: data_idx u32
+                        9 => _ = readU32(body, &pos),
+                        // memory.copy: 2 reserved u32
+                        10 => {
+                            _ = readU32(body, &pos);
+                            _ = readU32(body, &pos);
+                        },
+                        // memory.fill: reserved u32
+                        11 => _ = readU32(body, &pos),
+                        // table.init: elem_idx u32 + table_idx u32
+                        12 => {
+                            _ = readU32(body, &pos);
+                            _ = readU32(body, &pos);
+                        },
+                        // elem.drop: elem_idx u32
+                        13 => _ = readU32(body, &pos),
+                        // table.copy: dst_table u32 + src_table u32
+                        14 => {
+                            _ = readU32(body, &pos);
+                            _ = readU32(body, &pos);
+                        },
+                        // table.grow / table.size / table.fill: table_idx u32
+                        15, 16, 17 => _ = readU32(body, &pos),
+                        else => {},
+                    }
+                },
+
+                // ── prefix 0xfd (SIMD): sub-opcode + operands ────────────────
+                0xfd => {
+                    const sub = readU32(body, &pos);
+                    switch (sub) {
+                        // v128.load variants with memory immediate
+                        0...11, 84...91 => skipMemImm(body, &pos),
+                        // v128.store
+                        11 => skipMemImm(body, &pos),
+                        // v128.const: 16 bytes
+                        12 => pos += 16,
+                        // i8x16.shuffle: 16 lane bytes
+                        13 => pos += 16,
+                        // lane instructions: mem imm + 1-byte lane
+                        21...34 => {
+                            skipMemImm(body, &pos);
+                            pos += 1;
+                        },
+                        // extract_lane / replace_lane: 1-byte lane index
+                        23...42 => pos += 1,
+                        else => {},
+                    }
+                },
+
+                // ── prefix 0xfe (threads/atomics): sub-opcode + mem imm ──────
+                0xfe => {
+                    _ = readU32(body, &pos); // sub-opcode
+                    skipMemImm(body, &pos);
+                },
+
+                // ── everything else: no immediate (numeric/comparison/convert) ─
+                else => {},
+            }
+        }
+
+        return has_indirect;
+    }
+
+    /// Collect the set of all locally-defined function indices reachable from
+    /// `entry_func_idx` by following direct `call` / `return_call` edges and,
+    /// when a `call_indirect` is encountered, by adding all entries from the
+    /// relevant table(s).
+    ///
+    /// The result is written into `reachable` as a dense BitSet indexed by
+    /// func_idx.  Import slots are included in the index space but never
+    /// added to the reachable set (they are never `.pending`).
+    ///
+    /// Caller owns the returned BitSet and must call `deinit` when done.
+    fn collectReachable(
+        self: *const Module,
+        allocator: Allocator,
+        entry_func_idx: u32,
+    ) error{OutOfMemory}!std.DynamicBitSet {
+        const n = self.functions.len;
+        var reachable = try std.DynamicBitSet.initEmpty(allocator, n);
+        errdefer reachable.deinit();
+
+        var worklist = std.ArrayListUnmanaged(u32){};
+        defer worklist.deinit(allocator);
+
+        // Seed
+        try worklist.append(allocator, entry_func_idx);
+
+        var callees_buf = std.ArrayListUnmanaged(u32){};
+        defer callees_buf.deinit(allocator);
+
+        while (worklist.items.len > 0) {
+            const idx = worklist.pop();
+            if (idx >= n) continue;
+            if (reachable.isSet(idx)) continue;
+            reachable.set(idx);
+
+            // Only pending local functions have scannable bodies.
+            const body = switch (self.functions[idx]) {
+                .pending => |p| p.body,
+                .import, .encoded => continue,
+            };
+
+            callees_buf.clearRetainingCapacity();
+            const has_indirect = try scanDirectCallees(allocator, body, &callees_buf);
+
+            for (callees_buf.items) |callee| {
+                if (callee < n and !reachable.isSet(callee))
+                    try worklist.append(allocator, callee);
+            }
+
+            if (has_indirect) {
+                // Add every entry from every table as a potential callee.
+                for (self.tables) |table| {
+                    for (table) |func_idx| {
+                        if (func_idx < n and !reachable.isSet(func_idx))
+                            try worklist.append(allocator, func_idx);
+                    }
+                }
+            }
+        }
+
+        return reachable;
+    }
+
+    /// Warmup: compile all functions reachable from `entry_func_idx` before
+    /// the VM starts executing, eliminating lazy-compilation pauses on the
+    /// hot path.
+    ///
+    /// - If the engine was configured with `eager_compile = true` the module
+    ///   was already fully compiled during `Module.compile()`; this call is a
+    ///   no-op to avoid redundant work.
+    /// - Otherwise, the reachable set is collected with `collectReachable` and
+    ///   every pending slot in that set is compiled via `compileFunctionAt`.
+    /// - Successfully compiled functions have their raw Wasm body bytes freed
+    ///   (same behaviour as `compileAll`; `.body_owned` bodies are freed
+    ///   immediately, borrowed bodies are simply not referenced any more).
+    pub fn warmup(self: *Module, engine: Engine, entry_func_idx: u32) ModuleCompileError!void {
+        // eager_compile already compiled everything in Module.compile().
+        if (engine.config().eager_compile) return;
+
+        if (entry_func_idx >= self.functions.len) return;
+
+        var reachable = try self.collectReachable(self.allocator, entry_func_idx);
+        defer reachable.deinit();
+
+        var it = reachable.iterator(.{});
+        while (it.next()) |idx| {
+            try self.compileFunctionAt(engine, @intCast(idx));
+        }
     }
 
     /// Detailed memory breakdown for a compiled Module.
@@ -1203,9 +1715,6 @@ pub const Module = struct {
         if (self.translator) |*t| t.deinit();
         deinit_function_slots(self.allocator, self.functions);
         self.allocator.free(self.functions);
-        // Free the arena that holds all pending body copies (compileReader path).
-        // For the compile(bytes)/mmap path this is null (bodies are borrowed).
-        if (self.body_arena) |*ba| ba.deinit();
 
         deinit_exports(self.allocator, &self.exports);
         for (self.globals) |g| {
@@ -1264,6 +1773,9 @@ pub const Module = struct {
         self.allocator.free(self.type_ancestors);
 
         self.allocator.free(self.tags);
+
+        for (self.func_names) |n| if (n) |s| self.allocator.free(s);
+        self.allocator.free(self.func_names);
 
         self.* = undefined;
     }
@@ -2086,6 +2598,10 @@ fn decodeAndLower(
     }
 
     // ── Main dispatch: decode operands inline + lower directly ────────────────
+    // Capture and clear r0 accumulator state before dispatch.
+    const saved_r0 = lower.r0_slot;
+    lower.r0_slot = null;
+
     switch (code) {
         // ── No-operand simple ops ────────────────────────────────────────────
         .unreachable_ => {
@@ -2137,13 +2653,26 @@ fn decodeAndLower(
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
             const local = p.read_var_uint32();
             const src = try lower.pop_slot();
-            try lower.emit(.{ .local_set = .{ .local = @intCast(local), .src = src } });
+            const local_slot: ir.Slot = @intCast(local);
+            if (lower.try_fuse_local_set(local_slot, src) or
+                lower.try_fuse_const_to_local(local_slot, src) or
+                lower.try_fuse_global_get_to_local(local_slot, src) or
+                lower.try_fuse_load_to_local(local_slot, src) or
+                lower.try_fuse_cmp_to_local(local_slot, src))
+            {
+                // fused successfully
+            } else {
+                try lower.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
+            }
         },
         .local_tee => {
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
             const local = p.read_var_uint32();
             const src = lower.stack.peek() orelse return error.StackUnderflow;
-            try lower.emit(.{ .local_set = .{ .local = @intCast(local), .src = src } });
+            const local_slot: ir.Slot = @intCast(local);
+            if (!lower.try_fuse_local_tee(local_slot, src)) {
+                try lower.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
+            }
         },
         .global_get => {
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
@@ -2194,56 +2723,56 @@ fn decodeAndLower(
         },
 
         // ── i32 binary ───────────────────────────────────────────────────────
-        .i32_add => try lower.lower_binary_op("i32_add"),
-        .i32_sub => try lower.lower_binary_op("i32_sub"),
-        .i32_mul => try lower.lower_binary_op("i32_mul"),
-        .i32_div_s => try lower.lower_binary_op("i32_div_s"),
-        .i32_div_u => try lower.lower_binary_op("i32_div_u"),
-        .i32_rem_s => try lower.lower_binary_op("i32_rem_s"),
-        .i32_rem_u => try lower.lower_binary_op("i32_rem_u"),
-        .i32_and => try lower.lower_binary_op("i32_and"),
-        .i32_or => try lower.lower_binary_op("i32_or"),
-        .i32_xor => try lower.lower_binary_op("i32_xor"),
-        .i32_shl => try lower.lower_binary_op("i32_shl"),
-        .i32_shr_s => try lower.lower_binary_op("i32_shr_s"),
-        .i32_shr_u => try lower.lower_binary_op("i32_shr_u"),
-        .i32_rotl => try lower.lower_binary_op("i32_rotl"),
-        .i32_rotr => try lower.lower_binary_op("i32_rotr"),
+        .i32_add => try lower.lower_binary_op("i32_add", saved_r0),
+        .i32_sub => try lower.lower_binary_op("i32_sub", saved_r0),
+        .i32_mul => try lower.lower_binary_op("i32_mul", saved_r0),
+        .i32_div_s => try lower.lower_binary_op("i32_div_s", saved_r0),
+        .i32_div_u => try lower.lower_binary_op("i32_div_u", saved_r0),
+        .i32_rem_s => try lower.lower_binary_op("i32_rem_s", saved_r0),
+        .i32_rem_u => try lower.lower_binary_op("i32_rem_u", saved_r0),
+        .i32_and => try lower.lower_binary_op("i32_and", saved_r0),
+        .i32_or => try lower.lower_binary_op("i32_or", saved_r0),
+        .i32_xor => try lower.lower_binary_op("i32_xor", saved_r0),
+        .i32_shl => try lower.lower_binary_op("i32_shl", saved_r0),
+        .i32_shr_s => try lower.lower_binary_op("i32_shr_s", saved_r0),
+        .i32_shr_u => try lower.lower_binary_op("i32_shr_u", saved_r0),
+        .i32_rotl => try lower.lower_binary_op("i32_rotl", saved_r0),
+        .i32_rotr => try lower.lower_binary_op("i32_rotr", saved_r0),
 
         // ── i64 binary ───────────────────────────────────────────────────────
-        .i64_add => try lower.lower_binary_op("i64_add"),
-        .i64_sub => try lower.lower_binary_op("i64_sub"),
-        .i64_mul => try lower.lower_binary_op("i64_mul"),
-        .i64_div_s => try lower.lower_binary_op("i64_div_s"),
-        .i64_div_u => try lower.lower_binary_op("i64_div_u"),
-        .i64_rem_s => try lower.lower_binary_op("i64_rem_s"),
-        .i64_rem_u => try lower.lower_binary_op("i64_rem_u"),
-        .i64_and => try lower.lower_binary_op("i64_and"),
-        .i64_or => try lower.lower_binary_op("i64_or"),
-        .i64_xor => try lower.lower_binary_op("i64_xor"),
-        .i64_shl => try lower.lower_binary_op("i64_shl"),
-        .i64_shr_s => try lower.lower_binary_op("i64_shr_s"),
-        .i64_shr_u => try lower.lower_binary_op("i64_shr_u"),
-        .i64_rotl => try lower.lower_binary_op("i64_rotl"),
-        .i64_rotr => try lower.lower_binary_op("i64_rotr"),
+        .i64_add => try lower.lower_binary_op("i64_add", saved_r0),
+        .i64_sub => try lower.lower_binary_op("i64_sub", saved_r0),
+        .i64_mul => try lower.lower_binary_op("i64_mul", saved_r0),
+        .i64_div_s => try lower.lower_binary_op("i64_div_s", saved_r0),
+        .i64_div_u => try lower.lower_binary_op("i64_div_u", saved_r0),
+        .i64_rem_s => try lower.lower_binary_op("i64_rem_s", saved_r0),
+        .i64_rem_u => try lower.lower_binary_op("i64_rem_u", saved_r0),
+        .i64_and => try lower.lower_binary_op("i64_and", saved_r0),
+        .i64_or => try lower.lower_binary_op("i64_or", saved_r0),
+        .i64_xor => try lower.lower_binary_op("i64_xor", saved_r0),
+        .i64_shl => try lower.lower_binary_op("i64_shl", saved_r0),
+        .i64_shr_s => try lower.lower_binary_op("i64_shr_s", saved_r0),
+        .i64_shr_u => try lower.lower_binary_op("i64_shr_u", saved_r0),
+        .i64_rotl => try lower.lower_binary_op("i64_rotl", saved_r0),
+        .i64_rotr => try lower.lower_binary_op("i64_rotr", saved_r0),
 
         // ── f32 binary ───────────────────────────────────────────────────────
-        .f32_add => try lower.lower_binary_op("f32_add"),
-        .f32_sub => try lower.lower_binary_op("f32_sub"),
-        .f32_mul => try lower.lower_binary_op("f32_mul"),
-        .f32_div => try lower.lower_binary_op("f32_div"),
-        .f32_min => try lower.lower_binary_op("f32_min"),
-        .f32_max => try lower.lower_binary_op("f32_max"),
-        .f32_copysign => try lower.lower_binary_op("f32_copysign"),
+        .f32_add => try lower.lower_binary_op("f32_add", saved_r0),
+        .f32_sub => try lower.lower_binary_op("f32_sub", saved_r0),
+        .f32_mul => try lower.lower_binary_op("f32_mul", saved_r0),
+        .f32_div => try lower.lower_binary_op("f32_div", saved_r0),
+        .f32_min => try lower.lower_binary_op("f32_min", saved_r0),
+        .f32_max => try lower.lower_binary_op("f32_max", saved_r0),
+        .f32_copysign => try lower.lower_binary_op("f32_copysign", saved_r0),
 
         // ── f64 binary ───────────────────────────────────────────────────────
-        .f64_add => try lower.lower_binary_op("f64_add"),
-        .f64_sub => try lower.lower_binary_op("f64_sub"),
-        .f64_mul => try lower.lower_binary_op("f64_mul"),
-        .f64_div => try lower.lower_binary_op("f64_div"),
-        .f64_min => try lower.lower_binary_op("f64_min"),
-        .f64_max => try lower.lower_binary_op("f64_max"),
-        .f64_copysign => try lower.lower_binary_op("f64_copysign"),
+        .f64_add => try lower.lower_binary_op("f64_add", saved_r0),
+        .f64_sub => try lower.lower_binary_op("f64_sub", saved_r0),
+        .f64_mul => try lower.lower_binary_op("f64_mul", saved_r0),
+        .f64_div => try lower.lower_binary_op("f64_div", saved_r0),
+        .f64_min => try lower.lower_binary_op("f64_min", saved_r0),
+        .f64_max => try lower.lower_binary_op("f64_max", saved_r0),
+        .f64_copysign => try lower.lower_binary_op("f64_copysign", saved_r0),
 
         // ── i32 unary ────────────────────────────────────────────────────────
         .i32_clz => try lower.lower_unary_op("i32_clz"),
