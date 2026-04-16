@@ -28,10 +28,44 @@ WARMUP=2
 die()  { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "» $*"; }
 
-# Returns peak RSS in bytes for a single run (macOS /usr/bin/time -l).
+# Returns peak RSS in bytes for a single run.
 measure_rss() {
-  /usr/bin/time -l "$@" 2>&1 >/dev/null \
-    | awk '/maximum resident set size/ { print $1 }'
+  case "$(uname -s)" in
+    Darwin*)
+      /usr/bin/time -l "$@" 2>&1 >/dev/null \
+        | awk '/maximum resident set size/ { print $1 }'
+      ;;
+    *)
+      python3 - "$@" << 'PYEOF'
+import subprocess, sys, time, os, signal
+
+cmd = sys.argv[1:]
+proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+peak_rss = 0
+while True:
+    try:
+        out = subprocess.check_output(
+            ["ps", "-o", "rss=", "-p", str(proc.pid)],
+            stderr=subprocess.DEVNULL, text=True
+        ).strip()
+        if out:
+            rss = int(out) * 1024  # KB -> bytes
+            if rss > peak_rss:
+                peak_rss = rss
+    except subprocess.CalledProcessError:
+        pass
+
+    ret = proc.poll()
+    if ret is not None:
+        break
+    time.sleep(0.01)
+
+proc.wait()
+print(peak_rss)
+PYEOF
+      ;;
+  esac
 }
 
 # Returns time-averaged RSS in bytes for a single run.
@@ -85,7 +119,12 @@ PYEOF
 }
 
 # File size in bytes
-binary_size() { stat -f "%z" "$1"; }
+binary_size() {
+  case "$(uname -s)" in
+    Darwin*) stat -f "%z" "$1" ;;
+    *)       stat -c "%s" "$1" ;;
+  esac
+}
 
 # Human-readable bytes
 human_bytes() {
