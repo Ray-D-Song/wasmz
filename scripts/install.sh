@@ -103,8 +103,14 @@ platform_suffix() {
         x86_64|amd64)
             machine="x86_64"
             ;;
+        i686|i386)
+            machine="x86"
+            ;;
         aarch64|arm64)
             machine="arm64"
+            ;;
+        armv7l|arm)
+            machine="arm"
             ;;
         riscv64)
             machine="riscv64"
@@ -118,7 +124,9 @@ platform_suffix() {
     esac
 
     case "$platform-$machine" in
-        macos-x86_64|macos-arm64|windows-x86_64|windows-arm64|linux-x86_64|linux-arm64|linux-riscv64|linux-loongarch64)
+        macos-x86_64|macos-arm64|macos-arm|\
+windows-x86_64|windows-x86|windows-arm64|\
+linux-x86_64|linux-x86|linux-arm64|linux-arm|linux-riscv64|linux-loongarch64)
             printf '%s\n' "$platform-$machine"
             ;;
         *)
