@@ -31,6 +31,11 @@ jobs:
             asset_suffix: windows-x86_64
             binary_name: wasmz.exe
             archive_kind: zip
+          - target: x86-windows-gnu
+            runner: windows-latest
+            asset_suffix: windows-x86
+            binary_name: wasmz.exe
+            archive_kind: zip
           - target: aarch64-windows
             runner: windows-latest
             asset_suffix: windows-arm64
@@ -39,6 +44,16 @@ jobs:
           - target: x86_64-linux-musl
             runner: ubuntu-latest
             asset_suffix: linux-x86_64
+            binary_name: wasmz
+            archive_kind: tar.gz
+          - target: x86-linux-musl
+            runner: ubuntu-latest
+            asset_suffix: linux-x86
+            binary_name: wasmz
+            archive_kind: tar.gz
+          - target: arm-linux-gnueabihf
+            runner: ubuntu-latest
+            asset_suffix: linux-arm
             binary_name: wasmz
             archive_kind: tar.gz
           - target: aarch64-linux-musl
