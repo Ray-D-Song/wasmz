@@ -34,6 +34,7 @@ pub const Trap = instance_mod.Trap;
 pub const TrapCode = instance_mod.TrapCode;
 pub const printInitError = instance_mod.printInitError;
 pub const ValType = @import("core").ValType;
+pub const arch = @import("core").platform;
 pub const Linker = @import("wasmz/host.zig").Linker;
 pub const Imports = Linker;
 pub const HostContext = @import("wasmz/host.zig").HostContext;

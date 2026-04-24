@@ -149,7 +149,7 @@ pub fn printMemStats(store: *Store, instance: *Instance) void {
     const gc_heap = store.gc_heap;
     const gc_used = if (gc_heap) |h| h.usedSize() else 0;
     const gc_cap = if (gc_heap) |h| h.totalSize() else 0;
-    const shared_bytes = store.memory_budget.shared_bytes;
+    const shared_bytes: usize = @truncate(store.memory_budget.shared_bytes);
 
     // ── VM stacks ─────────────────────────────────────────────────────────────
     const vm = instance.vmMemStats();
@@ -225,7 +225,7 @@ pub fn printMemStats(store: *Store, instance: *Instance) void {
             // Runtime
             mb(linear_bytes),          linear_pages,
             mb(gc_cap),                kb(gc_used),
-            kb(gc_cap),                mb(shared_bytes),
+            kb(gc_cap),                kb(@as(usize, @truncate(shared_bytes))),
             shared_annotation,         mb(vm.val_stack_bytes),
             vm.val_stack_slots,        mb(vm.call_stack_bytes),
             vm.call_stack_frames,      mb(runtime_total),
