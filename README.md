@@ -51,7 +51,7 @@ Full implementation including:
 
 ```bash
 # Install from the latest release
-curl -fsSL https://raw.githubusercontent.com/Ray-D-Song/wasmz/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Ray-D-Song/wasmz/main/scripts/install.sh | bash
 
 # Run a WASM file
 wasmz module.wasm
@@ -68,13 +68,13 @@ wasmz module.wasm add 3 4
 Linux / macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Ray-D-Song/wasmz/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Ray-D-Song/wasmz/main/scripts/install.sh | bash
 ```
 
 Windows:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "iwr https://raw.githubusercontent.com/Ray-D-Song/wasmz/main/install.ps1 -UseBasicParsing | iex"
+powershell -ExecutionPolicy Bypass -c "iwr https://raw.githubusercontent.com/Ray-D-Song/wasmz/main/scripts/install.ps1 -UseBasicParsing | iex"
 ```
 
 By default, these install to:

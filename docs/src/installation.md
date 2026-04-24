@@ -7,15 +7,15 @@ Install the latest published GitHub release directly into your user directory:
 ### Linux / macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Ray-D-Song/wasmz/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Ray-D-Song/wasmz/main/scripts/install.sh | bash
 ```
 
 By default, this installs `wasmz` to `~/.local/bin`.
 
 ### Windows
-
+ 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "iwr https://raw.githubusercontent.com/Ray-D-Song/wasmz/main/install.ps1 -UseBasicParsing | iex"
+powershell -ExecutionPolicy Bypass -c "iwr https://raw.githubusercontent.com/Ray-D-Song/wasmz/main/scripts/install.ps1 -UseBasicParsing | iex"
 ```
 
 By default, this installs `wasmz.exe` to `%LOCALAPPDATA%\wasmz\bin`.
