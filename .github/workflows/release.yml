@@ -66,6 +66,11 @@ jobs:
             asset_suffix: linux-riscv64
             binary_name: wasmz
             archive_kind: tar.gz
+          - target: mips-linux-gnueabi
+            runner: ubuntu-latest
+            asset_suffix: linux-mips
+            binary_name: wasmz
+            archive_kind: tar.gz
           - target: loongarch64-linux-musl
             runner: ubuntu-latest
             asset_suffix: linux-loongarch64

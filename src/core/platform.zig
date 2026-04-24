@@ -11,11 +11,11 @@ pub const is_64bit = ptr_bits == 64;
 pub const is_32bit = ptr_bits == 32;
 
 pub const max_linear_memory_bytes: usize = if (is_64bit)
-    0xFFFF_FFFF_FFFF_FFFF
+    0x1_0000_0000  // wasm64 max memory (4GB, same as wasm32)
 else
     0xFFFF_FFFF;
 pub const max_linear_memory_pages: u64 = if (is_64bit)
-    0xFFFF_FFFF_FFFF_FFFF / std.wasm.page_size
+    0x1_0000_0000 / std.wasm.page_size  // 4GB / 64KB
 else
     0xFFFF_FFFF / std.wasm.page_size;
 
