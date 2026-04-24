@@ -38,12 +38,14 @@
 ///   - Each waiter re-checks `notify_seq` in a loop after waking.
 const std = @import("std");
 const builtin = @import("builtin");
+const core = @import("root.zig");
+const arch = core.platform;
 const Allocator = std.mem.Allocator;
 
 /// Maximum virtual address space reserved for an owned memory when the module
 /// declares no maximum page count.  4 GiB is the hard limit imposed by the
 /// 32-bit address space of WebAssembly linear memory.
-const MAX_OWNED_CAPACITY: usize = 4 * 1024 * 1024 * 1024;
+const MAX_OWNED_CAPACITY: usize = arch.max_linear_memory_bytes;
 
 /// True when the platform supports mmap/mprotect for the virtual-reserve strategy.
 const use_mmap = builtin.os.tag == .linux or
@@ -266,7 +268,8 @@ const SharedMemoryInner = struct {
         bucket.mutex.lock();
         defer bucket.mutex.unlock();
 
-        const cur = @atomicLoad(u64, @as(*u64, @ptrCast(@alignCast(self.bytes.ptr + ea))), .seq_cst);
+        const AtomicUint = arch.AtomicUint;
+        const cur = @atomicLoad(AtomicUint, @as(*AtomicUint, @ptrCast(@alignCast(self.bytes.ptr + ea))), .seq_cst);
         if (cur != expected) return .not_equal;
 
         bucket.waiters += 1;

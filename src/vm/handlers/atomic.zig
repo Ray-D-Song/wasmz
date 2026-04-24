@@ -7,6 +7,7 @@ const ir = @import("../../compiler/ir.zig");
 const encode = @import("../../compiler/encode/encode.zig");
 const dispatch = @import("../dispatch.zig");
 const core = @import("core");
+const arch = core.platform;
 
 const RawVal = dispatch.RawVal;
 const Trap = dispatch.Trap;
@@ -68,15 +69,16 @@ pub fn handle_atomic_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     }
 
     const raw_ptr: [*]u8 = mem.ptr + ea;
-    const val: u64 = switch (width) {
+    const atomic_u = arch.AtomicUint;
+    const val = switch (width) {
         .@"8" => @atomicLoad(u8, @as(*u8, @ptrCast(raw_ptr)), .seq_cst),
         .@"16" => @atomicLoad(u16, @as(*u16, @ptrCast(@alignCast(raw_ptr))), .seq_cst),
         .@"32" => @atomicLoad(u32, @as(*u32, @ptrCast(@alignCast(raw_ptr))), .seq_cst),
-        .@"64" => @atomicLoad(u64, @as(*u64, @ptrCast(@alignCast(raw_ptr))), .seq_cst),
+        .@"64" => @atomicLoad(atomic_u, @as(*atomic_u, @ptrCast(@alignCast(raw_ptr))), .seq_cst),
     };
     slots[ops.dst] = switch (ty) {
         .i32 => RawVal.from(@as(i32, @bitCast(@as(u32, @truncate(val))))),
-        .i64 => RawVal.from(@as(i64, @bitCast(val))),
+        .i64 => RawVal.from(@as(i64, @bitCast(@as(u64, val)))),
     };
     dispatch.next(ip, stride(encode.ops.OpsAtomicLoad), slots, frame, env, r0, fp0);
 }
@@ -102,6 +104,7 @@ pub fn handle_atomic_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
     }
 
     const raw_ptr: [*]u8 = mem.ptr + ea;
+    const atomic_u = arch.AtomicUint;
     const src_val: u64 = switch (ty) {
         .i32 => @as(u64, @as(u32, @bitCast(slots[ops.src].readAs(i32)))),
         .i64 => @as(u64, @bitCast(slots[ops.src].readAs(i64))),
@@ -110,7 +113,7 @@ pub fn handle_atomic_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
         .@"8" => @atomicStore(u8, @as(*u8, @ptrCast(raw_ptr)), @truncate(src_val), .seq_cst),
         .@"16" => @atomicStore(u16, @as(*u16, @ptrCast(@alignCast(raw_ptr))), @truncate(src_val), .seq_cst),
         .@"32" => @atomicStore(u32, @as(*u32, @ptrCast(@alignCast(raw_ptr))), @truncate(src_val), .seq_cst),
-        .@"64" => @atomicStore(u64, @as(*u64, @ptrCast(@alignCast(raw_ptr))), src_val, .seq_cst),
+        .@"64" => @atomicStore(atomic_u, @as(*atomic_u, @ptrCast(@alignCast(raw_ptr))), @truncate(src_val), .seq_cst),
     }
     dispatch.next(ip, stride(encode.ops.OpsAtomicStore), slots, frame, env, r0, fp0);
 }
@@ -180,14 +183,16 @@ pub fn handle_atomic_rmw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
             };
         },
         .@"64" => blk: {
-            const p = @as(*u64, @ptrCast(@alignCast(raw_ptr)));
+            const atomic_u = arch.AtomicUint;
+            const p = @as(*atomic_u, @ptrCast(@alignCast(raw_ptr)));
+            const v: atomic_u = @truncate(src_val);
             break :blk switch (rmw_op) {
-                .add => @atomicRmw(u64, p, .Add, src_val, .seq_cst),
-                .sub => @atomicRmw(u64, p, .Sub, src_val, .seq_cst),
-                .@"and" => @atomicRmw(u64, p, .And, src_val, .seq_cst),
-                .@"or" => @atomicRmw(u64, p, .Or, src_val, .seq_cst),
-                .xor => @atomicRmw(u64, p, .Xor, src_val, .seq_cst),
-                .xchg => @atomicRmw(u64, p, .Xchg, src_val, .seq_cst),
+                .add => @atomicRmw(atomic_u, p, .Add, v, .seq_cst),
+                .sub => @atomicRmw(atomic_u, p, .Sub, v, .seq_cst),
+                .@"and" => @atomicRmw(atomic_u, p, .And, v, .seq_cst),
+                .@"or" => @atomicRmw(atomic_u, p, .Or, v, .seq_cst),
+                .xor => @atomicRmw(atomic_u, p, .Xor, v, .seq_cst),
+                .xchg => @atomicRmw(atomic_u, p, .Xchg, v, .seq_cst),
             };
         },
     };
@@ -251,9 +256,12 @@ pub fn handle_atomic_cmpxchg(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState,
             break :blk result orelse e;
         },
         .@"64" => blk: {
-            const p = @as(*u64, @ptrCast(@alignCast(raw_ptr)));
-            const result = @cmpxchgStrong(u64, p, exp_val, rep_val, .seq_cst, .seq_cst);
-            break :blk result orelse exp_val;
+            const atomic_u = arch.AtomicUint;
+            const p = @as(*atomic_u, @ptrCast(@alignCast(raw_ptr)));
+            const exp: atomic_u = @truncate(exp_val);
+            const rep: atomic_u = @truncate(rep_val);
+            const result = @cmpxchgStrong(atomic_u, p, exp, rep, .seq_cst, .seq_cst);
+            break :blk result orelse exp;
         },
     };
     slots[ops.dst] = switch (ty) {

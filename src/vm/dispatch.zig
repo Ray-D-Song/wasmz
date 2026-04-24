@@ -18,14 +18,16 @@
 ///   tail-call).  `execute()` in root.zig calls the first handler and, once
 ///   that returns, reads the result.
 const std = @import("std");
-const zb = @import("builtin");
+const builtin = @import("builtin");
+const core = @import("core");
+const arch = core.platform;
 
 pub inline fn comptime_call(
     modifier: std.builtin.CallModifier,
     func: anytype,
     args: anytype,
 ) void {
-    if (zb.cpu.arch.isMIPS()) {
+    if (builtin.target.cpu.arch == .mips) {
         @call(.auto, func, args);
     } else {
         @call(modifier, func, args);
@@ -35,7 +37,6 @@ pub inline fn comptime_call(
 const ir = @import("../compiler/ir.zig");
 const vm_root = @import("./root.zig");
 const gc_mod = @import("gc/root.zig");
-const core = @import("core");
 const store_mod = @import("../wasmz/store.zig");
 const host_mod = @import("../wasmz/host.zig");
 const module_mod = @import("../wasmz/module.zig");
