@@ -732,7 +732,7 @@ inline fn handle_call_leaf_resolved_impl(comptime known_arity: u32, ip: [*]u8, f
     if (profiling.enabled) profiling.call_prof.calls += 1;
 
     const h: dispatch.Handler = std.mem.bytesAsValue(dispatch.Handler, callee.code.ptr[0..@sizeOf(dispatch.Handler)]).*;
-    @call(.always_tail, h, .{ callee.code.ptr, callee_slots.ptr, frame, env, 0, 0.0 });
+    dispatch.comptime_call(.always_tail, h, .{ callee.code.ptr, callee_slots.ptr, frame, env, 0, 0.0 });
 }
 
 inline fn handle_call_leaf_impl(comptime known_arity: ?u32, ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) void {
@@ -803,7 +803,7 @@ inline fn handle_call_leaf_impl(comptime known_arity: ?u32, ip: [*]u8, slots: [*
         if (profiling.enabled) profiling.call_prof.calls += 1;
 
         const h: dispatch.Handler = std.mem.bytesAsValue(dispatch.Handler, callee.code.ptr[0..@sizeOf(dispatch.Handler)]).*;
-        @call(.always_tail, h, .{ callee.code.ptr, callee_slots.ptr, frame, env, 0, 0.0 });
+        dispatch.comptime_call(.always_tail, h, .{ callee.code.ptr, callee_slots.ptr, frame, env, 0, 0.0 });
     }
 }
 

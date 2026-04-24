@@ -40,3 +40,5 @@ bench/results/hyperfine/
 /wasm3
 
 report-*.md
+
+wasmz.sln

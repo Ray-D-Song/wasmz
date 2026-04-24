@@ -18,6 +18,20 @@
 ///   tail-call).  `execute()` in root.zig calls the first handler and, once
 ///   that returns, reads the result.
 const std = @import("std");
+const zb = @import("builtin");
+
+pub inline fn comptime_call(
+    modifier: std.builtin.CallModifier,
+    func: anytype,
+    args: anytype,
+) void {
+    if (zb.cpu.arch.isMIPS()) {
+        @call(.auto, func, args);
+    } else {
+        @call(modifier, func, args);
+    }
+}
+
 const ir = @import("../compiler/ir.zig");
 const vm_root = @import("./root.zig");
 const gc_mod = @import("gc/root.zig");
@@ -383,7 +397,7 @@ pub inline fn next(
     countOp("dispatch_next");
     const next_ip = ip + cur_stride;
     const h: Handler = std.mem.bytesAsValue(Handler, next_ip[0..@sizeOf(Handler)]).*;
-    @call(.always_tail, h, .{ next_ip, slots, frame, env, r0, fp0 });
+    comptime_call(.always_tail, h, .{ next_ip, slots, frame, env, r0, fp0 });
 }
 
 /// Advance `ip` by `stride` bytes, read next handler, and check if it's a hot
@@ -416,11 +430,11 @@ pub inline fn nextWithLocalSetFusion(
         const next_stride = stride(encode.ops.OpsLocalSet);
         const after_next_ip = next_ip + next_stride;
         const h2: Handler = std.mem.bytesAsValue(Handler, after_next_ip[0..@sizeOf(Handler)]).*;
-        @call(.always_tail, h2, .{ after_next_ip, slots, frame, env, r0, fp0 });
+        comptime_call(.always_tail, h2, .{ after_next_ip, slots, frame, env, r0, fp0 });
     } else {
         // Not fused: dispatch normally
         countOp("dispatch_next");
-        @call(.always_tail, h, .{ next_ip, slots, frame, env, r0, fp0 });
+        comptime_call(.always_tail, h, .{ next_ip, slots, frame, env, r0, fp0 });
     }
 }
 
@@ -439,7 +453,7 @@ pub inline fn dispatch(
     countOp("total");
     countOp("dispatch_dispatch");
     const h: Handler = std.mem.bytesAsValue(Handler, ip[0..@sizeOf(Handler)]).*;
-    @call(.always_tail, h, .{ ip, slots, frame, env, r0, fp0 });
+    comptime_call(.always_tail, h, .{ ip, slots, frame, env, r0, fp0 });
 }
 
 // ── Runtime op counters (for profiling) ──────────────────────────────────────
