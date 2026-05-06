@@ -66,86 +66,8 @@ pub inline fn stride(comptime OpsT: type) usize {
     return HANDLER_SIZE + @sizeOf(OpsT);
 }
 
-// ── Inline cross-platform RSS reading ────────────────────────────────────────
-// Duplicated/inlined here to avoid cross-module import issues (handlers.zig
-// is inside the wasmz module which cannot import main's utils).
-
-/// Returns the current RSS in bytes, or 0 on unsupported platforms / error.
-pub fn currentRssBytes() usize {
-    return switch (builtin.os.tag) {
-        .macos => currentRssMacOS(),
-        .linux => currentRssLinux(),
-        .windows => currentRssWindows(),
-        else => 0,
-    };
-}
-
-fn currentRssMacOS() usize {
-    const MachTaskBasicInfo = extern struct {
-        virtual_size: u64,
-        resident_size: u64,
-        resident_size_max: u64,
-        user_time: extern struct { seconds: i32, microseconds: i32 },
-        system_time: extern struct { seconds: i32, microseconds: i32 },
-        policy: i32,
-        suspend_count: i32,
-    };
-    const mach_task_self = struct {
-        extern "c" fn mach_task_self() std.c.mach_port_t;
-    }.mach_task_self;
-    const task_info_fn = struct {
-        extern "c" fn task_info(std.c.mach_port_t, u32, *anyopaque, *u32) i32;
-    }.task_info;
-    var info: MachTaskBasicInfo = undefined;
-    var count: u32 = @sizeOf(MachTaskBasicInfo) / @sizeOf(u32);
-    if (task_info_fn(mach_task_self(), 20, &info, &count) != 0) return 0;
-    return @intCast(info.resident_size);
-}
-
-fn currentRssLinux() usize {
-    var buf: [256]u8 = undefined;
-    const fd = std.posix.open("/proc/self/statm", .{}, 0) catch return 0;
-    defer std.posix.close(fd);
-    const n = std.posix.read(fd, &buf) catch return 0;
-    if (n == 0) return 0;
-    var it = std.mem.tokenizeScalar(u8, buf[0..n], ' ');
-    _ = it.next(); // skip "size"
-    const rss_str = it.next() orelse return 0;
-    const rss_pages = std.fmt.parseInt(usize, rss_str, 10) catch return 0;
-    return rss_pages * std.heap.pageSize();
-}
-
-fn currentRssWindows() usize {
-    if (comptime builtin.os.tag != .windows) return 0;
-    const windows = std.os.windows;
-    const PROCESS_MEMORY_COUNTERS = extern struct {
-        cb: u32,
-        PageFaultCount: u32,
-        PeakWorkingSetSize: usize,
-        WorkingSetSize: usize,
-        QuotaPeakPagedPoolUsage: usize,
-        QuotaPagedPoolUsage: usize,
-        QuotaPeakNonPagedPoolUsage: usize,
-        QuotaNonPagedPoolUsage: usize,
-        PagefileUsage: usize,
-        PeakPagefileUsage: usize,
-    };
-    const k32 = struct {
-        extern "kernel32" fn K32GetProcessMemoryInfo(
-            windows.HANDLE,
-            *PROCESS_MEMORY_COUNTERS,
-            u32,
-        ) callconv(.winapi) windows.BOOL;
-    };
-    var counters: PROCESS_MEMORY_COUNTERS = undefined;
-    counters.cb = @sizeOf(PROCESS_MEMORY_COUNTERS);
-    if (k32.K32GetProcessMemoryInfo(
-        windows.self_process_handle,
-        &counters,
-        @sizeOf(PROCESS_MEMORY_COUNTERS),
-    ) == 0) return 0;
-    return counters.WorkingSetSize;
-}
+// currentRssBytes() moved to src/utils/profiling.zig (unified profiling module).
+// Callers should use profiling.currentRssBytes() instead.
 
 /// Compute effective address with bounds check.
 /// Returns null if out-of-bounds.

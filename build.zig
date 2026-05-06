@@ -86,6 +86,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "core", .module = core_mod },
             .{ .name = "wasmz", .module = mod },
+            .{ .name = "build_options", .module = build_options.createModule() },
         },
     });
 

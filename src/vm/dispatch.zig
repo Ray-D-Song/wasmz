@@ -462,61 +462,16 @@ pub inline fn dispatch(
 // Only compiled in when `-Dprofiling=true` (i.e. `make build-debug`).
 // In release builds this struct is zero-sized and all increment calls are no-ops.
 
-const build_options = @import("build_options");
+const profiling = @import("../utils/profiling.zig");
 
-pub const op_counts_enabled = build_options.profiling;
+pub const op_counts_enabled = profiling.enabled;
 
-pub const OpCounts = if (op_counts_enabled) struct {
-    copy: u64 = 0,
-    local_get: u64 = 0,
-    local_set: u64 = 0,
-    copy_jump_if_nz: u64 = 0,
-    jump: u64 = 0,
-    call_ret: u64 = 0,
-    global: u64 = 0,
-    constant: u64 = 0,
-    imm: u64 = 0,
-    imm_r: u64 = 0,
-    unary: u64 = 0,
-    conv: u64 = 0,
-    cmp: u64 = 0,
-    binop: u64 = 0,
-    ref_select: u64 = 0,
-    mem_table: u64 = 0,
-    simd: u64 = 0,
-    atomic: u64 = 0,
-    trap_unreachable: u64 = 0,
-    i32_to_local: u64 = 0,
-    i64_to_local: u64 = 0,
-    f32_to_local: u64 = 0,
-    f64_to_local: u64 = 0,
-    i32_imm_to_local: u64 = 0,
-    i64_imm_to_local: u64 = 0,
-    f32_imm_to_local: u64 = 0,
-    f64_imm_to_local: u64 = 0,
-    i32_local_inplace: u64 = 0,
-    i64_local_inplace: u64 = 0,
-    f32_local_inplace: u64 = 0,
-    f64_local_inplace: u64 = 0,
-    const_to_local: u64 = 0,
-    load_to_local: u64 = 0,
-    global_to_local: u64 = 0,
-    tee_local: u64 = 0,
-    cmp_to_local: u64 = 0,
-    misc: u64 = 0,
-    total: u64 = 0,
-    dispatch_dispatch: u64 = 0,
-    dispatch_next: u64 = 0,
-} else struct {};
+pub const OpCounts = profiling.OpCounts;
 
-pub var op_counts: OpCounts = .{};
+pub var op_counts = &profiling.op_counts;
 
 /// Increment a field of `op_counts` by 1. Compiles to a no-op when profiling is disabled.
-pub inline fn countOp(comptime field: []const u8) void {
-    if (op_counts_enabled) {
-        @field(op_counts, field) += 1;
-    }
-}
+pub const countOp = profiling.countOp;
 
 // ── Instruction operand sizes ─────────────────────────────────────────────────
 //

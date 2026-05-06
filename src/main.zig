@@ -21,8 +21,6 @@ const wasmz = @import("wasmz");
 const wasi_preview1 = @import("wasi").preview1;
 const profiling = wasmz.profiling;
 const arg_parse = @import("utils/arg-parse.zig");
-const stats = @import("utils/stats.zig");
-const rss = @import("utils/rss.zig");
 const mmap = @import("utils/mmap.zig");
 
 const Engine = wasmz.Engine;
@@ -31,7 +29,6 @@ const Store = wasmz.Store;
 const Instance = wasmz.Instance;
 const RawVal = wasmz.RawVal;
 const Linker = wasmz.Linker;
-const op_counts = wasmz.op_counts;
 
 const SMART_SIZE_THRESHOLD: u64 = 3 * 1024 * 1024;
 pub fn main() void {
@@ -60,39 +57,18 @@ fn run(allocator: std.mem.Allocator) void {
     };
     defer cli_args.deinit(allocator);
 
-    const phase_diag_enabled = blk: {
+    const phase_diag_enabled = if (profiling.enabled) blk: {
         const value = std.process.getEnvVarOwned(allocator, "WASMZ_PHASE_DIAG") catch break :blk false;
         allocator.free(value);
         break :blk true;
-    };
-    var phase_diag = stats.PhaseDiagCtx{
-        .enabled = phase_diag_enabled,
-        .t0_ns = if (phase_diag_enabled) std.time.nanoTimestamp() else 0,
-    };
+    } else false;
+    var phase_diag = profiling.PhaseDiag{};
+    if (phase_diag_enabled) phase_diag.now("t0_ns");
 
-    // ── mem-trace helpers ─────────────────────────────────────────────────────
     var trace_prev: usize = 0;
-    const tracePhase = struct {
-        fn f(enabled: bool, prev: *usize, comptime label: []const u8) void {
-            if (!enabled) return;
-            const cur = rss.currentRssBytes();
-            const cur_mb = @as(f64, @floatFromInt(cur)) / (1024.0 * 1024.0);
-            const delta_bytes: i64 = @as(i64, @intCast(cur)) - @as(i64, @intCast(prev.*));
-            const delta_mb = @as(f64, @floatFromInt(delta_bytes)) / (1024.0 * 1024.0);
-            const sign: []const u8 = if (delta_bytes >= 0) "+" else "";
-            std.debug.print(
-                "[mem-trace] {s:<22}  RSS {d:.1} MB  ({s}{d:.1} MB)\n",
-                .{ label, cur_mb, sign, delta_mb },
-            );
-            prev.* = cur;
-        }
-    }.f;
 
     const file_path = cli_args.file_path;
 
-    // Memory-map the Wasm file so that pending function bodies can borrow
-    // slices directly without heap-copying ~10 MB of bytecode.
-    // Uses a cross-platform abstraction (POSIX mmap / Windows NtMapViewOfSection).
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err|
         fatal("Unable to open {s}: {s}", .{ file_path, @errorName(err) });
     defer file.close();
@@ -102,9 +78,9 @@ fn run(allocator: std.mem.Allocator) void {
     };
     defer mmap.unmap(mapped);
     const wasm_bytes = mapped.data;
-    if (phase_diag.enabled) phase_diag.after_mmap_ns = std.time.nanoTimestamp();
+    if (phase_diag_enabled) phase_diag.now("after_mmap_ns");
 
-    tracePhase(cli_args.mem_trace, &trace_prev, "baseline (file mapped)");
+    if (cli_args.mem_trace) profiling.tracePhase(&trace_prev, "baseline (file mapped)");
 
     const use_eager_compile = if (cli_args.smart_compile)
         wasm_bytes.len < SMART_SIZE_THRESHOLD
@@ -124,9 +100,9 @@ fn run(allocator: std.mem.Allocator) void {
         var mod = m;
         mod.deinit();
     };
-    if (phase_diag.enabled) phase_diag.after_compile_ns = std.time.nanoTimestamp();
+    if (phase_diag_enabled) phase_diag.now("after_compile_ns");
 
-    tracePhase(cli_args.mem_trace, &trace_prev, "after compile");
+    if (cli_args.mem_trace) profiling.tracePhase(&trace_prev, "after compile");
 
     var store = Store.init(allocator, engine) catch |err|
         fatal("Failed to init store: {s}", .{@errorName(err)});
@@ -146,120 +122,31 @@ fn run(allocator: std.mem.Allocator) void {
         wasi_host.?.addToLinker(&linker, allocator) catch |err|
             fatal("Failed to add WASI to linker: {s}", .{@errorName(err)});
     }
-    if (phase_diag.enabled) phase_diag.after_store_ns = std.time.nanoTimestamp();
+    if (phase_diag_enabled) phase_diag.now("after_store_ns");
 
     var instance = Instance.init(&store, arc_module.retain(), linker) catch |err| {
         wasmz.printInitError(arc_module, linker, err);
         std.process.exit(1);
     };
     instance.mem_trace = cli_args.mem_trace;
-    if (phase_diag.enabled) phase_diag.after_instantiate_ns = std.time.nanoTimestamp();
-    tracePhase(cli_args.mem_trace, &trace_prev, "after instantiate");
+    if (phase_diag_enabled) phase_diag.now("after_instantiate_ns");
+    if (cli_args.mem_trace) profiling.tracePhase(&trace_prev, "after instantiate");
 
-    // Register a single combined on-exit callback (proc_exit path) that
-    // handles mem-trace, mem-stats, and profiling in one slot.
-    var on_exit_ctx = stats.OnExitCtx{
-        .do_profiling = profiling.enabled,
-        .mem_stats = cli_args.mem_stats,
-        .store = &store,
-        .instance = &instance,
-        .mem_trace = cli_args.mem_trace,
-        .prev_rss = &trace_prev,
-        .phase_diag = if (phase_diag.enabled) &phase_diag else null,
-    };
-    if (wasi_host) |*h| h.setOnExit(stats.onExitCombined, &on_exit_ctx);
+    if (profiling.enabled) {
+        var on_exit_ctx = profiling.OnExitCtx{
+            .mem_trace = cli_args.mem_trace,
+            .trace_label = "proc_exit (_start)",
+            .prev_rss = &trace_prev,
+            .mem_stats = cli_args.mem_stats,
+            .store = &store,
+            .instance = &instance,
+            .phase_diag = if (phase_diag_enabled) &phase_diag else null,
+        };
+        if (wasi_host) |*h| h.setOnExit(profiling.onExitCombined, &on_exit_ctx);
+    }
 
     defer {
-        if (cli_args.mem_stats) stats.printMemStats(&store, &instance);
-        // Print op counts to stderr — only compiled in when profiling is enabled
-        if (wasmz.op_counts_enabled) {
-            const oc = op_counts;
-            if (oc.total > 0) {
-                std.debug.print(
-                    \\=== Runtime op counts ===
-                    \\  copy              : {d:>12}  ({d:.1}%)
-                    \\  local_get         : {d:>12}  ({d:.1}%)
-                    \\  local_set         : {d:>12}  ({d:.1}%)
-                    \\  copy_jump_if_nz   : {d:>12}  ({d:.1}%)
-                    \\  jump              : {d:>12}  ({d:.1}%)
-                    \\  call_ret          : {d:>12}  ({d:.1}%)
-                    \\  global            : {d:>12}  ({d:.1}%)
-                    \\  constant          : {d:>12}  ({d:.1}%)
-                    \\  imm               : {d:>12}  ({d:.1}%)
-                    \\  imm_r             : {d:>12}  ({d:.1}%)
-                    \\
-                , .{
-                    oc.copy,            pct(oc.copy, oc.total),
-                    oc.local_get,       pct(oc.local_get, oc.total),
-                    oc.local_set,       pct(oc.local_set, oc.total),
-                    oc.copy_jump_if_nz, pct(oc.copy_jump_if_nz, oc.total),
-                    oc.jump,            pct(oc.jump, oc.total),
-                    oc.call_ret,        pct(oc.call_ret, oc.total),
-                    oc.global,          pct(oc.global, oc.total),
-                    oc.constant,        pct(oc.constant, oc.total),
-                    oc.imm,             pct(oc.imm, oc.total),
-                    oc.imm_r,           pct(oc.imm_r, oc.total),
-                });
-                std.debug.print(
-                    \\  unary             : {d:>12}  ({d:.1}%)
-                    \\  conv              : {d:>12}  ({d:.1}%)
-                    \\  cmp               : {d:>12}  ({d:.1}%)
-                    \\  binop             : {d:>12}  ({d:.1}%)
-                    \\  ref_select        : {d:>12}  ({d:.1}%)
-                    \\  mem_table         : {d:>12}  ({d:.1}%)
-                    \\  simd              : {d:>12}  ({d:.1}%)
-                    \\  atomic            : {d:>12}  ({d:.1}%)
-                    \\  trap_unreachable  : {d:>12}  ({d:.1}%)
-                    \\  misc              : {d:>12}  ({d:.1}%)
-                    \\
-                , .{
-                    oc.unary,            pct(oc.unary, oc.total),
-                    oc.conv,             pct(oc.conv, oc.total),
-                    oc.cmp,              pct(oc.cmp, oc.total),
-                    oc.binop,            pct(oc.binop, oc.total),
-                    oc.ref_select,       pct(oc.ref_select, oc.total),
-                    oc.mem_table,        pct(oc.mem_table, oc.total),
-                    oc.simd,             pct(oc.simd, oc.total),
-                    oc.atomic,           pct(oc.atomic, oc.total),
-                    oc.trap_unreachable, pct(oc.trap_unreachable, oc.total),
-                    oc.misc,             pct(oc.misc, oc.total),
-                });
-                std.debug.print(
-                    \\  --- Fused local ops ---
-                    \\  i32_to_local    : {d:>9}  ({d:.1}%)
-                    \\  i64_to_local    : {d:>9}  ({d:.1}%)
-                    \\  i32_imm_to_local: {d:>6}  ({d:.1}%)
-                    \\  i64_imm_to_local: {d:>6}  ({d:.1}%)
-                    \\  i32_local_inplace: {d:>5}  ({d:.1}%)
-                    \\  i64_local_inplace: {d:>5}  ({d:.1}%)
-                    \\  const_to_local : {d:>9}  ({d:.1}%)
-                    \\  load_to_local  : {d:>9}  ({d:.1}%)
-                    \\  global_to_local: {d:>9}  ({d:.1}%)
-                    \\  tee_local      : {d:>9}  ({d:.1}%)
-                    \\  cmp_to_local   : {d:>9}  ({d:.1}%)
-                    \\  --- Dispatch overhead ---
-                    \\  dispatch_dispatch : {d:>9}  ({d:.1}%)
-                    \\  dispatch_next     : {d:>9}  ({d:.1}%)
-                    \\  TOTAL             : {d:>12}
-                    \\
-                , .{
-                    oc.i32_to_local,      pct(oc.i32_to_local, oc.total),
-                    oc.i64_to_local,      pct(oc.i64_to_local, oc.total),
-                    oc.i32_imm_to_local,  pct(oc.i32_imm_to_local, oc.total),
-                    oc.i64_imm_to_local,  pct(oc.i64_imm_to_local, oc.total),
-                    oc.i32_local_inplace, pct(oc.i32_local_inplace, oc.total),
-                    oc.i64_local_inplace, pct(oc.i64_local_inplace, oc.total),
-                    oc.const_to_local,    pct(oc.const_to_local, oc.total),
-                    oc.load_to_local,     pct(oc.load_to_local, oc.total),
-                    oc.global_to_local,   pct(oc.global_to_local, oc.total),
-                    oc.tee_local,         pct(oc.tee_local, oc.total),
-                    oc.cmp_to_local,      pct(oc.cmp_to_local, oc.total),
-                    oc.dispatch_dispatch, pct(oc.dispatch_dispatch, oc.total),
-                    oc.dispatch_next,     pct(oc.dispatch_next, oc.total),
-                    oc.total,
-                });
-            }
-        } // if (wasmz.op_counts_enabled)
+        if (cli_args.mem_stats) profiling.printMemStats(&store, &instance);
         instance.deinit();
     }
 
@@ -268,8 +155,8 @@ fn run(allocator: std.mem.Allocator) void {
     {
         if (result == .trap) fatalTrap(result.trap, allocator, arc_module.value, "start function trapped");
     }
-    if (phase_diag.enabled) phase_diag.after_run_start_ns = std.time.nanoTimestamp();
-    tracePhase(cli_args.mem_trace, &trace_prev, "after runStart");
+    if (phase_diag_enabled) phase_diag.now("after_run_start_ns");
+    if (cli_args.mem_trace) profiling.tracePhase(&trace_prev, "after runStart");
 
     if (cli_args.reactor) {
         if (instance.initializeReactor() catch |err|
@@ -281,16 +168,16 @@ fn run(allocator: std.mem.Allocator) void {
 
     if (cli_args.func_name == null) {
         if (arc_module.value.exports.get("_start")) |_| {
-            tracePhase(cli_args.mem_trace, &trace_prev, "before _start");
-            if (phase_diag.enabled) phase_diag.enter_start_ns = std.time.nanoTimestamp();
+            if (cli_args.mem_trace) profiling.tracePhase(&trace_prev, "before _start");
+            if (phase_diag_enabled) phase_diag.now("enter_start_ns");
             const result = instance.call("_start", &.{}) catch |err|
                 fatal("Failed to call _start: {s}", .{@errorName(err)});
             if (result == .trap) fatalTrap(result.trap, allocator, arc_module.value, "trap");
-            if (phase_diag.enabled) {
-                phase_diag.after_start_ns = std.time.nanoTimestamp();
-                stats.printPhaseDiag(&phase_diag, "_start return");
+            if (phase_diag_enabled) {
+                phase_diag.now("after_start_ns");
+                phase_diag.print("_start return");
             }
-            tracePhase(cli_args.mem_trace, &trace_prev, "after _start");
+            if (cli_args.mem_trace) profiling.tracePhase(&trace_prev, "after _start");
             return;
         }
 
@@ -471,11 +358,6 @@ fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
     std.process.exit(1);
 }
 
-inline fn pct(part: u64, total: u64) f64 {
-    if (total == 0) return 0.0;
-    return @as(f64, @floatFromInt(part)) / @as(f64, @floatFromInt(total)) * 100.0;
-}
-
 fn fatalTrap(trap: wasmz.Trap, allocator: std.mem.Allocator, module: *const Module, comptime context: []const u8) noreturn {
     const red = "\x1b[31m";
     const reset = "\x1b[0m";
@@ -488,7 +370,6 @@ fn fatalTrap(trap: wasmz.Trap, allocator: std.mem.Allocator, module: *const Modu
                 if (frame.func_idx < module.func_names.len) {
                     if (module.func_names[frame.func_idx]) |name| break :blk name;
                 }
-                // Fall back to export name reverse-lookup
                 var iter = module.exports.iterator();
                 while (iter.next()) |entry| {
                     switch (entry.value_ptr.*) {
@@ -498,7 +379,6 @@ fn fatalTrap(trap: wasmz.Trap, allocator: std.mem.Allocator, module: *const Modu
                         else => {},
                     }
                 }
-                // Fall back to import name
                 if (frame.func_idx < module.imported_funcs.len) {
                     break :blk module.imported_funcs[frame.func_idx].func_name;
                 }
@@ -514,10 +394,6 @@ fn fatalTrap(trap: wasmz.Trap, allocator: std.mem.Allocator, module: *const Modu
     std.process.exit(1);
 }
 
-/// Returns true when the compiled module imports at least one symbol from the
-/// "wasi_snapshot_preview1" namespace, meaning it needs a live WASI host.
-/// Used for lazy WASI initialization: modules with no WASI imports skip Host
-/// allocation entirely.
 fn moduleNeedsWasi(module: *const Module) bool {
     for (module.imported_funcs) |def| {
         if (std.mem.eql(u8, def.module_name, "wasi_snapshot_preview1")) return true;
