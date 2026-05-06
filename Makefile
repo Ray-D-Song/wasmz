@@ -12,7 +12,7 @@ build:
 	@ls -lh zig-out/bin/$(BIN)
 
 release:
-	zig build -Doptimize=ReleaseFast
+	zig build -Doptimize=ReleaseSmall
 	@ls -lh zig-out/bin/$(BIN)
 
 install-debug: build-debug

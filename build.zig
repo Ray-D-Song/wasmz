@@ -125,6 +125,10 @@ pub fn build(b: *std.Build) void {
                 .ReleaseFast, .ReleaseSafe, .ReleaseSmall => true,
                 else => false,
             },
+            .unwind_tables = switch (optimize) {
+                .ReleaseFast, .ReleaseSmall => .none,
+                else => null,
+            },
         }),
     });
 
