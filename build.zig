@@ -281,14 +281,98 @@ pub fn build(b: *std.Build) void {
     clib_step.dependOn(&b.addInstallArtifact(clib, .{}).step);
     clib_step.dependOn(&install_header.step);
 
-    // ── wasmz-as-WASM (self-hosted) ──────────────────────────────────────────
+    // ── wasmz-as-WASI (self-hosted CLI) ─────────────────────────────────────
+    //
+    // Build with: zig build wasi
+    // Output:     zig-out/wasi/wasmz.wasm
+    //
+    // Compiles the wasmz runtime itself to wasm32-wasi.  Runs as a CLI tool
+    // under any WASI-compatible host (wasmtime, wasmer, Node.js WASI).
+    const wasi_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .wasi });
+    const wasi_optimize: std.builtin.OptimizeMode = .ReleaseSmall;
+    const wasi_profiling = false;
+
+    const wasi_build_options = b.addOptions();
+    wasi_build_options.addOption(bool, "profiling", wasi_profiling);
+
+    const wasi_zigrc_mod = b.createModule(.{
+        .root_source_file = b.path("src/libs/zigrc/root.zig"),
+        .target = wasi_target,
+    });
+
+    const wasi_payload_mod = b.createModule(.{
+        .root_source_file = b.path("src/parser/payload.zig"),
+        .target = wasi_target,
+        .optimize = wasi_optimize,
+    });
+    const wasi_parser_mod = b.createModule(.{
+        .root_source_file = b.path("src/parser/root.zig"),
+        .target = wasi_target,
+        .optimize = wasi_optimize,
+        .imports = &.{
+            .{ .name = "payload", .module = wasi_payload_mod },
+        },
+    });
+    const wasi_core_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/root.zig"),
+        .target = wasi_target,
+        .optimize = wasi_optimize,
+        .imports = &.{
+            .{ .name = "payload", .module = wasi_payload_mod },
+        },
+    });
+    const wasi_wasmz_mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = wasi_target,
+        .optimize = wasi_optimize,
+        .imports = &.{
+            .{ .name = "zigrc", .module = wasi_zigrc_mod },
+            .{ .name = "parser", .module = wasi_parser_mod },
+            .{ .name = "payload", .module = wasi_payload_mod },
+            .{ .name = "core", .module = wasi_core_mod },
+            .{ .name = "build_options", .module = wasi_build_options.createModule() },
+        },
+    });
+    const wasi_wasi_mod = b.createModule(.{
+        .root_source_file = b.path("src/wasi/root.zig"),
+        .target = wasi_target,
+        .optimize = wasi_optimize,
+        .imports = &.{
+            .{ .name = "core", .module = wasi_core_mod },
+            .{ .name = "wasmz", .module = wasi_wasmz_mod },
+            .{ .name = "build_options", .module = wasi_build_options.createModule() },
+        },
+    });
+    const wasi_exe = b.addExecutable(.{
+        .name = "wasmz",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = wasi_target,
+            .optimize = wasi_optimize,
+            .imports = &.{
+                .{ .name = "wasmz", .module = wasi_wasmz_mod },
+                .{ .name = "wasi", .module = wasi_wasi_mod },
+                .{ .name = "build_options", .module = wasi_build_options.createModule() },
+            },
+            .strip = true,
+        }),
+    });
+    wasi_exe.rdynamic = false;
+    wasi_exe.wasi_exec_model = .command;
+    wasi_exe.root_module.link_libc = true;
+
+    const install_wasi = b.addInstallArtifact(wasi_exe, .{ .dest_dir = .{ .override = .{ .custom = "wasi" } } });
+    const wasi_step = b.step("wasi", "Build wasmz as a wasm32-wasi CLI module");
+    wasi_step.dependOn(&install_wasi.step);
+
+    // ── wasmz-as-WASM (browser) ──────────────────────────────────────────────
     //
     // Build with: zig build wasm
     // Output:     zig-out/wasm/wasmz.wasm
     //
-    // Compiles the wasmz runtime itself to wasm32-wasi.  This is a work-in-
-    // progress port — many native APIs (mmap, RSS, /proc, etc.) need shims.
-    const wasm_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .wasi });
+    // Compiles the wasmz runtime to wasm32-freestanding.  Exports C-style
+    // functions callable from JavaScript.  No OS or filesystem dependencies.
+    const wasm_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
     const wasm_optimize: std.builtin.OptimizeMode = .ReleaseSmall;
     const wasm_profiling = false;
 
@@ -333,36 +417,24 @@ pub fn build(b: *std.Build) void {
             .{ .name = "build_options", .module = wasm_build_options.createModule() },
         },
     });
-    const wasm_wasi_mod = b.createModule(.{
-        .root_source_file = b.path("src/wasi/root.zig"),
-        .target = wasm_target,
-        .optimize = wasm_optimize,
-        .imports = &.{
-            .{ .name = "core", .module = wasm_core_mod },
-            .{ .name = "wasmz", .module = wasm_wasmz_mod },
-            .{ .name = "build_options", .module = wasm_build_options.createModule() },
-        },
-    });
-    const wasm_exe = b.addExecutable(.{
+    const wasm_wasm_exe = b.addExecutable(.{
         .name = "wasmz",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
+            .root_source_file = b.path("src/wasmz-wasm.zig"),
             .target = wasm_target,
             .optimize = wasm_optimize,
             .imports = &.{
                 .{ .name = "wasmz", .module = wasm_wasmz_mod },
-                .{ .name = "wasi", .module = wasm_wasi_mod },
                 .{ .name = "build_options", .module = wasm_build_options.createModule() },
             },
             .strip = true,
         }),
     });
-    wasm_exe.rdynamic = false;
-    wasm_exe.wasi_exec_model = .command;
-    wasm_exe.root_module.link_libc = true;
+    wasm_wasm_exe.rdynamic = true;
+    wasm_wasm_exe.entry = .disabled;
 
-    const install_wasm = b.addInstallArtifact(wasm_exe, .{ .dest_dir = .{ .override = .{ .custom = "wasm" } } });
-    const wasm_step = b.step("wasm", "Build wasmz itself as a wasm32-wasi module");
+    const install_wasm = b.addInstallArtifact(wasm_wasm_exe, .{ .dest_dir = .{ .override = .{ .custom = "wasm" } } });
+    const wasm_step = b.step("wasm", "Build wasmz as a wasm32-freestanding browser module");
     wasm_step.dependOn(&install_wasm.step);
 
     // ── SQLite WASM fixture ───────────────────────────────────────────────────

@@ -22,6 +22,12 @@ jobs:
           - target: aarch64-macos
             runner: macos-latest
             artifact_suffix: macos-arm64
+          - target: wasm32-wasi
+            runner: ubuntu-latest
+            artifact_suffix: wasi
+          - target: wasm32-freestanding
+            runner: ubuntu-latest
+            artifact_suffix: wasm
 
     steps:
       - name: Checkout
@@ -37,16 +43,33 @@ jobs:
         run: echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build
-        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+        shell: bash
+        run: |
+          case "${{ matrix.target }}" in
+            wasm32-wasi)   zig build wasi ;;
+            wasm32-freestanding) zig build wasm ;;
+            *)             zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ;;
+          esac
 
       - name: Rename artifact
+        shell: bash
         run: |
           mkdir -p dist
-          cp zig-out/bin/wasmz dist/wasmz-${{ steps.git_hash.outputs.sha }}-${{ matrix.artifact_suffix }}
+          case "${{ matrix.target }}" in
+            wasm32-wasi)
+              cp zig-out/wasi/wasmz.wasm dist/wasmz-${{ steps.git_hash.outputs.sha }}-${{ matrix.artifact_suffix }}.wasm
+              ;;
+            wasm32-freestanding)
+              cp zig-out/wasm/wasmz.wasm dist/wasmz-${{ steps.git_hash.outputs.sha }}-${{ matrix.artifact_suffix }}.wasm
+              ;;
+            *)
+              cp zig-out/bin/wasmz dist/wasmz-${{ steps.git_hash.outputs.sha }}-${{ matrix.artifact_suffix }}
+              ;;
+          esac
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: wasmz-${{ steps.git_hash.outputs.sha }}-${{ matrix.artifact_suffix }}
-          path: dist/wasmz-${{ steps.git_hash.outputs.sha }}-${{ matrix.artifact_suffix }}
+          path: dist/wasmz-${{ steps.git_hash.outputs.sha }}-${{ matrix.artifact_suffix }}*
           retention-days: 30

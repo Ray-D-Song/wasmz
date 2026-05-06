@@ -67,39 +67,49 @@ const mmap_page_align = std.heap.page_size_min;
 /// committed (PROT_NONE), then commit the first `committed` bytes.
 /// Returns a pointer to the base of the region and the full capacity slice.
 fn ownedMmapInit(committed: usize, capacity: usize) Allocator.Error![]align(mmap_page_align) u8 {
-    const posix = std.posix;
-    // Reserve full virtual range, inaccessible.
-    const base = posix.mmap(
-        null,
-        capacity,
-        posix.PROT.NONE,
-        .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
-        -1,
-        0,
-    ) catch return error.OutOfMemory;
-    // Commit initial pages.
-    if (committed > 0) {
-        posix.mprotect(base[0..committed], posix.PROT.READ | posix.PROT.WRITE) catch {
-            posix.munmap(base);
-            return error.OutOfMemory;
-        };
-        @memset(base[0..committed], 0);
+    if (use_mmap) {
+        const posix = std.posix;
+        const base = posix.mmap(
+            null,
+            capacity,
+            posix.PROT.NONE,
+            .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
+            -1,
+            0,
+        ) catch return error.OutOfMemory;
+        if (committed > 0) {
+            posix.mprotect(base[0..committed], posix.PROT.READ | posix.PROT.WRITE) catch {
+                posix.munmap(base);
+                return error.OutOfMemory;
+            };
+            @memset(base[0..committed], 0);
+        }
+        return base;
+    } else {
+        unreachable;
     }
-    return base;
 }
 
 /// Extend committed range from `old_committed` to `new_committed`.
 /// `base` is the full reserved region (capacity bytes).
 fn ownedMmapGrow(base: []align(mmap_page_align) u8, old_committed: usize, new_committed: usize) bool {
-    const posix = std.posix;
-    const new_range: []align(mmap_page_align) u8 = @alignCast(base[old_committed..new_committed]);
-    posix.mprotect(new_range, posix.PROT.READ | posix.PROT.WRITE) catch return false;
-    @memset(new_range, 0);
-    return true;
+    if (use_mmap) {
+        const posix = std.posix;
+        const new_range: []align(mmap_page_align) u8 = @alignCast(base[old_committed..new_committed]);
+        posix.mprotect(new_range, posix.PROT.READ | posix.PROT.WRITE) catch return false;
+        @memset(new_range, 0);
+        return true;
+    } else {
+        unreachable;
+    }
 }
 
 fn ownedMmapDeinit(base: []align(mmap_page_align) u8) void {
-    std.posix.munmap(base);
+    if (use_mmap) {
+        std.posix.munmap(base);
+    } else {
+        unreachable;
+    }
 }
 
 pub const WASM_PAGE_SIZE: usize = 65536;
@@ -110,13 +120,13 @@ pub const WASM_PAGE_SIZE: usize = 65536;
 const FUTEX_BUCKETS: usize = 64;
 
 /// One entry in the futex bucket table.
-const FutexBucket = struct {
+const FutexBucket = if (builtin.single_threaded) struct {
+    waiters: u32 = 0,
+    notify_seq: u32 = 0,
+} else struct {
     mutex: std.Thread.Mutex = .{},
     cond: std.Thread.Condition = .{},
-    /// Number of threads currently waiting on this bucket.
     waiters: u32 = 0,
-    /// Generation counter: incremented by every notify call so waiters can
-    /// distinguish a real wake-up from a spurious one.
     notify_seq: u32 = 0,
 };
 
@@ -181,6 +191,7 @@ const SharedMemoryInner = struct {
     /// memory.atomic.notify: wake up to `count` threads waiting on `ea`.
     /// Returns the number of threads actually woken.
     pub fn notify(self: *SharedMemoryInner, ea: u32, count: u32) u32 {
+        if (builtin.single_threaded) return 0;
         const idx = bucketIndex(ea);
         const bucket = &self.futex[idx];
         bucket.mutex.lock();
@@ -188,13 +199,10 @@ const SharedMemoryInner = struct {
         const waiting = bucket.waiters;
         if (waiting == 0 or count == 0) return 0;
         const to_wake = @min(count, waiting);
-        // Advance the generation counter so waiters can detect a real wake-up.
         bucket.notify_seq +%= 1;
         if (to_wake >= waiting) {
-            // Wake all — broadcast is cheaper than N signals.
             bucket.cond.broadcast();
         } else {
-            // Signal `to_wake` times.
             var i: u32 = 0;
             while (i < to_wake) : (i += 1) {
                 bucket.cond.signal();
@@ -211,6 +219,7 @@ const SharedMemoryInner = struct {
         expected: u32,
         timeout_ns: i64,
     ) WaitResult {
+        if (builtin.single_threaded) return .not_equal;
         if (timeout_ns == 0) return .timed_out;
 
         const idx = bucketIndex(ea);
@@ -219,26 +228,20 @@ const SharedMemoryInner = struct {
         bucket.mutex.lock();
         defer bucket.mutex.unlock();
 
-        // Check value under the lock to avoid a TOCTOU race with notify.
         const cur = @atomicLoad(u32, @as(*u32, @ptrCast(@alignCast(self.bytes.ptr + ea))), .seq_cst);
         if (cur != expected) return .not_equal;
 
         bucket.waiters += 1;
         defer bucket.waiters -= 1;
 
-        // Record the generation counter before parking.  A real notify increments
-        // it; a spurious wake-up leaves it unchanged, so we loop back to sleep.
         const initial_seq = bucket.notify_seq;
 
         if (timeout_ns < 0) {
-            // Wait indefinitely — loop to guard against spurious wake-ups.
             while (bucket.notify_seq == initial_seq) {
                 bucket.cond.wait(&bucket.mutex);
             }
             return .ok;
         } else {
-            // Timed wait — compute absolute deadline and loop until notified or
-            // the deadline has passed.
             const start_ns = std.time.nanoTimestamp();
             const deadline_ns = start_ns + timeout_ns;
             while (bucket.notify_seq == initial_seq) {
@@ -260,6 +263,7 @@ const SharedMemoryInner = struct {
         expected: u64,
         timeout_ns: i64,
     ) WaitResult {
+        if (builtin.single_threaded) return .not_equal;
         if (timeout_ns == 0) return .timed_out;
 
         const idx = bucketIndex(ea);

@@ -4,6 +4,7 @@
 /// into types used by the compiler and runtime.
 /// This module serves as a bridge between the parser layer and the compiler/core layer.
 const std = @import("std");
+const builtin = @import("builtin");
 const payload_mod = @import("payload");
 const lower_mod = @import("./lower.zig");
 const ir_mod = @import("./ir.zig");
@@ -557,7 +558,9 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         // never reaches this function.
 
         else => |op| {
-            std.debug.print("UnsupportedOperator: {s}\n", .{@tagName(op)});
+            if (!builtin.single_threaded) {
+                std.debug.print("UnsupportedOperator: {s}\n", .{@tagName(op)});
+            }
             return error.UnsupportedOperator;
         },
     };

@@ -1,5 +1,6 @@
 /// memory.zig — memory and bulk-memory instruction handlers
 const std = @import("std");
+const builtin = @import("builtin");
 const encode = @import("../../compiler/encode/encode.zig");
 const dispatch = @import("../dispatch.zig");
 const core = @import("core");
@@ -314,25 +315,27 @@ pub fn handle_memory_grow(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
         }
         // mem-trace probe: log every successful memory.grow
         if (env.mem_trace and delta > 0) {
-            const new_byte_len = env.memory.byteLen();
-            const rss_after = currentRssBytes();
-            const mb = struct {
-                fn f(b: usize) f64 {
-                    return @as(f64, @floatFromInt(b)) / (1024.0 * 1024.0);
-                }
-            }.f;
-            std.debug.print(
-                "[mem-trace] memory.grow +{d} pages  linear {d:.1} -> {d:.1} MB  RSS {d:.1} -> {d:.1} MB (realloc {s}{d:.1} MB)\n",
-                .{
-                    delta,
-                    mb(old_byte_len),
-                    mb(new_byte_len),
-                    mb(rss_before),
-                    mb(rss_after),
-                    if (rss_after >= rss_before) "+" else "-",
-                    if (rss_after >= rss_before) mb(rss_after - rss_before) else mb(rss_before - rss_after),
-                },
-            );
+            if (!builtin.single_threaded) {
+                const new_byte_len = env.memory.byteLen();
+                const rss_after = currentRssBytes();
+                const mb = struct {
+                    fn f(b: usize) f64 {
+                        return @as(f64, @floatFromInt(b)) / (1024.0 * 1024.0);
+                    }
+                }.f;
+                std.debug.print(
+                    "[mem-trace] memory.grow +{d} pages  linear {d:.1} -> {d:.1} MB  RSS {d:.1} -> {d:.1} MB (realloc {s}{d:.1} MB)\n",
+                    .{
+                        delta,
+                        mb(old_byte_len),
+                        mb(new_byte_len),
+                        mb(rss_before),
+                        mb(rss_after),
+                        if (rss_after >= rss_before) "+" else "-",
+                        if (rss_after >= rss_before) mb(rss_after - rss_before) else mb(rss_before - rss_after),
+                    },
+                );
+            }
         }
     }
     dispatch.next(ip, stride(encode.ops.OpsMemoryGrow), slots, frame, env, r0, fp0);

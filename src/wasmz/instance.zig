@@ -6,6 +6,7 @@
 ///   - memory:     linear memory, either exclusively-owned or a shared reference (Threads proposal)
 ///   - host_funcs: resolved host functions for each imported function slot
 const std = @import("std");
+const builtin = @import("builtin");
 const core = @import("core");
 const store_mod = @import("./store.zig");
 const module_mod = @import("./module.zig");
@@ -60,6 +61,7 @@ pub const InstanceError = Allocator.Error || error{
 };
 
 pub fn printInitError(arc: ArcModule, imports: Linker, err: InstanceError) void {
+    if (builtin.single_threaded) return;
     switch (err) {
         error.ImportNotSatisfied => {
             std.debug.print("error: Failed to instantiate module: the following imports are not satisfied:\n", .{});
@@ -807,7 +809,9 @@ fn evaluateGcConstExpr(
                 break;
             },
             else => {
-                std.log.err("evaluateGcConstExpr: unsupported opcode 0x{x}", .{@intFromEnum(info.code)});
+                if (!builtin.single_threaded) {
+                    std.log.err("evaluateGcConstExpr: unsupported opcode 0x{x}", .{@intFromEnum(info.code)});
+                }
                 return error.UnsupportedOpcode;
             },
         }
