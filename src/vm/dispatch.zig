@@ -27,7 +27,7 @@ pub inline fn comptime_call(
     func: anytype,
     args: anytype,
 ) void {
-    if (builtin.target.cpu.arch == .mips) {
+    if (builtin.target.cpu.arch == .mips or builtin.target.cpu.arch == .wasm32) {
         @call(.auto, func, args);
     } else {
         @call(modifier, func, args);

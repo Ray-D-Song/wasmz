@@ -32,7 +32,10 @@ const Linker = wasmz.Linker;
 
 const SMART_SIZE_THRESHOLD: u64 = 3 * 1024 * 1024;
 pub fn main() void {
-    if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
+    if (builtin.os.tag == .wasi) {
+        const ally: std.mem.Allocator = .{ .ptr = undefined, .vtable = &std.heap.WasmAllocator.vtable };
+        run(ally);
+    } else if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
         var gpa = std.heap.GeneralPurposeAllocator(.{}){};
         defer _ = gpa.deinit();
         run(gpa.allocator());

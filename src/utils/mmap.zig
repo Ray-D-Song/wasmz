@@ -2,56 +2,78 @@
 ///
 /// - POSIX (macOS, Linux, *BSD …): `mmap(2)` / `munmap(2)`
 /// - Windows: `NtCreateSection` / `NtMapViewOfSection` / `NtUnmapViewOfSection`
+/// - WASI: plain heap read via `readAllAlloc` (no mmap on wasm)
 ///
-/// The returned slice borrows directly from the OS page cache so the data
-/// must not be written to.  The mapping must be released with `unmap()`.
+/// The returned slice borrows directly from the OS page cache (or heap on WASI)
+/// and must not be written to.  The mapping must be released with `unmap()`.
 const std = @import("std");
 const builtin = @import("builtin");
 
 const page_align = std.heap.page_size_min;
 
+const is_wasi = builtin.os.tag == .wasi;
+const is_windows = builtin.os.tag == .windows;
+
 pub const MappedFile = struct {
     /// The mapped read-only byte slice.
     data: []align(page_align) const u8,
 
-    // Windows-only bookkeeping
-    /// Section handle that must be closed after unmapping (Windows only).
-    section_handle: if (is_windows) std.os.windows.HANDLE else void =
-        if (is_windows) undefined else {},
+    /// Section handle (Windows only).
+    section_handle: if (is_windows) std.os.windows.HANDLE else void = if (is_windows) undefined else {},
 
-    const is_windows = builtin.os.tag == .windows;
+    /// Owned heap buffer (WASI only); freed on unmap.
+    wasi_buf: if (is_wasi) []align(page_align) u8 else void = if (is_wasi) undefined else {},
 };
 
 pub const MapError = error{
-    /// The file is empty (0 bytes); nothing to map.
     EmptyFile,
-    /// OS refused the mapping (permissions, resource limits, …).
     MapFailed,
 };
 
-/// Memory-map an open file for reading.
-///
-/// The caller must eventually call `unmap()` on the returned `MappedFile`.
-/// The underlying `file` can be closed immediately after this returns —
-/// the mapping keeps its own reference.
+/// Memory-map (or read) an open file for reading.
 pub fn mapFile(file: std.fs.File) MapError!MappedFile {
     const stat = file.stat() catch return error.MapFailed;
     if (stat.size == 0) return error.EmptyFile;
 
-    if (comptime builtin.os.tag == .windows) {
+    if (comptime is_wasi) {
+        return mapFileWasi(file, stat.size);
+    } else if (comptime is_windows) {
         return mapFileWindows(file.handle, stat.size);
     } else {
         return mapFilePosix(file.handle, stat.size);
     }
 }
 
-/// Release a mapping previously obtained from `mapFile()`.
+/// Release a mapping.
 pub fn unmap(m: MappedFile) void {
-    if (comptime builtin.os.tag == .windows) {
+    if (comptime is_wasi) {
+        unmapWasi(m);
+    } else if (comptime is_windows) {
         unmapWindows(m);
     } else {
         std.posix.munmap(m.data);
     }
+}
+
+// WASI implementation — plain heap allocation + file read
+
+fn mapFileWasi(file: std.fs.File, size: u64) MapError!MappedFile {
+    const len: usize = std.math.cast(usize, size) orelse return error.MapFailed;
+    const allocator = std.heap.page_allocator;
+    const buf = allocator.alignedAlloc(u8, std.mem.Alignment.fromByteUnits(page_align), len) catch return error.MapFailed;
+    errdefer allocator.free(buf);
+    _ = file.readAll(buf) catch |err| {
+        allocator.free(buf);
+        return if (err == error.EndOfStream) error.MapFailed else error.MapFailed;
+    };
+    return .{
+        .data = buf,
+        .wasi_buf = buf,
+    };
+}
+
+fn unmapWasi(m: MappedFile) void {
+    std.heap.page_allocator.free(m.wasi_buf);
 }
 
 // POSIX implementation
@@ -75,13 +97,12 @@ fn mapFileWindows(handle: std.os.windows.HANDLE, size: u64) MapError!MappedFile 
     const windows = std.os.windows;
     const ntdll = windows.ntdll;
 
-    // 1. Create a read-only section backed by the file.
     var section_handle: windows.HANDLE = undefined;
     const create_rc = ntdll.NtCreateSection(
         &section_handle,
         windows.STANDARD_RIGHTS_REQUIRED | windows.SECTION_QUERY | windows.SECTION_MAP_READ,
-        null, // ObjectAttributes
-        null, // MaximumSize — use file size
+        null,
+        null,
         windows.PAGE_READONLY,
         windows.SEC_COMMIT,
         handle,
@@ -89,19 +110,18 @@ fn mapFileWindows(handle: std.os.windows.HANDLE, size: u64) MapError!MappedFile 
     if (create_rc != .SUCCESS) return error.MapFailed;
     errdefer windows.CloseHandle(section_handle);
 
-    // 2. Map the section into our address space.
     var base_addr: usize = 0;
-    var view_size: usize = 0; // 0 → map entire section
+    var view_size: usize = 0;
     const map_rc = ntdll.NtMapViewOfSection(
         section_handle,
         windows.self_process_handle,
         @ptrCast(&base_addr),
-        null, // ZeroBits
-        0, // CommitSize
-        null, // SectionOffset
+        null,
+        0,
+        null,
         &view_size,
         .ViewUnmap,
-        0, // AllocationType
+        0,
         windows.PAGE_READONLY,
     );
     if (map_rc != .SUCCESS) return error.MapFailed;
