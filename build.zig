@@ -359,6 +359,7 @@ pub fn build(b: *std.Build) void {
     });
     wasm_exe.rdynamic = false;
     wasm_exe.wasi_exec_model = .command;
+    wasm_exe.root_module.link_libc = true;
 
     const install_wasm = b.addInstallArtifact(wasm_exe, .{ .dest_dir = .{ .override = .{ .custom = "wasm" } } });
     const wasm_step = b.step("wasm", "Build wasmz itself as a wasm32-wasi module");
