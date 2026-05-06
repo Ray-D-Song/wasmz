@@ -135,7 +135,7 @@ pub const Instance = struct {
         const allocator = store.allocator;
         var instance_alloc_count: usize = 0;
 
-        // ── 0. resolve imported global values ───────────────────────────────────
+        // 0. resolve imported global values
         // Build a flat slice of RawVal for each imported global, in the order they
         // appear in the Import Section.  These values are used by global.get in
         // constant expressions (Wasm spec: global.get in const expr can only
@@ -148,7 +148,7 @@ pub const Instance = struct {
                 RawVal.fromBits64(0);
         }
 
-        // ── 1. copy globals ──────────────────────────────────────────
+        // 1. copy globals
         const globals = try allocator.alloc(Global, module.globals.len);
         errdefer allocator.free(globals);
         instance_alloc_count += 1;
@@ -185,7 +185,7 @@ pub const Instance = struct {
             }
         }
 
-        // ── 2. allocate memory ──────────────────────────────────────────────────
+        // 2. allocate memory
         var mem: Memory = if (module.memory) |mem_def| blk: {
             if (mem_def.shared) {
                 const max = mem_def.max_pages orelse return error.SharedMemoryMissingMax;
@@ -199,7 +199,7 @@ pub const Instance = struct {
         errdefer mem.deinit();
         if (module.memory != null) instance_alloc_count += 1;
 
-        // ── 3. resolve host functions ────────────────────────────────────────────
+        // 3. resolve host functions
         // Build a flat slice parallel to module.imported_funcs, looking up each
         // import by (module_name, func_name) in the provided Imports map.
         const host_funcs = try allocator.alloc(HostFunc, module.imported_funcs.len);
@@ -227,13 +227,13 @@ pub const Instance = struct {
             .tables = module.tables,
         };
 
-        // ── 4. initialize data segment dropped flags ───────────────────────────────
+        // 4. initialize data segment dropped flags
         const data_segments_dropped = try allocator.alloc(bool, module.data_segments.len);
         errdefer allocator.free(data_segments_dropped);
         @memset(data_segments_dropped, false);
         instance_alloc_count += 1;
 
-        // ── 4a. apply active data segments to linear memory (WASM spec §4.5.4) ──
+        // 4a. apply active data segments to linear memory (WASM spec §4.5.4)
         // Active segments are copied into linear memory at instantiation time and
         // then implicitly dropped (they cannot be used by memory.init after this).
         {
@@ -254,7 +254,7 @@ pub const Instance = struct {
         // a redundant copy alive for the lifetime of the Module.
         @constCast(module).releaseActiveSegmentData();
 
-        // ── 5. initialize element segment dropped flags ──────────────────────────────
+        // 5. initialize element segment dropped flags
         const elem_segments_dropped = try allocator.alloc(bool, module.elem_segments.len);
         errdefer allocator.free(elem_segments_dropped);
         @memset(elem_segments_dropped, false);
@@ -308,7 +308,7 @@ pub const Instance = struct {
         const allocator = store.allocator;
         var instance_alloc_count: usize = 0;
 
-        // ── Validate that the module declares a shared memory ──────────────────
+        // Validate that the module declares a shared memory
         const mem_def = module.memory orelse return error.ModuleMemoryNotShared;
         if (!mem_def.shared) return error.ModuleMemoryNotShared;
 
@@ -316,7 +316,7 @@ pub const Instance = struct {
         const required_capacity = @as(usize, max) * @import("core").WASM_PAGE_SIZE;
         if (shared.capacity() < required_capacity) return error.SharedMemoryTooSmall;
 
-        // ── 1. copy globals ────────────────────────────────────────────────────
+        // 1. copy globals
         // Resolve imported global values first for use in global.get const exprs.
         const imported_global_values_shared = try allocator.alloc(RawVal, module.imported_globals.len);
         defer allocator.free(imported_global_values_shared);
@@ -359,12 +359,12 @@ pub const Instance = struct {
             }
         }
 
-        // ── 2. wrap the provided shared memory (increments refcount) ───────────
+        // 2. wrap the provided shared memory (increments refcount)
         var mem = Memory.initShared(shared);
         errdefer mem.deinit();
         instance_alloc_count += 1;
 
-        // ── 3. resolve host functions ──────────────────────────────────────────
+        // 3. resolve host functions
         const host_funcs = try allocator.alloc(HostFunc, module.imported_funcs.len);
         errdefer allocator.free(host_funcs);
         instance_alloc_count += 1;
@@ -388,13 +388,13 @@ pub const Instance = struct {
             .tables = module.tables,
         };
 
-        // ── 4. segment dropped flags ───────────────────────────────────────────
+        // 4. segment dropped flags
         const data_segments_dropped = try allocator.alloc(bool, module.data_segments.len);
         errdefer allocator.free(data_segments_dropped);
         @memset(data_segments_dropped, false);
         instance_alloc_count += 1;
 
-        // ── 4a. apply active data segments to linear memory (WASM spec §4.5.4) ──
+        // 4a. apply active data segments to linear memory (WASM spec §4.5.4)
         {
             const mem_bytes = mem.bytes();
             for (module.data_segments, 0..) |seg, i| {
@@ -577,14 +577,11 @@ pub const Instance = struct {
     }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
 // GC constant expression evaluator
-//
 // WebAssembly GC globals may use constant expressions that allocate GC objects
 // (struct.new, array.new_fixed, etc.).  These cannot be evaluated at compile
 // time because they require the GC heap.  This mini stack-machine interpreter
 // is called during Instance.init for each global whose init_expr was deferred.
-// ─────────────────────────────────────────────────────────────────────────────
 
 const GcHeap = gc_mod.GcHeap;
 const GcHeader = gc_mod.GcHeader;

@@ -17,7 +17,7 @@ const ExecEnv = dispatch.ExecEnv;
 
 const HANDLER_SIZE = dispatch.HANDLER_SIZE;
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// Helpers
 
 inline fn readOps(comptime T: type, ip: [*]u8) T {
     if (@sizeOf(T) == 0) return .{};
@@ -38,7 +38,7 @@ inline fn trapReturn(frame: *DispatchState, code: core.TrapCode) void {
     frame.result = .{ .trap = trap };
 }
 
-// ── atomic_fence ─────────────────────────────────────────────────────────────
+// atomic_fence
 
 pub fn handle_atomic_fence(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const Fence = struct {
@@ -48,7 +48,7 @@ pub fn handle_atomic_fence(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
     dispatch.next(ip, stride(encode.ops.OpsNone), slots, frame, env, r0, fp0);
 }
 
-// ── atomic_load ──────────────────────────────────────────────────────────────
+// atomic_load
 
 pub fn handle_atomic_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsAtomicLoad, ip);
@@ -83,7 +83,7 @@ pub fn handle_atomic_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     dispatch.next(ip, stride(encode.ops.OpsAtomicLoad), slots, frame, env, r0, fp0);
 }
 
-// ── atomic_store ─────────────────────────────────────────────────────────────
+// atomic_store
 
 pub fn handle_atomic_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsAtomicStore, ip);
@@ -118,7 +118,7 @@ pub fn handle_atomic_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
     dispatch.next(ip, stride(encode.ops.OpsAtomicStore), slots, frame, env, r0, fp0);
 }
 
-// ── atomic_rmw ───────────────────────────────────────────────────────────────
+// atomic_rmw
 
 pub fn handle_atomic_rmw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsAtomicRmw, ip);
@@ -203,7 +203,7 @@ pub fn handle_atomic_rmw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
     dispatch.next(ip, stride(encode.ops.OpsAtomicRmw), slots, frame, env, r0, fp0);
 }
 
-// ── atomic_cmpxchg ───────────────────────────────────────────────────────────
+// atomic_cmpxchg
 
 pub fn handle_atomic_cmpxchg(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsAtomicCmpxchg, ip);
@@ -271,7 +271,7 @@ pub fn handle_atomic_cmpxchg(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState,
     dispatch.next(ip, stride(encode.ops.OpsAtomicCmpxchg), slots, frame, env, r0, fp0);
 }
 
-// ── atomic_notify ────────────────────────────────────────────────────────────
+// atomic_notify
 
 pub fn handle_atomic_notify(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsAtomicNotify, ip);
@@ -294,7 +294,7 @@ pub fn handle_atomic_notify(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
     dispatch.next(ip, stride(encode.ops.OpsAtomicNotify), slots, frame, env, r0, fp0);
 }
 
-// ── atomic_wait32 ────────────────────────────────────────────────────────────
+// atomic_wait32
 
 pub fn handle_atomic_wait32(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsAtomicWait32, ip);
@@ -324,7 +324,7 @@ pub fn handle_atomic_wait32(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
     dispatch.next(ip, stride(encode.ops.OpsAtomicWait32), slots, frame, env, r0, fp0);
 }
 
-// ── atomic_wait64 ────────────────────────────────────────────────────────────
+// atomic_wait64
 
 pub fn handle_atomic_wait64(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsAtomicWait64, ip);

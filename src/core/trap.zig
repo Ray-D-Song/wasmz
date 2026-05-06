@@ -1,7 +1,6 @@
 const std = @import("std");
 
 // Error type which can be returned by Wasm code or by the host environment.
-//
 // Under some conditions, Wasm execution may produce a `Trap`,
 // which immediately aborts execution.
 // Traps cannot be handled by WebAssembly code, but are reported to the
@@ -60,7 +59,7 @@ pub const TrapCode = enum(u8) {
 
     OutOfSystemMemory = 12,
 
-    // ── GC-specific trap codes ────────────────────────────────────────────────────
+    // GC-specific trap codes
     // Attempt to dereference a null GC reference.
     NullReference = 13,
 

@@ -18,7 +18,7 @@ const ExecEnv = dispatch.ExecEnv;
 
 const HANDLER_SIZE = dispatch.HANDLER_SIZE;
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// Helpers
 
 inline fn readOps(comptime T: type, ip: [*]u8) T {
     if (@sizeOf(T) == 0) return .{};
@@ -56,7 +56,7 @@ inline fn writeSimd(slots: [*]RawVal, idx: u32, sv: SimdVal) void {
     sv.toSlots(&slots[idx], &slots[idx + 1]);
 }
 
-// ── simd_unary ───────────────────────────────────────────────────────────────
+// simd_unary
 
 pub fn handle_simd_unary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops_val = readOps(encode.ops.OpsSimdUnary, ip);
@@ -76,7 +76,7 @@ pub fn handle_simd_unary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
     dispatch.next(ip, stride(encode.ops.OpsSimdUnary), slots, frame, env, r0, fp0);
 }
 
-// ── simd_binary ──────────────────────────────────────────────────────────────
+// simd_binary
 
 pub fn handle_simd_binary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops_val = readOps(encode.ops.OpsSimdBinary, ip);
@@ -86,7 +86,7 @@ pub fn handle_simd_binary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     dispatch.next(ip, stride(encode.ops.OpsSimdBinary), slots, frame, env, r0, fp0);
 }
 
-// ── simd_ternary ─────────────────────────────────────────────────────────────
+// simd_ternary
 
 pub fn handle_simd_ternary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops_val = readOps(encode.ops.OpsSimdTernary, ip);
@@ -96,7 +96,7 @@ pub fn handle_simd_ternary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
     dispatch.next(ip, stride(encode.ops.OpsSimdTernary), slots, frame, env, r0, fp0);
 }
 
-// ── simd_compare ─────────────────────────────────────────────────────────────
+// simd_compare
 
 pub fn handle_simd_compare(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops_val = readOps(encode.ops.OpsSimdBinary, ip);
@@ -106,7 +106,7 @@ pub fn handle_simd_compare(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
     dispatch.next(ip, stride(encode.ops.OpsSimdBinary), slots, frame, env, r0, fp0);
 }
 
-// ── simd_shift_scalar ────────────────────────────────────────────────────────
+// simd_shift_scalar
 
 pub fn handle_simd_shift_scalar(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops_val = readOps(encode.ops.OpsSimdBinary, ip);
@@ -117,7 +117,7 @@ pub fn handle_simd_shift_scalar(ip: [*]u8, slots: [*]RawVal, frame: *DispatchSta
     dispatch.next(ip, stride(encode.ops.OpsSimdBinary), slots, frame, env, r0, fp0);
 }
 
-// ── simd_extract_lane ────────────────────────────────────────────────────────
+// simd_extract_lane
 
 pub fn handle_simd_extract_lane(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops_val = readOps(encode.ops.OpsSimdExtractLane, ip);
@@ -127,7 +127,7 @@ pub fn handle_simd_extract_lane(ip: [*]u8, slots: [*]RawVal, frame: *DispatchSta
     dispatch.next(ip, stride(encode.ops.OpsSimdExtractLane), slots, frame, env, r0, fp0);
 }
 
-// ── simd_replace_lane ────────────────────────────────────────────────────────
+// simd_replace_lane
 
 pub fn handle_simd_replace_lane(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops_val = readOps(encode.ops.OpsSimdReplaceLane, ip);
@@ -138,7 +138,7 @@ pub fn handle_simd_replace_lane(ip: [*]u8, slots: [*]RawVal, frame: *DispatchSta
     dispatch.next(ip, stride(encode.ops.OpsSimdReplaceLane), slots, frame, env, r0, fp0);
 }
 
-// ── simd_shuffle ─────────────────────────────────────────────────────────────
+// simd_shuffle
 
 pub fn handle_simd_shuffle(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops_val = readOps(encode.ops.OpsSimdShuffle, ip);
@@ -147,7 +147,7 @@ pub fn handle_simd_shuffle(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
     dispatch.next(ip, stride(encode.ops.OpsSimdShuffle), slots, frame, env, r0, fp0);
 }
 
-// ── simd_load ────────────────────────────────────────────────────────────────
+// simd_load
 
 pub fn handle_simd_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops_val = readOps(encode.ops.OpsSimdLoad, ip);
@@ -187,7 +187,7 @@ pub fn handle_simd_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
     dispatch.next(ip, stride(encode.ops.OpsSimdLoad), slots, frame, env, r0, fp0);
 }
 
-// ── simd_store ───────────────────────────────────────────────────────────────
+// simd_store
 
 pub fn handle_simd_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops_val = readOps(encode.ops.OpsSimdStore, ip);

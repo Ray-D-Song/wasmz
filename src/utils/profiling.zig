@@ -26,7 +26,7 @@ const instance_mod = @import("../wasmz/instance.zig");
 
 pub const enabled = build_options.profiling;
 
-// ── RSS ──────────────────────────────────────────────────────────────────────
+// RSS
 // Always available (not gated).  In release builds the call sites have
 // runtime guards that evaluate to false, so the function is never invoked.
 
@@ -106,7 +106,7 @@ fn currentRssWindows() usize {
     return counters.WorkingSetSize;
 }
 
-// ── Scoped timer ─────────────────────────────────────────────────────────────
+// Scoped timer
 
 pub const ScopedTimer = if (enabled) struct {
     timer: std.time.Timer,
@@ -136,7 +136,7 @@ pub const ScopedTimer = if (enabled) struct {
     }
 };
 
-// ── Call profiling counters ──────────────────────────────────────────────────
+// Call profiling counters
 
 pub const CallProfiling = if (enabled) struct {
     calls: u64 = 0,
@@ -190,7 +190,7 @@ pub const CallProfiling = if (enabled) struct {
 
 pub var call_prof: CallProfiling = .{};
 
-// ── Compile profiling counters ───────────────────────────────────────────────
+// Compile profiling counters
 
 pub const CompileProfiling = if (enabled) struct {
     functions_compiled: u64 = 0,
@@ -224,7 +224,7 @@ pub const CompileProfiling = if (enabled) struct {
 
 pub var compile_prof: CompileProfiling = .{};
 
-// ── ControlFrame size distribution counters ───────────────────────────────────
+// ControlFrame size distribution counters
 
 pub const FrameSizeProfiling = if (enabled) struct {
     total_frames: u64 = 0,
@@ -268,7 +268,7 @@ pub const FrameSizeProfiling = if (enabled) struct {
 
 pub var frame_prof: FrameSizeProfiling = .{};
 
-// ── Runtime op counts ────────────────────────────────────────────────────────
+// Runtime op counts
 
 pub const OpCounts = if (enabled) struct {
     copy: u64 = 0,
@@ -321,7 +321,7 @@ pub inline fn countOp(comptime field: []const u8) void {
     }
 }
 
-// ── WASI diagnostic counters ─────────────────────────────────────────────────
+// WASI diagnostic counters
 
 pub const WasiDiagOp = enum {
     args_sizes_get,
@@ -472,7 +472,7 @@ pub const WasiDiag = if (enabled) struct {
     pub fn record(_: *WasiDiag, _: WasiDiagOp, _: i128) void {}
 };
 
-// ── Phase diagnostics ────────────────────────────────────────────────────────
+// Phase diagnostics
 
 pub const PhaseDiag = if (enabled) struct {
     t0_ns: i128 = 0,
@@ -524,7 +524,7 @@ pub const PhaseDiag = if (enabled) struct {
     pub fn print(_: *const PhaseDiag, _: []const u8) void {}
 };
 
-// ── Mem-trace helper ─────────────────────────────────────────────────────────
+// Mem-trace helper
 
 pub fn tracePhase(prev: *usize, label: []const u8) void {
     if (!enabled) return;
@@ -540,7 +540,7 @@ pub fn tracePhase(prev: *usize, label: []const u8) void {
     prev.* = cur;
 }
 
-// ── Mem-stats ────────────────────────────────────────────────────────────────
+// Mem-stats
 
 pub fn printMemStats(store: *store_mod.Store, instance: *instance_mod.Instance) void {
     if (!enabled) return;
@@ -586,33 +586,33 @@ pub fn printMemStats(store: *store_mod.Store, instance: *instance_mod.Instance) 
         \\Memory usage:
         \\
         \\  Runtime
-        \\  ─────────────────────────────────────────
+        \\ 
         \\  Linear memory:     {d:.2} MB  ({d} pages)
         \\  GC heap:           {d:.2} MB  (used {d:.1} KB / cap {d:.1} KB)
         \\  Shared memory:     {d:.2} MB  {s}
         \\  VM val_stack:      {d:.2} MB  ({d} slots)
         \\  VM call_stack:     {d:.2} MB  ({d} frames)
-        \\  ─────────────────────────────────────────
+        \\ 
         \\  Runtime subtotal:  {d:.2} MB
         \\
         \\  Module
-        \\  ─────────────────────────────────────────
+        \\ 
         \\  Pending bodies:    {d:.2} MB  ({d} funcs, raw Wasm bytecode)
         \\  Encoded code:      {d:.2} MB  ({d} funcs, threaded-dispatch)
         \\  Encoded aux:       {d:.1} KB  (br_table / eh tables)
         \\  Data segments:     {d:.2} MB  (passive only after instantiation)
-        \\  ─────────────────────────────────────────
+        \\ 
         \\  Module subtotal:   {d:.2} MB
         \\
         \\  ═════════════════════════════════════════
         \\  Grand total:       {d:.2} MB
         \\
         \\  Allocations
-        \\  ─────────────────────────────────────────
+        \\ 
         \\  Instance:           {d}
         \\  VM (val/call stack): {d}
         \\  GC heap:            {d}
-        \\  ─────────────────────────────────────────
+        \\ 
         \\  Total:              {d}
         \\
     ,
@@ -635,7 +635,7 @@ pub fn printMemStats(store: *store_mod.Store, instance: *instance_mod.Instance) 
     std.fs.File.stderr().writeAll(fbs.getWritten()) catch {};
 }
 
-// ── On-exit (proc_exit callback) ─────────────────────────────────────────────
+// On-exit (proc_exit callback)
 
 pub const OnExitCtx = if (enabled) struct {
     mem_trace: bool = false,
@@ -665,7 +665,7 @@ pub fn onExitCombined(exit_code: u32, data: ?*anyopaque) void {
     printReportImpl();
 }
 
-// ── Report ───────────────────────────────────────────────────────────────────
+// Report
 
 pub fn printReport() void {
     if (!enabled) return;
@@ -904,9 +904,7 @@ fn printOpCountsReport() void {
     });
 }
 
-// ── Print WASI diagnostics ───────────────────────────────────────────────────
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// Helpers
 
 inline fn pct(part: u64, total: u64) f64 {
     if (total == 0) return 0.0;

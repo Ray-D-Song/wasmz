@@ -11,7 +11,7 @@ const handlers_eh = @import("handlers/eh.zig");
 const handlers_simd = @import("handlers/simd.zig");
 
 pub const handler_table: encode.HandlerTable = .{
-    // ── terminators / constants / refs / vars / control ──────────────────
+    // terminators / constants / refs / vars / control
     .unreachable_ = &handlers.handle_unreachable,
     .const_i32 = &handlers.handle_const_i32,
     .const_i64 = &handlers.handle_const_i64,
@@ -34,7 +34,7 @@ pub const handler_table: encode.HandlerTable = .{
     .jump_table = &handlers.handle_jump_table,
     .select = &handlers.handle_select,
     .ret = &handlers.handle_ret,
-    // ── fused binop+ret (Peephole I) ────────────────────────────────────
+    // fused binop+ret (Peephole I)
     .i32_add_ret = &handlers.handle_i32_add_ret,
     .i32_sub_ret = &handlers.handle_i32_sub_ret,
     .i64_add_ret = &handlers.handle_i64_add_ret,
@@ -43,7 +43,7 @@ pub const handler_table: encode.HandlerTable = .{
     .f32_sub_ret = &handlers.handle_f32_sub_ret,
     .f64_add_ret = &handlers.handle_f64_add_ret,
     .f64_sub_ret = &handlers.handle_f64_sub_ret,
-    // ── i32 binary ──────────────────────────────────────────────────────
+    // i32 binary
     .i32_add = &handlers.handle_i32_add,
     .i32_sub = &handlers.handle_i32_sub,
     .i32_mul = &handlers.handle_i32_mul,
@@ -59,7 +59,7 @@ pub const handler_table: encode.HandlerTable = .{
     .i32_shr_u = &handlers.handle_i32_shr_u,
     .i32_rotl = &handlers.handle_i32_rotl,
     .i32_rotr = &handlers.handle_i32_rotr,
-    // ── i64 binary ──────────────────────────────────────────────────────
+    // i64 binary
     .i64_add = &handlers.handle_i64_add,
     .i64_sub = &handlers.handle_i64_sub,
     .i64_mul = &handlers.handle_i64_mul,
@@ -75,7 +75,7 @@ pub const handler_table: encode.HandlerTable = .{
     .i64_shr_u = &handlers.handle_i64_shr_u,
     .i64_rotl = &handlers.handle_i64_rotl,
     .i64_rotr = &handlers.handle_i64_rotr,
-    // ── f32 binary ──────────────────────────────────────────────────────
+    // f32 binary
     .f32_add = &handlers.handle_f32_add,
     .f32_sub = &handlers.handle_f32_sub,
     .f32_mul = &handlers.handle_f32_mul,
@@ -83,7 +83,7 @@ pub const handler_table: encode.HandlerTable = .{
     .f32_min = &handlers.handle_f32_min,
     .f32_max = &handlers.handle_f32_max,
     .f32_copysign = &handlers.handle_f32_copysign,
-    // ── f64 binary ──────────────────────────────────────────────────────
+    // f64 binary
     .f64_add = &handlers.handle_f64_add,
     .f64_sub = &handlers.handle_f64_sub,
     .f64_mul = &handlers.handle_f64_mul,
@@ -91,17 +91,17 @@ pub const handler_table: encode.HandlerTable = .{
     .f64_min = &handlers.handle_f64_min,
     .f64_max = &handlers.handle_f64_max,
     .f64_copysign = &handlers.handle_f64_copysign,
-    // ── i32 unary ───────────────────────────────────────────────────────
+    // i32 unary
     .i32_clz = &handlers.handle_i32_clz,
     .i32_ctz = &handlers.handle_i32_ctz,
     .i32_popcnt = &handlers.handle_i32_popcnt,
     .i32_eqz = &handlers.handle_i32_eqz,
-    // ── i64 unary ───────────────────────────────────────────────────────
+    // i64 unary
     .i64_clz = &handlers.handle_i64_clz,
     .i64_ctz = &handlers.handle_i64_ctz,
     .i64_popcnt = &handlers.handle_i64_popcnt,
     .i64_eqz = &handlers.handle_i64_eqz,
-    // ── f32 unary ───────────────────────────────────────────────────────
+    // f32 unary
     .f32_abs = &handlers.handle_f32_abs,
     .f32_neg = &handlers.handle_f32_neg,
     .f32_ceil = &handlers.handle_f32_ceil,
@@ -109,7 +109,7 @@ pub const handler_table: encode.HandlerTable = .{
     .f32_trunc = &handlers.handle_f32_trunc,
     .f32_nearest = &handlers.handle_f32_nearest,
     .f32_sqrt = &handlers.handle_f32_sqrt,
-    // ── f64 unary ───────────────────────────────────────────────────────
+    // f64 unary
     .f64_abs = &handlers.handle_f64_abs,
     .f64_neg = &handlers.handle_f64_neg,
     .f64_ceil = &handlers.handle_f64_ceil,
@@ -117,7 +117,7 @@ pub const handler_table: encode.HandlerTable = .{
     .f64_trunc = &handlers.handle_f64_trunc,
     .f64_nearest = &handlers.handle_f64_nearest,
     .f64_sqrt = &handlers.handle_f64_sqrt,
-    // ── i32 comparisons ─────────────────────────────────────────────────
+    // i32 comparisons
     .i32_eq = &handlers.handle_i32_eq,
     .i32_ne = &handlers.handle_i32_ne,
     .i32_lt_s = &handlers.handle_i32_lt_s,
@@ -128,7 +128,7 @@ pub const handler_table: encode.HandlerTable = .{
     .i32_le_u = &handlers.handle_i32_le_u,
     .i32_ge_s = &handlers.handle_i32_ge_s,
     .i32_ge_u = &handlers.handle_i32_ge_u,
-    // ── i64 comparisons ─────────────────────────────────────────────────
+    // i64 comparisons
     .i64_eq = &handlers.handle_i64_eq,
     .i64_ne = &handlers.handle_i64_ne,
     .i64_lt_s = &handlers.handle_i64_lt_s,
@@ -139,7 +139,7 @@ pub const handler_table: encode.HandlerTable = .{
     .i64_le_u = &handlers.handle_i64_le_u,
     .i64_ge_s = &handlers.handle_i64_ge_s,
     .i64_ge_u = &handlers.handle_i64_ge_u,
-    // ── f32/f64 comparisons ─────────────────────────────────────────────
+    // f32/f64 comparisons
     .f32_eq = &handlers.handle_f32_eq,
     .f32_ne = &handlers.handle_f32_ne,
     .f32_lt = &handlers.handle_f32_lt,
@@ -152,7 +152,7 @@ pub const handler_table: encode.HandlerTable = .{
     .f64_gt = &handlers.handle_f64_gt,
     .f64_le = &handlers.handle_f64_le,
     .f64_ge = &handlers.handle_f64_ge,
-    // ── conversions ─────────────────────────────────────────────────────
+    // conversions
     .i32_wrap_i64 = &handlers.handle_i32_wrap_i64,
     .i32_trunc_f32_s = &handlers.handle_i32_trunc_f32_s,
     .i32_trunc_f32_u = &handlers.handle_i32_trunc_f32_u,
@@ -191,7 +191,7 @@ pub const handler_table: encode.HandlerTable = .{
     .i64_extend8_s = &handlers.handle_i64_extend8_s,
     .i64_extend16_s = &handlers.handle_i64_extend16_s,
     .i64_extend32_s = &handlers.handle_i64_extend32_s,
-    // ── memory loads ────────────────────────────────────────────────────
+    // memory loads
     .i32_load = &handlers.handle_i32_load,
     .i32_load8_s = &handlers.handle_i32_load8_s,
     .i32_load8_u = &handlers.handle_i32_load8_u,
@@ -206,7 +206,7 @@ pub const handler_table: encode.HandlerTable = .{
     .i64_load32_u = &handlers.handle_i64_load32_u,
     .f32_load = &handlers.handle_f32_load,
     .f64_load = &handlers.handle_f64_load,
-    // ── memory stores ───────────────────────────────────────────────────
+    // memory stores
     .i32_store = &handlers.handle_i32_store,
     .i32_store8 = &handlers.handle_i32_store8,
     .i32_store16 = &handlers.handle_i32_store16,
@@ -216,14 +216,14 @@ pub const handler_table: encode.HandlerTable = .{
     .i64_store32 = &handlers.handle_i64_store32,
     .f32_store = &handlers.handle_f32_store,
     .f64_store = &handlers.handle_f64_store,
-    // ── memory misc ─────────────────────────────────────────────────────
+    // memory misc
     .memory_size = &handlers.handle_memory_size,
     .memory_grow = &handlers.handle_memory_grow,
     .memory_init = &handlers.handle_memory_init,
     .data_drop = &handlers.handle_data_drop,
     .memory_copy = &handlers.handle_memory_copy,
     .memory_fill = &handlers.handle_memory_fill,
-    // ── calls ───────────────────────────────────────────────────────────
+    // calls
     .call = &handlers_call.handle_call,
     .call_0 = &handlers_call.handle_call_0,
     .call_1 = &handlers_call.handle_call_1,
@@ -247,7 +247,7 @@ pub const handler_table: encode.HandlerTable = .{
     .return_call_indirect = &handlers_call.handle_return_call_indirect,
     .call_ref = &handlers_call.handle_call_ref,
     .return_call_ref = &handlers_call.handle_return_call_ref,
-    // ── atomics ─────────────────────────────────────────────────────────
+    // atomics
     .atomic_load = &handlers_atomic.handle_atomic_load,
     .atomic_store = &handlers_atomic.handle_atomic_store,
     .atomic_rmw = &handlers_atomic.handle_atomic_rmw,
@@ -256,7 +256,7 @@ pub const handler_table: encode.HandlerTable = .{
     .atomic_notify = &handlers_atomic.handle_atomic_notify,
     .atomic_wait32 = &handlers_atomic.handle_atomic_wait32,
     .atomic_wait64 = &handlers_atomic.handle_atomic_wait64,
-    // ── tables ──────────────────────────────────────────────────────────
+    // tables
     .table_get = &handlers_table.handle_table_get,
     .table_set = &handlers_table.handle_table_set,
     .table_size = &handlers_table.handle_table_size,
@@ -265,14 +265,14 @@ pub const handler_table: encode.HandlerTable = .{
     .table_copy = &handlers_table.handle_table_copy,
     .table_init = &handlers_table.handle_table_init,
     .elem_drop = &handlers_table.handle_elem_drop,
-    // ── GC structs ──────────────────────────────────────────────────────
+    // GC structs
     .struct_new = &handlers_gc.handle_struct_new,
     .struct_new_default = &handlers_gc.handle_struct_new_default,
     .struct_get = &handlers_gc.handle_struct_get,
     .struct_get_s = &handlers_gc.handle_struct_get_s,
     .struct_get_u = &handlers_gc.handle_struct_get_u,
     .struct_set = &handlers_gc.handle_struct_set,
-    // ── GC arrays ───────────────────────────────────────────────────────
+    // GC arrays
     .array_new = &handlers_gc.handle_array_new,
     .array_new_default = &handlers_gc.handle_array_new_default,
     .array_new_fixed = &handlers_gc.handle_array_new_fixed,
@@ -287,11 +287,11 @@ pub const handler_table: encode.HandlerTable = .{
     .array_copy = &handlers_gc.handle_array_copy,
     .array_init_data = &handlers_gc.handle_array_init_data,
     .array_init_elem = &handlers_gc.handle_array_init_elem,
-    // ── GC i31 ──────────────────────────────────────────────────────────
+    // GC i31
     .ref_i31 = &handlers_gc.handle_ref_i31,
     .i31_get_s = &handlers_gc.handle_i31_get_s,
     .i31_get_u = &handlers_gc.handle_i31_get_u,
-    // ── GC ref test/cast ────────────────────────────────────────────────
+    // GC ref test/cast
     .ref_test = &handlers_gc.handle_ref_test,
     .ref_cast = &handlers_gc.handle_ref_cast,
     .ref_as_non_null = &handlers_gc.handle_ref_as_non_null,
@@ -299,15 +299,15 @@ pub const handler_table: encode.HandlerTable = .{
     .br_on_non_null = &handlers_gc.handle_br_on_non_null,
     .br_on_cast = &handlers_gc.handle_br_on_cast,
     .br_on_cast_fail = &handlers_gc.handle_br_on_cast_fail,
-    // ── GC any/extern conversion ────────────────────────────────────────
+    // GC any/extern conversion
     .any_convert_extern = &handlers_gc.handle_any_convert_extern,
     .extern_convert_any = &handlers_gc.handle_extern_convert_any,
-    // ── EH ──────────────────────────────────────────────────────────────
+    // EH
     .throw = &handlers_eh.handle_throw,
     .throw_ref = &handlers_eh.handle_throw_ref,
     .try_table_enter = &handlers_eh.handle_try_table_enter,
     .try_table_leave = &handlers_eh.handle_try_table_leave,
-    // ── Fused: binop-imm (Candidate C) ──────────────────────────────────────
+    // Fused: binop-imm (Candidate C)
     .i32_add_imm = &handlers.handle_i32_add_imm,
     .i32_sub_imm = &handlers.handle_i32_sub_imm,
     .i32_mul_imm = &handlers.handle_i32_mul_imm,
@@ -327,7 +327,7 @@ pub const handler_table: encode.HandlerTable = .{
     .i32_le_u_imm = &handlers.handle_i32_le_u_imm,
     .i32_ge_s_imm = &handlers.handle_i32_ge_s_imm,
     .i32_ge_u_imm = &handlers.handle_i32_ge_u_imm,
-    // ── Fused: i64 binop-imm (Candidate C, i64) ──────────────────────────────
+    // Fused: i64 binop-imm (Candidate C, i64)
     .i64_add_imm = &handlers.handle_i64_add_imm,
     .i64_sub_imm = &handlers.handle_i64_sub_imm,
     .i64_mul_imm = &handlers.handle_i64_mul_imm,
@@ -347,7 +347,7 @@ pub const handler_table: encode.HandlerTable = .{
     .i64_le_u_imm = &handlers.handle_i64_le_u_imm,
     .i64_ge_s_imm = &handlers.handle_i64_ge_s_imm,
     .i64_ge_u_imm = &handlers.handle_i64_ge_u_imm,
-    // ── Fused: f32/f64 binop-imm ───────────────────────────────────────────────
+    // Fused: f32/f64 binop-imm
     .f32_add_imm = &handlers.handle_f32_add_imm,
     .f32_sub_imm = &handlers.handle_f32_sub_imm,
     .f32_mul_imm = &handlers.handle_f32_mul_imm,
@@ -356,7 +356,7 @@ pub const handler_table: encode.HandlerTable = .{
     .f64_sub_imm = &handlers.handle_f64_sub_imm,
     .f64_mul_imm = &handlers.handle_f64_mul_imm,
     .f64_div_imm = &handlers.handle_f64_div_imm,
-    // ── r0 variants: i32 binop-imm-r ─────────────────────────────────────────
+    // r0 variants: i32 binop-imm-r
     .i32_add_imm_r = &handlers.handle_i32_add_imm_r,
     .i32_sub_imm_r = &handlers.handle_i32_sub_imm_r,
     .i32_mul_imm_r = &handlers.handle_i32_mul_imm_r,
@@ -366,7 +366,7 @@ pub const handler_table: encode.HandlerTable = .{
     .i32_shl_imm_r = &handlers.handle_i32_shl_imm_r,
     .i32_shr_s_imm_r = &handlers.handle_i32_shr_s_imm_r,
     .i32_shr_u_imm_r = &handlers.handle_i32_shr_u_imm_r,
-    // ── r0 variants: i64 binop-imm-r ─────────────────────────────────────────
+    // r0 variants: i64 binop-imm-r
     .i64_add_imm_r = &handlers.handle_i64_add_imm_r,
     .i64_sub_imm_r = &handlers.handle_i64_sub_imm_r,
     .i64_mul_imm_r = &handlers.handle_i64_mul_imm_r,
@@ -376,7 +376,7 @@ pub const handler_table: encode.HandlerTable = .{
     .i64_shl_imm_r = &handlers.handle_i64_shl_imm_r,
     .i64_shr_s_imm_r = &handlers.handle_i64_shr_s_imm_r,
     .i64_shr_u_imm_r = &handlers.handle_i64_shr_u_imm_r,
-    // ── Fused: compare-jump (Candidate F) ────────────────────────────────────
+    // Fused: compare-jump (Candidate F)
     .i32_eq_jump_if_false = &handlers.handle_i32_eq_jump_if_false,
     .i32_ne_jump_if_false = &handlers.handle_i32_ne_jump_if_false,
     .i32_lt_s_jump_if_false = &handlers.handle_i32_lt_s_jump_if_false,
@@ -388,7 +388,7 @@ pub const handler_table: encode.HandlerTable = .{
     .i32_ge_s_jump_if_false = &handlers.handle_i32_ge_s_jump_if_false,
     .i32_ge_u_jump_if_false = &handlers.handle_i32_ge_u_jump_if_false,
     .i32_eqz_jump_if_false = &handlers.handle_i32_eqz_jump_if_false,
-    // ── Fused: i64 compare-jump (Candidate F, i64) ───────────────────────────
+    // Fused: i64 compare-jump (Candidate F, i64)
     .i64_eq_jump_if_false = &handlers.handle_i64_eq_jump_if_false,
     .i64_ne_jump_if_false = &handlers.handle_i64_ne_jump_if_false,
     .i64_lt_s_jump_if_false = &handlers.handle_i64_lt_s_jump_if_false,
@@ -400,7 +400,7 @@ pub const handler_table: encode.HandlerTable = .{
     .i64_ge_s_jump_if_false = &handlers.handle_i64_ge_s_jump_if_false,
     .i64_ge_u_jump_if_false = &handlers.handle_i64_ge_u_jump_if_false,
     .i64_eqz_jump_if_false = &handlers.handle_i64_eqz_jump_if_false,
-    // ── Fused: f32/f64 compare-jump ─────────────────────────────────────────
+    // Fused: f32/f64 compare-jump
     .f32_eq_jump_if_false = &handlers.handle_f32_eq_jump_if_false,
     .f32_ne_jump_if_false = &handlers.handle_f32_ne_jump_if_false,
     .f32_lt_jump_if_false = &handlers.handle_f32_lt_jump_if_false,
@@ -413,7 +413,7 @@ pub const handler_table: encode.HandlerTable = .{
     .f64_gt_jump_if_false = &handlers.handle_f64_gt_jump_if_false,
     .f64_le_jump_if_false = &handlers.handle_f64_le_jump_if_false,
     .f64_ge_jump_if_false = &handlers.handle_f64_ge_jump_if_false,
-    // ── Fused: compare-jump-if-true (Peephole J) ─────────────────────────────
+    // Fused: compare-jump-if-true (Peephole J)
     .i32_eq_jump_if_true = &handlers.handle_i32_eq_jump_if_true,
     .i32_ne_jump_if_true = &handlers.handle_i32_ne_jump_if_true,
     .i32_lt_s_jump_if_true = &handlers.handle_i32_lt_s_jump_if_true,
@@ -436,7 +436,7 @@ pub const handler_table: encode.HandlerTable = .{
     .i64_ge_s_jump_if_true = &handlers.handle_i64_ge_s_jump_if_true,
     .i64_ge_u_jump_if_true = &handlers.handle_i64_ge_u_jump_if_true,
     .i64_eqz_jump_if_true = &handlers.handle_i64_eqz_jump_if_true,
-    // ── Fused: f32/f64 compare-jump-if-true ──────────────────────────────────
+    // Fused: f32/f64 compare-jump-if-true
     .f32_eq_jump_if_true = &handlers.handle_f32_eq_jump_if_true,
     .f32_ne_jump_if_true = &handlers.handle_f32_ne_jump_if_true,
     .f32_lt_jump_if_true = &handlers.handle_f32_lt_jump_if_true,
@@ -449,7 +449,7 @@ pub const handler_table: encode.HandlerTable = .{
     .f64_gt_jump_if_true = &handlers.handle_f64_gt_jump_if_true,
     .f64_le_jump_if_true = &handlers.handle_f64_le_jump_if_true,
     .f64_ge_jump_if_true = &handlers.handle_f64_ge_jump_if_true,
-    // ── Fused: binop-to-local (Candidate D) ──────────────────────────────────
+    // Fused: binop-to-local (Candidate D)
     .i32_add_to_local = &handlers.handle_i32_add_to_local,
     .i32_sub_to_local = &handlers.handle_i32_sub_to_local,
     .i32_mul_to_local = &handlers.handle_i32_mul_to_local,
@@ -459,7 +459,7 @@ pub const handler_table: encode.HandlerTable = .{
     .i32_shl_to_local = &handlers.handle_i32_shl_to_local,
     .i32_shr_s_to_local = &handlers.handle_i32_shr_s_to_local,
     .i32_shr_u_to_local = &handlers.handle_i32_shr_u_to_local,
-    // ── Fused: i64 binop-to-local (Candidate D, i64) ─────────────────────────
+    // Fused: i64 binop-to-local (Candidate D, i64)
     .i64_add_to_local = &handlers.handle_i64_add_to_local,
     .i64_sub_to_local = &handlers.handle_i64_sub_to_local,
     .i64_mul_to_local = &handlers.handle_i64_mul_to_local,
@@ -469,7 +469,7 @@ pub const handler_table: encode.HandlerTable = .{
     .i64_shl_to_local = &handlers.handle_i64_shl_to_local,
     .i64_shr_s_to_local = &handlers.handle_i64_shr_s_to_local,
     .i64_shr_u_to_local = &handlers.handle_i64_shr_u_to_local,
-    // ── Fused: f32/f64 binop-to-local ────────────────────────────────────────
+    // Fused: f32/f64 binop-to-local
     .f32_add_to_local = &handlers.handle_f32_add_to_local,
     .f32_sub_to_local = &handlers.handle_f32_sub_to_local,
     .f32_mul_to_local = &handlers.handle_f32_mul_to_local,
@@ -478,7 +478,7 @@ pub const handler_table: encode.HandlerTable = .{
     .f64_sub_to_local = &handlers.handle_f64_sub_to_local,
     .f64_mul_to_local = &handlers.handle_f64_mul_to_local,
     .f64_div_to_local = &handlers.handle_f64_div_to_local,
-    // ── Fused: binop + local_tee ───────────────────────────────────
+    // Fused: binop + local_tee
     .i32_add_tee_local = &handlers.handle_i32_add_tee_local,
     .i32_sub_tee_local = &handlers.handle_i32_sub_tee_local,
     .i32_mul_tee_local = &handlers.handle_i32_mul_tee_local,
@@ -497,7 +497,7 @@ pub const handler_table: encode.HandlerTable = .{
     .i64_shl_tee_local = &handlers.handle_i64_shl_tee_local,
     .i64_shr_s_tee_local = &handlers.handle_i64_shr_s_tee_local,
     .i64_shr_u_tee_local = &handlers.handle_i64_shr_u_tee_local,
-    // ── Fused: f32/f64 binop + local_tee ─────────────────────────────────
+    // Fused: f32/f64 binop + local_tee
     .f32_add_tee_local = &handlers.handle_f32_add_tee_local,
     .f32_sub_tee_local = &handlers.handle_f32_sub_tee_local,
     .f32_mul_tee_local = &handlers.handle_f32_mul_tee_local,
@@ -506,7 +506,7 @@ pub const handler_table: encode.HandlerTable = .{
     .f64_sub_tee_local = &handlers.handle_f64_sub_tee_local,
     .f64_mul_tee_local = &handlers.handle_f64_mul_tee_local,
     .f64_div_tee_local = &handlers.handle_f64_div_tee_local,
-    // ── Fused: comparison + local_set (cmp_to_local) ────────────────────────
+    // Fused: comparison + local_set (cmp_to_local)
     .i32_eq_to_local = &handlers.handle_i32_eq_to_local,
     .i32_ne_to_local = &handlers.handle_i32_ne_to_local,
     .i32_lt_s_to_local = &handlers.handle_i32_lt_s_to_local,
@@ -527,7 +527,7 @@ pub const handler_table: encode.HandlerTable = .{
     .i64_le_u_to_local = &handlers.handle_i64_le_u_to_local,
     .i64_ge_s_to_local = &handlers.handle_i64_ge_s_to_local,
     .i64_ge_u_to_local = &handlers.handle_i64_ge_u_to_local,
-    // ── Fused: f32/f64 comparison + local_set ────────────────────────────────
+    // Fused: f32/f64 comparison + local_set
     .f32_eq_to_local = &handlers.handle_f32_eq_to_local,
     .f32_ne_to_local = &handlers.handle_f32_ne_to_local,
     .f32_lt_to_local = &handlers.handle_f32_lt_to_local,
@@ -540,7 +540,7 @@ pub const handler_table: encode.HandlerTable = .{
     .f64_gt_to_local = &handlers.handle_f64_gt_to_local,
     .f64_le_to_local = &handlers.handle_f64_le_to_local,
     .f64_ge_to_local = &handlers.handle_f64_ge_to_local,
-    // ── Fused: binop-imm-to-local (Candidate E) ──────────────────────────────
+    // Fused: binop-imm-to-local (Candidate E)
     .i32_add_imm_to_local = &handlers.handle_i32_add_imm_to_local,
     .i32_sub_imm_to_local = &handlers.handle_i32_sub_imm_to_local,
     .i32_mul_imm_to_local = &handlers.handle_i32_mul_imm_to_local,
@@ -559,7 +559,7 @@ pub const handler_table: encode.HandlerTable = .{
     .i64_shl_imm_to_local = &handlers.handle_i64_shl_imm_to_local,
     .i64_shr_s_imm_to_local = &handlers.handle_i64_shr_s_imm_to_local,
     .i64_shr_u_imm_to_local = &handlers.handle_i64_shr_u_imm_to_local,
-    // ── Fused: f32/f64 binop-imm-to-local ─────────────────────────────────
+    // Fused: f32/f64 binop-imm-to-local
     .f32_add_imm_to_local = &handlers.handle_f32_add_imm_to_local,
     .f32_sub_imm_to_local = &handlers.handle_f32_sub_imm_to_local,
     .f32_mul_imm_to_local = &handlers.handle_f32_mul_imm_to_local,
@@ -568,7 +568,7 @@ pub const handler_table: encode.HandlerTable = .{
     .f64_sub_imm_to_local = &handlers.handle_f64_sub_imm_to_local,
     .f64_mul_imm_to_local = &handlers.handle_f64_mul_imm_to_local,
     .f64_div_imm_to_local = &handlers.handle_f64_div_imm_to_local,
-    // ── Fused: local-inplace (Candidate H) ───────────────────────────────────
+    // Fused: local-inplace (Candidate H)
     .i32_add_local_inplace = &handlers.handle_i32_add_local_inplace,
     .i32_sub_local_inplace = &handlers.handle_i32_sub_local_inplace,
     .i32_mul_local_inplace = &handlers.handle_i32_mul_local_inplace,
@@ -587,7 +587,7 @@ pub const handler_table: encode.HandlerTable = .{
     .i64_shl_local_inplace = &handlers.handle_i64_shl_local_inplace,
     .i64_shr_s_local_inplace = &handlers.handle_i64_shr_s_local_inplace,
     .i64_shr_u_local_inplace = &handlers.handle_i64_shr_u_local_inplace,
-    // ── Fused: f32/f64 local-inplace ────────────────────────────────────────
+    // Fused: f32/f64 local-inplace
     .f32_add_local_inplace = &handlers.handle_f32_add_local_inplace,
     .f32_sub_local_inplace = &handlers.handle_f32_sub_local_inplace,
     .f32_mul_local_inplace = &handlers.handle_f32_mul_local_inplace,
@@ -596,18 +596,18 @@ pub const handler_table: encode.HandlerTable = .{
     .f64_sub_local_inplace = &handlers.handle_f64_sub_local_inplace,
     .f64_mul_local_inplace = &handlers.handle_f64_mul_local_inplace,
     .f64_div_local_inplace = &handlers.handle_f64_div_local_inplace,
-    // ── Fused: const-to-local ────────────────────────────────────────────────
+    // Fused: const-to-local
     .i32_const_to_local = &handlers.handle_i32_const_to_local,
     .i64_const_to_local = &handlers.handle_i64_const_to_local,
-    // ── Superinstruction: imm + local_set → imm_to_local ────────────────────
+    // Superinstruction: imm + local_set → imm_to_local
     .i32_imm_to_local = &handlers.handle_i32_imm_to_local,
     .i64_imm_to_local = &handlers.handle_i64_imm_to_local,
-    // ── Fused: global_get-to-local ────────────────────────────────────────────
+    // Fused: global_get-to-local
     .global_get_to_local = &handlers.handle_global_get_to_local,
-    // ── Fused: load-to-local ──────────────────────────────────────────────────
+    // Fused: load-to-local
     .i32_load_to_local = &handlers.handle_i32_load_to_local,
     .i64_load_to_local = &handlers.handle_i64_load_to_local,
-    // ── Fused: compare-imm-jump-if-false (Candidate G) ───────────────────────
+    // Fused: compare-imm-jump-if-false (Candidate G)
     .i32_eq_imm_jump_if_false = &handlers.handle_i32_eq_imm_jump_if_false,
     .i32_ne_imm_jump_if_false = &handlers.handle_i32_ne_imm_jump_if_false,
     .i32_lt_s_imm_jump_if_false = &handlers.handle_i32_lt_s_imm_jump_if_false,
@@ -628,7 +628,7 @@ pub const handler_table: encode.HandlerTable = .{
     .i64_le_u_imm_jump_if_false = &handlers.handle_i64_le_u_imm_jump_if_false,
     .i64_ge_s_imm_jump_if_false = &handlers.handle_i64_ge_s_imm_jump_if_false,
     .i64_ge_u_imm_jump_if_false = &handlers.handle_i64_ge_u_imm_jump_if_false,
-    // ── Fused: f32/f64 compare-imm-jump-if-false ─────────────────────────
+    // Fused: f32/f64 compare-imm-jump-if-false
     .f32_eq_imm_jump_if_false = &handlers.handle_f32_eq_imm_jump_if_false,
     .f32_ne_imm_jump_if_false = &handlers.handle_f32_ne_imm_jump_if_false,
     .f32_lt_imm_jump_if_false = &handlers.handle_f32_lt_imm_jump_if_false,
@@ -641,7 +641,7 @@ pub const handler_table: encode.HandlerTable = .{
     .f64_gt_imm_jump_if_false = &handlers.handle_f64_gt_imm_jump_if_false,
     .f64_le_imm_jump_if_false = &handlers.handle_f64_le_imm_jump_if_false,
     .f64_ge_imm_jump_if_false = &handlers.handle_f64_ge_imm_jump_if_false,
-    // ── compare-imm-jump, true-branch (J-imm) ───────────────────────────
+    // compare-imm-jump, true-branch (J-imm)
     .i32_eq_imm_jump_if_true = &handlers.handle_i32_eq_imm_jump_if_true,
     .i32_ne_imm_jump_if_true = &handlers.handle_i32_ne_imm_jump_if_true,
     .i32_lt_s_imm_jump_if_true = &handlers.handle_i32_lt_s_imm_jump_if_true,
@@ -662,7 +662,7 @@ pub const handler_table: encode.HandlerTable = .{
     .i64_le_u_imm_jump_if_true = &handlers.handle_i64_le_u_imm_jump_if_true,
     .i64_ge_s_imm_jump_if_true = &handlers.handle_i64_ge_s_imm_jump_if_true,
     .i64_ge_u_imm_jump_if_true = &handlers.handle_i64_ge_u_imm_jump_if_true,
-    // ── Fused: f32/f64 compare-imm-jump-if-true ─────────────────────────
+    // Fused: f32/f64 compare-imm-jump-if-true
     .f32_eq_imm_jump_if_true = &handlers.handle_f32_eq_imm_jump_if_true,
     .f32_ne_imm_jump_if_true = &handlers.handle_f32_ne_imm_jump_if_true,
     .f32_lt_imm_jump_if_true = &handlers.handle_f32_lt_imm_jump_if_true,
@@ -675,7 +675,7 @@ pub const handler_table: encode.HandlerTable = .{
     .f64_gt_imm_jump_if_true = &handlers.handle_f64_gt_imm_jump_if_true,
     .f64_le_imm_jump_if_true = &handlers.handle_f64_le_imm_jump_if_true,
     .f64_ge_imm_jump_if_true = &handlers.handle_f64_ge_imm_jump_if_true,
-    // ── SIMD ────────────────────────────────────────────────────────────
+    // SIMD
     .simd_unary = &handlers_simd.handle_simd_unary,
     .simd_binary = &handlers_simd.handle_simd_binary,
     .simd_ternary = &handlers_simd.handle_simd_ternary,

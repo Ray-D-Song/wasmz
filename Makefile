@@ -1,7 +1,7 @@
 BIN      := wasmz
 INSTALL  := $(HOME)/.local/bin
 
-.PHONY: build-debug build release install install-debug install-release uninstall test clib bench
+.PHONY: build-debug build release install install-debug install-release uninstall test clib bench build-wasm
 
 build-debug:
 	zig build -Doptimize=Debug -Dprofiling=true
@@ -50,3 +50,7 @@ bench:
 count-ops:
 	$(MAKE) install-debug
 	./tests/profiling-qjs-fib.sh
+
+build-wasm:
+	zig build wasm
+	@ls -lh zig-out/wasm/wasmz.wasm

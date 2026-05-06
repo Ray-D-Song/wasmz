@@ -57,7 +57,7 @@ const use_mmap = builtin.os.tag == .linux or
     builtin.os.tag == .solaris or
     builtin.os.tag == .illumos;
 
-// ── Owned memory helpers (POSIX mmap strategy) ───────────────────────────────
+// Owned memory helpers (POSIX mmap strategy)
 
 /// OS page alignment for mmap regions.  On macOS this is 16 KiB; on Linux 4 KiB.
 /// WASM_PAGE_SIZE (64 KiB) is always a multiple of this so all offsets are valid.
@@ -104,7 +104,7 @@ fn ownedMmapDeinit(base: []align(mmap_page_align) u8) void {
 
 pub const WASM_PAGE_SIZE: usize = 65536;
 
-// ── Futex bucket table ────────────────────────────────────────────────────────
+// Futex bucket table
 
 /// Number of futex buckets in the wait/notify table.  Must be a power of two.
 const FUTEX_BUCKETS: usize = 64;
@@ -130,7 +130,7 @@ pub const WaitResult = enum(i32) {
     timed_out = 2,
 };
 
-// ── SharedMemoryInner ─────────────────────────────────────────────────────────
+// SharedMemoryInner
 
 /// Inner shared-memory object, heap-allocated and reference-counted via `SharedMemory`.
 ///
@@ -443,7 +443,7 @@ pub const Memory = struct {
         borrowed: []u8,
     },
 
-    // ── constructors ─────────────────────────────────────────────────────────────
+    // constructors
 
     /// Create an exclusively-owned memory.
     ///
@@ -509,7 +509,7 @@ pub const Memory = struct {
         return .{ .kind = .{ .borrowed = slice } };
     }
 
-    // ── cleanup ───────────────────────────────────────────────────────────────────
+    // cleanup
 
     pub fn deinit(self: *Memory) void {
         switch (self.kind) {
@@ -529,7 +529,7 @@ pub const Memory = struct {
         self.* = undefined;
     }
 
-    // ── accessors ─────────────────────────────────────────────────────────────────
+    // accessors
 
     /// Return the currently-live byte slice.
     ///
@@ -558,7 +558,7 @@ pub const Memory = struct {
         return @intCast(self.byteLen() / WASM_PAGE_SIZE);
     }
 
-    // ── Wait / Notify public API ───────────────────────────────────────────────
+    // Wait / Notify public API
     //
     // For owned/borrowed memories, wait/notify are no-ops with the "safe" return
     // values defined by the Wasm spec for non-shared memories:
@@ -592,7 +592,7 @@ pub const Memory = struct {
         };
     }
 
-    // ── memory.grow ───────────────────────────────────────────────────────────
+    // memory.grow
     //
     // Attempts to grow the memory by `delta` pages.
     // Returns the previous page count on success, or std.math.maxInt(u32) on

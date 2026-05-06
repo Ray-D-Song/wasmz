@@ -45,7 +45,7 @@ const OpsCallLeafResolved = extern struct {
     callee_bits: u64,
 };
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// Helpers
 
 inline fn readOps(comptime T: type, ip: [*]u8) T {
     if (@sizeOf(T) == 0) return .{};
@@ -327,7 +327,7 @@ fn invokeHostCallInline(
     return ret;
 }
 
-// ── call ─────────────────────────────────────────────────────────────────────
+// call
 
 inline fn handle_call_resolved_impl(comptime known_arity: u32, ip: [*]u8, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) void {
     _ = r0;
@@ -406,11 +406,11 @@ inline fn handle_call_impl(comptime known_arity: ?u32, ip: [*]u8, slots: [*]RawV
         }
         dispatch.next(ip, instr_stride, slots, frame, env, r0, fp0);
     } else {
-        // ── readOps + inline args already done above ──
+        // readOps + inline args already done above
         var t = profiling.ScopedTimer.start();
         t.lap(&profiling.call_prof.ns_read_ops);
 
-        // ── ensure compiled (lazy JIT) ──────────────────────────────
+        // ensure compiled (lazy JIT)
         const was_pending = if (profiling.enabled) switch (env.functions[ops.func_idx]) {
             .pending => true,
             else => false,
@@ -422,7 +422,7 @@ inline fn handle_call_impl(comptime known_arity: ?u32, ip: [*]u8, slots: [*]RawV
         t.lap(&profiling.call_prof.ns_ensure_compiled);
         if (profiling.enabled and was_pending) profiling.call_prof.lazy_compiles += 1;
 
-        // ── allocate + zero callee slots ─────────────────────────────
+        // allocate + zero callee slots
         const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
         const sp_base = frame.val_sp;
         const callee_slots = allocCalleeSlots(frame, callee_slots_len, arg_slots.len, callee.locals_count, callee.needs_zero) orelse return;
@@ -432,11 +432,11 @@ inline fn handle_call_impl(comptime known_arity: ?u32, ip: [*]u8, slots: [*]RawV
         // invalidating the handler's original `slots` parameter.
         const caller_slots_profiled = frame.callStackTop().slots.ptr;
 
-        // ── copy args (fast paths for common arities) ─────────────────
+        // copy args (fast paths for common arities)
         copyArgsKnown(known_arity, callee_slots, caller_slots_profiled, arg_slots);
         t.lap(&profiling.call_prof.ns_copy_args);
 
-        // ── save ip, push frame, dispatch ────────────────────────────
+        // save ip, push frame, dispatch
         const cur = frame.callStackTop();
         cur.ip = ip + instr_stride;
         const callee_dst: ?ir.Slot = if (ops.dst_valid != 0) @intCast(ops.dst) else null;
@@ -510,7 +510,7 @@ pub fn handle_call_resolved_7(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
     handle_call_resolved_impl(7, ip, frame, env, r0, fp0);
 }
 
-// ── call_to_local ──────────────────────────────────────────────────────────────
+// call_to_local
 // Fused: call + local_set → result written directly to local slot.
 // Replaces: `call { dst=T } + local_set { local=L, src=T }` (handled by compiler)
 // Result: single instruction that writes result directly to local.
@@ -681,7 +681,7 @@ pub fn handle_call_to_local_resolved_7(ip: [*]u8, slots: [*]RawVal, frame: *Disp
     handle_call_to_local_resolved_impl(7, ip, frame, env, r0, fp0);
 }
 
-// ── call_leaf ──────────────────────────────────────────────────────────────────
+// call_leaf
 // Leaf call: inline execute the callee's instructions directly.
 // This eliminates both the call dispatch AND the return dispatch,
 // saving two dispatch events per call.
@@ -856,7 +856,7 @@ pub fn handle_call_leaf_resolved_7(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
     handle_call_leaf_resolved_impl(7, ip, frame, env, r0, fp0);
 }
 
-// ── call_indirect ────────────────────────────────────────────────────────────
+// call_indirect
 
 pub fn handle_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsCallIndirect, ip);
@@ -963,7 +963,7 @@ pub fn handle_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
     }
 }
 
-// ── return_call ──────────────────────────────────────────────────────────────
+// return_call
 
 pub fn handle_return_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     _ = r0;
@@ -1050,7 +1050,7 @@ pub fn handle_return_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     }
 }
 
-// ── return_call_indirect ─────────────────────────────────────────────────────
+// return_call_indirect
 
 pub fn handle_return_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     _ = r0;
@@ -1163,9 +1163,9 @@ pub fn handle_return_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
     }
 }
 
-// ── call_ref ─────────────────────────────────────────────────────────────────
+// call_ref
 
-// ── call_ref ─────────────────────────────────────────────────────────────────
+// call_ref
 
 pub fn handle_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsCallRef, ip);
@@ -1256,7 +1256,7 @@ pub fn handle_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
     }
 }
 
-// ── return_call_ref ──────────────────────────────────────────────────────────
+// return_call_ref
 
 pub fn handle_return_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     _ = r0;

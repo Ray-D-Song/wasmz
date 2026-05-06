@@ -1318,7 +1318,7 @@ pub const Module = struct {
             pos += 1;
 
             switch (op) {
-                // ── no immediate ────────────────────────────────────────────
+                // no immediate
                 0x00, // unreachable
                 0x01, // nop
                 0x05, // else
@@ -1331,10 +1331,10 @@ pub const Module = struct {
                 0x45...0xc4, // most numeric ops (no immediates)
                 => {},
 
-                // ── block / loop / if / try: block type (s33 / valtype) ────
+                // block / loop / if / try: block type (s33 / valtype)
                 0x02, 0x03, 0x04, 0x06 => skipBlockType(body, &pos),
 
-                // ── try_table: block type + handler list ────────────────────
+                // try_table: block type + handler list
                 0x1f => {
                     skipBlockType(body, &pos);
                     // handler count
@@ -1351,72 +1351,72 @@ pub const Module = struct {
                     }
                 },
 
-                // ── br / br_if / rethrow / delegate: depth u32 ─────────────
+                // br / br_if / rethrow / delegate: depth u32
                 0x0c, 0x0d, 0x09, 0x18 => _ = readU32(body, &pos),
 
-                // ── br_table: n+1 depths ────────────────────────────────────
+                // br_table: n+1 depths
                 0x0e => {
                     const n = readU32(body, &pos);
                     var t: u32 = 0;
                     while (t <= n) : (t += 1) _ = readU32(body, &pos);
                 },
 
-                // ── call / return_call → collect callee ─────────────────────
+                // call / return_call → collect callee
                 0x10, 0x12 => {
                     const callee = readU32(body, &pos);
                     try out.append(allocator, callee);
                 },
 
-                // ── call_indirect / return_call_indirect → indirect flag ─────
+                // call_indirect / return_call_indirect → indirect flag
                 0x11, 0x13 => {
                     _ = readU32(body, &pos); // type index
                     _ = readU32(body, &pos); // table index
                     has_indirect = true;
                 },
 
-                // ── call_ref / return_call_ref: type index ──────────────────
+                // call_ref / return_call_ref: type index
                 0x14, 0x15 => _ = readU32(body, &pos),
 
-                // ── catch / throw: tag index ─────────────────────────────────
+                // catch / throw: tag index
                 0x07, 0x08 => _ = readU32(body, &pos),
 
-                // ── select with type: 1-byte count + valtype ────────────────
+                // select with type: 1-byte count + valtype
                 0x1c => {
                     const cnt = readU32(body, &pos);
                     pos += cnt; // each valtype is 1 byte
                 },
 
-                // ── local_get/set/tee, global_get/set, table_get/set ─────────
+                // local_get/set/tee, global_get/set, table_get/set
                 0x20...0x26 => _ = readU32(body, &pos),
 
-                // ── memory load/store instructions: align + offset ───────────
+                // memory load/store instructions: align + offset
                 0x28...0x3e => skipMemImm(body, &pos),
 
-                // ── memory.size / memory.grow: reserved byte ────────────────
+                // memory.size / memory.grow: reserved byte
                 0x3f, 0x40 => _ = readU32(body, &pos),
 
-                // ── i32.const ────────────────────────────────────────────────
+                // i32.const
                 0x41 => skipS32(body, &pos),
 
-                // ── i64.const ────────────────────────────────────────────────
+                // i64.const
                 0x42 => skipS64(body, &pos),
 
-                // ── f32.const ────────────────────────────────────────────────
+                // f32.const
                 0x43 => pos += 4,
 
-                // ── f64.const ────────────────────────────────────────────────
+                // f64.const
                 0x44 => pos += 8,
 
-                // ── ref.null: heap type ──────────────────────────────────────
+                // ref.null: heap type
                 0xd0 => skipHeapType(body, &pos),
 
-                // ── ref.func: func index ─────────────────────────────────────
+                // ref.func: func index
                 0xd2 => _ = readU32(body, &pos),
 
-                // ── ref.is_null, ref.as_non_null, ref.eq ────────────────────
+                // ref.is_null, ref.as_non_null, ref.eq
                 0xd1, 0xd3, 0xd5 => {},
 
-                // ── prefix 0xfb (GC) ─────────────────────────────────────────
+                // prefix 0xfb (GC)
                 0xfb => {
                     const sub = readU32(body, &pos);
                     switch (sub) {
@@ -1475,7 +1475,7 @@ pub const Module = struct {
                     }
                 },
 
-                // ── prefix 0xfc (misc / bulk memory / table) ─────────────────
+                // prefix 0xfc (misc / bulk memory / table)
                 0xfc => {
                     const sub = readU32(body, &pos);
                     switch (sub) {
@@ -1513,7 +1513,7 @@ pub const Module = struct {
                     }
                 },
 
-                // ── prefix 0xfd (SIMD): sub-opcode + operands ────────────────
+                // prefix 0xfd (SIMD): sub-opcode + operands
                 0xfd => {
                     const sub = readU32(body, &pos);
                     switch (sub) {
@@ -1536,13 +1536,13 @@ pub const Module = struct {
                     }
                 },
 
-                // ── prefix 0xfe (threads/atomics): sub-opcode + mem imm ──────
+                // prefix 0xfe (threads/atomics): sub-opcode + mem imm
                 0xfe => {
                     _ = readU32(body, &pos); // sub-opcode
                     skipMemImm(body, &pos);
                 },
 
-                // ── everything else: no immediate (numeric/comparison/convert) ─
+                // everything else: no immediate (numeric/comparison/convert)
                 else => {},
             }
         }
@@ -1780,7 +1780,7 @@ pub const Module = struct {
         self.* = undefined;
     }
 
-    // ── deinit helpers ───────────────────────────────────────────────────────────
+    // deinit helpers
 
     /// Clear the data-slice references of all *active* data segments.
     ///
@@ -1818,7 +1818,7 @@ pub const Module = struct {
         exports_map.deinit(allocator);
     }
 
-    // ── compile helpers ──────────────────────────────────────────────────────────
+    // compile helpers
 
     /// Insert a function export entry into the exports map.
     /// The export name `name` will be copied to heap memory (`owned_name`), and the exports map is responsible for its lifecycle.
@@ -2506,16 +2506,13 @@ fn buildWasmOp(
     } else try translate_mod.operatorToWasmOp(info);
 }
 
-// ── Decode-to-lower: fused opcode decode + lowering in one pass ──────────────
-//
+// Decode-to-lower: fused opcode decode + lowering in one pass
 // Instead of: parser.readSingleOperator() → OperatorInformation → lowerOpFromInfo()
 // We do:      read opcode byte → inline decode operands → call lower methods directly.
-//
 // This eliminates:
 //   1. The OperatorInformation intermediate struct construction
 //   2. The second opcode dispatch in lowerOpFromInfo
 //   3. Temporary allocations for operands that are immediately consumed
-//
 // For prefix opcodes (0xfb/0xfc/0xfd/0xfe) and the legacy EH opcodes,
 // we fall back to the old path since they're less common and more complex.
 
@@ -2537,7 +2534,7 @@ fn decodeAndLower(
         return error.UnknownOperator;
     };
 
-    // ── Prefix opcodes: fall back to full readSingleOperator + lowerOpFromInfo ──
+    // Prefix opcodes: fall back to full readSingleOperator + lowerOpFromInfo
     switch (code) {
         .prefix_0xfb, .prefix_0xfc, .prefix_0xfd, .prefix_0xfe => {
             // Reset cursor to before the opcode byte so readSingleOperator can
@@ -2553,7 +2550,7 @@ fn decodeAndLower(
         else => {},
     }
 
-    // ── Dead-code elimination ────────────────────────────────────────────────
+    // Dead-code elimination
     var was_unreachable = false;
     if (lower.is_unreachable) {
         switch (code) {
@@ -2597,13 +2594,13 @@ fn decodeAndLower(
         }
     }
 
-    // ── Main dispatch: decode operands inline + lower directly ────────────────
+    // Main dispatch: decode operands inline + lower directly
     // Capture and clear r0 accumulator state before dispatch.
     const saved_r0 = lower.r0_slot;
     lower.r0_slot = null;
 
     switch (code) {
-        // ── No-operand simple ops ────────────────────────────────────────────
+        // No-operand simple ops
         .unreachable_ => {
             try lower.emit(.unreachable_);
             lower.is_unreachable = true;
@@ -2613,7 +2610,7 @@ fn decodeAndLower(
             _ = try lower.pop_slot();
         },
 
-        // ── Structured control flow ──────────────────────────────────────────
+        // Structured control flow
         .block => {
             const block_type = try translate_mod.wasmBlockTypeFromType(try p.read_type_checked());
             try lower.lowerOp(.{ .block = block_type });
@@ -2643,7 +2640,7 @@ fn decodeAndLower(
             try lower.lowerOp(.{ .br_table = .{ .targets = targets } });
         },
 
-        // ── Locals & globals ─────────────────────────────────────────────────
+        // Locals & globals
         .local_get => {
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
             const local = p.read_var_uint32();
@@ -2688,7 +2685,7 @@ fn decodeAndLower(
             try lower.emit(.{ .global_set = .{ .src = src, .global_idx = global_idx } });
         },
 
-        // ── Constants ────────────────────────────────────────────────────────
+        // Constants
         .i32_const => {
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
             const value = p.read_var_int32();
@@ -2722,7 +2719,7 @@ fn decodeAndLower(
             try lower.stack.push(lower.allocator, dst);
         },
 
-        // ── i32 binary ───────────────────────────────────────────────────────
+        // i32 binary
         .i32_add => try lower.lower_binary_op("i32_add", saved_r0),
         .i32_sub => try lower.lower_binary_op("i32_sub", saved_r0),
         .i32_mul => try lower.lower_binary_op("i32_mul", saved_r0),
@@ -2739,7 +2736,7 @@ fn decodeAndLower(
         .i32_rotl => try lower.lower_binary_op("i32_rotl", saved_r0),
         .i32_rotr => try lower.lower_binary_op("i32_rotr", saved_r0),
 
-        // ── i64 binary ───────────────────────────────────────────────────────
+        // i64 binary
         .i64_add => try lower.lower_binary_op("i64_add", saved_r0),
         .i64_sub => try lower.lower_binary_op("i64_sub", saved_r0),
         .i64_mul => try lower.lower_binary_op("i64_mul", saved_r0),
@@ -2756,7 +2753,7 @@ fn decodeAndLower(
         .i64_rotl => try lower.lower_binary_op("i64_rotl", saved_r0),
         .i64_rotr => try lower.lower_binary_op("i64_rotr", saved_r0),
 
-        // ── f32 binary ───────────────────────────────────────────────────────
+        // f32 binary
         .f32_add => try lower.lower_binary_op("f32_add", saved_r0),
         .f32_sub => try lower.lower_binary_op("f32_sub", saved_r0),
         .f32_mul => try lower.lower_binary_op("f32_mul", saved_r0),
@@ -2765,7 +2762,7 @@ fn decodeAndLower(
         .f32_max => try lower.lower_binary_op("f32_max", saved_r0),
         .f32_copysign => try lower.lower_binary_op("f32_copysign", saved_r0),
 
-        // ── f64 binary ───────────────────────────────────────────────────────
+        // f64 binary
         .f64_add => try lower.lower_binary_op("f64_add", saved_r0),
         .f64_sub => try lower.lower_binary_op("f64_sub", saved_r0),
         .f64_mul => try lower.lower_binary_op("f64_mul", saved_r0),
@@ -2774,17 +2771,17 @@ fn decodeAndLower(
         .f64_max => try lower.lower_binary_op("f64_max", saved_r0),
         .f64_copysign => try lower.lower_binary_op("f64_copysign", saved_r0),
 
-        // ── i32 unary ────────────────────────────────────────────────────────
+        // i32 unary
         .i32_clz => try lower.lower_unary_op("i32_clz"),
         .i32_ctz => try lower.lower_unary_op("i32_ctz"),
         .i32_popcnt => try lower.lower_unary_op("i32_popcnt"),
 
-        // ── i64 unary ────────────────────────────────────────────────────────
+        // i64 unary
         .i64_clz => try lower.lower_unary_op("i64_clz"),
         .i64_ctz => try lower.lower_unary_op("i64_ctz"),
         .i64_popcnt => try lower.lower_unary_op("i64_popcnt"),
 
-        // ── f32 unary ────────────────────────────────────────────────────────
+        // f32 unary
         .f32_abs => try lower.lower_unary_op("f32_abs"),
         .f32_neg => try lower.lower_unary_op("f32_neg"),
         .f32_ceil => try lower.lower_unary_op("f32_ceil"),
@@ -2793,7 +2790,7 @@ fn decodeAndLower(
         .f32_nearest => try lower.lower_unary_op("f32_nearest"),
         .f32_sqrt => try lower.lower_unary_op("f32_sqrt"),
 
-        // ── f64 unary ────────────────────────────────────────────────────────
+        // f64 unary
         .f64_abs => try lower.lower_unary_op("f64_abs"),
         .f64_neg => try lower.lower_unary_op("f64_neg"),
         .f64_ceil => try lower.lower_unary_op("f64_ceil"),
@@ -2802,7 +2799,7 @@ fn decodeAndLower(
         .f64_nearest => try lower.lower_unary_op("f64_nearest"),
         .f64_sqrt => try lower.lower_unary_op("f64_sqrt"),
 
-        // ── i32 comparisons ──────────────────────────────────────────────────
+        // i32 comparisons
         .i32_eqz => try lower.lower_unary_op("i32_eqz"),
         .i32_eq => try lower.lower_compare_op("i32_eq"),
         .i32_ne => try lower.lower_compare_op("i32_ne"),
@@ -2815,7 +2812,7 @@ fn decodeAndLower(
         .i32_ge_s => try lower.lower_compare_op("i32_ge_s"),
         .i32_ge_u => try lower.lower_compare_op("i32_ge_u"),
 
-        // ── i64 comparisons ──────────────────────────────────────────────────
+        // i64 comparisons
         .i64_eqz => try lower.lower_unary_op("i64_eqz"),
         .i64_eq => try lower.lower_compare_op("i64_eq"),
         .i64_ne => try lower.lower_compare_op("i64_ne"),
@@ -2828,7 +2825,7 @@ fn decodeAndLower(
         .i64_ge_s => try lower.lower_compare_op("i64_ge_s"),
         .i64_ge_u => try lower.lower_compare_op("i64_ge_u"),
 
-        // ── f32 comparisons ──────────────────────────────────────────────────
+        // f32 comparisons
         .f32_eq => try lower.lower_compare_op("f32_eq"),
         .f32_ne => try lower.lower_compare_op("f32_ne"),
         .f32_lt => try lower.lower_compare_op("f32_lt"),
@@ -2836,7 +2833,7 @@ fn decodeAndLower(
         .f32_le => try lower.lower_compare_op("f32_le"),
         .f32_ge => try lower.lower_compare_op("f32_ge"),
 
-        // ── f64 comparisons ──────────────────────────────────────────────────
+        // f64 comparisons
         .f64_eq => try lower.lower_compare_op("f64_eq"),
         .f64_ne => try lower.lower_compare_op("f64_ne"),
         .f64_lt => try lower.lower_compare_op("f64_lt"),
@@ -2844,7 +2841,7 @@ fn decodeAndLower(
         .f64_le => try lower.lower_compare_op("f64_le"),
         .f64_ge => try lower.lower_compare_op("f64_ge"),
 
-        // ── Conversions & sign-extension ─────────────────────────────────────
+        // Conversions & sign-extension
         .i32_wrap_i64 => try lower.lower_convert_op("i32_wrap_i64"),
         .i32_trunc_f32_s => try lower.lower_convert_op("i32_trunc_f32_s"),
         .i32_trunc_f32_u => try lower.lower_convert_op("i32_trunc_f32_u"),
@@ -2876,7 +2873,7 @@ fn decodeAndLower(
         .i64_extend16_s => try lower.lower_convert_op("i64_extend16_s"),
         .i64_extend32_s => try lower.lower_convert_op("i64_extend32_s"),
 
-        // ── Memory loads ─────────────────────────────────────────────────────
+        // Memory loads
         .i32_load => {
             const offset = (try p.read_memory_immediate()).offset;
             const addr = try lower.pop_slot();
@@ -2976,7 +2973,7 @@ fn decodeAndLower(
             try lower.stack.push(lower.allocator, dst);
         },
 
-        // ── Memory stores ────────────────────────────────────────────────────
+        // Memory stores
         .i32_store => {
             const offset = (try p.read_memory_immediate()).offset;
             const src = try lower.pop_slot();
@@ -3032,7 +3029,7 @@ fn decodeAndLower(
             try lower.emit(.{ .f64_store = .{ .addr = addr, .src = src, .offset = offset } });
         },
 
-        // ── Bulk memory ──────────────────────────────────────────────────────
+        // Bulk memory
         .memory_size => {
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
             _ = p.read_var_uint32();
@@ -3049,14 +3046,14 @@ fn decodeAndLower(
             try lower.emit(.{ .memory_grow = .{ .dst = dst, .delta = delta } });
         },
 
-        // ── Return ───────────────────────────────────────────────────────────
+        // Return
         .return_ => {
             const value = lower.stack.pop();
             try lower.emit(.{ .ret = .{ .value = value } });
             lower.is_unreachable = true;
         },
 
-        // ── Select ───────────────────────────────────────────────────────────
+        // Select
         .select => {
             const cond = try lower.pop_slot();
             const val2 = try lower.pop_slot();
@@ -3079,7 +3076,7 @@ fn decodeAndLower(
             try lower.stack.push(lower.allocator, dst);
         },
 
-        // ── Reference types ──────────────────────────────────────────────────
+        // Reference types
         .ref_null => {
             _ = try p.read_heap_type_checked();
             const dst = lower.alloc_slot();
@@ -3113,7 +3110,7 @@ fn decodeAndLower(
             try lower.stack.push(lower.allocator, dst);
         },
 
-        // ── Table instructions ───────────────────────────────────────────────
+        // Table instructions
         .table_get => {
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
             const table_index = p.read_var_uint32();
@@ -3130,7 +3127,7 @@ fn decodeAndLower(
             try lower.emit(.{ .table_set = .{ .table_index = table_index, .index = index, .value = value } });
         },
 
-        // ── Branch-on-ref opcodes ────────────────────────────────────────────
+        // Branch-on-ref opcodes
         .br_on_null => {
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
             const depth = p.read_var_uint32();
@@ -3142,12 +3139,12 @@ fn decodeAndLower(
             try lower.lowerOp(.{ .br_on_non_null = depth });
         },
 
-        // ── Throw-ref ────────────────────────────────────────────────────────
+        // Throw-ref
         .throw_ref => {
             try lower.lowerOp(.throw_ref);
         },
 
-        // ── 9 special opcodes: inline resolver logic ─────────────────────────
+        // 9 special opcodes: inline resolver logic
         .call => {
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
             const func_idx = p.read_var_uint32();
@@ -3257,7 +3254,7 @@ fn decodeAndLower(
             unreachable;
         },
 
-        // ── Legacy EH opcodes (try_, catch_, catch_all, rethrow, delegate) ───
+        // Legacy EH opcodes (try_, catch_, catch_all, rethrow, delegate)
         // These should only appear in the legacy path. If encountered in the
         // new-EH path, they have no operands to lower here; fall back.
         .try_ => {
@@ -3283,10 +3280,10 @@ fn decodeAndLower(
             return error.UnsupportedOperator;
         },
 
-        // ── Prefix opcodes already handled above ─────────────────────────────
+        // Prefix opcodes already handled above
         .prefix_0xfb, .prefix_0xfc, .prefix_0xfd, .prefix_0xfe => unreachable,
 
-        // ── Anything else (unexpected single-byte opcode) ────────────────────
+        // Anything else (unexpected single-byte opcode)
         else => {
             return error.UnknownOperator;
         },

@@ -14,7 +14,7 @@ pub const MappedFile = struct {
     /// The mapped read-only byte slice.
     data: []align(page_align) const u8,
 
-    // ── Windows-only bookkeeping ─────────────────────────────────────────────
+    // Windows-only bookkeeping
     /// Section handle that must be closed after unmapping (Windows only).
     section_handle: if (is_windows) std.os.windows.HANDLE else void =
         if (is_windows) undefined else {},
@@ -54,7 +54,7 @@ pub fn unmap(m: MappedFile) void {
     }
 }
 
-// ── POSIX implementation ─────────────────────────────────────────────────────
+// POSIX implementation
 
 fn mapFilePosix(fd: std.posix.fd_t, size: u64) MapError!MappedFile {
     const len: usize = std.math.cast(usize, size) orelse return error.MapFailed;
@@ -69,7 +69,7 @@ fn mapFilePosix(fd: std.posix.fd_t, size: u64) MapError!MappedFile {
     return .{ .data = mapped };
 }
 
-// ── Windows implementation ───────────────────────────────────────────────────
+// Windows implementation
 
 fn mapFileWindows(handle: std.os.windows.HANDLE, size: u64) MapError!MappedFile {
     const windows = std.os.windows;
