@@ -4,6 +4,7 @@ const encode = @import("../../compiler/encode/encode.zig");
 const dispatch = @import("../dispatch.zig");
 const core = @import("core");
 const common = @import("common.zig");
+const profiling = @import("../../utils/profiling.zig");
 
 const RawVal = dispatch.RawVal;
 const Trap = dispatch.Trap;
@@ -14,7 +15,7 @@ const readOps = common.readOps;
 const stride = common.stride;
 const trapReturn = common.trapReturn;
 const effectiveAddr = common.effectiveAddr;
-const currentRssBytes = common.currentRssBytes;
+const currentRssBytes = profiling.currentRssBytes;
 
 // ── Memory Loads ────────────────────────────────────────────────────────────
 

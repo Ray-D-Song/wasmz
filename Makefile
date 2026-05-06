@@ -8,7 +8,7 @@ build-debug:
 	@ls -lh zig-out/bin/$(BIN)
 
 build:
-	zig build -Doptimize=ReleaseSafe
+	zig build -Doptimize=ReleaseSafe -Dprofiling=true
 	@ls -lh zig-out/bin/$(BIN)
 
 release:
