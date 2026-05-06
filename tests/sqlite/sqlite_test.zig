@@ -37,7 +37,7 @@ const sqlite3_wasm = @embedFile("fixtures/sqlite_wasm/sqlite3.wasm");
 
 const SQLITE_OK = 0;
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
+// Helpers
 
 /// Write `data` into wasm linear memory at `offset`.
 fn writeWasmMem(instance: *Instance, offset: u32, data: []const u8) void {
@@ -139,7 +139,7 @@ fn execSql(instance: *Instance, db_handle: i32, sql: []const u8) ![]const u8 {
     return readWasmBytes(instance, @intCast(buf_ptr), @intCast(buf_len));
 }
 
-// ── Test setup helper ──────────────────────────────────────────────────────────
+// Test setup helper
 
 /// TestCtx is always heap-allocated so that Store and Instance never move.
 /// Store.linkBudget() must be called after Store reaches its permanent address,
@@ -206,7 +206,7 @@ const TestCtx = struct {
     }
 };
 
-// ── Test 1: Module loads and reactor initializes ───────────────────────────────
+// Test 1: Module loads and reactor initializes
 
 test "sqlite: module loads and _initialize succeeds" {
     const ctx = try TestCtx.create();
@@ -216,7 +216,7 @@ test "sqlite: module loads and _initialize succeeds" {
     try testing.expect(ctx.instance.isReactor());
 }
 
-// ── Test 2: alloc / dealloc roundtrip ─────────────────────────────────────────
+// Test 2: alloc / dealloc roundtrip
 
 test "sqlite: alloc and dealloc roundtrip" {
     const ctx = try TestCtx.create();
@@ -233,7 +233,7 @@ test "sqlite: alloc and dealloc roundtrip" {
     try wasmDealloc(&ctx.instance, ptr, 64);
 }
 
-// ── Test 3: open and close in-memory database ─────────────────────────────────
+// Test 3: open and close in-memory database
 
 test "sqlite: open and close :memory: database" {
     const ctx = try TestCtx.create();
@@ -246,7 +246,7 @@ test "sqlite: open and close :memory: database" {
     try testing.expectEqual(SQLITE_OK, rc);
 }
 
-// ── Test 4: CREATE TABLE succeeds ─────────────────────────────────────────────
+// Test 4: CREATE TABLE succeeds
 
 test "sqlite: CREATE TABLE executes without error" {
     const ctx = try TestCtx.create();
@@ -258,7 +258,7 @@ test "sqlite: CREATE TABLE executes without error" {
     _ = try execSql(&ctx.instance, db, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, score REAL)");
 }
 
-// ── Test 5: INSERT and last_insert_rowid ──────────────────────────────────────
+// Test 5: INSERT and last_insert_rowid
 
 test "sqlite: INSERT and last_insert_rowid" {
     const ctx = try TestCtx.create();
@@ -275,7 +275,7 @@ test "sqlite: INSERT and last_insert_rowid" {
     try testing.expectEqual(@as(i64, 1), rowid);
 }
 
-// ── Test 6: db_changes ────────────────────────────────────────────────────────
+// Test 6: db_changes
 
 test "sqlite: db_changes returns correct count" {
     const ctx = try TestCtx.create();
@@ -291,7 +291,7 @@ test "sqlite: db_changes returns correct count" {
     try testing.expectEqual(@as(i32, 3), changes);
 }
 
-// ── Test 7: SELECT returns rows ───────────────────────────────────────────────
+// Test 7: SELECT returns rows
 
 test "sqlite: SELECT returns correct rows in result buffer" {
     const ctx = try TestCtx.create();
@@ -309,7 +309,7 @@ test "sqlite: SELECT returns correct rows in result buffer" {
     try testing.expectEqualSlices(u8, "1\tfoo\n2\tbar\n3\tbaz\n", result);
 }
 
-// ── Test 8: UPDATE ────────────────────────────────────────────────────────────
+// Test 8: UPDATE
 
 test "sqlite: UPDATE modifies rows correctly" {
     const ctx = try TestCtx.create();
@@ -326,7 +326,7 @@ test "sqlite: UPDATE modifies rows correctly" {
     try testing.expectEqualSlices(u8, "42\n", result);
 }
 
-// ── Test 9: Multiple independent databases ────────────────────────────────────
+// Test 9: Multiple independent databases
 
 test "sqlite: multiple independent :memory: databases" {
     const ctx = try TestCtx.create();
@@ -353,7 +353,7 @@ test "sqlite: multiple independent :memory: databases" {
     try testing.expectEqualSlices(u8, "from_db2\n", r2);
 }
 
-// ── Test 10: SQL aggregate function ───────────────────────────────────────────
+// Test 10: SQL aggregate function
 
 test "sqlite: SQL aggregate SUM works" {
     const ctx = try TestCtx.create();

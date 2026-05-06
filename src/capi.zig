@@ -29,7 +29,7 @@ const Trap = wasmz.Trap;
 
 const alloc = std.heap.c_allocator;
 
-// ── Error type ────────────────────────────────────────────────────────────────
+// Error type
 
 /// Opaque error handle exposed to C.
 /// The struct is extern so that its pointer is ABI-stable; the message field
@@ -77,7 +77,7 @@ export fn wasmz_error_message(err: ?*const wasmz_error_t) [*:0]const u8 {
     return e.message;
 }
 
-// ── Value type ────────────────────────────────────────────────────────────────
+// Value type
 
 /// Must stay in sync with the C enum wasmz_val_kind_t in include/wasmz.h
 const ValKind = enum(c_int) {
@@ -119,7 +119,7 @@ fn rawToCval(raw: RawVal, kind: ValKind) wasmz_val_t {
     return v;
 }
 
-// ── Engine ────────────────────────────────────────────────────────────────────
+// Engine
 
 /// Opaque handle; the C header forward-declares this as `struct wasmz_engine`.
 pub const wasmz_engine_t = extern struct {
@@ -156,7 +156,7 @@ export fn wasmz_engine_delete(handle: ?*wasmz_engine_t) void {
     alloc.destroy(h);
 }
 
-// ── Store ─────────────────────────────────────────────────────────────────────
+// Store
 
 pub const wasmz_store_t = extern struct {
     ptr: *anyopaque,
@@ -190,7 +190,7 @@ export fn wasmz_store_delete(handle: ?*wasmz_store_t) void {
     alloc.destroy(h);
 }
 
-// ── Module ────────────────────────────────────────────────────────────────────
+// Module
 
 pub const wasmz_module_t = extern struct {
     ptr: *anyopaque,
@@ -239,7 +239,7 @@ export fn wasmz_module_delete(handle: ?*wasmz_module_t) void {
     alloc.destroy(h);
 }
 
-// ── Instance ──────────────────────────────────────────────────────────────────
+// Instance
 
 pub const wasmz_instance_t = extern struct {
     ptr: *anyopaque,
@@ -399,7 +399,7 @@ export fn wasmz_instance_is_reactor(handle: ?*const wasmz_instance_t) c_int {
     return if (inst.isReactor()) 1 else 0;
 }
 
-// ── Memory ───────────────────────────────────────────────────────────────────
+// Memory
 
 export fn wasmz_instance_memory(handle: ?*wasmz_instance_t) ?[*]u8 {
     const h = handle orelse return null;
@@ -422,7 +422,7 @@ export fn wasmz_instance_memory_grow(handle: ?*wasmz_instance_t, pages: u32) c_i
     return 0;
 }
 
-// ── Linker ─────────────────────────────────────────────────────────────────
+// Linker
 
 pub const wasmz_linker_t = extern struct {
     ptr: *anyopaque,
@@ -572,7 +572,7 @@ export fn wasmz_instance_new_with_linker(
     return null;
 }
 
-// ── Host Context ────────────────────────────────────────────────────────────
+// Host Context
 
 export fn wasmz_context_memory(ctx: ?*anyopaque) ?[*]u8 {
     const c: *HostContext = @ptrCast(@alignCast(ctx));
@@ -625,7 +625,7 @@ export fn wasmz_context_trap(ctx: ?*anyopaque, msg_ptr: ?[*:0]const u8) void {
     c.pending_trap = trap;
 }
 
-// ── Module introspection ───────────────────────────────────────────────
+// Module introspection
 
 export fn wasmz_module_has_memory(handle: ?*const wasmz_module_t) c_int {
     const h = handle orelse return 0;
@@ -668,7 +668,7 @@ export fn wasmz_module_export_name(handle: ?*const wasmz_module_t, index: usize)
     return null;
 }
 
-// ── Store user data ───────────────────────────────────────────────────────
+// Store user data
 
 export fn wasmz_store_set_user_data(handle: ?*wasmz_store_t, user_data: ?*anyopaque) void {
     const h = handle orelse return;
@@ -682,7 +682,7 @@ export fn wasmz_store_get_user_data(handle: ?*wasmz_store_t) ?*anyopaque {
     return store.user_data;
 }
 
-// ── VM stats ────────────────────────────────────────────────────────────────
+// VM stats
 
 pub const wasmz_vm_stats_t = extern struct {
     val_stack_bytes: usize,

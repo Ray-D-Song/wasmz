@@ -27,7 +27,7 @@ fn releaseArc(arc: ArcModule) void {
     }
 }
 
-// ── Fixtures ──────────────────────────────────────────────────────────────────
+// Fixtures
 
 /// New proposal: try_table + catch $t → returns i32 payload (42)
 const eh_new_catch_wasm = @embedFile("fixtures/eh_new_catch.wasm");
@@ -47,7 +47,7 @@ const eh_legacy_catch_all_wasm = @embedFile("fixtures/eh_legacy_catch_all.wasm")
 /// Legacy proposal: inner catch_all rethrows (rethrow 0) → outer catch $t returns 42
 const eh_legacy_rethrow_wasm = @embedFile("fixtures/eh_legacy_rethrow.wasm");
 
-// ── New proposal tests ────────────────────────────────────────────────────────
+// New proposal tests
 
 test "EH new: try_table catches thrown exception and returns payload" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
@@ -92,7 +92,7 @@ test "EH new: throw_ref rethrows exception causing UnhandledException trap" {
     }
 }
 
-// ── Legacy proposal tests ─────────────────────────────────────────────────────
+// Legacy proposal tests
 
 test "EH legacy: try/catch catches thrown exception and returns payload" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});

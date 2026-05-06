@@ -480,7 +480,7 @@ pub const GcHeap = struct {
         }) catch {};
     }
 
-    // ── Exception object helpers ────────────────────────────────────────────────
+    // Exception object helpers
     //
     // Exception object layout on the heap (all fields little-endian):
     //   Offset  0: GcHeader (8 bytes) — kind_bits=GcKind.Exception, type_index=tag_index
@@ -552,7 +552,7 @@ pub const GcHeap = struct {
         struct_layouts: []const ?StructLayout,
         array_layouts: []const ?ArrayLayout,
     ) void {
-        // ── Phase 1: Mark ───────────────────────────────────────────────────
+        // Phase 1: Mark
         // Use an explicit ArrayListUnmanaged as the worklist so we never overflow
         // the native call stack regardless of object graph depth.
         var worklist = std.ArrayListUnmanaged(u32){};
@@ -654,7 +654,7 @@ pub const GcHeap = struct {
             }
         }
 
-        // ── Phase 2: Sweep ──────────────────────────────────────────────────
+        // Phase 2: Sweep
         // Iterate live_objects in reverse so swap-remove doesn't skip entries.
         var i: usize = self.live_objects.items.len;
         while (i > 0) {

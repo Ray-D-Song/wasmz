@@ -49,7 +49,7 @@ const simd = core.simd;
 
 const HANDLER_SIZE = dispatch.HANDLER_SIZE;
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// Helpers
 
 /// Read the operand struct for an instruction.
 /// `ip` points to the start of the instruction (the 8-byte handler pointer).

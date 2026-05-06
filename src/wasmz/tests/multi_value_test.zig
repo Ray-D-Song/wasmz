@@ -18,12 +18,12 @@ const Instance = instance_mod.Instance;
 const Linker = host_mod.Linker;
 const RawVal = vm_mod.RawVal;
 
-// ── Fixtures ──────────────────────────────────────────────────────────────────
+// Fixtures
 
 /// Multi-value block: block (type $two_i32) yields (i32, i32), then i32.add → i32.
 const multi_value_block_wasm = @embedFile("fixtures/multi_value_block.wasm");
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// Tests
 
 test "multi-value block: block yields two i32 values that are then added" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});

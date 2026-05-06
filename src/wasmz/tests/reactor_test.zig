@@ -45,7 +45,7 @@ fn releaseArc(arc: ArcModule) void {
     }
 }
 
-// ── Test 1: isReactor / isCommand ─────────────────────────────────────────────
+// Test 1: isReactor / isCommand
 
 test "reactor: isReactor() true, isCommand() false for no-_start module" {
     var engine = try makeEngine();
@@ -64,7 +64,7 @@ test "reactor: isReactor() true, isCommand() false for no-_start module" {
     try testing.expect(!instance.isCommand());
 }
 
-// ── Test 2: isCommand() true for a module with _start ─────────────────────────
+// Test 2: isCommand() true for a module with _start
 
 test "reactor: isCommand() true for module with _start export" {
     // Minimal wasm with only a _start export (no-op)
@@ -93,7 +93,7 @@ test "reactor: isCommand() true for module with _start export" {
     try testing.expect(!instance.isReactor());
 }
 
-// ── Test 3: initializeReactor() calls _initialize ────────────────────────────
+// Test 3: initializeReactor() calls _initialize
 
 test "reactor: initializeReactor() invokes _initialize and sets global" {
     var engine = try makeEngine();
@@ -132,7 +132,7 @@ test "reactor: initializeReactor() invokes _initialize and sets global" {
     }
 }
 
-// ── Test 4: initializeReactor() returns null for module without _initialize ───
+// Test 4: initializeReactor() returns null for module without _initialize
 
 test "reactor: initializeReactor() returns null when no _initialize export" {
     // Minimal module with only `add` export, no _initialize
@@ -162,7 +162,7 @@ test "reactor: initializeReactor() returns null when no _initialize export" {
     try testing.expectEqual(@as(?@TypeOf(result.?), null), result);
 }
 
-// ── Test 5: add() correctness after initializeReactor ─────────────────────────
+// Test 5: add() correctness after initializeReactor
 
 test "reactor: add() returns correct value after initializeReactor" {
     var engine = try makeEngine();
@@ -185,7 +185,7 @@ test "reactor: add() returns correct value after initializeReactor" {
     try testing.expectEqual(@as(i32, 42), val.readAs(i32));
 }
 
-// ── Test 6: fib() correctness ─────────────────────────────────────────────────
+// Test 6: fib() correctness
 
 test "reactor: fib() correctness: fib(10) == 55" {
     var engine = try makeEngine();

@@ -1,10 +1,8 @@
 // SIMD vector operation helpers.
-//
 // Pure arithmetic, logic, comparison, and conversion functions that operate
 // on V128 values.  None of these functions reference SimdOpcode -- they are
 // parameterised by lane type T and lane count N, and by comptime-enum
 // selectors for the operation kind.
-//
 // The public surface is consumed exclusively by exec.zig (the dispatcher).
 const std = @import("std");
 const builtin = @import("builtin");

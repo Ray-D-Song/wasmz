@@ -52,7 +52,7 @@ pub const Host = struct {
         self.* = undefined;
     }
 
-    // ── Lazy accessor helpers ─────────────────────────────────────────────
+    // Lazy accessor helpers
 
     /// Returns a pointer to the FdIO subsystem, initializing it on first access.
     fn getFdIO(self: *Host) *FdIO {
@@ -84,7 +84,7 @@ pub const Host = struct {
         return self.env_args.?;
     }
 
-    // ── Public configuration API ──────────────────────────────────────────
+    // Public configuration API
 
     pub fn setArgs(self: *Host, args: []const []const u8) Allocator.Error!void {
         try self.getEnvArgs().setArgs(args);

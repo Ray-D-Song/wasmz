@@ -49,7 +49,7 @@ const helper = core.helper;
 const simd = core.simd;
 
 const HANDLER_SIZE = dispatch.HANDLER_SIZE;
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// Helpers
 
 /// Read the operand struct for an instruction.
 /// `ip` points to the start of the instruction (the 8-byte handler pointer).
@@ -66,7 +66,7 @@ inline fn stride(comptime OpsT: type) usize {
     return HANDLER_SIZE + @sizeOf(OpsT);
 }
 
-// ── Inline cross-platform RSS reading ────────────────────────────────────────
+// Inline cross-platform RSS reading
 // Duplicated/inlined here to avoid cross-module import issues (handlers.zig
 // is inside the wasmz module which cannot import main's utils).
 
@@ -176,7 +176,7 @@ inline fn trapReturnTruncate(frame: *DispatchState, err: helper.TruncateError) v
     });
 }
 
-// ── Terminators ──────────────────────────────────────────────────────────────
+// Terminators
 
 pub fn handle_unreachable(
     ip: [*]u8,
@@ -234,7 +234,7 @@ pub fn handle_ret(
     dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env, 0, 0.0);
 }
 
-// ── Fused binop+ret handlers (Peephole I) ────────────────────────────────────
+// Fused binop+ret handlers (Peephole I)
 // Compute result and return immediately, saving one dispatch event per call.
 
 inline fn doRetWithVal(
@@ -335,7 +335,7 @@ pub fn handle_f64_sub_ret(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const result = slots[ops.lhs].readAs(f64) - slots[ops.rhs].readAs(f64);
     doRetWithVal(frame, env, RawVal.from(result));
 }
-// ── Constants ────────────────────────────────────────────────────────────────
+// Constants
 
 pub fn handle_const_i32(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("constant");
@@ -390,7 +390,7 @@ pub fn handle_const_ref_null(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState,
     dispatch.next(ip, stride(encode.ops.OpsDst), slots, frame, env, r0, fp0);
 }
 
-// ── References ───────────────────────────────────────────────────────────────
+// References
 
 pub fn handle_ref_is_null(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("ref_select");
@@ -421,7 +421,7 @@ pub fn handle_ref_eq(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *c
     dispatch.next(ip, stride(encode.ops.OpsDstLhsRhs), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(eq)))), fp0);
 }
 
-// ── Variables ────────────────────────────────────────────────────────────────
+// Variables
 
 pub fn handle_local_get(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("local_get");
@@ -479,7 +479,7 @@ pub fn handle_copy_jump_if_nz(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
     }
 }
 
-// ── Control flow ─────────────────────────────────────────────────────────────
+// Control flow
 
 pub fn handle_jump(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("jump");
@@ -536,7 +536,7 @@ pub fn handle_select(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *c
     dispatch.next(ip, stride(encode.ops.OpsSelect), slots, frame, env, r0, fp0);
 }
 
-// ── i32 binary arithmetic ────────────────────────────────────────────────────
+// i32 binary arithmetic
 
 fn binOpI32(comptime op: enum { add, sub, mul }, slots: [*]RawVal, ops: encode.ops.OpsDstLhsRhs) i32 {
     const lhs = slots[ops.lhs].readAs(i32);
@@ -703,7 +703,7 @@ pub fn handle_i32_rotr(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
     dispatch.next(ip, stride(encode.ops.OpsDstLhsRhs), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(result)))), fp0);
 }
 
-// ── i64 binary arithmetic ────────────────────────────────────────────────────
+// i64 binary arithmetic
 
 pub fn handle_i64_add(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("misc");
@@ -857,7 +857,7 @@ pub fn handle_i64_rotr(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
     dispatch.next(ip, stride(encode.ops.OpsDstLhsRhs), slots, frame, env, @as(u64, @bitCast(result)), fp0);
 }
 
-// ── f32 binary ───────────────────────────────────────────────────────────────
+// f32 binary
 
 pub fn handle_f32_add(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("misc");
@@ -923,7 +923,7 @@ pub fn handle_f32_copysign(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
     dispatch.next(ip, stride(encode.ops.OpsDstLhsRhs), slots, frame, env, r0, @as(f64, @floatCast(result)));
 }
 
-// ── f64 binary ───────────────────────────────────────────────────────────────
+// f64 binary
 
 pub fn handle_f64_add(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("misc");
@@ -989,7 +989,7 @@ pub fn handle_f64_copysign(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
     dispatch.next(ip, stride(encode.ops.OpsDstLhsRhs), slots, frame, env, r0, result);
 }
 
-// ── Integer unary ────────────────────────────────────────────────────────────
+// Integer unary
 
 pub fn handle_i32_clz(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("unary");
@@ -1048,7 +1048,7 @@ pub fn handle_i64_eqz(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *
     dispatch.next(ip, stride(encode.ops.OpsDstSrc), slots, frame, env, r0, fp0);
 }
 
-// ── Float unary ──────────────────────────────────────────────────────────────
+// Float unary
 
 pub fn handle_f32_abs(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("unary");
@@ -1149,7 +1149,7 @@ pub fn handle_f64_sqrt(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
     dispatch.next(ip, stride(encode.ops.OpsDstSrc), slots, frame, env, r0, fp0);
 }
 
-// ── Comparisons ──────────────────────────────────────────────────────────────
+// Comparisons
 
 fn cmpI32(comptime op: enum { eq, ne, lt_s, lt_u, gt_s, gt_u, le_s, le_u, ge_s, ge_u }, slots: [*]RawVal, ops: encode.ops.OpsDstLhsRhs) void {
     const result: i32 = switch (op) {
@@ -1335,7 +1335,7 @@ pub fn handle_i64_ge_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
     dispatch.next(ip, stride(encode.ops.OpsDstLhsRhs), slots, frame, env, r0, fp0);
 }
 
-// ── Fused: comparison + local_set (cmp_to_local, i32) ───────────────────
+// Fused: comparison + local_set (cmp_to_local, i32)
 
 pub fn handle_i32_eq_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("cmp_to_local");
@@ -1398,7 +1398,7 @@ pub fn handle_i32_ge_u_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchSta
     dispatch.next(ip, stride(encode.ops.OpsCmpToLocal), slots, frame, env, r0, fp0);
 }
 
-// ── Fused: comparison + local_set (cmp_to_local, i64) ───────────────────
+// Fused: comparison + local_set (cmp_to_local, i64)
 
 pub fn handle_i64_eq_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("cmp_to_local");
@@ -1461,7 +1461,7 @@ pub fn handle_i64_ge_u_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchSta
     dispatch.next(ip, stride(encode.ops.OpsCmpToLocal), slots, frame, env, r0, fp0);
 }
 
-// ── Fused: comparison + local_set (cmp_to_local, f32/f64) ───────────────
+// Fused: comparison + local_set (cmp_to_local, f32/f64)
 
 inline fn cmpF32ToLocal(comptime op: enum { eq, ne, lt, gt, le, ge }, ops: encode.ops.OpsCmpToLocal, slots: [*]RawVal) i32 {
     const lhs = slots[ops.lhs].readAs(f32);
@@ -1664,7 +1664,7 @@ pub fn handle_f64_ge(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *c
     dispatch.next(ip, stride(encode.ops.OpsDstLhsRhs), slots, frame, env, r0, fp0);
 }
 
-// ── Conversions ─────────────────────────────────────────────────────────────
+// Conversions
 
 inline fn reinterpretUnsignedAsSigned(comptime T: type, value: UnsignedOf(T)) T {
     return @as(T, @bitCast(value));
@@ -2020,7 +2020,7 @@ pub fn handle_i64_extend32_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState,
     dispatch.next(ip, stride(encode.ops.OpsDstSrc), slots, frame, env, r0, fp0);
 }
 
-// ── Fused: i32 binop-imm (Candidate C) ──────────────────────────────────────
+// Fused: i32 binop-imm (Candidate C)
 
 pub fn handle_i32_add_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2166,7 +2166,7 @@ pub fn handle_i32_ge_u_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
     dispatch.next(ip, stride(encode.ops.OpsBinopImm), slots, frame, env, r0, fp0);
 }
 
-// ── Fused: i32 compare-jump (Candidate F) ───────────────────────────────────
+// Fused: i32 compare-jump (Candidate F)
 // Jumps to rel_target (from instruction start) when the comparison is FALSE.
 
 inline fn cmpJumpI32(
@@ -2262,7 +2262,7 @@ pub fn handle_i32_eqz_jump_if_false(ip: [*]u8, slots: [*]RawVal, frame: *Dispatc
     }
 }
 
-// ── Fused: i32 compare-jump-if-true (Peephole J) ─────────────────────────────
+// Fused: i32 compare-jump-if-true (Peephole J)
 // Jumps to target when comparison is TRUE. Replaces jump_if_false+jump pattern.
 
 inline fn cmpJumpI32True(
@@ -2358,7 +2358,7 @@ pub fn handle_i32_eqz_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
     }
 }
 
-// ── Fused: i32 binop-to-local (Candidate D) ─────────────────────────────────
+// Fused: i32 binop-to-local (Candidate D)
 
 pub fn handle_i32_add_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i32_to_local");
@@ -2415,7 +2415,7 @@ pub fn handle_i32_shr_u_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchSt
     dispatch.next(ip, stride(encode.ops.OpsBinopToLocal), slots, frame, env, r0, fp0);
 }
 
-// ── Fused: i64 binop-imm (Candidate C, i64) ─────────────────────────────────
+// Fused: i64 binop-imm (Candidate C, i64)
 
 pub fn handle_i64_add_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2561,7 +2561,7 @@ pub fn handle_i64_ge_u_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
     dispatch.next(ip, stride(encode.ops.OpsBinopImm64), slots, frame, env, r0, fp0);
 }
 
-// ── Fused: f32/f64 binop-imm ─────────────────────────────────────────────────
+// Fused: f32/f64 binop-imm
 
 pub fn handle_f32_add_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2628,7 +2628,7 @@ pub fn handle_f64_div_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImmF64), slots, frame, env, r0, fp0, RawVal.from(result));
 }
 
-// ── r0 variants: i32 binop-imm-r (lhs from r0 accumulator) ─────────────────
+// r0 variants: i32 binop-imm-r (lhs from r0 accumulator)
 
 pub fn handle_i32_add_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm_r");
@@ -2706,7 +2706,7 @@ pub fn handle_i32_shr_u_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
     dispatch.next(ip, stride(encode.ops.OpsBinopImmR0), slots, frame, env, @as(u64, @bitCast(@as(i64, result))), fp0);
 }
 
-// ── r0 variants: i64 binop-imm-r (lhs from r0 accumulator) ─────────────────
+// r0 variants: i64 binop-imm-r (lhs from r0 accumulator)
 
 pub fn handle_i64_add_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm_r");
@@ -2781,7 +2781,7 @@ pub fn handle_i64_shr_u_imm_r(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
     dispatch.next(ip, stride(encode.ops.OpsBinopImmR064), slots, frame, env, @as(u64, @bitCast(result)), fp0);
 }
 
-// ── Fused: i64 compare-jump (Candidate F, i64) ──────────────────────────────
+// Fused: i64 compare-jump (Candidate F, i64)
 
 inline fn cmpJumpI64(
     comptime op: enum { eq, ne, lt_s, lt_u, gt_s, gt_u, le_s, le_u, ge_s, ge_u },
@@ -2876,7 +2876,7 @@ pub fn handle_i64_eqz_jump_if_false(ip: [*]u8, slots: [*]RawVal, frame: *Dispatc
     }
 }
 
-// ── Fused: i64 compare-jump-if-true (Peephole J) ─────────────────────────────
+// Fused: i64 compare-jump-if-true (Peephole J)
 
 inline fn cmpJumpI64True(
     comptime op: enum { eq, ne, lt_s, lt_u, gt_s, gt_u, le_s, le_u, ge_s, ge_u },
@@ -2971,7 +2971,7 @@ pub fn handle_i64_eqz_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
     }
 }
 
-// ── Fused: f32/f64 compare-jump ─────────────────────────────────────────────
+// Fused: f32/f64 compare-jump
 
 inline fn cmpJumpF32False(
     comptime op: enum { eq, ne, lt, gt, le, ge },
@@ -3074,7 +3074,7 @@ pub fn handle_f64_ge_jump_if_false(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
     cmpJumpF64False(.ge, ip, slots, frame, env, r0, fp0);
 }
 
-// ── Fused: f32/f64 compare-jump-if-true ────────────────────────────────────
+// Fused: f32/f64 compare-jump-if-true
 
 inline fn cmpJumpF32True(
     comptime op: enum { eq, ne, lt, gt, le, ge },
@@ -3177,7 +3177,7 @@ pub fn handle_f64_ge_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *DispatchS
     cmpJumpF64True(.ge, ip, slots, frame, env, r0, fp0);
 }
 
-// ── Fused: i64 binop-to-local (Candidate D, i64) ────────────────────────────
+// Fused: i64 binop-to-local (Candidate D, i64)
 
 pub fn handle_i64_add_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i64_to_local");
@@ -3234,7 +3234,7 @@ pub fn handle_i64_shr_u_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchSt
     dispatch.next(ip, stride(encode.ops.OpsBinopToLocal), slots, frame, env, r0, fp0);
 }
 
-// ── Fused: f32/f64 binop-to-local ────────────────────────────────────────
+// Fused: f32/f64 binop-to-local
 
 pub fn handle_f32_add_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("f32_to_local");
@@ -3285,7 +3285,7 @@ pub fn handle_f64_div_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchStat
     dispatch.next(ip, stride(encode.ops.OpsBinopToLocal), slots, frame, env, r0, fp0);
 }
 
-// ── Fused: binop + local_tee (i32) ──────────────────────────────────────
+// Fused: binop + local_tee (i32)
 
 pub fn handle_i32_add_tee_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("tee_local");
@@ -3369,7 +3369,7 @@ pub fn handle_i32_shr_u_tee_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchS
     dispatch.next(ip, stride(encode.ops.OpsBinopTeeLocal), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(result)))), fp0);
 }
 
-// ── Fused: binop + local_tee (i64) ──────────────────────────────────────
+// Fused: binop + local_tee (i64)
 
 pub fn handle_i64_add_tee_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("tee_local");
@@ -3453,7 +3453,7 @@ pub fn handle_i64_shr_u_tee_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchS
     dispatch.next(ip, stride(encode.ops.OpsBinopTeeLocal), slots, frame, env, @as(u64, @bitCast(result)), fp0);
 }
 
-// ── Fused: f32/f64 binop + local_tee ─────────────────────────────────
+// Fused: f32/f64 binop + local_tee
 
 pub fn handle_f32_add_tee_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, _: f64) callconv(.c) void {
     dispatch.countOp("tee_local");
@@ -3551,7 +3551,7 @@ pub const handle_data_drop = memory.handle_data_drop;
 pub const handle_memory_copy = memory.handle_memory_copy;
 pub const handle_memory_fill = memory.handle_memory_fill;
 
-// ── Fused: binop-imm-to-local (Candidate E, i32) ───────────────────────────
+// Fused: binop-imm-to-local (Candidate E, i32)
 // const_i32 + binop + local_set → single instruction writing imm-op result to local.
 
 pub fn handle_i32_add_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
@@ -3618,7 +3618,7 @@ pub fn handle_i32_shr_u_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *Dispat
     dispatch.next(ip, stride(encode.ops.OpsBinopImmToLocal), slots, frame, env, r0, fp0);
 }
 
-// ── Fused: binop-imm-to-local (Candidate E, i64) ───────────────────────────
+// Fused: binop-imm-to-local (Candidate E, i64)
 
 pub fn handle_i64_add_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i64_imm_to_local");
@@ -3684,7 +3684,7 @@ pub fn handle_i64_shr_u_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *Dispat
     dispatch.next(ip, stride(encode.ops.OpsBinopImmToLocal64), slots, frame, env, r0, fp0);
 }
 
-// ── Fused: f32/f64 binop-imm-to-local ─────────────────────────────────
+// Fused: f32/f64 binop-imm-to-local
 
 pub fn handle_f32_add_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("f32_imm_to_local");
@@ -3735,7 +3735,7 @@ pub fn handle_f64_div_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
     dispatch.next(ip, stride(encode.ops.OpsBinopImmToLocalF64), slots, frame, env, r0, fp0);
 }
 
-// ── Fused: local-inplace (Candidate H, i32) ─────────────────────────────────
+// Fused: local-inplace (Candidate H, i32)
 // local_get + const_i32 + binop + local_set (same local) → single in-place update.
 
 pub fn handle_i32_add_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
@@ -3793,7 +3793,7 @@ pub fn handle_i32_shr_u_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *Dispa
     dispatch.next(ip, stride(encode.ops.OpsLocalInplace), slots, frame, env, r0, fp0);
 }
 
-// ── Fused: local-inplace (Candidate H, i64) ─────────────────────────────────
+// Fused: local-inplace (Candidate H, i64)
 
 pub fn handle_i64_add_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("i64_local_inplace");
@@ -3850,7 +3850,7 @@ pub fn handle_i64_shr_u_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *Dispa
     dispatch.next(ip, stride(encode.ops.OpsLocalInplace64), slots, frame, env, r0, fp0);
 }
 
-// ── Fused: f32/f64 local-inplace ────────────────────────────────────────
+// Fused: f32/f64 local-inplace
 
 pub fn handle_f32_add_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("f32_local_inplace");
@@ -3901,7 +3901,7 @@ pub fn handle_f64_div_local_inplace(ip: [*]u8, slots: [*]RawVal, frame: *Dispatc
     dispatch.next(ip, stride(encode.ops.OpsLocalInplaceF64), slots, frame, env, r0, fp0);
 }
 
-// ── Fused: compare-imm-jump (Candidate G) ───────────────────────────────────
+// Fused: compare-imm-jump (Candidate G)
 // Inline helpers for i32 and i64 compare-imm-jump.
 
 inline fn cmpImmJumpI32(
@@ -4065,7 +4065,7 @@ pub fn handle_i64_ge_u_imm_jump_if_false(ip: [*]u8, slots: [*]RawVal, frame: *Di
     cmpImmJumpI64(.ge_u, ip, slots, frame, env, r0, fp0);
 }
 
-// ── compare-imm-jump, true-branch helpers (Peephole J-imm) ──────────────────
+// compare-imm-jump, true-branch helpers (Peephole J-imm)
 
 inline fn cmpImmJumpI32True(
     comptime op: enum { eq, ne, lt_s, lt_u, gt_s, gt_u, le_s, le_u, ge_s, ge_u },
@@ -4228,7 +4228,7 @@ pub fn handle_i64_ge_u_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *Dis
     cmpImmJumpI64True(.ge_u, ip, slots, frame, env, r0, fp0);
 }
 
-// ── Fused: f32/f64 compare-imm-jump-if-false ──────────────────────────
+// Fused: f32/f64 compare-imm-jump-if-false
 
 inline fn cmpImmJumpF32False(
     comptime op: enum { eq, ne, lt, gt, le, ge },
@@ -4331,7 +4331,7 @@ pub fn handle_f64_ge_imm_jump_if_false(ip: [*]u8, slots: [*]RawVal, frame: *Disp
     cmpImmJumpF64False(.ge, ip, slots, frame, env, r0, fp0);
 }
 
-// ── Fused: f32/f64 compare-imm-jump-if-true ───────────────────────────
+// Fused: f32/f64 compare-imm-jump-if-true
 
 inline fn cmpImmJumpF32True(
     comptime op: enum { eq, ne, lt, gt, le, ge },
@@ -4434,7 +4434,7 @@ pub fn handle_f64_ge_imm_jump_if_true(ip: [*]u8, slots: [*]RawVal, frame: *Dispa
     cmpImmJumpF64True(.ge, ip, slots, frame, env, r0, fp0);
 }
 
-// ── Fused: const + local_set → const_to_local ────────────────────────────────
+// Fused: const + local_set → const_to_local
 
 pub fn handle_i32_const_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("const_to_local");
@@ -4450,7 +4450,7 @@ pub fn handle_i64_const_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchSt
     dispatch.next(ip, stride(encode.ops.OpsConstToLocal64), slots, frame, env, r0, fp0);
 }
 
-// ── Superinstruction: i32_imm + local_set → imm_to_local ───────────────────────
+// Superinstruction: i32_imm + local_set → imm_to_local
 // Writes imm directly to local, while preserving src slot (for pipelining).
 // Replaces two instructions: (i32_add_imm writes to src) + (local_set copies src to local)
 
@@ -4470,7 +4470,7 @@ pub fn handle_i64_imm_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchStat
     dispatch.next(ip, stride(encode.ops.OpsImm64ToLocal), slots, frame, env, r0, fp0);
 }
 
-// ── Fused: global_get + local_set → global_get_to_local ─────────────────────
+// Fused: global_get + local_set → global_get_to_local
 
 pub fn handle_global_get_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("global_to_local");
@@ -4479,7 +4479,7 @@ pub fn handle_global_get_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchS
     dispatch.next(ip, stride(encode.ops.OpsGlobalGetToLocal), slots, frame, env, r0, fp0);
 }
 
-// ── Fused: load + local_set → load_to_local ──────────────────────────────────
+// Fused: load + local_set → load_to_local
 
 pub fn handle_i32_load_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("load_to_local");

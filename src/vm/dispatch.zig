@@ -78,7 +78,7 @@ pub const HostInstance = host_mod.HostInstance;
 const CompiledDataSegment = module_mod.CompiledDataSegment;
 const CompiledElemSegment = module_mod.CompiledElemSegment;
 
-// ── Handler type ──────────────────────────────────────────────────────────────
+// Handler type
 
 /// The unified signature for every instruction handler.
 ///
@@ -115,7 +115,7 @@ pub const Handler = *const fn (
     fp0: f64,
 ) callconv(.c) void;
 
-// ── Execution environment (read-only) ─────────────────────────────────────────
+// Execution environment (read-only)
 
 /// Read-only view of the module instance, passed by pointer to every handler.
 /// `functions` covers the *full* Wasm function index space (imports + locals).
@@ -150,7 +150,7 @@ pub const ExecEnv = struct {
     mem_trace: bool = false,
 };
 
-// ── Call / EH frame ───────────────────────────────────────────────────────────
+// Call / EH frame
 
 /// One active call frame.
 ///
@@ -188,7 +188,7 @@ pub const EhFrame = struct {
     handler_table: []const CatchHandlerEntry,
 };
 
-// ── Dispatch state (mutable, shared across all handlers in one invocation) ────
+// Dispatch state (mutable, shared across all handlers in one invocation)
 
 /// Default value-stack size in RawVal slots (8 bytes each).
 /// Grows by doubling on overflow up to MAX_VAL_STACK_SLOTS.
@@ -231,7 +231,7 @@ pub const DispatchState = struct {
     /// null when the DispatchState owns its stacks directly (non-persistent mode).
     vm: ?*vm_root.VM = null,
 
-    // ── Cached linear memory base/length ─────────────────────────────────
+    // Cached linear memory base/length
     // Avoids the `env.memory.bytes()` call (tagged-union dispatch + pointer
     // chase) on every memory load/store handler.  Updated by `memory.grow`.
     mem_base: [*]u8 = undefined,
@@ -376,7 +376,7 @@ pub const DispatchState = struct {
     }
 };
 
-// ── Dispatch helper ───────────────────────────────────────────────────────────
+// Dispatch helper
 
 /// Advance `ip` by `stride` bytes and tail-call the handler embedded at the
 /// new position.
@@ -457,8 +457,7 @@ pub inline fn dispatch(
     comptime_call(.always_tail, h, .{ ip, slots, frame, env, r0, fp0 });
 }
 
-// ── Runtime op counters (for profiling) ──────────────────────────────────────
-//
+// Runtime op counters (for profiling)
 // Only compiled in when `-Dprofiling=true` (i.e. `make build-debug`).
 // In release builds this struct is zero-sized and all increment calls are no-ops.
 
@@ -473,12 +472,9 @@ pub var op_counts = &profiling.op_counts;
 /// Increment a field of `op_counts` by 1. Compiles to a no-op when profiling is disabled.
 pub const countOp = profiling.countOp;
 
-// ── Instruction operand sizes ─────────────────────────────────────────────────
-//
+// Instruction operand sizes
 // Each instruction in the code stream looks like:
-//
 //   [ *Handler (8 bytes) ] [ Operands (0..N bytes) ]
-//
 // The stride of an instruction equals 8 + @sizeOf(Operands).
 // All operand structs must be `extern` so their layout is deterministic.
 

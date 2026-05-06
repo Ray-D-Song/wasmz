@@ -498,7 +498,7 @@ test "lower conversion and sign-extension family into slot IR" {
     try expect_convert_lowered(.i64_extend32_s, .i64_extend32_s);
 }
 
-// ── Control flow tests ────────────────────────────────────────────────────────
+// Control flow tests
 
 test "lower block with void result and br exits cleanly" {
     // Wasm equivalent:

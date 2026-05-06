@@ -59,7 +59,7 @@ pub const LowerError = error{
     InvalidFunctionType,
 };
 
-// ── Control flow ──────────────────────────────────────────────────────────────
+// Control flow
 
 /// Which WASM structured-control construct opened this frame.
 pub const BlockKind = enum { block, loop, if_, try_table };
@@ -219,7 +219,7 @@ pub const ControlFrame = struct {
     has_branch_local_init: bool = false,
 };
 
-// ── Input op enum ─────────────────────────────────────────────────────────────
+// Input op enum
 
 /// A single catch arm as parsed (used in try_table WasmOp).
 /// This mirrors payload.CatchHandler but uses our local types.
@@ -253,14 +253,14 @@ pub const WasmOp = union(enum) {
     global_get: u32,
     global_set: u32,
 
-    // ── Constants ─────────────────────────────────────────────────────────────
+    // Constants
     i32_const: i32,
     i64_const: i64,
     f32_const: f32,
     f64_const: f64,
     v128_const: V128,
 
-    // ── i32 arithmetic (binary) ───────────────────────────────────────────────
+    // i32 arithmetic (binary)
     i32_add,
     i32_sub,
     i32_mul,
@@ -277,7 +277,7 @@ pub const WasmOp = union(enum) {
     i32_rotl,
     i32_rotr,
 
-    // ── i64 arithmetic (binary) ───────────────────────────────────────────────
+    // i64 arithmetic (binary)
     i64_add,
     i64_sub,
     i64_mul,
@@ -294,7 +294,7 @@ pub const WasmOp = union(enum) {
     i64_rotl,
     i64_rotr,
 
-    // ── f32 arithmetic (binary) ───────────────────────────────────────────────
+    // f32 arithmetic (binary)
     f32_add,
     f32_sub,
     f32_mul,
@@ -303,7 +303,7 @@ pub const WasmOp = union(enum) {
     f32_max,
     f32_copysign,
 
-    // ── f64 arithmetic (binary) ───────────────────────────────────────────────
+    // f64 arithmetic (binary)
     f64_add,
     f64_sub,
     f64_mul,
@@ -312,17 +312,17 @@ pub const WasmOp = union(enum) {
     f64_max,
     f64_copysign,
 
-    // ── i32 unary ────────────────────────────────────────────────────────────
+    // i32 unary
     i32_clz,
     i32_ctz,
     i32_popcnt,
 
-    // ── i64 unary ────────────────────────────────────────────────────────────
+    // i64 unary
     i64_clz,
     i64_ctz,
     i64_popcnt,
 
-    // ── f32 unary ────────────────────────────────────────────────────────────
+    // f32 unary
     f32_abs,
     f32_neg,
     f32_ceil,
@@ -331,7 +331,7 @@ pub const WasmOp = union(enum) {
     f32_nearest,
     f32_sqrt,
 
-    // ── f64 unary ────────────────────────────────────────────────────────────
+    // f64 unary
     f64_abs,
     f64_neg,
     f64_ceil,
@@ -340,7 +340,7 @@ pub const WasmOp = union(enum) {
     f64_nearest,
     f64_sqrt,
 
-    // ── i32 comparisons ─────────────────────────────────────────────────────
+    // i32 comparisons
     i32_eqz,
     i32_eq,
     i32_ne,
@@ -353,7 +353,7 @@ pub const WasmOp = union(enum) {
     i32_ge_s,
     i32_ge_u,
 
-    // ── i64 comparisons ─────────────────────────────────────────────────────
+    // i64 comparisons
     i64_eqz,
     i64_eq,
     i64_ne,
@@ -366,7 +366,7 @@ pub const WasmOp = union(enum) {
     i64_ge_s,
     i64_ge_u,
 
-    // ── f32 comparisons ─────────────────────────────────────────────────────
+    // f32 comparisons
     f32_eq,
     f32_ne,
     f32_lt,
@@ -374,7 +374,7 @@ pub const WasmOp = union(enum) {
     f32_le,
     f32_ge,
 
-    // ── f64 comparisons ─────────────────────────────────────────────────────
+    // f64 comparisons
     f64_eq,
     f64_ne,
     f64_lt,
@@ -382,7 +382,7 @@ pub const WasmOp = union(enum) {
     f64_le,
     f64_ge,
 
-    // ── Numeric conversion and reinterpret operations ────────────────────────
+    // Numeric conversion and reinterpret operations
     i32_wrap_i64,
     i32_trunc_f32_s,
     i32_trunc_f32_u,
@@ -417,14 +417,14 @@ pub const WasmOp = union(enum) {
     f32_reinterpret_i32,
     f64_reinterpret_i64,
 
-    // ── Sign-extension operations ────────────────────────────────────────────
+    // Sign-extension operations
     i32_extend8_s,
     i32_extend16_s,
     i64_extend8_s,
     i64_extend16_s,
     i64_extend32_s,
 
-    // ── SIMD operations ───────────────────────────────────────────────────────
+    // SIMD operations
     simd_unary: SimdOpcode,
     simd_binary: SimdOpcode,
     simd_ternary: SimdOpcode,
@@ -470,7 +470,7 @@ pub const WasmOp = union(enum) {
         n_params: u32,
     },
 
-    // ── Memory load instructions ─────────────────────────────────────────────
+    // Memory load instructions
     // `offset` is the static immediate offset encoded in the Wasm instruction (memory_address.offset).
     i32_load: struct { offset: u32 },
     i32_load8_s: struct { offset: u32 },
@@ -489,7 +489,7 @@ pub const WasmOp = union(enum) {
     f32_load: struct { offset: u32 },
     f64_load: struct { offset: u32 },
 
-    // ── Memory store instructions ─────────────────────────────────────────────
+    // Memory store instructions
     i32_store: struct { offset: u32 },
     i32_store8: struct { offset: u32 },
     i32_store16: struct { offset: u32 },
@@ -502,7 +502,7 @@ pub const WasmOp = union(enum) {
     f32_store: struct { offset: u32 },
     f64_store: struct { offset: u32 },
 
-    // ── Bulk memory instructions ──────────────────────────────────────────────
+    // Bulk memory instructions
     memory_init: u32,
     data_drop: u32,
     memory_copy,
@@ -510,7 +510,7 @@ pub const WasmOp = union(enum) {
     memory_size,
     memory_grow,
 
-    // ── Atomic memory instructions (Wasm Threads proposal) ───────────────────
+    // Atomic memory instructions (Wasm Threads proposal)
     /// atomic.fence: sequentially-consistent full memory fence (no operands).
     atomic_fence,
     /// Atomic load: pop addr (i32), push loaded value (i32 or i64).
@@ -532,7 +532,7 @@ pub const WasmOp = union(enum) {
     /// select with explicit type annotation (same semantics, type annotation ignored at runtime",)
     select_with_type,
 
-    // ── Reference type instructions ───────────────────────────────────────────
+    // Reference type instructions
     /// ref.null: push a null reference value.
     /// All reference types (funcref, externref, anyref, eqref, …) share the
     /// same null sentinel: low64 == 0.  funcref values are encoded as
@@ -545,7 +545,7 @@ pub const WasmOp = union(enum) {
     /// ref.eq: compare two references — i32 result (1 = equal, 0 = not equal).
     ref_eq,
 
-    // ── Table instructions ─────────────────────────────────────────────────────────
+    // Table instructions
     /// table.get: pop index (i32), push funcref from table[table_index][index].
     table_get: u32, // table_index
     /// table.set: pop value (funcref), pop index (i32), write to table[table_index][index].
@@ -563,7 +563,7 @@ pub const WasmOp = union(enum) {
     /// elem.drop: mark element segment as dropped.
     elem_drop: u32, // segment_idx
 
-    // ── GC Struct instructions ─────────────────────────────────────────────────────
+    // GC Struct instructions
     /// struct.new: pop N field values, push new struct instance.
     /// type_idx is the type section index of the struct type.
     /// n_fields is the number of fields to pop from the stack.
@@ -579,7 +579,7 @@ pub const WasmOp = union(enum) {
     /// struct.set: pop value, pop struct ref, write value to field_idx.
     struct_set: struct { type_idx: u32, field_idx: u32 },
 
-    // ── GC Array instructions ──────────────────────────────────────────────────────
+    // GC Array instructions
     /// array.new: pop init value and len (i32), push new array with len copies of init.
     array_new: u32, // type_idx
     /// array.new_default: pop len (i32), push new array with default element values.
@@ -609,7 +609,7 @@ pub const WasmOp = union(enum) {
     /// array.init_elem: pop n (i32), pop s (i32), pop d (i32), pop array ref. Copy from element segment.
     array_init_elem: struct { type_idx: u32, elem_idx: u32 },
 
-    // ── GC i31 instructions ────────────────────────────────────────────────────────
+    // GC i31 instructions
     /// ref.i31: pop i32, push i31ref (small integer packed into reference).
     ref_i31,
     /// i31.get_s: pop i31ref, push signed i31 value (sign-extended to i32).
@@ -617,7 +617,7 @@ pub const WasmOp = union(enum) {
     /// i31.get_u: pop i31ref, push unsigned i31 value (zero-extended to i32).
     i31_get_u,
 
-    // ── GC Type Test/Cast instructions ─────────────────────────────────────────────
+    // GC Type Test/Cast instructions
     /// ref.test / ref.test_null: pop ref, push i32 (1 if ref matches type_idx, 0 otherwise).
     /// nullable=true: a null ref also returns 1.
     ref_test: struct { type_idx: u32, nullable: bool },
@@ -627,7 +627,7 @@ pub const WasmOp = union(enum) {
     /// ref.as_non_null: pop ref, trap if null, else push ref.
     ref_as_non_null,
 
-    // ── GC Control Flow instructions ────────────────────────────────────────────────
+    // GC Control Flow instructions
     /// br_on_null: pop ref, branch if ref is null (ref is consumed), else push ref back and continue.
     br_on_null: u32, // br_depth
     /// br_on_non_null: pop ref, branch if ref is non-null (push ref back then branch), else continue.
@@ -649,7 +649,7 @@ pub const WasmOp = union(enum) {
         to_nullable: bool,
     },
 
-    // ── GC Call instructions ───────────────────────────────────────────────────────
+    // GC Call instructions
     /// call_ref: pop funcref and N args, call function via reference.
     call_ref: struct {
         type_idx: u32,
@@ -662,13 +662,13 @@ pub const WasmOp = union(enum) {
         n_params: u32,
     },
 
-    // ── GC Extern/Any conversion instructions ──────────────────────────────────────
+    // GC Extern/Any conversion instructions
     /// any.convert_extern: pop externref, push anyref (type conversion).
     any_convert_extern,
     /// extern.convert_any: pop anyref, push externref (type conversion).
     extern_convert_any,
 
-    // ── Exception Handling instructions ───────────────────────────────────────────
+    // Exception Handling instructions
     /// throw: pop N args from stack (per tag arity), throw exception with the given tag.
     throw: struct {
         tag_index: u32,
@@ -694,7 +694,7 @@ pub const BlockType = union(enum) {
     type_index: u32,
 };
 
-// ── Lowering pass ─────────────────────────────────────────────────────────────
+// Lowering pass
 
 pub const Lower = struct {
     allocator: Allocator,
@@ -951,7 +951,7 @@ pub const Lower = struct {
         self.free_slots.clearRetainingCapacity();
     }
 
-    // ── Slot helpers ──────────────────────────────────────────────────────────
+    // Slot helpers
 
     /// Resolve a ?BlockType into allocated param_slots and result_slots lists.
     /// For void (null): both lists are empty.
@@ -1065,7 +1065,7 @@ pub const Lower = struct {
         return @intCast(local);
     }
 
-    // ── Control stack helpers ─────────────────────────────────────────────────
+    // Control stack helpers
 
     /// Look up a frame by br depth (0 = innermost).
     fn frame_at_depth(self: *Lower, depth: u32) LowerError!*ControlFrame {
@@ -1228,7 +1228,7 @@ pub const Lower = struct {
         frame.patch_sites.clearRetainingCapacity();
     }
 
-    // ── Emit a branch to `frame` ──────────────────────────────────────────────
+    // Emit a branch to `frame`
 
     /// Copy the top-of-stack into the frame's result slot (if any), then emit
     /// an unconditional jump toward the frame's target.
@@ -1266,7 +1266,7 @@ pub const Lower = struct {
         return jump_pc;
     }
 
-    // ── Generic operation helpers ─────────────────────────────────────────────
+    // Generic operation helpers
 
     /// Peephole F helper: attempts to fuse the last emitted compare op with
     /// an upcoming jump_if_z whose condition slot is `cond`.
@@ -1347,7 +1347,7 @@ pub const Lower = struct {
                 try self.emit(.{ .i32_eqz_jump_if_false = .{ .src = c.src, .target = target } });
                 return true;
             },
-            // ── i64 compare-jump variants ─────────────────────────────────────
+            // i64 compare-jump variants
             .i64_eq => |c| if (c.dst == cond) {
                 _ = self.compiled.ops.pop();
                 try self.emit(.{ .i64_eq_jump_if_false = .{ .lhs = c.lhs, .rhs = c.rhs, .target = target } });
@@ -1403,7 +1403,7 @@ pub const Lower = struct {
                 try self.emit(.{ .i64_eqz_jump_if_false = .{ .src = c.src, .target = target } });
                 return true;
             },
-            // ── Candidate G: fuse _imm compare + jump → _imm_jump_if_false ──────
+            // Candidate G: fuse _imm compare + jump → _imm_jump_if_false
             .i32_eq_imm => |c| if (c.dst == cond) {
                 _ = self.compiled.ops.pop();
                 try self.emit(.{ .i32_eq_imm_jump_if_false = .{ .lhs = c.lhs, .imm = c.imm, .target = target } });
@@ -1559,7 +1559,7 @@ pub const Lower = struct {
                 if (b.dst != src) return false;
                 last.* = .{ .i32_shr_u_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
             },
-            // ── i64 binop-to-local variants ───────────────────────────────────
+            // i64 binop-to-local variants
             .i64_add => |b| {
                 if (b.dst != src) return false;
                 last.* = .{ .i64_add_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
@@ -1596,7 +1596,7 @@ pub const Lower = struct {
                 if (b.dst != src) return false;
                 last.* = .{ .i64_shr_u_to_local = .{ .local = local, .lhs = b.lhs, .rhs = b.rhs } };
             },
-            // ── Candidate H/E: _imm variants → local_inplace or imm_to_local ─────
+            // Candidate H/E: _imm variants → local_inplace or imm_to_local
             // H has higher priority: if the lhs slot IS the same local being set,
             // fuse into local_inplace (local op= imm pattern).
             // Otherwise fall through to E: fuse into imm_to_local.
@@ -1672,7 +1672,7 @@ pub const Lower = struct {
                     last.* = .{ .i32_shr_u_imm_to_local = .{ .local = local, .lhs = b.lhs, .imm = b.imm } };
                 }
             },
-            // ── i64 _imm variants ─────────────────────────────────────────────────
+            // i64 _imm variants
             .i64_add_imm => |b| {
                 if (b.dst != src) return false;
                 if (b.lhs == self.local_to_slot(local)) {
@@ -2012,7 +2012,7 @@ pub const Lower = struct {
         return true;
     }
 
-    // ── Constant folding & algebraic simplification helpers ──────────────────
+    // Constant folding & algebraic simplification helpers
 
     /// Attempt to fuse a preceding binop + local_tee into binop_tee_local.
     /// `local` is the target local slot, `src` is the value on the value-stack
@@ -2148,7 +2148,7 @@ pub const Lower = struct {
         const rhs_op = ops[ops.len - 1];
         const lhs_op = ops[ops.len - 2];
 
-        // ── i32 constant folding ──
+        // i32 constant folding
         if (comptime std.mem.startsWith(u8, op_tag, "i32_")) {
             const rhs_val: i32 = switch (rhs_op) {
                 .const_i32 => |c| if (c.dst == rhs) c.value else return false,
@@ -2168,7 +2168,7 @@ pub const Lower = struct {
             }
         }
 
-        // ── i64 constant folding ──
+        // i64 constant folding
         if (comptime std.mem.startsWith(u8, op_tag, "i64_")) {
             const rhs_val: i64 = switch (rhs_op) {
                 .const_i64 => |c| if (c.dst == rhs) c.value else return false,
@@ -2273,7 +2273,7 @@ pub const Lower = struct {
     ) !bool {
         const imm_u: u32 = @bitCast(imm);
 
-        // ── Identity: result == lhs ──
+        // Identity: result == lhs
         const is_identity = comptime_is_identity_i32(op_tag, imm);
         if (is_identity) {
             _ = self.compiled.ops.pop();
@@ -2282,7 +2282,7 @@ pub const Lower = struct {
             return true;
         }
 
-        // ── Annihilator: result is a known constant ──
+        // Annihilator: result is a known constant
         const annihilator = comptime_annihilator_i32(op_tag, imm);
         if (annihilator) |val| {
             _ = self.compiled.ops.pop();
@@ -2291,7 +2291,7 @@ pub const Lower = struct {
             return true;
         }
 
-        // ── Strength reduction: mul by power-of-2 → shl ──
+        // Strength reduction: mul by power-of-2 → shl
         if (comptime std.mem.eql(u8, op_tag, "i32_mul")) {
             if (imm_u != 0 and (imm_u & (imm_u - 1)) == 0) {
                 const shift: i32 = @intCast(@ctz(imm_u));
@@ -2302,7 +2302,7 @@ pub const Lower = struct {
             }
         }
 
-        // ── Strength reduction: unsigned div by power-of-2 → shr_u ──
+        // Strength reduction: unsigned div by power-of-2 → shr_u
         if (comptime std.mem.eql(u8, op_tag, "i32_div_u")) {
             if (imm_u != 0 and (imm_u & (imm_u - 1)) == 0) {
                 const shift: i32 = @intCast(@ctz(imm_u));
@@ -2326,7 +2326,7 @@ pub const Lower = struct {
     ) !bool {
         const imm_u: u64 = @bitCast(imm);
 
-        // ── Identity: result == lhs ──
+        // Identity: result == lhs
         const is_identity = comptime_is_identity_i64(op_tag, imm);
         if (is_identity) {
             _ = self.compiled.ops.pop();
@@ -2335,7 +2335,7 @@ pub const Lower = struct {
             return true;
         }
 
-        // ── Annihilator: result is a known constant ──
+        // Annihilator: result is a known constant
         const annihilator = comptime_annihilator_i64(op_tag, imm);
         if (annihilator) |val| {
             _ = self.compiled.ops.pop();
@@ -2344,9 +2344,9 @@ pub const Lower = struct {
             return true;
         }
 
-        // ── Strength reduction: mul by power-of-2 → shl ──
+        // Strength reduction: mul by power-of-2 → shl
 
-        // ── Strength reduction: mul by power-of-2 → shl ──
+        // Strength reduction: mul by power-of-2 → shl
         if (comptime std.mem.eql(u8, op_tag, "i64_mul")) {
             if (imm_u != 0 and (imm_u & (imm_u -% 1)) == 0) {
                 const shift: i64 = @intCast(@ctz(imm_u));
@@ -2357,7 +2357,7 @@ pub const Lower = struct {
             }
         }
 
-        // ── Strength reduction: unsigned div by power-of-2 → shr_u ──
+        // Strength reduction: unsigned div by power-of-2 → shr_u
         if (comptime std.mem.eql(u8, op_tag, "i64_div_u")) {
             if (imm_u != 0 and (imm_u & (imm_u -% 1)) == 0) {
                 const shift: i64 = @intCast(@ctz(imm_u));
@@ -2468,7 +2468,7 @@ pub const Lower = struct {
         const rhs_op = ops[ops.len - 1];
         const lhs_op = ops[ops.len - 2];
 
-        // ── i32 comparisons ──
+        // i32 comparisons
         if (comptime std.mem.startsWith(u8, op_tag, "i32_")) {
             const rhs_val: i32 = switch (rhs_op) {
                 .const_i32 => |c| if (c.dst == rhs) c.value else return false,
@@ -2487,7 +2487,7 @@ pub const Lower = struct {
             }
         }
 
-        // ── i64 comparisons ──
+        // i64 comparisons
         if (comptime std.mem.startsWith(u8, op_tag, "i64_")) {
             const rhs_val: i64 = switch (rhs_op) {
                 .const_i64 => |c| if (c.dst == rhs) c.value else return false,
@@ -2506,7 +2506,7 @@ pub const Lower = struct {
             }
         }
 
-        // ── f32 comparisons ──
+        // f32 comparisons
         if (comptime std.mem.startsWith(u8, op_tag, "f32_")) {
             const rhs_val: f32 = switch (rhs_op) {
                 .const_f32 => |c| if (c.dst == rhs) c.value else return false,
@@ -2525,7 +2525,7 @@ pub const Lower = struct {
             }
         }
 
-        // ── f64 comparisons ──
+        // f64 comparisons
         if (comptime std.mem.startsWith(u8, op_tag, "f64_")) {
             const rhs_val: f64 = switch (rhs_op) {
                 .const_f64 => |c| if (c.dst == rhs) c.value else return false,
@@ -2614,7 +2614,7 @@ pub const Lower = struct {
 
         const src_op = ops[ops.len - 1];
 
-        // ── i32 unary: eqz, clz, ctz, popcnt ──
+        // i32 unary: eqz, clz, ctz, popcnt
         if (comptime std.mem.startsWith(u8, op_tag, "i32_")) {
             const val: i32 = switch (src_op) {
                 .const_i32 => |c| if (c.dst == src) c.value else return false,
@@ -2635,7 +2635,7 @@ pub const Lower = struct {
             }
         }
 
-        // ── i64 unary: eqz, clz, ctz, popcnt ──
+        // i64 unary: eqz, clz, ctz, popcnt
         if (comptime std.mem.eql(u8, op_tag, "i64_eqz")) {
             const val: i64 = switch (src_op) {
                 .const_i64 => |c| if (c.dst == src) c.value else return false,
@@ -2684,7 +2684,7 @@ pub const Lower = struct {
         const lhs = try self.pop_slot();
         const dst = self.alloc_slot();
 
-        // ── Constant folding: const + const + binop → const ──────────────────
+        // Constant folding: const + const + binop → const
         // If both operands are constants, evaluate at compile time and emit a
         // single const instruction.  We must NOT fold division/remainder when the
         // divisor is zero or when signed INT_MIN / -1 (these are wasm traps).
@@ -2693,7 +2693,7 @@ pub const Lower = struct {
             return;
         }
 
-        // ── Peephole C: const_i32/i64 + xxx → xxx_imm ────────────────────────
+        // Peephole C: const_i32/i64 + xxx → xxx_imm
         // If there is a fused _imm variant for this op AND the previous emitted
         // op is `const_i32`/`const_i64` whose dst matches rhs, fold it into an immediate.
         const imm_tag = op_tag ++ "_imm";
@@ -2704,14 +2704,14 @@ pub const Lower = struct {
             if (ops.len > 0) {
                 switch (ops[ops.len - 1]) {
                     .const_i32 => |c| if (ImmType == i32 and c.dst == rhs) {
-                        // ── Algebraic simplification & strength reduction ──
+                        // Algebraic simplification & strength reduction
                         if (try self.try_simplify_imm_i32(op_tag, lhs, c.value, dst)) {
                             self.r0_slot = null;
                             return;
                         }
                         // Remove the const_i32 and emit the fused imm op instead.
                         _ = self.compiled.ops.pop();
-                        // ── r0 variant: if lhs is already in r0, skip the lhs slot ──
+                        // r0 variant: if lhs is already in r0, skip the lhs slot
                         const r_tag = imm_tag ++ "_r";
                         if (comptime @hasField(Op, r_tag)) {
                             if (prev_r0) |r0| {
@@ -2741,7 +2741,7 @@ pub const Lower = struct {
                             return;
                         }
                         _ = self.compiled.ops.pop();
-                        // ── r0 variant: if lhs is already in r0, skip the lhs slot ──
+                        // r0 variant: if lhs is already in r0, skip the lhs slot
                         const r_tag = imm_tag ++ "_r";
                         if (comptime @hasField(Op, r_tag)) {
                             if (prev_r0) |r0| {
@@ -2793,7 +2793,7 @@ pub const Lower = struct {
         const src = try self.pop_slot();
         const dst = self.alloc_slot();
 
-        // ── Constant folding: const + unary → const ──
+        // Constant folding: const + unary → const
         if (try self.try_fold_unary_const(op_tag, src, dst)) {
             try self.stack.push(self.allocator, dst);
             return;
@@ -2846,13 +2846,13 @@ pub const Lower = struct {
         const lhs = try self.pop_slot();
         const dst = self.alloc_slot();
 
-        // ── Constant folding: const + const + compare → const_i32 (0 or 1) ──
+        // Constant folding: const + const + compare → const_i32 (0 or 1)
         if (try self.try_fold_compare_const(op_tag, lhs, rhs, dst)) {
             try self.stack.push(self.allocator, dst);
             return;
         }
 
-        // ── Peephole C (compare variant): const_i32/i64 + xxx_cmp → xxx_cmp_imm ──
+        // Peephole C (compare variant): const_i32/i64 + xxx_cmp → xxx_cmp_imm
         const imm_tag = op_tag ++ "_imm";
         if (comptime @hasField(Op, imm_tag)) {
             const ImmType = @TypeOf(@field(@as(std.meta.TagPayload(Op, @field(Op, imm_tag)), undefined), "imm"));
@@ -2931,7 +2931,7 @@ pub const Lower = struct {
         try self.stack.push(self.allocator, dst);
     }
 
-    // ── Main dispatch ─────────────────────────────────────────────────────────
+    // Main dispatch
 
     pub fn lowerOp(self: *Lower, op: WasmOp) !void {
         // Dead-code elimination: when in unreachable state, only track control-flow
@@ -2992,7 +2992,7 @@ pub const Lower = struct {
                 self.r0_slot = null;
             },
 
-            // ── Structured control flow ───────────────────────────────────────
+            // Structured control flow
 
             .block => |block_type| {
                 const slots = try self.resolve_block_slots(block_type);
@@ -3096,7 +3096,7 @@ pub const Lower = struct {
 
                 // Emit a conditional jump that skips the then-body if cond==0.
                 // Target is patched at else_ or end.
-                // ── Peephole F: fuse preceding compare + jump_if_z ────────────
+                // Peephole F: fuse preceding compare + jump_if_z
                 if (!try self.try_fuse_compare_jump(cond, 0)) {
                     try self.emit(.{ .jump_if_z = .{ .cond = cond, .target = 0 } });
                 }
@@ -3218,7 +3218,7 @@ pub const Lower = struct {
                 //   jump_if_z cond → skip_jump
                 //   jump → target
                 //   skip_jump: (fall-through, continue)
-                // ── Peephole F: fuse preceding compare + jump_if_z ────────────
+                // Peephole F: fuse preceding compare + jump_if_z
                 if (!try self.try_fuse_compare_jump(cond, 0)) {
                     try self.emit(.{ .jump_if_z = .{ .cond = cond, .target = 0 } }); // skip the jump below if cond==0
                 }
@@ -3234,7 +3234,7 @@ pub const Lower = struct {
                     try self.add_patch_site(frame, branch_jump_pc);
                 }
 
-                // ── Peephole J: fuse jump_if_false + jump → jump_if_true ──────
+                // Peephole J: fuse jump_if_false + jump → jump_if_true
                 // When no value copies were emitted between jiz_pc and branch_jump_pc
                 // (they are exactly adjacent), fold the two ops into one jump_if_true.
                 const peephole_j_fused = fused: {
@@ -3313,7 +3313,7 @@ pub const Lower = struct {
                     break :fused true; // fusion succeeded — no need for the normal patching below
                 };
 
-                // ── Peephole K: fuse copy + jump_if_nz → copy_jump_if_nz ──────
+                // Peephole K: fuse copy + jump_if_nz → copy_jump_if_nz
                 // When Peephole J didn't fire (because a copy sits between jiz_pc and
                 // branch_jump_pc) and we have exactly one copy immediately before the
                 // jump_if_z/jump_if_nz, fuse copy+jump into a single copy_jump_if_nz op.
@@ -3503,7 +3503,7 @@ pub const Lower = struct {
                 self.is_unreachable = true;
             },
 
-            // ── Locals & constants ────────────────────────────────────────────
+            // Locals & constants
 
             .local_get => |local| {
                 self.recordLocalRead(local);
@@ -3512,7 +3512,7 @@ pub const Lower = struct {
             .local_set => |local| {
                 const src = try self.pop_slot();
                 const local_slot: Slot = @intCast(local);
-                // ── Peephole D: i32_xxx + local_set → i32_xxx_to_local ────────
+                // Peephole D: i32_xxx + local_set → i32_xxx_to_local
                 if (self.try_fuse_local_set(local_slot, src) or
                     self.try_fuse_const_to_local(local_slot, src) or
                     self.try_fuse_global_get_to_local(local_slot, src) or
@@ -3535,7 +3535,7 @@ pub const Lower = struct {
                 }
                 self.recordLocalWrite(local);
             },
-            // ── Globals ──────────────────────────────────────────────────────────
+            // Globals
             .global_get => |global_idx| {
                 const dst = self.alloc_slot();
                 try self.emit(.{ .global_get = .{ .dst = dst, .global_idx = global_idx } });
@@ -3552,7 +3552,7 @@ pub const Lower = struct {
                 try self.stack.push(self.allocator, dst);
             },
 
-            // ── Constants (i64, f32, f64) ──────────────────────────────────────
+            // Constants (i64, f32, f64)
 
             .i64_const => |value| {
                 const dst = self.alloc_slot();
@@ -3576,7 +3576,7 @@ pub const Lower = struct {
                 try self.stack.push(self.allocator, dst);
             },
 
-            // ── i32 arithmetic operations (binary) ──────────────────────────────
+            // i32 arithmetic operations (binary)
             // Using helper function to reduce boilerplate
 
             .i32_add => try self.lower_binary_op("i32_add", saved_r0),
@@ -3595,7 +3595,7 @@ pub const Lower = struct {
             .i32_rotl => try self.lower_binary_op("i32_rotl", saved_r0),
             .i32_rotr => try self.lower_binary_op("i32_rotr", saved_r0),
 
-            // ── i64 arithmetic operations (binary) ──────────────────────────────
+            // i64 arithmetic operations (binary)
 
             .i64_add => try self.lower_binary_op("i64_add", saved_r0),
             .i64_sub => try self.lower_binary_op("i64_sub", saved_r0),
@@ -3613,7 +3613,7 @@ pub const Lower = struct {
             .i64_rotl => try self.lower_binary_op("i64_rotl", saved_r0),
             .i64_rotr => try self.lower_binary_op("i64_rotr", saved_r0),
 
-            // ── f32 arithmetic operations (binary) ──────────────────────────────
+            // f32 arithmetic operations (binary)
 
             .f32_add => try self.lower_binary_op("f32_add", saved_r0),
             .f32_sub => try self.lower_binary_op("f32_sub", saved_r0),
@@ -3623,7 +3623,7 @@ pub const Lower = struct {
             .f32_max => try self.lower_binary_op("f32_max", saved_r0),
             .f32_copysign => try self.lower_binary_op("f32_copysign", saved_r0),
 
-            // ── f64 arithmetic operations (binary) ──────────────────────────────
+            // f64 arithmetic operations (binary)
 
             .f64_add => try self.lower_binary_op("f64_add", saved_r0),
             .f64_sub => try self.lower_binary_op("f64_sub", saved_r0),
@@ -3633,19 +3633,19 @@ pub const Lower = struct {
             .f64_max => try self.lower_binary_op("f64_max", saved_r0),
             .f64_copysign => try self.lower_binary_op("f64_copysign", saved_r0),
 
-            // ── i32 unary operations ────────────────────────────────────────────
+            // i32 unary operations
 
             .i32_clz => try self.lower_unary_op("i32_clz"),
             .i32_ctz => try self.lower_unary_op("i32_ctz"),
             .i32_popcnt => try self.lower_unary_op("i32_popcnt"),
 
-            // ── i64 unary operations ────────────────────────────────────────────
+            // i64 unary operations
 
             .i64_clz => try self.lower_unary_op("i64_clz"),
             .i64_ctz => try self.lower_unary_op("i64_ctz"),
             .i64_popcnt => try self.lower_unary_op("i64_popcnt"),
 
-            // ── f32 unary operations ────────────────────────────────────────────
+            // f32 unary operations
 
             .f32_abs => try self.lower_unary_op("f32_abs"),
             .f32_neg => try self.lower_unary_op("f32_neg"),
@@ -3655,7 +3655,7 @@ pub const Lower = struct {
             .f32_nearest => try self.lower_unary_op("f32_nearest"),
             .f32_sqrt => try self.lower_unary_op("f32_sqrt"),
 
-            // ── f64 unary operations ────────────────────────────────────────────
+            // f64 unary operations
 
             .f64_abs => try self.lower_unary_op("f64_abs"),
             .f64_neg => try self.lower_unary_op("f64_neg"),
@@ -3665,7 +3665,7 @@ pub const Lower = struct {
             .f64_nearest => try self.lower_unary_op("f64_nearest"),
             .f64_sqrt => try self.lower_unary_op("f64_sqrt"),
 
-            // ── i32 comparison operations ────────────────────────────────────────
+            // i32 comparison operations
 
             .i32_eqz => try self.lower_unary_op("i32_eqz"), // special: unary, result is i32
             .i32_eq => try self.lower_compare_op("i32_eq"),
@@ -3679,7 +3679,7 @@ pub const Lower = struct {
             .i32_ge_s => try self.lower_compare_op("i32_ge_s"),
             .i32_ge_u => try self.lower_compare_op("i32_ge_u"),
 
-            // ── i64 comparison operations ────────────────────────────────────────
+            // i64 comparison operations
 
             .i64_eqz => try self.lower_unary_op("i64_eqz"),
             .i64_eq => try self.lower_compare_op("i64_eq"),
@@ -3693,7 +3693,7 @@ pub const Lower = struct {
             .i64_ge_s => try self.lower_compare_op("i64_ge_s"),
             .i64_ge_u => try self.lower_compare_op("i64_ge_u"),
 
-            // ── f32 comparison operations ────────────────────────────────────────
+            // f32 comparison operations
 
             .f32_eq => try self.lower_compare_op("f32_eq"),
             .f32_ne => try self.lower_compare_op("f32_ne"),
@@ -3702,7 +3702,7 @@ pub const Lower = struct {
             .f32_le => try self.lower_compare_op("f32_le"),
             .f32_ge => try self.lower_compare_op("f32_ge"),
 
-            // ── f64 comparison operations ────────────────────────────────────────
+            // f64 comparison operations
 
             .f64_eq => try self.lower_compare_op("f64_eq"),
             .f64_ne => try self.lower_compare_op("f64_ne"),
@@ -3711,7 +3711,7 @@ pub const Lower = struct {
             .f64_le => try self.lower_compare_op("f64_le"),
             .f64_ge => try self.lower_compare_op("f64_ge"),
 
-            // ── Numeric conversion and reinterpret operations ───────────────
+            // Numeric conversion and reinterpret operations
             .i32_wrap_i64 => try self.lower_convert_op("i32_wrap_i64"),
             .i32_trunc_f32_s => try self.lower_convert_op("i32_trunc_f32_s"),
             .i32_trunc_f32_u => try self.lower_convert_op("i32_trunc_f32_u"),
@@ -3746,7 +3746,7 @@ pub const Lower = struct {
             .f32_reinterpret_i32 => try self.lower_convert_op("f32_reinterpret_i32"),
             .f64_reinterpret_i64 => try self.lower_convert_op("f64_reinterpret_i64"),
 
-            // ── Sign-extension operations ────────────────────────────────────
+            // Sign-extension operations
             .i32_extend8_s => try self.lower_convert_op("i32_extend8_s"),
             .i32_extend16_s => try self.lower_convert_op("i32_extend16_s"),
             .i64_extend8_s => try self.lower_convert_op("i64_extend8_s"),
@@ -3895,7 +3895,7 @@ pub const Lower = struct {
                 self.is_unreachable = true;
             },
 
-            // ── function call ──────────────────────────────────────────────────────────
+            // function call
 
             .call => |inst| {
                 // Pop n_params argument slots from the value stack in reverse order.
@@ -3924,7 +3924,7 @@ pub const Lower = struct {
                 if (dst) |s| try self.stack.push(self.allocator, s);
             },
 
-            // ── indirect function call ─────────────────────────────────────────────────
+            // indirect function call
 
             .call_indirect => |inst| {
                 // Stack: [..., arg0, arg1, ..., argN-1, index]
@@ -3956,7 +3956,7 @@ pub const Lower = struct {
                 if (dst) |s| try self.stack.push(self.allocator, s);
             },
 
-            // ── tail call ─────────────────────────────────────────────────────────
+            // tail call
 
             .return_call => |inst| {
                 // Pop n_params argument slots from the value stack in reverse order.
@@ -3981,7 +3981,7 @@ pub const Lower = struct {
                 self.is_unreachable = true;
             },
 
-            // ── tail call indirect ─────────────────────────────────────────────────
+            // tail call indirect
 
             .return_call_indirect => |inst| {
                 // Stack: [..., arg0, arg1, ..., argN-1, index]
@@ -4011,7 +4011,7 @@ pub const Lower = struct {
                 self.is_unreachable = true;
             },
 
-            // ── Memory load ──────────────────────────────────────────────────────────
+            // Memory load
 
             .i32_load => |inst| {
                 const addr = try self.pop_slot();
@@ -4049,7 +4049,7 @@ pub const Lower = struct {
                 try self.stack.push(self.allocator, dst);
             },
 
-            // ── i64 load instructions ─────────────────────────────────────────────
+            // i64 load instructions
 
             .i64_load => |inst| {
                 const addr = try self.pop_slot();
@@ -4094,7 +4094,7 @@ pub const Lower = struct {
                 try self.stack.push(self.allocator, dst);
             },
 
-            // ── f32/f64 load instructions ─────────────────────────────────────────
+            // f32/f64 load instructions
 
             .f32_load => |inst| {
                 const addr = try self.pop_slot();
@@ -4109,7 +4109,7 @@ pub const Lower = struct {
                 try self.stack.push(self.allocator, dst);
             },
 
-            // ── i32 store instructions ─────────────────────────────────────────────
+            // i32 store instructions
 
             .i32_store => |inst| {
                 const src = try self.pop_slot(); // value
@@ -4127,7 +4127,7 @@ pub const Lower = struct {
                 try self.emit(.{ .i32_store16 = .{ .addr = addr, .src = src, .offset = inst.offset } });
             },
 
-            // ── i64 store instructions ─────────────────────────────────────────────
+            // i64 store instructions
 
             .i64_store => |inst| {
                 const src = try self.pop_slot();
@@ -4150,7 +4150,7 @@ pub const Lower = struct {
                 try self.emit(.{ .i64_store32 = .{ .addr = addr, .src = src, .offset = inst.offset } });
             },
 
-            // ── f32/f64 store instructions ─────────────────────────────────────────
+            // f32/f64 store instructions
 
             .f32_store => |inst| {
                 const src = try self.pop_slot();
@@ -4163,7 +4163,7 @@ pub const Lower = struct {
                 try self.emit(.{ .f64_store = .{ .addr = addr, .src = src, .offset = inst.offset } });
             },
 
-            // ── Bulk memory ─────────────────────────────────────────────────────────
+            // Bulk memory
             // memory.init: [dst_addr, src_offset, len] -> []  (pop len, then src_offset, then dst_addr",)
             .memory_init => |segment_idx| {
                 const len = try self.pop_slot();
@@ -4205,7 +4205,7 @@ pub const Lower = struct {
                 try self.emit(.{ .memory_grow = .{ .dst = dst, .delta = delta } });
             },
 
-            // ── Atomic instructions ───────────────────────────────────────────────
+            // Atomic instructions
             // atomic.fence: no operands, no result
             .atomic_fence => {
                 try self.emit(.atomic_fence);
@@ -4312,7 +4312,7 @@ pub const Lower = struct {
                 } });
             },
 
-            // ── select ───────────────────────────────────────────────────────────
+            // select
             // Stack order: val1 pushed first, val2 second, cond last (TOS).
             // Pop cond, then val2, then val1.
 
@@ -4325,7 +4325,7 @@ pub const Lower = struct {
                 try self.stack.push(self.allocator, dst);
             },
 
-            // ── Reference type instructions ──────────────────────────────────────
+            // Reference type instructions
             // ref.null: push null reference (low64 = 0, unified for all ref types).
             .ref_null => {
                 const dst = self.alloc_slot();
@@ -4357,7 +4357,7 @@ pub const Lower = struct {
                 try self.stack.push(self.allocator, dst);
             },
 
-            // ── Table instructions ─────────────────────────────────────────────────
+            // Table instructions
             // table.get: pop index, push funcref from table[table_index][index].
             .table_get => |table_index| {
                 const index = try self.pop_slot();
@@ -4418,7 +4418,7 @@ pub const Lower = struct {
                 try self.emit(.{ .elem_drop = .{ .segment_idx = segment_idx } });
             },
 
-            // ── GC Struct instructions ────────────────────────────────────────────────
+            // GC Struct instructions
             .struct_new => |inst| {
                 // Pop n_fields values from stack (reverse order: last field = TOS)
                 const args_start: u32 = @intCast(self.compiled.call_args.items.len);
@@ -4492,7 +4492,7 @@ pub const Lower = struct {
                 } });
             },
 
-            // ── GC Array instructions ──────────────────────────────────────────────────
+            // GC Array instructions
             .array_new => |type_idx| {
                 // Stack: [..., init_val, len] (len = TOS)
                 const len = try self.pop_slot();
@@ -4683,7 +4683,7 @@ pub const Lower = struct {
                 } });
             },
 
-            // ── GC i31 instructions ────────────────────────────────────────────────────
+            // GC i31 instructions
             .ref_i31 => {
                 const value = try self.pop_slot();
                 const dst = self.alloc_slot();
@@ -4712,7 +4712,7 @@ pub const Lower = struct {
                 try self.stack.push(self.allocator, dst);
             },
 
-            // ── GC Type Test/Cast instructions ─────────────────────────────────────────
+            // GC Type Test/Cast instructions
             .ref_test => |ref_test_op| {
                 const ref = try self.pop_slot();
                 const dst = self.alloc_slot();
@@ -4745,7 +4745,7 @@ pub const Lower = struct {
                 try self.stack.push(self.allocator, dst);
             },
 
-            // ── GC Control Flow instructions ────────────────────────────────────────────
+            // GC Control Flow instructions
             .br_on_null => |br_depth| {
                 self.disableLocalInitAnalysis();
                 // br_on_null: if ref is null, branch; else continue with ref on stack
@@ -4861,7 +4861,7 @@ pub const Lower = struct {
                 try self.stack.push(self.allocator, ref);
             },
 
-            // ── GC Call instructions ───────────────────────────────────────────────────
+            // GC Call instructions
             // Note: n_params and has_result will be filled by module.zig
             .call_ref => |inst| {
                 // Stack: [..., arg0, arg1, ..., argN-1, funcref] (funcref = TOS)
@@ -4931,7 +4931,7 @@ pub const Lower = struct {
                 try self.stack.push(self.allocator, dst);
             },
 
-            // ── Exception Handling ────────────────────────────────────────────────────
+            // Exception Handling
 
             // throw: pop n_args values from the stack (last pushed == first arg in reverse),
             // allocate exception args in call_args pool, emit throw.
@@ -5151,7 +5151,7 @@ pub const Lower = struct {
         }
     }
 
-    // ── Direct OperatorInformation → IR dispatch (bypass WasmOp) ─────────────
+    // Direct OperatorInformation → IR dispatch (bypass WasmOp)
 
     /// Attempt to lower an OperatorInformation directly to IR, bypassing the
     /// WasmOp intermediate tagged union.  Returns `true` if the opcode was
@@ -5160,7 +5160,7 @@ pub const Lower = struct {
     /// call, call_indirect, return_call, return_call_indirect, throw,
     /// try_table, struct_new, call_ref, return_call_ref).
     pub fn lowerOpFromInfo(self: *Lower, info: OperatorInformation) !bool {
-        // ── Dead-code elimination (same logic as lowerOp) ────────────────────
+        // Dead-code elimination (same logic as lowerOp)
         var was_unreachable = false;
         if (self.is_unreachable) {
             switch (info.code) {
@@ -5192,7 +5192,7 @@ pub const Lower = struct {
             }
         }
 
-        // ── Special opcodes: fall back to buildWasmOp + lowerOp ──────────────
+        // Special opcodes: fall back to buildWasmOp + lowerOp
         switch (info.code) {
             .call,
             .call_indirect,
@@ -5217,7 +5217,7 @@ pub const Lower = struct {
         const saved_r0 = self.r0_slot;
         self.r0_slot = null;
 
-        // ── Dispatch directly from OperatorCode ──────────────────────────────
+        // Dispatch directly from OperatorCode
         switch (info.code) {
             .unreachable_ => {
                 try self.emit(.unreachable_);
@@ -5228,7 +5228,7 @@ pub const Lower = struct {
                 _ = try self.pop_slot();
             },
 
-            // ── Structured control flow ──────────────────────────────────────
+            // Structured control flow
             .block => {
                 const block_type = try translate_mod.wasmBlockTypeFromType(info.block_type);
                 try self.lowerOp(.{ .block = block_type });
@@ -5260,7 +5260,7 @@ pub const Lower = struct {
             },
             .br_table => try self.lowerOp(.{ .br_table = .{ .targets = info.br_table } }),
 
-            // ── Locals & globals ─────────────────────────────────────────────
+            // Locals & globals
             .local_get => {
                 const local = info.local_index orelse return error.UnsupportedOperator;
                 self.recordLocalRead(local);
@@ -5270,7 +5270,7 @@ pub const Lower = struct {
                 const local = info.local_index orelse return error.UnsupportedOperator;
                 const src = try self.pop_slot();
                 const local_slot: Slot = @intCast(local);
-                // ── Peephole D: i32_xxx + local_set → i32_xxx_to_local ────────
+                // Peephole D: i32_xxx + local_set → i32_xxx_to_local
                 if (self.try_fuse_local_set(local_slot, src) or
                     self.try_fuse_const_to_local(local_slot, src) or
                     self.try_fuse_global_get_to_local(local_slot, src) or
@@ -5305,7 +5305,7 @@ pub const Lower = struct {
                 try self.emit(.{ .global_set = .{ .src = src, .global_idx = global_idx } });
             },
 
-            // ── Constants ────────────────────────────────────────────────────
+            // Constants
             .i32_const => {
                 const value = try translate_mod.literalAsI32(info);
                 const dst = self.alloc_slot();
@@ -5331,7 +5331,7 @@ pub const Lower = struct {
                 try self.stack.push(self.allocator, dst);
             },
 
-            // ── i32 binary ───────────────────────────────────────────────────
+            // i32 binary
             .i32_add => try self.lower_binary_op("i32_add", saved_r0),
             .i32_sub => try self.lower_binary_op("i32_sub", saved_r0),
             .i32_mul => try self.lower_binary_op("i32_mul", saved_r0),
@@ -5348,7 +5348,7 @@ pub const Lower = struct {
             .i32_rotl => try self.lower_binary_op("i32_rotl", saved_r0),
             .i32_rotr => try self.lower_binary_op("i32_rotr", saved_r0),
 
-            // ── i64 binary ───────────────────────────────────────────────────
+            // i64 binary
             .i64_add => try self.lower_binary_op("i64_add", saved_r0),
             .i64_sub => try self.lower_binary_op("i64_sub", saved_r0),
             .i64_mul => try self.lower_binary_op("i64_mul", saved_r0),
@@ -5365,7 +5365,7 @@ pub const Lower = struct {
             .i64_rotl => try self.lower_binary_op("i64_rotl", saved_r0),
             .i64_rotr => try self.lower_binary_op("i64_rotr", saved_r0),
 
-            // ── f32 binary ───────────────────────────────────────────────────
+            // f32 binary
             .f32_add => try self.lower_binary_op("f32_add", saved_r0),
             .f32_sub => try self.lower_binary_op("f32_sub", saved_r0),
             .f32_mul => try self.lower_binary_op("f32_mul", saved_r0),
@@ -5374,7 +5374,7 @@ pub const Lower = struct {
             .f32_max => try self.lower_binary_op("f32_max", saved_r0),
             .f32_copysign => try self.lower_binary_op("f32_copysign", saved_r0),
 
-            // ── f64 binary ───────────────────────────────────────────────────
+            // f64 binary
             .f64_add => try self.lower_binary_op("f64_add", saved_r0),
             .f64_sub => try self.lower_binary_op("f64_sub", saved_r0),
             .f64_mul => try self.lower_binary_op("f64_mul", saved_r0),
@@ -5383,17 +5383,17 @@ pub const Lower = struct {
             .f64_max => try self.lower_binary_op("f64_max", saved_r0),
             .f64_copysign => try self.lower_binary_op("f64_copysign", saved_r0),
 
-            // ── i32 unary ────────────────────────────────────────────────────
+            // i32 unary
             .i32_clz => try self.lower_unary_op("i32_clz"),
             .i32_ctz => try self.lower_unary_op("i32_ctz"),
             .i32_popcnt => try self.lower_unary_op("i32_popcnt"),
 
-            // ── i64 unary ────────────────────────────────────────────────────
+            // i64 unary
             .i64_clz => try self.lower_unary_op("i64_clz"),
             .i64_ctz => try self.lower_unary_op("i64_ctz"),
             .i64_popcnt => try self.lower_unary_op("i64_popcnt"),
 
-            // ── f32 unary ────────────────────────────────────────────────────
+            // f32 unary
             .f32_abs => try self.lower_unary_op("f32_abs"),
             .f32_neg => try self.lower_unary_op("f32_neg"),
             .f32_ceil => try self.lower_unary_op("f32_ceil"),
@@ -5402,7 +5402,7 @@ pub const Lower = struct {
             .f32_nearest => try self.lower_unary_op("f32_nearest"),
             .f32_sqrt => try self.lower_unary_op("f32_sqrt"),
 
-            // ── f64 unary ────────────────────────────────────────────────────
+            // f64 unary
             .f64_abs => try self.lower_unary_op("f64_abs"),
             .f64_neg => try self.lower_unary_op("f64_neg"),
             .f64_ceil => try self.lower_unary_op("f64_ceil"),
@@ -5411,7 +5411,7 @@ pub const Lower = struct {
             .f64_nearest => try self.lower_unary_op("f64_nearest"),
             .f64_sqrt => try self.lower_unary_op("f64_sqrt"),
 
-            // ── i32 comparisons ──────────────────────────────────────────────
+            // i32 comparisons
             .i32_eqz => try self.lower_unary_op("i32_eqz"),
             .i32_eq => try self.lower_compare_op("i32_eq"),
             .i32_ne => try self.lower_compare_op("i32_ne"),
@@ -5424,7 +5424,7 @@ pub const Lower = struct {
             .i32_ge_s => try self.lower_compare_op("i32_ge_s"),
             .i32_ge_u => try self.lower_compare_op("i32_ge_u"),
 
-            // ── i64 comparisons ──────────────────────────────────────────────
+            // i64 comparisons
             .i64_eqz => try self.lower_unary_op("i64_eqz"),
             .i64_eq => try self.lower_compare_op("i64_eq"),
             .i64_ne => try self.lower_compare_op("i64_ne"),
@@ -5437,7 +5437,7 @@ pub const Lower = struct {
             .i64_ge_s => try self.lower_compare_op("i64_ge_s"),
             .i64_ge_u => try self.lower_compare_op("i64_ge_u"),
 
-            // ── f32 comparisons ──────────────────────────────────────────────
+            // f32 comparisons
             .f32_eq => try self.lower_compare_op("f32_eq"),
             .f32_ne => try self.lower_compare_op("f32_ne"),
             .f32_lt => try self.lower_compare_op("f32_lt"),
@@ -5445,7 +5445,7 @@ pub const Lower = struct {
             .f32_le => try self.lower_compare_op("f32_le"),
             .f32_ge => try self.lower_compare_op("f32_ge"),
 
-            // ── f64 comparisons ──────────────────────────────────────────────
+            // f64 comparisons
             .f64_eq => try self.lower_compare_op("f64_eq"),
             .f64_ne => try self.lower_compare_op("f64_ne"),
             .f64_lt => try self.lower_compare_op("f64_lt"),
@@ -5453,7 +5453,7 @@ pub const Lower = struct {
             .f64_le => try self.lower_compare_op("f64_le"),
             .f64_ge => try self.lower_compare_op("f64_ge"),
 
-            // ── Conversions & sign-extension ─────────────────────────────────
+            // Conversions & sign-extension
             .i32_wrap_i64 => try self.lower_convert_op("i32_wrap_i64"),
             .i32_trunc_f32_s => try self.lower_convert_op("i32_trunc_f32_s"),
             .i32_trunc_f32_u => try self.lower_convert_op("i32_trunc_f32_u"),
@@ -5493,7 +5493,7 @@ pub const Lower = struct {
             .i64_extend16_s => try self.lower_convert_op("i64_extend16_s"),
             .i64_extend32_s => try self.lower_convert_op("i64_extend32_s"),
 
-            // ── Memory loads ─────────────────────────────────────────────────
+            // Memory loads
             .i32_load => {
                 const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
                 const addr = try self.pop_slot();
@@ -5593,7 +5593,7 @@ pub const Lower = struct {
                 try self.stack.push(self.allocator, dst);
             },
 
-            // ── Memory stores ────────────────────────────────────────────────
+            // Memory stores
             .i32_store => {
                 const offset = (info.memory_address orelse return error.UnsupportedOperator).offset;
                 const src = try self.pop_slot();
@@ -5649,7 +5649,7 @@ pub const Lower = struct {
                 try self.emit(.{ .f64_store = .{ .addr = addr, .src = src, .offset = offset } });
             },
 
-            // ── Bulk memory ──────────────────────────────────────────────────
+            // Bulk memory
             .memory_init => {
                 const segment_idx = info.segment_index orelse return error.UnsupportedOperator;
                 const len = try self.pop_slot();
@@ -5685,14 +5685,14 @@ pub const Lower = struct {
                 try self.emit(.{ .memory_grow = .{ .dst = dst, .delta = delta } });
             },
 
-            // ── Return ───────────────────────────────────────────────────────
+            // Return
             .return_ => {
                 const value = self.stack.pop();
                 try self.emit(.{ .ret = .{ .value = value } });
                 self.is_unreachable = true;
             },
 
-            // ── Select ───────────────────────────────────────────────────────
+            // Select
             .select, .select_with_type => {
                 const cond = try self.pop_slot();
                 const val2 = try self.pop_slot();
@@ -5702,7 +5702,7 @@ pub const Lower = struct {
                 try self.stack.push(self.allocator, dst);
             },
 
-            // ── Reference types ──────────────────────────────────────────────
+            // Reference types
             .ref_null => {
                 const dst = self.alloc_slot();
                 try self.emit(.{ .const_ref_null = .{ .dst = dst } });
@@ -5728,7 +5728,7 @@ pub const Lower = struct {
                 try self.stack.push(self.allocator, dst);
             },
 
-            // ── Table instructions ───────────────────────────────────────────
+            // Table instructions
             .table_get => {
                 const table_index = info.table_index orelse return error.UnsupportedOperator;
                 const index = try self.pop_slot();
@@ -5784,10 +5784,10 @@ pub const Lower = struct {
                 try self.emit(.{ .elem_drop = .{ .segment_idx = segment_idx } });
             },
 
-            // ── SIMD / Atomic / GC-non-struct_new / other rare opcodes ────
+            // SIMD / Atomic / GC-non-struct_new / other rare opcodes
             // All handled by the `else` fallback below via operatorToWasmOp.
 
-            // ── Special opcodes already returned false above ─────────────────
+            // Special opcodes already returned false above
             .call,
             .call_indirect,
             .return_call,
@@ -5799,7 +5799,7 @@ pub const Lower = struct {
             .return_call_ref,
             => unreachable,
 
-            // ── Anything else: delegate to operatorToWasmOp + lowerOp ────────
+            // Anything else: delegate to operatorToWasmOp + lowerOp
             else => {
                 const wasm_op = try translate_mod.operatorToWasmOp(info);
                 try self.lowerOp(wasm_op);

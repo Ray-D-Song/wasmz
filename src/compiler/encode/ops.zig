@@ -128,7 +128,7 @@ pub const OpsSimdShuffle = extern struct { dst: Slot, lhs: Slot, rhs: Slot, _pad
 pub const OpsSimdLoad = extern struct { dst: Slot, addr: Slot, src_vec: Slot, _pad: u16 = 0, opcode: u32, offset: u32, lane_valid: u8, lane: u8, src_vec_valid: u8, _pad2: u8 = 0 };
 pub const OpsSimdStore = extern struct { addr: Slot, src: Slot, opcode: u32, offset: u32, lane_valid: u8, lane: u8, _pad: [2]u8 = [_]u8{0} ** 2 };
 
-// ── f32/f64 fused operations ───────────────────────────────────────────────────
+// f32/f64 fused operations
 
 pub const OpsBinopImmF32 = extern struct { dst: Slot, lhs: Slot, _pad: u16 = 0, imm: f32 };
 pub const OpsBinopImmF64 = extern struct { dst: Slot, lhs: Slot, _pad: [6]u8 = [_]u8{0} ** 6, imm: f64 };

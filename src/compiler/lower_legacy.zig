@@ -1,12 +1,9 @@
 // lower_legacy.zig
-//
 // Lowering for the legacy WebAssembly Exception Handling proposal:
 //   try / catch <tag> / catch_all / rethrow <depth> / delegate <depth>
-//
 // Strategy:
 //   The same IR (try_table_enter / try_table_leave / throw / throw_ref) is
 //   reused.  Legacy constructs are transformed during lowering:
-//
 //   try ... catch <tag> ... catch_all ... end
 //   becomes (structurally):
 //     [try_table_enter { handlers_start, handlers_len, end_target=E }]
@@ -20,16 +17,13 @@
 //     [jump AFTER_CATCHES]
 //   E: (no-op label — backpatch target)
 //   AFTER_CATCHES:
-//
 //   rethrow <depth>:
 //     translated to throw_ref using the exnref slot recorded for the try frame
 //     at the indicated relative depth.
-//
 //   delegate <depth>:
 //     terminates the try body: throws the current exnref into the outer try at
 //     <depth> (i.e. a throw_ref that bypasses zero or more try frames).
 //     Implemented as a throw_ref followed by unwinding.
-//
 // NOTE: This file operates directly on the Lower struct from lower.zig,
 // mutating its fields (compiled, stack, control_stack) to emit IR.
 
@@ -54,7 +48,7 @@ pub const LegacyLowerError = error{
     ControlStackUnderflow,
 } || lower_mod.LowerError;
 
-// ── Additional per-frame state for legacy try blocks ─────────────────────────
+// Additional per-frame state for legacy try blocks
 
 /// State attached to a legacy `try` control frame (BlockKind.try_table kind).
 /// We stash it in a parallel array indexed by control-stack position.
@@ -125,7 +119,7 @@ pub const LowerLegacy = struct {
         try self.try_states.append(self.allocator, null);
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
+    // Helpers
 
     fn current_pc(self: *LowerLegacy) u32 {
         return self.inner.current_pc();
@@ -162,7 +156,7 @@ pub const LowerLegacy = struct {
         return error.InvalidRethrowDepth;
     }
 
-    // ── Main dispatch ─────────────────────────────────────────────────────────
+    // Main dispatch
 
     /// Lower a single legacy WasmOp (or delegate to inner.lowerOp for non-legacy ops).
     pub fn lowerLegacyOp(self: *LowerLegacy, op: LegacyWasmOp) !void {
@@ -188,7 +182,7 @@ pub const LowerLegacy = struct {
                 }
             },
 
-            // ── try ────────────────────────────────────────────────────────────
+            // try
             // The legacy `try` block works like try_table but we don't know the
             // handlers yet (they come one by one as catch_ / catch_all arrive).
             // We emit try_table_enter with 0 handlers for now; the actual handler
@@ -226,7 +220,7 @@ pub const LowerLegacy = struct {
                 });
             },
 
-            // ── catch_ <tag_index> ─────────────────────────────────────────────
+            // catch_ <tag_index>
             .catch_ => |info| {
                 // A catch arm is reachable even if the try body ended in unreachable code
                 // (throw, br, etc.), similar to how `else` resets unreachable after `if`.
@@ -235,14 +229,14 @@ pub const LowerLegacy = struct {
                 try self.handle_catch_start(info.tag_index, info.tag_arity, false);
             },
 
-            // ── catch_all ──────────────────────────────────────────────────────
+            // catch_all
             .catch_all => {
                 self.inner.is_unreachable = false;
                 self.inner.unreachable_depth = 0;
                 try self.handle_catch_start(null, 0, true);
             },
 
-            // ── rethrow <relative_depth> ─────────────────────────────────────
+            // rethrow <relative_depth>
             // Depth counts try/catch frames only (not plain blocks/loops).
             .rethrow => |depth| {
                 const ts = try self.try_state_at_depth(depth);
@@ -254,7 +248,7 @@ pub const LowerLegacy = struct {
                 self.inner.is_unreachable = true;
             },
 
-            // ── delegate <relative_depth> ────────────────────────────────────
+            // delegate <relative_depth>
             // Delegate terminates the try body and re-throws any exception into
             // the handler at `depth` (counting only try frames).
             // We implement this as:
@@ -279,7 +273,7 @@ pub const LowerLegacy = struct {
         }
     }
 
-    // ── catch/catch_all helper ────────────────────────────────────────────────
+    // catch/catch_all helper
 
     /// Called when we encounter a `catch_` or `catch_all` opcode.
     ///
@@ -436,7 +430,7 @@ pub const LowerLegacy = struct {
         // rethrow uses it directly; the user can't access it from Wasm source.
     }
 
-    // ── delegate helper ───────────────────────────────────────────────────────
+    // delegate helper
 
     fn handle_delegate(self: *LowerLegacy, depth: u32) !void {
         const cs = &self.inner.control_stack;
@@ -547,7 +541,7 @@ pub const LowerLegacy = struct {
         try self.inner.unwind_stack_to_frame(&popped_frame);
     }
 
-    // ── end (for legacy try/catch block) ─────────────────────────────────────
+    // end (for legacy try/catch block)
 
     /// Handle `end` when the innermost frame is a legacy try/catch block.
     /// If the frame has catch arms, we need to close the last catch body.
@@ -641,7 +635,7 @@ pub const LowerLegacy = struct {
     }
 };
 
-// ── Legacy WasmOp ─────────────────────────────────────────────────────────────
+// Legacy WasmOp
 
 /// A discriminated union covering both legacy EH ops and all normal ops.
 pub const LegacyWasmOp = union(enum) {

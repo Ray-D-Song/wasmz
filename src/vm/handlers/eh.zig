@@ -32,7 +32,7 @@ const ArrayLayout = gc_mod.ArrayLayout;
 
 const HANDLER_SIZE = dispatch.HANDLER_SIZE;
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// Helpers
 
 inline fn readOps(comptime T: type, ip: [*]u8) T {
     if (@sizeOf(T) == 0) return .{};
@@ -160,7 +160,7 @@ fn dispatchException(
     return false;
 }
 
-// ── throw ────────────────────────────────────────────────────────────────────
+// throw
 
 pub fn handle_throw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsThrow, ip);
@@ -207,7 +207,7 @@ pub fn handle_throw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *co
     }
 }
 
-// ── throw_ref ────────────────────────────────────────────────────────────────
+// throw_ref
 
 pub fn handle_throw_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsThrowRef, ip);
@@ -227,7 +227,7 @@ pub fn handle_throw_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
     }
 }
 
-// ── try_table_enter ──────────────────────────────────────────────────────────
+// try_table_enter
 
 pub fn handle_try_table_enter(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsTryTableEnter, ip);
@@ -244,7 +244,7 @@ pub fn handle_try_table_enter(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
     dispatch.next(ip, stride(encode.ops.OpsTryTableEnter), slots, frame, env, r0, fp0);
 }
 
-// ── try_table_leave ──────────────────────────────────────────────────────────
+// try_table_leave
 
 pub fn handle_try_table_leave(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsTryTableLeave, ip);

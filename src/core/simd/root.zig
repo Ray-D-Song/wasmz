@@ -1,10 +1,8 @@
 // WebAssembly SIMD (128-bit) instruction interpreter.
-//
 // Implements the full wasm SIMD proposal plus relaxed-SIMD extensions.
 // All 128-bit vectors are stored as V128 ({ bytes: [16]u8 }) in little-endian
 // byte order.  Internal helpers convert to/from Zig's @Vector for lane-typed
 // arithmetic, handling big-endian byte-swap when necessary.
-//
 // Public API consumed by the VM dispatcher (vm/root.zig):
 //   - Classification: classifyOpcode, isSimdOpcode, isRelaxedSimdOpcode, shapeOf, ...
 //   - Execution: executeUnary, executeBinary, executeTernary, executeCompare, executeShift

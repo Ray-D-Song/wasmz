@@ -150,7 +150,7 @@ pub const VM = struct {
             .mem_trace = env.mem_trace,
         };
 
-        // ── Ensure persistent buffers are allocated (lazy, first call only) ──
+        // Ensure persistent buffers are allocated (lazy, first call only)
         try self.ensureBuffers();
 
         const entry_slots_len: usize = @max(
@@ -165,7 +165,7 @@ pub const VM = struct {
             entry_slots[i] = param;
         }
 
-        // ── Build dispatch state — borrow persistent buffers ──────────────────
+        // Build dispatch state — borrow persistent buffers
         var frame = dispatch_mod.DispatchState{
             .allocator = self.allocator,
             .val_stack = self.val_stack,

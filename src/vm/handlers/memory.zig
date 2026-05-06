@@ -17,7 +17,7 @@ const trapReturn = common.trapReturn;
 const effectiveAddr = common.effectiveAddr;
 const currentRssBytes = profiling.currentRssBytes;
 
-// ── Memory Loads ────────────────────────────────────────────────────────────
+// Memory Loads
 
 pub fn handle_i32_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsLoad, ip);
@@ -178,7 +178,7 @@ pub fn handle_f64_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
     dispatch.next(ip, stride(encode.ops.OpsLoad), slots, frame, env, r0, fp0);
 }
 
-// ── Memory Stores ───────────────────────────────────────────────────────────
+// Memory Stores
 
 pub fn handle_i32_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsStore, ip);
@@ -279,7 +279,7 @@ pub fn handle_f64_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
     dispatch.next(ip, stride(encode.ops.OpsStore), slots, frame, env, r0, fp0);
 }
 
-// ── Bulk Memory ─────────────────────────────────────────────────────────────
+// Bulk Memory
 
 pub fn handle_memory_size(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsMemorySize, ip);
@@ -312,7 +312,7 @@ pub fn handle_memory_grow(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
         if (env.memory_budget) |b| {
             b.recordLinearGrow(env.memory.byteLen());
         }
-        // ── mem-trace probe: log every successful memory.grow ─────────────
+        // mem-trace probe: log every successful memory.grow
         if (env.mem_trace and delta > 0) {
             const new_byte_len = env.memory.byteLen();
             const rss_after = currentRssBytes();

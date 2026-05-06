@@ -1,9 +1,7 @@
 // SIMD public execution dispatchers.
-//
 // These are the entry points called by the VM dispatcher (vm/root.zig).
 // Each function takes a SimdOpcode and SimdVal operands, dispatches to the
 // appropriate helper in ops.zig / memory.zig, and returns a SimdVal.
-//
 // Scalar results (e.g. extractLane, any_true, bitmask) return RawVal.
 // Scalar inputs (e.g. executeShift rhs, replaceLane src_lane, splat src) use RawVal.
 const std = @import("std");
@@ -17,7 +15,7 @@ pub const SimdVal = raw_mod.SimdVal;
 const V128 = ops.V128;
 const SimdOpcode = classify.SimdOpcode;
 
-// ── Conversion helpers ────────────────────────────────────────────────────────
+// Conversion helpers
 
 inline fn sv2v(s: SimdVal) V128 {
     return s.toV128();
@@ -27,7 +25,7 @@ inline fn v2sv(v: V128) SimdVal {
     return SimdVal.fromV128(v);
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
+// Public API
 
 /// Dispatches a unary SIMD operation. Handles splat, bitwise not, integer/float
 /// unary ops, type conversions, extending, and pairwise addition.
@@ -358,7 +356,7 @@ pub fn store(opcode: SimdOpcode, memory: []u8, addr: u32, offset: u32, lane: ?u8
     mem_ops.store(opcode, memory, addr, offset, lane, src.toV128());
 }
 
-// ── Private helpers ───────────────────────────────────────────────────────────
+// Private helpers
 
 /// Creates a V128 where all lanes are filled with the same scalar value.
 /// `scalar` carries the scalar value in its low 8 bytes (as a RawVal).

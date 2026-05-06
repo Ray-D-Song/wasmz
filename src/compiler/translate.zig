@@ -149,7 +149,7 @@ fn typeIndexFromHeapType(heap_type: ?PayloadHeapType) TranslateError!u32 {
 /// Translates OperatorInformation produced by the parser into a WasmOp recognized by Lower.
 /// Unsupported opcodes return the UnsupportedOperator error.
 pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
-    // ── Comptime-generated simple operation mappings ─────────────────────────
+    // Comptime-generated simple operation mappings
     // These operations have a 1:1 mapping from OperatorCode to WasmOp (no payload)
 
     const simple_binary_ops = [_]OperatorCode{
@@ -286,7 +286,7 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         return try atomicWasmOpFromOperatorInfo(info);
     }
 
-    // ── Manual mapping for operations with special payloads ───────────────────
+    // Manual mapping for operations with special payloads
 
     return switch (info.code) {
         .unreachable_ => WasmOp.unreachable_,
@@ -306,13 +306,13 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         .global_get => WasmOp{ .global_get = info.global_index orelse return error.UnsupportedOperator },
         .global_set => WasmOp{ .global_set = info.global_index orelse return error.UnsupportedOperator },
 
-        // ── Constants ───────────────────────────────────────────────────────
+        // Constants
         .i32_const => WasmOp{ .i32_const = try literalAsI32(info) },
         .i64_const => WasmOp{ .i64_const = try literalAsI64(info) },
         .f32_const => WasmOp{ .f32_const = try literalAsF32(info) },
         .f64_const => WasmOp{ .f64_const = try literalAsF64(info) },
 
-        // ── Memory load instructions ─────────────────────────────────────────
+        // Memory load instructions
         .i32_load => WasmOp{ .i32_load = .{
             .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
         } },
@@ -356,7 +356,7 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
             .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
         } },
 
-        // ── Memory store instructions ───────────────────────────────────────
+        // Memory store instructions
         .i32_store => WasmOp{ .i32_store = .{
             .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
         } },
@@ -385,7 +385,7 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
             .offset = (info.memory_address orelse return error.UnsupportedOperator).offset,
         } },
 
-        // ── Bulk memory instructions ────────────────────────────────────────
+        // Bulk memory instructions
         .memory_init => WasmOp{ .memory_init = info.segment_index orelse return error.UnsupportedOperator },
         .data_drop => WasmOp{ .data_drop = info.segment_index orelse return error.UnsupportedOperator },
         .memory_copy => WasmOp.memory_copy,
@@ -397,14 +397,14 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         .select => WasmOp.select,
         .select_with_type => WasmOp.select_with_type,
 
-        // ── Reference type instructions ─────────────────────────────────────────
+        // Reference type instructions
         // ref.null: produces null for any heap type. All ref types share null=0.
         .ref_null => WasmOp.ref_null,
         .ref_is_null => WasmOp.ref_is_null,
         .ref_func => WasmOp{ .ref_func = info.func_index orelse return error.UnsupportedOperator },
         .ref_eq => WasmOp.ref_eq,
 
-        // ── Table instructions ──────────────────────────────────────────────────
+        // Table instructions
         .table_get => WasmOp{ .table_get = info.table_index orelse return error.UnsupportedOperator },
         .table_set => WasmOp{ .table_set = info.table_index orelse return error.UnsupportedOperator },
         .table_size => WasmOp{ .table_size = info.table_index orelse return error.UnsupportedOperator },
@@ -420,7 +420,7 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         } },
         .elem_drop => WasmOp{ .elem_drop = info.segment_index orelse return error.UnsupportedOperator },
 
-        // ── GC Struct instructions ─────────────────────────────────────────────────
+        // GC Struct instructions
         // Note: n_fields will be filled by module.zig after looking up the type definition
         // Parser stores the type index in info.ref_type (not info.type_index).
         .struct_new => WasmOp{
@@ -447,7 +447,7 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
             .field_idx = info.field_index orelse return error.UnsupportedOperator,
         } },
 
-        // ── GC Array instructions ──────────────────────────────────────────────────
+        // GC Array instructions
         // Parser stores the type index in info.ref_type (not info.type_index).
         .array_new => WasmOp{ .array_new = try typeIndexFromHeapType(info.ref_type) },
         .array_new_default => WasmOp{ .array_new_default = try typeIndexFromHeapType(info.ref_type) },
@@ -482,12 +482,12 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
             .elem_idx = info.segment_index orelse return error.UnsupportedOperator,
         } },
 
-        // ── GC i31 instructions ────────────────────────────────────────────────────
+        // GC i31 instructions
         .ref_i31 => WasmOp.ref_i31,
         .i31_get_s => WasmOp.i31_get_s,
         .i31_get_u => WasmOp.i31_get_u,
 
-        // ── GC Type Test/Cast instructions ─────────────────────────────────────────
+        // GC Type Test/Cast instructions
         // Parser stores the target HeapType in info.ref_type (not info.type_index).
         // Use heapTypeToRaw so that abstract heap types (anyref, eqref, …) are also
         // encoded correctly as their core.HeapType ordinal (0–9).
@@ -498,7 +498,7 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
         .ref_cast_null => WasmOp{ .ref_cast = .{ .type_idx = try heapTypeToRaw(info.ref_type), .nullable = true } },
         .ref_as_non_null => WasmOp.ref_as_non_null,
 
-        // ── GC Control Flow instructions ───────────────────────────────────────────
+        // GC Control Flow instructions
         .br_on_null => WasmOp{ .br_on_null = info.br_depth orelse return error.UnsupportedOperator },
         .br_on_non_null => WasmOp{ .br_on_non_null = info.br_depth orelse return error.UnsupportedOperator },
         .br_on_cast => blk: {
@@ -522,7 +522,7 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
             } };
         },
 
-        // ── GC Call instructions ───────────────────────────────────────────────────
+        // GC Call instructions
         // Note: n_params and has_result will be filled by the caller (module.zig)
         .call_ref => WasmOp{
             .call_ref = .{
@@ -538,11 +538,11 @@ pub fn operatorToWasmOp(info: OperatorInformation) TranslateError!WasmOp {
             },
         },
 
-        // ── GC Extern/Any conversion instructions ──────────────────────────────────
+        // GC Extern/Any conversion instructions
         .any_convert_extern => WasmOp.any_convert_extern,
         .extern_convert_any => WasmOp.extern_convert_any,
 
-        // ── Exception Handling instructions ────────────────────────────────────────
+        // Exception Handling instructions
         // throw.n_args is a placeholder (0); module.zig fills in the real arity by
         // looking up the tag's FuncType (same pattern as call.n_params).
         .throw => WasmOp{
@@ -740,7 +740,7 @@ pub fn wasmCompositeTypeFromTypeEntry(
     };
 }
 
-// ── Atomic opcode helpers ─────────────────────────────────────────────────────
+// Atomic opcode helpers
 
 /// Returns true if the opcode is a Wasm Threads proposal atomic instruction
 /// (any opcode in the 0xFE.. range).
@@ -761,101 +761,101 @@ fn atomicWasmOpFromOperatorInfo(info: OperatorInformation) TranslateError!WasmOp
     const offset = if (info.memory_address) |ma| ma.offset else 0;
 
     return switch (info.code) {
-        // ── fence ───────────────────────────────────────────────────────────────
+        // fence
         .atomic_fence => WasmOp.atomic_fence,
 
-        // ── notify / wait ───────────────────────────────────────────────────────
+        // notify / wait
         .memory_atomic_notify => WasmOp{ .atomic_notify = .{ .offset = offset } },
         .memory_atomic_wait32 => WasmOp{ .atomic_wait32 = .{ .offset = offset } },
         .memory_atomic_wait64 => WasmOp{ .atomic_wait64 = .{ .offset = offset } },
 
-        // ── i32 atomic loads ────────────────────────────────────────────────────
+        // i32 atomic loads
         .i32_atomic_load => WasmOp{ .atomic_load = .{ .offset = offset, .width = .@"32", .ty = .i32 } },
         .i32_atomic_load8_u => WasmOp{ .atomic_load = .{ .offset = offset, .width = .@"8", .ty = .i32 } },
         .i32_atomic_load16_u => WasmOp{ .atomic_load = .{ .offset = offset, .width = .@"16", .ty = .i32 } },
 
-        // ── i64 atomic loads ────────────────────────────────────────────────────
+        // i64 atomic loads
         .i64_atomic_load => WasmOp{ .atomic_load = .{ .offset = offset, .width = .@"64", .ty = .i64 } },
         .i64_atomic_load8_u => WasmOp{ .atomic_load = .{ .offset = offset, .width = .@"8", .ty = .i64 } },
         .i64_atomic_load16_u => WasmOp{ .atomic_load = .{ .offset = offset, .width = .@"16", .ty = .i64 } },
         .i64_atomic_load32_u => WasmOp{ .atomic_load = .{ .offset = offset, .width = .@"32", .ty = .i64 } },
 
-        // ── i32 atomic stores ───────────────────────────────────────────────────
+        // i32 atomic stores
         .i32_atomic_store => WasmOp{ .atomic_store = .{ .offset = offset, .width = .@"32", .ty = .i32 } },
         .i32_atomic_store8 => WasmOp{ .atomic_store = .{ .offset = offset, .width = .@"8", .ty = .i32 } },
         .i32_atomic_store16 => WasmOp{ .atomic_store = .{ .offset = offset, .width = .@"16", .ty = .i32 } },
 
-        // ── i64 atomic stores ───────────────────────────────────────────────────
+        // i64 atomic stores
         .i64_atomic_store => WasmOp{ .atomic_store = .{ .offset = offset, .width = .@"64", .ty = .i64 } },
         .i64_atomic_store8 => WasmOp{ .atomic_store = .{ .offset = offset, .width = .@"8", .ty = .i64 } },
         .i64_atomic_store16 => WasmOp{ .atomic_store = .{ .offset = offset, .width = .@"16", .ty = .i64 } },
         .i64_atomic_store32 => WasmOp{ .atomic_store = .{ .offset = offset, .width = .@"32", .ty = .i64 } },
 
-        // ── i32 atomic RMW add ──────────────────────────────────────────────────
+        // i32 atomic RMW add
         .i32_atomic_rmw_add => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .add, .width = .@"32", .ty = .i32 } },
         .i32_atomic_rmw8_add_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .add, .width = .@"8", .ty = .i32 } },
         .i32_atomic_rmw16_add_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .add, .width = .@"16", .ty = .i32 } },
-        // ── i64 atomic RMW add ──────────────────────────────────────────────────
+        // i64 atomic RMW add
         .i64_atomic_rmw_add => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .add, .width = .@"64", .ty = .i64 } },
         .i64_atomic_rmw8_add_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .add, .width = .@"8", .ty = .i64 } },
         .i64_atomic_rmw16_add_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .add, .width = .@"16", .ty = .i64 } },
         .i64_atomic_rmw32_add_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .add, .width = .@"32", .ty = .i64 } },
 
-        // ── i32 atomic RMW sub ──────────────────────────────────────────────────
+        // i32 atomic RMW sub
         .i32_atomic_rmw_sub => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .sub, .width = .@"32", .ty = .i32 } },
         .i32_atomic_rmw8_sub_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .sub, .width = .@"8", .ty = .i32 } },
         .i32_atomic_rmw16_sub_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .sub, .width = .@"16", .ty = .i32 } },
-        // ── i64 atomic RMW sub ──────────────────────────────────────────────────
+        // i64 atomic RMW sub
         .i64_atomic_rmw_sub => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .sub, .width = .@"64", .ty = .i64 } },
         .i64_atomic_rmw8_sub_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .sub, .width = .@"8", .ty = .i64 } },
         .i64_atomic_rmw16_sub_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .sub, .width = .@"16", .ty = .i64 } },
         .i64_atomic_rmw32_sub_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .sub, .width = .@"32", .ty = .i64 } },
 
-        // ── i32 atomic RMW and ──────────────────────────────────────────────────
+        // i32 atomic RMW and
         .i32_atomic_rmw_and => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"and", .width = .@"32", .ty = .i32 } },
         .i32_atomic_rmw8_and_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"and", .width = .@"8", .ty = .i32 } },
         .i32_atomic_rmw16_and_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"and", .width = .@"16", .ty = .i32 } },
-        // ── i64 atomic RMW and ──────────────────────────────────────────────────
+        // i64 atomic RMW and
         .i64_atomic_rmw_and => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"and", .width = .@"64", .ty = .i64 } },
         .i64_atomic_rmw8_and_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"and", .width = .@"8", .ty = .i64 } },
         .i64_atomic_rmw16_and_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"and", .width = .@"16", .ty = .i64 } },
         .i64_atomic_rmw32_and_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"and", .width = .@"32", .ty = .i64 } },
 
-        // ── i32 atomic RMW or ───────────────────────────────────────────────────
+        // i32 atomic RMW or
         .i32_atomic_rmw_or => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"or", .width = .@"32", .ty = .i32 } },
         .i32_atomic_rmw8_or_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"or", .width = .@"8", .ty = .i32 } },
         .i32_atomic_rmw16_or_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"or", .width = .@"16", .ty = .i32 } },
-        // ── i64 atomic RMW or ───────────────────────────────────────────────────
+        // i64 atomic RMW or
         .i64_atomic_rmw_or => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"or", .width = .@"64", .ty = .i64 } },
         .i64_atomic_rmw8_or_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"or", .width = .@"8", .ty = .i64 } },
         .i64_atomic_rmw16_or_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"or", .width = .@"16", .ty = .i64 } },
         .i64_atomic_rmw32_or_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .@"or", .width = .@"32", .ty = .i64 } },
 
-        // ── i32 atomic RMW xor ──────────────────────────────────────────────────
+        // i32 atomic RMW xor
         .i32_atomic_rmw_xor => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xor, .width = .@"32", .ty = .i32 } },
         .i32_atomic_rmw8_xor_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xor, .width = .@"8", .ty = .i32 } },
         .i32_atomic_rmw16_xor_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xor, .width = .@"16", .ty = .i32 } },
-        // ── i64 atomic RMW xor ──────────────────────────────────────────────────
+        // i64 atomic RMW xor
         .i64_atomic_rmw_xor => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xor, .width = .@"64", .ty = .i64 } },
         .i64_atomic_rmw8_xor_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xor, .width = .@"8", .ty = .i64 } },
         .i64_atomic_rmw16_xor_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xor, .width = .@"16", .ty = .i64 } },
         .i64_atomic_rmw32_xor_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xor, .width = .@"32", .ty = .i64 } },
 
-        // ── i32 atomic RMW xchg ─────────────────────────────────────────────────
+        // i32 atomic RMW xchg
         .i32_atomic_rmw_xchg => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xchg, .width = .@"32", .ty = .i32 } },
         .i32_atomic_rmw8_xchg_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xchg, .width = .@"8", .ty = .i32 } },
         .i32_atomic_rmw16_xchg_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xchg, .width = .@"16", .ty = .i32 } },
-        // ── i64 atomic RMW xchg ─────────────────────────────────────────────────
+        // i64 atomic RMW xchg
         .i64_atomic_rmw_xchg => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xchg, .width = .@"64", .ty = .i64 } },
         .i64_atomic_rmw8_xchg_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xchg, .width = .@"8", .ty = .i64 } },
         .i64_atomic_rmw16_xchg_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xchg, .width = .@"16", .ty = .i64 } },
         .i64_atomic_rmw32_xchg_u => WasmOp{ .atomic_rmw = .{ .offset = offset, .op = .xchg, .width = .@"32", .ty = .i64 } },
 
-        // ── i32 atomic cmpxchg ──────────────────────────────────────────────────
+        // i32 atomic cmpxchg
         .i32_atomic_rmw_cmpxchg => WasmOp{ .atomic_cmpxchg = .{ .offset = offset, .width = .@"32", .ty = .i32 } },
         .i32_atomic_rmw8_cmpxchg_u => WasmOp{ .atomic_cmpxchg = .{ .offset = offset, .width = .@"8", .ty = .i32 } },
         .i32_atomic_rmw16_cmpxchg_u => WasmOp{ .atomic_cmpxchg = .{ .offset = offset, .width = .@"16", .ty = .i32 } },
-        // ── i64 atomic cmpxchg ──────────────────────────────────────────────────
+        // i64 atomic cmpxchg
         .i64_atomic_rmw_cmpxchg => WasmOp{ .atomic_cmpxchg = .{ .offset = offset, .width = .@"64", .ty = .i64 } },
         .i64_atomic_rmw8_cmpxchg_u => WasmOp{ .atomic_cmpxchg = .{ .offset = offset, .width = .@"8", .ty = .i64 } },
         .i64_atomic_rmw16_cmpxchg_u => WasmOp{ .atomic_cmpxchg = .{ .offset = offset, .width = .@"16", .ty = .i64 } },

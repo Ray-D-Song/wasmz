@@ -17,7 +17,7 @@ const SharedMemory = core.SharedMemory;
 const WaitResult = core.WaitResult;
 const WASM_PAGE_SIZE = core.WASM_PAGE_SIZE;
 
-// ── 1. notify on non-shared memory ───────────────────────────────────────────
+// 1. notify on non-shared memory
 
 test "Memory.notify on owned memory returns 0" {
     var mem = try Memory.initOwned(testing.allocator, 1);
@@ -26,7 +26,7 @@ test "Memory.notify on owned memory returns 0" {
     try testing.expectEqual(@as(u32, 0), woken);
 }
 
-// ── 2. wait on non-shared memory ─────────────────────────────────────────────
+// 2. wait on non-shared memory
 
 test "Memory.wait32 on owned memory returns not_equal" {
     var mem = try Memory.initOwned(testing.allocator, 1);
@@ -42,7 +42,7 @@ test "Memory.wait64 on owned memory returns not_equal" {
     try testing.expectEqual(WaitResult.not_equal, result);
 }
 
-// ── 3. notify with no waiters ─────────────────────────────────────────────────
+// 3. notify with no waiters
 
 test "SharedMemory.notify with no waiters returns 0" {
     var sm = try SharedMemory.init(testing.allocator, 1, 2);
@@ -51,7 +51,7 @@ test "SharedMemory.notify with no waiters returns 0" {
     try testing.expectEqual(@as(u32, 0), woken);
 }
 
-// ── 4. wait32 – mismatched value ──────────────────────────────────────────────
+// 4. wait32 – mismatched value
 
 test "SharedMemory.wait32 returns not_equal when value differs" {
     var sm = try SharedMemory.init(testing.allocator, 1, 2);
@@ -62,7 +62,7 @@ test "SharedMemory.wait32 returns not_equal when value differs" {
     try testing.expectEqual(WaitResult.not_equal, result);
 }
 
-// ── 5. wait64 – mismatched value ──────────────────────────────────────────────
+// 5. wait64 – mismatched value
 
 test "SharedMemory.wait64 returns not_equal when value differs" {
     var sm = try SharedMemory.init(testing.allocator, 1, 2);
@@ -72,7 +72,7 @@ test "SharedMemory.wait64 returns not_equal when value differs" {
     try testing.expectEqual(WaitResult.not_equal, result);
 }
 
-// ── 6. wait32 – zero timeout → timed_out ─────────────────────────────────────
+// 6. wait32 – zero timeout → timed_out
 
 test "SharedMemory.wait32 with zero timeout and matching value returns timed_out" {
     var sm = try SharedMemory.init(testing.allocator, 1, 2);
@@ -83,12 +83,10 @@ test "SharedMemory.wait32 with zero timeout and matching value returns timed_out
     try testing.expectEqual(WaitResult.timed_out, result);
 }
 
-// ── 7. Cross-thread wait32 / notify round-trip ────────────────────────────────
-//
+// 7. Cross-thread wait32 / notify round-trip
 // Thread A: wait32 on address 0, expected value 0, no timeout
 // Main thread: sleep a little, write 1 to address 0, then notify
 // Expected: Thread A wakes with result .ok
-//
 // We use a second atomic flag so the main thread can verify Thread A woke up.
 
 const WaitCtx = struct {

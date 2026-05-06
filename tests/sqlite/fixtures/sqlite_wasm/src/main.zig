@@ -1,6 +1,5 @@
 // sqlite_wasm.zig — Zig wrapper that compiles sqlite3.c into wasm32-wasi
 // and exports a minimal sqlite3 API callable by a WASM host.
-//
 // Exported functions (all use i32 for pointers since wasm is 32-bit):
 //   _initialize()              — reactor init (no-op, but marks reactor model)
 //   sqlite3_open(path_ptr, path_len, db_out_ptr) -> i32

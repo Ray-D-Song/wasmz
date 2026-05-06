@@ -8,7 +8,7 @@ const HeapType = core.HeapType;
 
 pub const Slot = u16;
 
-// ── Generic Operation Types ─────────────────────────────────────────────────────
+// Generic Operation Types
 
 /// Binary operation: applies to all add/sub/mul/and/or/xor/shl/shr/div/rem operations, etc.
 /// Generic over the value type (i32, i64, f32, f64)
@@ -213,7 +213,7 @@ pub const SimdShiftScalarOp = struct {
     rhs: Slot,
 };
 
-// ── Atomic operation helper types ─────────────────────────────────────────────
+// Atomic operation helper types
 
 /// Natural access width for atomic load/store/rmw/cmpxchg operations.
 /// The value indicates the number of bytes accessed in memory; values narrower
@@ -244,13 +244,13 @@ pub const AtomicType = enum { i32, i64 };
 /// The read-modify-write operation applied by atomic.rmw.
 pub const AtomicRmwOp = enum { add, sub, @"and", @"or", xor, xchg };
 
-// ── Main Op Union ──────────────────────────────────────────────────────────────
+// Main Op Union
 
 pub const Op = union(enum) {
     /// Trap immediately with UnreachableCodeReached
     unreachable_,
 
-    // ── Constants ───────────────────────────────────────────────────────────────
+    // Constants
     const_i32: struct {
         dst: Slot,
         value: i32,
@@ -272,7 +272,7 @@ pub const Op = union(enum) {
         value: V128,
     },
 
-    // ── Reference type constants ─────────────────────────────────────────────────
+    // Reference type constants
     /// ref.null: push a null reference.
     ///
     /// All reference types (funcref, externref, anyref, eqref, structref, …) share
@@ -303,7 +303,7 @@ pub const Op = union(enum) {
         rhs: Slot,
     },
 
-    // ── Variable access ─────────────────────────────────────────────────────────
+    // Variable access
     local_get: struct {
         dst: Slot,
         local: Slot,
@@ -313,7 +313,7 @@ pub const Op = union(enum) {
         src: Slot,
     },
 
-    // ── i32 arithmetic operations (using generic BinaryOp) ──────────────────────
+    // i32 arithmetic operations (using generic BinaryOp)
     i32_add: BinaryOp(i32),
     i32_sub: BinaryOp(i32),
     i32_mul: BinaryOp(i32),
@@ -334,7 +334,7 @@ pub const Op = union(enum) {
     i32_rotl: BinaryOp(i32),
     i32_rotr: BinaryOp(i32),
 
-    // ── i64 arithmetic operations ───────────────────────────────────────────────
+    // i64 arithmetic operations
     i64_add: BinaryOp(i64),
     i64_sub: BinaryOp(i64),
     i64_mul: BinaryOp(i64),
@@ -351,7 +351,7 @@ pub const Op = union(enum) {
     i64_rotl: BinaryOp(i64),
     i64_rotr: BinaryOp(i64),
 
-    // ── f32 arithmetic operations ───────────────────────────────────────────────
+    // f32 arithmetic operations
     f32_add: BinaryOp(f32),
     f32_sub: BinaryOp(f32),
     f32_mul: BinaryOp(f32),
@@ -360,7 +360,7 @@ pub const Op = union(enum) {
     f32_max: BinaryOp(f32),
     f32_copysign: BinaryOp(f32),
 
-    // ── f64 arithmetic operations ───────────────────────────────────────────────
+    // f64 arithmetic operations
     f64_add: BinaryOp(f64),
     f64_sub: BinaryOp(f64),
     f64_mul: BinaryOp(f64),
@@ -369,17 +369,17 @@ pub const Op = union(enum) {
     f64_max: BinaryOp(f64),
     f64_copysign: BinaryOp(f64),
 
-    // ── i32 unary operations (using generic UnaryOp) ────────────────────────────
+    // i32 unary operations (using generic UnaryOp)
     i32_clz: UnaryOp(i32),
     i32_ctz: UnaryOp(i32),
     i32_popcnt: UnaryOp(i32),
 
-    // ── i64 unary operations ────────────────────────────────────────────────────
+    // i64 unary operations
     i64_clz: UnaryOp(i64),
     i64_ctz: UnaryOp(i64),
     i64_popcnt: UnaryOp(i64),
 
-    // ── f32 unary operations ────────────────────────────────────────────────────
+    // f32 unary operations
     f32_abs: UnaryOp(f32),
     f32_neg: UnaryOp(f32),
     f32_ceil: UnaryOp(f32),
@@ -388,7 +388,7 @@ pub const Op = union(enum) {
     f32_nearest: UnaryOp(f32),
     f32_sqrt: UnaryOp(f32),
 
-    // ── f64 unary operations ────────────────────────────────────────────────────
+    // f64 unary operations
     f64_abs: UnaryOp(f64),
     f64_neg: UnaryOp(f64),
     f64_ceil: UnaryOp(f64),
@@ -397,7 +397,7 @@ pub const Op = union(enum) {
     f64_nearest: UnaryOp(f64),
     f64_sqrt: UnaryOp(f64),
 
-    // ── i32 comparison operations (using generic CompareOp) ─────────────────────
+    // i32 comparison operations (using generic CompareOp)
     i32_eqz: UnaryOp(i32), // special: unary, result is i32
     i32_eq: CompareOp(i32),
     i32_ne: CompareOp(i32),
@@ -410,7 +410,7 @@ pub const Op = union(enum) {
     i32_ge_s: CompareOp(i32),
     i32_ge_u: CompareOp(i32),
 
-    // ── i64 comparison operations ───────────────────────────────────────────────
+    // i64 comparison operations
     i64_eqz: UnaryOp(i64), // special: unary, result is i32
     i64_eq: CompareOp(i64),
     i64_ne: CompareOp(i64),
@@ -423,7 +423,7 @@ pub const Op = union(enum) {
     i64_ge_s: CompareOp(i64),
     i64_ge_u: CompareOp(i64),
 
-    // ── f32 comparison operations ───────────────────────────────────────────────
+    // f32 comparison operations
     f32_eq: CompareOp(f32),
     f32_ne: CompareOp(f32),
     f32_lt: CompareOp(f32),
@@ -431,7 +431,7 @@ pub const Op = union(enum) {
     f32_le: CompareOp(f32),
     f32_ge: CompareOp(f32),
 
-    // ── f64 comparison operations ───────────────────────────────────────────────
+    // f64 comparison operations
     f64_eq: CompareOp(f64),
     f64_ne: CompareOp(f64),
     f64_lt: CompareOp(f64),
@@ -439,7 +439,7 @@ pub const Op = union(enum) {
     f64_le: CompareOp(f64),
     f64_ge: CompareOp(f64),
 
-    // ── Numeric conversion and reinterpret operations ────────────────────────
+    // Numeric conversion and reinterpret operations
     i32_wrap_i64: ConvertOp(i64, i32),
     i32_trunc_f32_s: ConvertOp(f32, i32),
     i32_trunc_f32_u: ConvertOp(f32, i32),
@@ -474,14 +474,14 @@ pub const Op = union(enum) {
     f32_reinterpret_i32: ConvertOp(i32, f32),
     f64_reinterpret_i64: ConvertOp(i64, f64),
 
-    // ── Sign-extension operations ────────────────────────────────────────────
+    // Sign-extension operations
     i32_extend8_s: ConvertOp(i32, i32),
     i32_extend16_s: ConvertOp(i32, i32),
     i64_extend8_s: ConvertOp(i64, i64),
     i64_extend16_s: ConvertOp(i64, i64),
     i64_extend32_s: ConvertOp(i64, i64),
 
-    // ── Fused: binop with immediate rhs (C: const_i32 + binop → xxx_imm) ─────
+    // Fused: binop with immediate rhs (C: const_i32 + binop → xxx_imm)
     // i32 arithmetic-imm: rhs is an i32 literal embedded in the instruction
     i32_add_imm: BinaryOpImm(i32),
     i32_sub_imm: BinaryOpImm(i32),
@@ -535,7 +535,7 @@ pub const Op = union(enum) {
     f64_mul_imm: BinaryOpImm(f64),
     f64_div_imm: BinaryOpImm(f64),
 
-    // ── r0 variants: lhs comes from r0 accumulator, no lhs slot in encoding ──
+    // r0 variants: lhs comes from r0 accumulator, no lhs slot in encoding
     // i32 arithmetic-imm r0: lhs = r0
     i32_add_imm_r: BinaryOpImmR0(i32),
     i32_sub_imm_r: BinaryOpImmR0(i32),
@@ -557,7 +557,7 @@ pub const Op = union(enum) {
     i64_shr_s_imm_r: BinaryOpImmR0(i64),
     i64_shr_u_imm_r: BinaryOpImmR0(i64),
 
-    // ── Fused: compare + jump_if_z (F: cmp + branch → cmp_jump) ─────────────
+    // Fused: compare + jump_if_z (F: cmp + branch → cmp_jump)
     // Jumps to rel_target (from instruction start) when the comparison is FALSE.
     // i32 compare-jump variants
     i32_eq_jump_if_false: CompareJumpOp(i32),
@@ -600,7 +600,7 @@ pub const Op = union(enum) {
     f64_le_jump_if_false: CompareJumpOp(f64),
     f64_ge_jump_if_false: CompareJumpOp(f64),
 
-    // ── Fused: compare + jump_if_true (J: cmp + br_if → cmp_jump_if_true) ────
+    // Fused: compare + jump_if_true (J: cmp + br_if → cmp_jump_if_true)
     // Peephole J: replaces the 2-op pattern:
     //   compare_jump_if_false → continue_pc
     //   jump → target
@@ -646,7 +646,7 @@ pub const Op = union(enum) {
     f64_le_jump_if_true: CompareJumpOp(f64),
     f64_ge_jump_if_true: CompareJumpOp(f64),
 
-    // ── Fused: binop result to local (D: binop + local_set → binop_to_local) ─
+    // Fused: binop result to local (D: binop + local_set → binop_to_local)
     i32_add_to_local: BinaryOpToLocal(i32),
     i32_sub_to_local: BinaryOpToLocal(i32),
     i32_mul_to_local: BinaryOpToLocal(i32),
@@ -677,7 +677,7 @@ pub const Op = union(enum) {
     f64_mul_to_local: BinaryOpToLocal(f64),
     f64_div_to_local: BinaryOpToLocal(f64),
 
-    // ── Fused: binop + local_tee → binop_tee_local ────────────────────────
+    // Fused: binop + local_tee → binop_tee_local
     i32_add_tee_local: BinaryOpTeeLocal(i32),
     i32_sub_tee_local: BinaryOpTeeLocal(i32),
     i32_mul_tee_local: BinaryOpTeeLocal(i32),
@@ -707,7 +707,7 @@ pub const Op = union(enum) {
     f64_mul_tee_local: BinaryOpTeeLocal(f64),
     f64_div_tee_local: BinaryOpTeeLocal(f64),
 
-    // ── Fused: comparison + local_set (cmp_to_local) ──────────────────────
+    // Fused: comparison + local_set (cmp_to_local)
     i32_eq_to_local: CompareOpToLocal(i32),
     i32_ne_to_local: CompareOpToLocal(i32),
     i32_lt_s_to_local: CompareOpToLocal(i32),
@@ -743,7 +743,7 @@ pub const Op = union(enum) {
     f64_le_to_local: CompareOpToLocal(f64),
     f64_ge_to_local: CompareOpToLocal(f64),
 
-    // ── Fused: binop-imm-to-local (E: const + binop + local_set → binop_imm_to_local) ──
+    // Fused: binop-imm-to-local (E: const + binop + local_set → binop_imm_to_local)
     // i32 arithmetic-imm-to-local
     i32_add_imm_to_local: BinaryOpImmToLocal(i32),
     i32_sub_imm_to_local: BinaryOpImmToLocal(i32),
@@ -775,7 +775,7 @@ pub const Op = union(enum) {
     f64_mul_imm_to_local: BinaryOpImmToLocal(f64),
     f64_div_imm_to_local: BinaryOpImmToLocal(f64),
 
-    // ── Fused: local inplace (H: local_get + binop_imm + local_set, same local) ──
+    // Fused: local inplace (H: local_get + binop_imm + local_set, same local)
     // i32 local-inplace
     i32_add_local_inplace: LocalInplace(i32),
     i32_sub_local_inplace: LocalInplace(i32),
@@ -807,27 +807,27 @@ pub const Op = union(enum) {
     f64_mul_local_inplace: LocalInplace(f64),
     f64_div_local_inplace: LocalInplace(f64),
 
-    // ── Fused: const + local_set → const_to_local (just write constant to local) ──
+    // Fused: const + local_set → const_to_local (just write constant to local)
     i32_const_to_local: ConstToLocal(i32),
     i64_const_to_local: ConstToLocal(i64),
 
-    // ── Superinstruction: i32_imm + local_set → imm_to_local ──────────────────
+    // Superinstruction: i32_imm + local_set → imm_to_local
     // Combines: (const_i32 writes to tmp) + (local_set copies tmp to local)
     // Into: single instruction that writes imm directly to local, preserving src.
     i32_imm_to_local: struct { local: Slot, src: Slot, imm: i32 },
     i64_imm_to_local: struct { local: Slot, src: Slot, imm: i64 },
 
-    // ── Fused: global_get + local_set → global_get_to_local ──
+    // Fused: global_get + local_set → global_get_to_local
     global_get_to_local: struct {
         local: Slot,
         global_idx: u32,
     },
 
-    // ── Fused: i32/i64 load + local_set → load_to_local ──
+    // Fused: i32/i64 load + local_set → load_to_local
     i32_load_to_local: struct { local: Slot, addr: Slot, offset: u32 },
     i64_load_to_local: struct { local: Slot, addr: Slot, offset: u32 },
 
-    // ── Fused: compare-imm + jump_if_false (G: const + compare + br_if) ─────
+    // Fused: compare-imm + jump_if_false (G: const + compare + br_if)
     // i32 compare-imm-jump
     i32_eq_imm_jump_if_false: CompareImmJumpOp(i32),
     i32_ne_imm_jump_if_false: CompareImmJumpOp(i32),
@@ -865,7 +865,7 @@ pub const Op = union(enum) {
     f64_le_imm_jump_if_false: CompareImmJumpOp(f64),
     f64_ge_imm_jump_if_false: CompareImmJumpOp(f64),
 
-    // ── Fused: compare-imm + jump_if_true (J-imm: const + compare + br_if, true branch) ─
+    // Fused: compare-imm + jump_if_true (J-imm: const + compare + br_if, true branch)
     // i32 compare-imm-jump, true-branch
     i32_eq_imm_jump_if_true: CompareImmJumpOp(i32),
     i32_ne_imm_jump_if_true: CompareImmJumpOp(i32),
@@ -903,7 +903,7 @@ pub const Op = union(enum) {
     f64_le_imm_jump_if_true: CompareImmJumpOp(f64),
     f64_ge_imm_jump_if_true: CompareImmJumpOp(f64),
 
-    // ── SIMD operations ───────────────────────────────────────────────────────
+    // SIMD operations
     simd_unary: SimdUnaryOp,
     simd_binary: SimdBinaryOp,
     simd_ternary: SimdTernaryOp,
@@ -987,7 +987,7 @@ pub const Op = union(enum) {
         value: ?Slot,
     },
 
-    // ── Fused binop+ret: compute result and return immediately ─────────────────
+    // Fused binop+ret: compute result and return immediately
     // Peephole I: final binop whose result is immediately returned.
     // Saves one dispatch event per non-base recursive call.
     i32_add_ret: struct { lhs: Slot, rhs: Slot },
@@ -999,19 +999,19 @@ pub const Op = union(enum) {
     f64_add_ret: struct { lhs: Slot, rhs: Slot },
     f64_sub_ret: struct { lhs: Slot, rhs: Slot },
 
-    // ── Memory load/store instructions ──────────────────────────────────────────
+    // Memory load/store instructions
     // All load/store instructions share the same memory immediate: (align, offset).
     // `addr` is the slot holding the base address (i32), `offset` is the static immediate offset.
     // The effective address = addr_value + offset.
 
-    // ── i32 load instructions ───────────────────────────────────────────────────
+    // i32 load instructions
     i32_load: struct { dst: Slot, addr: Slot, offset: u32 },
     i32_load8_s: struct { dst: Slot, addr: Slot, offset: u32 },
     i32_load8_u: struct { dst: Slot, addr: Slot, offset: u32 },
     i32_load16_s: struct { dst: Slot, addr: Slot, offset: u32 },
     i32_load16_u: struct { dst: Slot, addr: Slot, offset: u32 },
 
-    // ── i64 load instructions ───────────────────────────────────────────────────
+    // i64 load instructions
     i64_load: struct { dst: Slot, addr: Slot, offset: u32 },
     i64_load8_s: struct { dst: Slot, addr: Slot, offset: u32 },
     i64_load8_u: struct { dst: Slot, addr: Slot, offset: u32 },
@@ -1020,22 +1020,22 @@ pub const Op = union(enum) {
     i64_load32_s: struct { dst: Slot, addr: Slot, offset: u32 },
     i64_load32_u: struct { dst: Slot, addr: Slot, offset: u32 },
 
-    // ── f32/f64 load instructions ───────────────────────────────────────────────
+    // f32/f64 load instructions
     f32_load: struct { dst: Slot, addr: Slot, offset: u32 },
     f64_load: struct { dst: Slot, addr: Slot, offset: u32 },
 
-    // ── i32 store instructions ──────────────────────────────────────────────────
+    // i32 store instructions
     i32_store: struct { addr: Slot, src: Slot, offset: u32 },
     i32_store8: struct { addr: Slot, src: Slot, offset: u32 },
     i32_store16: struct { addr: Slot, src: Slot, offset: u32 },
 
-    // ── i64 store instructions ──────────────────────────────────────────────────
+    // i64 store instructions
     i64_store: struct { addr: Slot, src: Slot, offset: u32 },
     i64_store8: struct { addr: Slot, src: Slot, offset: u32 },
     i64_store16: struct { addr: Slot, src: Slot, offset: u32 },
     i64_store32: struct { addr: Slot, src: Slot, offset: u32 },
 
-    // ── f32/f64 store instructions ──────────────────────────────────────────────
+    // f32/f64 store instructions
     f32_store: struct { addr: Slot, src: Slot, offset: u32 },
     f64_store: struct { addr: Slot, src: Slot, offset: u32 },
     /// direct fn call
@@ -1132,7 +1132,7 @@ pub const Op = union(enum) {
         targets_len: u32,
     },
 
-    // ── Bulk memory instructions ─────────────────────────────────────────────────
+    // Bulk memory instructions
     /// memory.init: Copy data from a data segment to linear memory.
     /// `dst_addr` slot holds the destination memory address.
     /// `src_offset` slot holds the offset within the data segment.
@@ -1177,7 +1177,7 @@ pub const Op = union(enum) {
         delta: Slot,
     },
 
-    // ── Atomic memory instructions (Wasm Threads proposal) ───────────────────────
+    // Atomic memory instructions (Wasm Threads proposal)
     //
     // All atomic ops require natural alignment (ea % access_size == 0); misalignment
     // traps with UnalignedAtomicAccess.
@@ -1264,7 +1264,7 @@ pub const Op = union(enum) {
         offset: u32,
     },
 
-    // ── Table instructions ────────────────────────────────────────────────────────
+    // Table instructions
     /// table.get: read the element at `index` from table `table_index`.
     /// Traps if `index` is out of bounds.
     /// Pushes the funcref value (u32 func_idx, or maxInt(u32) for null) into `dst`.
@@ -1326,7 +1326,7 @@ pub const Op = union(enum) {
         segment_idx: u32,
     },
 
-    // ── GC Struct instructions ─────────────────────────────────────────────────────
+    // GC Struct instructions
     /// struct.new: allocate struct and initialize with N field values from slots.
     /// Fields are popped from stack in reverse order (last field = TOS).
     /// args_start/args_len index into CompiledFunction.call_args.
@@ -1370,7 +1370,7 @@ pub const Op = union(enum) {
         field_idx: u32,
     },
 
-    // ── GC Array instructions ──────────────────────────────────────────────────────
+    // GC Array instructions
     /// array.new: allocate array with `len` copies of `init` value.
     array_new: struct {
         dst: Slot,
@@ -1478,7 +1478,7 @@ pub const Op = union(enum) {
         elem_idx: u32,
     },
 
-    // ── GC i31 instructions ────────────────────────────────────────────────────────
+    // GC i31 instructions
     /// ref.i31: pack i32 value into i31ref.
     ref_i31: struct {
         dst: Slot,
@@ -1495,7 +1495,7 @@ pub const Op = union(enum) {
         ref: Slot,
     },
 
-    // ── GC Type Test/Cast instructions ─────────────────────────────────────────────
+    // GC Type Test/Cast instructions
     /// ref.test / ref.test_null: test if reference matches type (returns i32 0/1).
     /// nullable=true means the target is (ref null ht): a null ref counts as a match.
     ref_test: struct {
@@ -1518,7 +1518,7 @@ pub const Op = union(enum) {
         ref: Slot,
     },
 
-    // ── GC Control Flow instructions ────────────────────────────────────────────────
+    // GC Control Flow instructions
     /// br_on_null: branch if ref is null (ref consumed), else continue with ref.
     br_on_null: struct {
         ref: Slot,
@@ -1548,7 +1548,7 @@ pub const Op = union(enum) {
         to_nullable: bool,
     },
 
-    // ── GC Call instructions ───────────────────────────────────────────────────────
+    // GC Call instructions
     /// call_ref: indirect call via funcref.
     call_ref: struct {
         dst: ?Slot,
@@ -1565,7 +1565,7 @@ pub const Op = union(enum) {
         args_len: u32,
     },
 
-    // ── GC Extern/Any conversion instructions ──────────────────────────────────────
+    // GC Extern/Any conversion instructions
     /// any.convert_extern: convert externref to anyref.
     any_convert_extern: struct {
         dst: Slot,
@@ -1577,7 +1577,7 @@ pub const Op = union(enum) {
         ref: Slot,
     },
 
-    // ── Exception Handling instructions ───────────────────────────────────────────
+    // Exception Handling instructions
     /// throw: allocate exception with tag `tag_index` and args, then unwind.
     /// Args are stored in CompiledFunction.call_args (reusing that pool).
     throw: struct {

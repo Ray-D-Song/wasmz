@@ -1,5 +1,4 @@
 // SIMD memory load/store operations.
-//
 // Handles plain v128.load/store, widening loads, splat loads, zero-extending
 // loads, and lane loads/stores.  All helpers operate on V128 (no RawVal
 // dependency -- the exec layer does the RawVal <-> V128 conversion).

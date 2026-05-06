@@ -1,9 +1,7 @@
 // SIMD opcode classification and shape inference.
-//
 // Provides O(1) switch-based classification of SIMD opcodes into categories
 // (unary, binary, ternary, compare, shift, load, store, etc.) and shape
 // inference (i8x16, i16x8, i32x4, i64x2, f32x4, f64x2).
-//
 // All functions here operate purely on the SimdOpcode enum; no vector
 // arithmetic or memory access is performed.
 const std = @import("std");

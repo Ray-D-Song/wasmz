@@ -70,7 +70,7 @@ const THREADED_WASM = [_]u8{
     0x20, 0x00, 0xfe, 0x00, 0x02, 0x00, 0x0b,
 };
 
-// ── Helper: thread context ────────────────────────────────────────────────────
+// Helper: thread context
 
 const WaiterCtx = struct {
     /// Result from `wait(expected=0, timeout=-1)`: 0=ok, 1=not_equal, 2=timed_out.
@@ -96,7 +96,7 @@ const WaiterCtx = struct {
     }
 };
 
-// ── Test ──────────────────────────────────────────────────────────────────────
+// Test
 
 test "multi-thread: shared memory wait/notify round-trip via Wasm instance" {
     const allocator = testing.allocator;
@@ -116,19 +116,19 @@ test "multi-thread: shared memory wait/notify round-trip via Wasm instance" {
     var shared = try SharedMemory.init(allocator, 1, 2);
     defer shared.deinit();
 
-    // ── Store A (waiter thread) ───────────────────────────────────────────────
+    // Store A (waiter thread)
     var store_a = try Store.init(allocator, engine);
     defer store_a.deinit();
     var instance_a = try Instance.initWithSharedMemory(&store_a, arc.retain(), Linker.empty, shared);
     defer instance_a.deinit();
 
-    // ── Store B (main thread notifier) ────────────────────────────────────────
+    // Store B (main thread notifier)
     var store_b = try Store.init(allocator, engine);
     defer store_b.deinit();
     var instance_b = try Instance.initWithSharedMemory(&store_b, arc.retain(), Linker.empty, shared);
     defer instance_b.deinit();
 
-    // ── Spawn waiter thread ───────────────────────────────────────────────────
+    // Spawn waiter thread
     var ctx = WaiterCtx{
         .result = std.atomic.Value(i32).init(-99),
         .instance_ptr = &instance_a,
@@ -138,7 +138,7 @@ test "multi-thread: shared memory wait/notify round-trip via Wasm instance" {
     // Give the waiter time to park inside wait32.
     std.Thread.sleep(20 * std.time.ns_per_ms);
 
-    // ── Main thread: set value then notify ────────────────────────────────────
+    // Main thread: set value then notify
     const set_args = [_]RawVal{RawVal.from(@as(i32, 42))};
     const set_r = try instance_b.call("set", &set_args);
     try testing.expect(set_r == .ok);
@@ -152,7 +152,7 @@ test "multi-thread: shared memory wait/notify round-trip via Wasm instance" {
 
     waiter.join();
 
-    // ── Verify results ────────────────────────────────────────────────────────
+    // Verify results
 
     // notify should have woken exactly 1 waiter.
     try testing.expectEqual(@as(i32, 1), woken);
@@ -169,7 +169,7 @@ test "multi-thread: shared memory wait/notify round-trip via Wasm instance" {
     try testing.expectEqual(@as(i32, 42), got);
 }
 
-// ── Bonus: memory.size and memory.grow integration ───────────────────────────
+// Bonus: memory.size and memory.grow integration
 
 test "memory.size returns current page count" {
     const allocator = testing.allocator;
