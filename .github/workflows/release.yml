@@ -76,6 +76,16 @@ jobs:
             asset_suffix: linux-loongarch64
             binary_name: wasmz
             archive_kind: tar.gz
+          - target: wasm32-wasi
+            runner: ubuntu-latest
+            asset_suffix: wasi
+            binary_name: wasmz.wasm
+            archive_kind: tar.gz
+          - target: wasm32-freestanding
+            runner: ubuntu-latest
+            asset_suffix: wasm
+            binary_name: wasmz.wasm
+            archive_kind: tar.gz
 
     steps:
       - name: Checkout
@@ -87,13 +97,29 @@ jobs:
           version: 0.15.2
 
       - name: Build
-        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+        shell: bash
+        run: |
+          case "${{ matrix.target }}" in
+            wasm32-wasi)   zig build wasi ;;
+            wasm32-freestanding) zig build wasm ;;
+            *)             zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ;;
+          esac
 
       - name: Stage release files
         shell: bash
         run: |
           mkdir -p dist/package
-          cp "zig-out/bin/${{ matrix.binary_name }}" "dist/package/${{ matrix.binary_name }}"
+          case "${{ matrix.target }}" in
+            wasm32-wasi)
+              cp zig-out/wasi/wasmz.wasm dist/package/wasmz.wasm
+              ;;
+            wasm32-freestanding)
+              cp zig-out/wasm/wasmz.wasm dist/package/wasmz.wasm
+              ;;
+            *)
+              cp "zig-out/bin/${{ matrix.binary_name }}" "dist/package/${{ matrix.binary_name }}"
+              ;;
+          esac
 
       - name: Create tarball
         if: matrix.archive_kind == 'tar.gz'
