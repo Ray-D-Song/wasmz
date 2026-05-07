@@ -80,7 +80,7 @@ test "preview1 clock and fd_write use host implementations" {
     var store = try wasmz.Store.init(testing.allocator, engine);
     defer store.deinit();
 
-    var sink = std.ArrayList(u8){};
+    var sink: std.ArrayList(u8) = .empty;
     defer sink.deinit(testing.allocator);
 
     const Sink = struct {

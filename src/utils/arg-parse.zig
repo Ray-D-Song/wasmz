@@ -213,7 +213,7 @@ pub const Parser = struct {
             const arg = raw_args[idx];
 
             if (std.mem.startsWith(u8, arg, "--")) {
-                if (std.mem.indexOf(u8, arg, "=")) |eq_pos| {
+                if (std.mem.find(u8, arg, "=")) |eq_pos| {
                     const flag_name = arg[2..eq_pos];
                     const flag_value = arg[eq_pos + 1 ..];
                     try self.setFlag(&flags, &string_values, flag_name, flag_value);
