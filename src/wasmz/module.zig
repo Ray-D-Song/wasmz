@@ -1569,13 +1569,13 @@ pub const Module = struct {
         var reachable = try std.DynamicBitSet.initEmpty(allocator, n);
         errdefer reachable.deinit();
 
-        var worklist = std.ArrayListUnmanaged(u32){};
+        var worklist: std.ArrayListUnmanaged(u32) = .empty;
         defer worklist.deinit(allocator);
 
         // Seed
         try worklist.append(allocator, entry_func_idx);
 
-        var callees_buf = std.ArrayListUnmanaged(u32){};
+        var callees_buf: std.ArrayListUnmanaged(u32) = .empty;
         defer callees_buf.deinit(allocator);
 
         while (worklist.items.len > 0) {

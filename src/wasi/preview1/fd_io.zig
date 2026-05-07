@@ -125,7 +125,7 @@ pub const FdIO = struct {
     }
 
     pub fn addPreopen(self: *Self, path: []const u8) !types.Fd {
-        const dir = std.fs.cwd().openDir(self.io, path, .{}) catch |err| switch (err) {
+        const dir = std.Io.Dir.cwd().openDir(self.io, path, .{}) catch |err| switch (err) {
             error.FileNotFound => return error.PathNotFound,
             error.NotDir => return error.NotDirectory,
             else => return error.Io,

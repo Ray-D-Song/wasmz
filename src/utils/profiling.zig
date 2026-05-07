@@ -117,18 +117,19 @@ fn currentRssWindows() usize {
 // Scoped timer
 
 pub const ScopedTimer = if (enabled) struct {
-    timer: std.time.Timer,
+    start_ts: i128,
 
     pub fn start() @This() {
-        return .{ .timer = std.time.Timer.start() catch unreachable };
+        return .{ .start_ts = nanoNow() };
     }
 
     pub inline fn lap(self: *@This(), dest: *u64) void {
-        dest.* += self.timer.lap();
+        const now = nanoNow();
+        dest.* = @intCast(now - self.start_ts);
     }
 
     pub inline fn read(self: *@This()) u64 {
-        return self.timer.read();
+        return @intCast(nanoNow() - self.start_ts);
     }
 } else struct {
     pub inline fn start() @This() {
@@ -586,11 +587,11 @@ pub fn printMemStats(store: *store_mod.Store, instance: *instance_mod.Instance) 
 
     const shared_annotation: []const u8 = if (shared_bytes == 0) "(none)" else "";
 
-    var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const w = fbs.writer();
-
-    w.print(
+    var stderr_buf: [2048]u8 = undefined;
+    var ti: std.Io.Threaded = .init_single_threaded;
+    const io = ti.io();
+    var bw = std.Io.File.stderr().writer(io, &stderr_buf);
+    bw.interface.print(
         \\Memory usage:
         \\
         \\  Runtime
@@ -640,7 +641,6 @@ pub fn printMemStats(store: *store_mod.Store, instance: *instance_mod.Instance) 
             gc_alloc_count,            total_alloc_count,
         },
     ) catch {};
-    std.Io.File.stderr().writeAll(fbs.getWritten()) catch {};
 }
 
 // On-exit (proc_exit callback)
