@@ -136,7 +136,7 @@ test "multi-thread: shared memory wait/notify round-trip via Wasm instance" {
     const waiter = try std.Thread.spawn(.{}, WaiterCtx.run, .{&ctx});
 
     // Give the waiter time to park inside wait32.
-    std.Thread.sleep(20 * std.time.ns_per_ms);
+    var ti: std.Io.Threaded = .init_single_threaded; std.Io.sleep(ti.io(), std.Io.Duration.fromNanoseconds(20 * std.time.ns_per_ms), .awake) catch {};
 
     // Main thread: set value then notify
     const set_args = [_]RawVal{RawVal.from(@as(i32, 42))};

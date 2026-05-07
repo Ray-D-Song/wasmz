@@ -4,6 +4,7 @@ const wasmz = @import("wasmz");
 const types = @import("./types.zig");
 
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 const RawVal = core.RawVal;
 const HostContext = wasmz.HostContext;
 
@@ -41,19 +42,24 @@ pub const Output = struct {
     }
 
     fn write_stdout(_: ?*anyopaque, bytes: []const u8) WriteError!void {
-        std.fs.File.stdout().writeAll(bytes) catch return error.Io;
+        var t: Io.Threaded = .init_single_threaded;
+        const local_io = t.io();
+        std.Io.File.writeStreamingAll(std.Io.File.stdout(), local_io, bytes) catch return error.Io;
     }
 
     fn write_stderr(_: ?*anyopaque, bytes: []const u8) WriteError!void {
-        std.fs.File.stderr().writeAll(bytes) catch return error.Io;
+        var t: Io.Threaded = .init_single_threaded;
+        const local_io = t.io();
+        std.Io.File.writeStreamingAll(std.Io.File.stderr(), local_io, bytes) catch return error.Io;
     }
+
 };
 
 const FileEntry = struct {
     kind: enum { file, directory },
     handle: union {
-        file: std.fs.File,
-        directory: std.fs.Dir,
+        file: std.Io.File,
+        directory: std.Io.Dir,
     },
     offset: u64,
     rights: types.Rights,
@@ -61,7 +67,7 @@ const FileEntry = struct {
 
 const Preopen = struct {
     path: []const u8,
-    dir: std.fs.Dir,
+    dir: std.Io.Dir,
 };
 
 pub const FdIO = struct {
@@ -70,15 +76,18 @@ pub const FdIO = struct {
     stdout: Output,
     stderr: Output,
     allocator: Allocator,
+    io: Io,
     files: std.AutoHashMap(types.Fd, FileEntry),
     preopens: std.AutoHashMap(types.Fd, Preopen),
     next_fd: types.Fd,
 
     pub fn init(allocator: Allocator) FdIO {
+        var t: Io.Threaded = .init_single_threaded;
         return .{
             .stdout = Output.stdout(),
             .stderr = Output.stderr(),
             .allocator = allocator,
+            .io = t.io(),
             .files = std.AutoHashMap(types.Fd, FileEntry).init(allocator),
             .preopens = std.AutoHashMap(types.Fd, Preopen).init(allocator),
             .next_fd = 3,
@@ -89,10 +98,10 @@ pub const FdIO = struct {
         var iter = self.files.iterator();
         while (iter.next()) |entry| {
             switch (entry.value_ptr.kind) {
-                .file => entry.value_ptr.handle.file.close(),
+                .file => entry.value_ptr.handle.file.close(self.io),
                 .directory => {
                     var dir = @constCast(&entry.value_ptr.handle.directory);
-                    dir.close();
+                    dir.close(self.io);
                 },
             }
         }
@@ -101,7 +110,7 @@ pub const FdIO = struct {
         var preopen_iter = self.preopens.iterator();
         while (preopen_iter.next()) |entry| {
             var dir = @constCast(&entry.value_ptr.dir);
-            dir.close();
+            dir.close(self.io);
             self.allocator.free(entry.value_ptr.path);
         }
         self.preopens.deinit();
@@ -116,7 +125,7 @@ pub const FdIO = struct {
     }
 
     pub fn addPreopen(self: *Self, path: []const u8) !types.Fd {
-        const dir = std.fs.cwd().openDir(path, .{}) catch |err| switch (err) {
+        const dir = std.fs.cwd().openDir(self.io, path, .{}) catch |err| switch (err) {
             error.FileNotFound => return error.PathNotFound,
             error.NotDir => return error.NotDirectory,
             else => return error.Io,
@@ -159,7 +168,7 @@ pub const FdIO = struct {
 
         const entry: FileEntry = blk: {
             if (oflags.directory) {
-                const subdir = preopen.dir.openDir(path, .{}) catch {
+                const subdir = preopen.dir.openDir(self.io, path, .{}) catch {
                     types.writeErrno(results, .noent);
                     return;
                 };
@@ -172,7 +181,7 @@ pub const FdIO = struct {
             }
 
             if (oflags.creat) {
-                const file = preopen.dir.createFile(path, .{ .truncate = oflags.trunc }) catch {
+                const file = preopen.dir.createFile(self.io, path, .{ .truncate = oflags.trunc }) catch {
                     types.writeErrno(results, .exist);
                     return;
                 };
@@ -184,7 +193,7 @@ pub const FdIO = struct {
                 };
             }
 
-            const file = preopen.dir.openFile(path, .{ .mode = .read_write }) catch {
+            const file = preopen.dir.openFile(self.io, path, .{ .mode = .read_write }) catch {
                 types.writeErrno(results, .noent);
                 return;
             };
@@ -216,16 +225,16 @@ pub const FdIO = struct {
             else => {
                 if (self.files.fetchRemove(fd)) |removed| {
                     switch (removed.value.kind) {
-                        .file => removed.value.handle.file.close(),
+                        .file => removed.value.handle.file.close(self.io),
                         .directory => {
                             var dir = @constCast(&removed.value.handle.directory);
-                            dir.close();
+                            dir.close(self.io);
                         },
                     }
                     types.writeErrno(results, .success);
                 } else if (self.preopens.fetchRemove(fd)) |removed| {
                     var dir = @constCast(&removed.value.dir);
-                    dir.close();
+                    dir.close(self.io);
                     self.allocator.free(removed.value.path);
                     types.writeErrno(results, .success);
                 } else {
@@ -279,14 +288,15 @@ pub const FdIO = struct {
                 const iovs = try ctx.readSlice(iovs_ptr, iovs_len, types.Ciovec);
                 var total_written: u32 = 0;
 
-                entry.handle.file.seekTo(entry.offset) catch {
+                var reader = entry.handle.file.reader(self.io, &[_]u8{});
+                reader.seekTo(entry.offset) catch {
                     types.writeErrno(results, .io);
                     return;
                 };
 
                 for (iovs) |iov| {
                     const bytes = try ctx.readBytes(iov.buf, iov.buf_len);
-                    const written = entry.handle.file.write(bytes) catch {
+                    const written = entry.handle.file.writeStreaming(self.io, &.{}, &.{bytes}, 1) catch {
                         types.writeErrno(results, .io);
                         return;
                     };
@@ -327,7 +337,7 @@ pub const FdIO = struct {
                     const bytes_to_read = @min(buf_len, @as(u32, @intCast(guest_mem.len - buf)));
                     const read_buf = guest_mem[buf .. buf + bytes_to_read];
 
-                    const bytes_read = std.fs.File.stdin().read(read_buf) catch {
+                    const bytes_read = std.Io.File.stdin().readStreaming(self.io, &.{read_buf}) catch {
                         types.writeErrno(results, .io);
                         return;
                     };
@@ -348,7 +358,8 @@ pub const FdIO = struct {
                 const iovs = try ctx.readSlice(iovs_ptr, iovs_len, types.Iovec);
                 var total_read: u32 = 0;
 
-                entry.handle.file.seekTo(entry.offset) catch {
+                var reader = entry.handle.file.reader(self.io, &[_]u8{});
+                reader.seekTo(entry.offset) catch {
                     types.writeErrno(results, .io);
                     return;
                 };
@@ -369,7 +380,7 @@ pub const FdIO = struct {
                     const bytes_to_read = @min(buf_len, @as(u32, @intCast(guest_mem.len - buf)));
                     const read_buf = guest_mem[buf .. buf + bytes_to_read];
 
-                    const bytes_read = entry.handle.file.read(read_buf) catch {
+                    const bytes_read = entry.handle.file.readStreaming(self.io, &.{read_buf}) catch {
                         types.writeErrno(results, .io);
                         return;
                     };
@@ -420,7 +431,7 @@ pub const FdIO = struct {
                         break :blk @intCast(new);
                     },
                     .end => blk: {
-                        const stat = entry.handle.file.stat() catch {
+                        const stat = entry.handle.file.stat(self.io) catch {
                             types.writeErrno(results, .io);
                             return;
                         };
@@ -468,7 +479,7 @@ pub const FdIO = struct {
             },
             else => {
                 if (self.files.get(fd)) |entry| {
-                    const file_stat = entry.handle.file.stat() catch {
+                    const file_stat = entry.handle.file.stat(self.io) catch {
                         types.writeErrno(results, .io);
                         return;
                     };
@@ -484,9 +495,9 @@ pub const FdIO = struct {
                         },
                         .nlink = 1,
                         .size = file_stat.size,
-                        .atim = @intCast(file_stat.atime),
-                        .mtim = @intCast(file_stat.mtime),
-                        .ctim = @intCast(file_stat.ctime),
+                        .atim = @intCast((file_stat.atime orelse Io.Timestamp.zero).toNanoseconds()),
+                        .mtim = @intCast(file_stat.mtime.toNanoseconds()),
+                        .ctim = @intCast(file_stat.ctime.toNanoseconds()),
                     };
 
                     try ctx.writeBytes(buf_ptr, std.mem.asBytes(&result));
@@ -495,7 +506,7 @@ pub const FdIO = struct {
                 }
 
                 if (self.preopens.get(fd)) |preopen| {
-                    const dir_stat = preopen.dir.stat() catch {
+                    const dir_stat = preopen.dir.stat(self.io) catch {
                         types.writeErrno(results, .io);
                         return;
                     };
@@ -506,9 +517,9 @@ pub const FdIO = struct {
                         .filetype = .directory,
                         .nlink = 1,
                         .size = dir_stat.size,
-                        .atim = @intCast(dir_stat.atime),
-                        .mtim = @intCast(dir_stat.mtime),
-                        .ctim = @intCast(dir_stat.ctime),
+                        .atim = @intCast((dir_stat.atime orelse Io.Timestamp.zero).toNanoseconds()),
+                        .mtim = @intCast(dir_stat.mtime.toNanoseconds()),
+                        .ctim = @intCast(dir_stat.ctime.toNanoseconds()),
                     };
 
                     try ctx.writeBytes(buf_ptr, std.mem.asBytes(&result));
@@ -550,14 +561,15 @@ pub const FdIO = struct {
                 const iovs = try ctx.readSlice(iovs_ptr, iovs_len, types.Ciovec);
                 var total_written: u32 = 0;
 
-                entry.handle.file.seekTo(@intCast(offset)) catch {
+                var reader = entry.handle.file.reader(self.io, &[_]u8{});
+                reader.seekTo(@intCast(offset)) catch {
                     types.writeErrno(results, .io);
                     return;
                 };
 
                 for (iovs) |iov| {
                     const bytes = try ctx.readBytes(iov.buf, iov.buf_len);
-                    const written = entry.handle.file.write(bytes) catch {
+                    const written = entry.handle.file.writeStreaming(self.io, &.{}, &.{bytes}, 1) catch {
                         types.writeErrno(results, .io);
                         return;
                     };
@@ -595,7 +607,8 @@ pub const FdIO = struct {
                 const iovs = try ctx.readSlice(iovs_ptr, iovs_len, types.Iovec);
                 var total_read: u32 = 0;
 
-                entry.handle.file.seekTo(@intCast(offset)) catch {
+                var reader = entry.handle.file.reader(self.io, &[_]u8{});
+                reader.seekTo(@intCast(offset)) catch {
                     types.writeErrno(results, .io);
                     return;
                 };
@@ -616,7 +629,7 @@ pub const FdIO = struct {
                     const bytes_to_read = @min(buf_len, @as(u32, @intCast(guest_mem.len - buf)));
                     const read_buf = guest_mem[buf .. buf + bytes_to_read];
 
-                    const bytes_read = entry.handle.file.read(read_buf) catch {
+                    const bytes_read = entry.handle.file.readStreaming(self.io, &.{read_buf}) catch {
                         types.writeErrno(results, .io);
                         return;
                     };
@@ -650,7 +663,7 @@ pub const FdIO = struct {
             },
             else => {
                 if (self.files.get(fd)) |entry| {
-                    const file_stat = entry.handle.file.stat() catch {
+                    const file_stat = entry.handle.file.stat(self.io) catch {
                         types.writeErrno(results, .io);
                         return;
                     };
@@ -798,12 +811,12 @@ pub const FdIO = struct {
                     return;
                 }
                 const new_size: u64 = @intCast(offset + len);
-                const stat = entry.handle.file.stat() catch {
+                const stat = entry.handle.file.stat(self.io) catch {
                     types.writeErrno(results, .io);
                     return;
                 };
                 if (new_size > stat.size) {
-                    entry.handle.file.setEndPos(new_size) catch {
+                    entry.handle.file.setLength(self.io, new_size) catch {
                         types.writeErrno(results, .io);
                         return;
                     };
@@ -831,7 +844,7 @@ pub const FdIO = struct {
                     types.writeErrno(results, .badf);
                     return;
                 }
-                entry.handle.file.sync() catch {
+                entry.handle.file.sync(self.io) catch {
                     types.writeErrno(results, .io);
                     return;
                 };
@@ -903,7 +916,7 @@ pub const FdIO = struct {
                     types.writeErrno(results, .badf);
                     return;
                 }
-                entry.handle.file.setEndPos(size) catch {
+                entry.handle.file.setLength(self.io, size) catch {
                     types.writeErrno(results, .io);
                     return;
                 };
@@ -945,7 +958,7 @@ pub const FdIO = struct {
         const bufused_ptr = params[4].readAs(u32);
 
         // Get the directory handle
-        const dir_handle: std.fs.Dir = blk: {
+        const dir_handle: std.Io.Dir = blk: {
             if (self.files.getPtr(fd)) |entry| {
                 if (entry.kind != .directory) {
                     types.writeErrno(results, .notdir);
@@ -979,7 +992,7 @@ pub const FdIO = struct {
 
         // Skip entries until we reach the cookie
         while (current_cookie < cookie) {
-            const entry = iter.next() catch {
+            const entry = iter.next(self.io) catch {
                 types.writeErrno(results, .io);
                 return;
             };
@@ -989,7 +1002,7 @@ pub const FdIO = struct {
 
         // Write directory entries into the buffer
         while (true) {
-            const entry = iter.next() catch {
+            const entry = iter.next(self.io) catch {
                 types.writeErrno(results, .io);
                 return;
             };
@@ -1040,15 +1053,15 @@ pub const FdIO = struct {
         // Close the destination fd if it exists
         if (self.files.fetchRemove(to)) |removed| {
             switch (removed.value.kind) {
-                .file => removed.value.handle.file.close(),
+                .file => removed.value.handle.file.close(self.io),
                 .directory => {
                     var dir = @constCast(&removed.value.handle.directory);
-                    dir.close();
+                    dir.close(self.io);
                 },
             }
         } else if (self.preopens.fetchRemove(to)) |removed| {
             var dir = @constCast(&removed.value.dir);
-            dir.close();
+            dir.close(self.io);
             self.allocator.free(removed.value.path);
         }
 
@@ -1088,7 +1101,7 @@ pub const FdIO = struct {
                     types.writeErrno(results, .badf);
                     return;
                 }
-                entry.handle.file.sync() catch {
+                entry.handle.file.sync(self.io) catch {
                     types.writeErrno(results, .io);
                     return;
                 };
@@ -1125,7 +1138,7 @@ pub const FdIO = struct {
         const path_ptr = params[1].readAs(u32);
         const path_len = params[2].readAs(u32);
 
-        const dir_handle: std.fs.Dir = blk: {
+        const dir_handle: std.Io.Dir = blk: {
             if (self.preopens.get(fd)) |p| break :blk p.dir;
             if (self.files.get(fd)) |e| {
                 if (e.kind == .directory) break :blk e.handle.directory;
@@ -1137,7 +1150,7 @@ pub const FdIO = struct {
         const path_bytes = try ctx.readBytes(path_ptr, path_len);
         const path = std.mem.sliceTo(path_bytes, 0);
 
-        dir_handle.makeDir(path) catch |err| switch (err) {
+        dir_handle.createDir(self.io, path, Io.File.Permissions.default_dir) catch |err| switch (err) {
             error.PathAlreadyExists => {
                 types.writeErrno(results, .exist);
                 return;
@@ -1164,7 +1177,7 @@ pub const FdIO = struct {
         const path_len = params[3].readAs(u32);
         const buf_ptr = params[4].readAs(u32);
 
-        const dir_handle: std.fs.Dir = blk: {
+        const dir_handle: std.Io.Dir = blk: {
             if (self.preopens.get(fd)) |p| break :blk p.dir;
             if (self.files.get(fd)) |e| {
                 if (e.kind == .directory) break :blk e.handle.directory;
@@ -1176,7 +1189,7 @@ pub const FdIO = struct {
         const path_bytes = try ctx.readBytes(path_ptr, path_len);
         const path = std.mem.sliceTo(path_bytes, 0);
 
-        const stat = dir_handle.statFile(path) catch |err| switch (err) {
+        const stat = dir_handle.statFile(self.io, path, .{}) catch |err| switch (err) {
             error.FileNotFound => {
                 types.writeErrno(results, .noent);
                 return;
@@ -1198,9 +1211,9 @@ pub const FdIO = struct {
             },
             .nlink = 1,
             .size = stat.size,
-            .atim = @intCast(stat.atime),
-            .mtim = @intCast(stat.mtime),
-            .ctim = @intCast(stat.ctime),
+            .atim = @intCast((stat.atime orelse Io.Timestamp.zero).toNanoseconds()),
+            .mtim = @intCast(stat.mtime.toNanoseconds()),
+            .ctim = @intCast(stat.ctime.toNanoseconds()),
         };
 
         try ctx.writeBytes(buf_ptr, std.mem.asBytes(&result));
@@ -1242,7 +1255,7 @@ pub const FdIO = struct {
         const new_path_ptr = params[5].readAs(u32);
         const new_path_len = params[6].readAs(u32);
 
-        const old_dir: std.fs.Dir = blk: {
+        const old_dir: std.Io.Dir = blk: {
             if (self.preopens.get(old_fd)) |p| break :blk p.dir;
             if (self.files.get(old_fd)) |e| {
                 if (e.kind == .directory) break :blk e.handle.directory;
@@ -1251,7 +1264,7 @@ pub const FdIO = struct {
             return;
         };
 
-        const new_dir: std.fs.Dir = blk: {
+        const new_dir: std.Io.Dir = blk: {
             if (self.preopens.get(new_fd)) |p| break :blk p.dir;
             if (self.files.get(new_fd)) |e| {
                 if (e.kind == .directory) break :blk e.handle.directory;
@@ -1265,7 +1278,7 @@ pub const FdIO = struct {
         const new_path_bytes = try ctx.readBytes(new_path_ptr, new_path_len);
         const new_path = std.mem.sliceTo(new_path_bytes, 0);
 
-        old_dir.symLink(old_path, new_path, .{}) catch |err| switch (err) {
+        old_dir.symLink(self.io, old_path, new_path, .{}) catch |err| switch (err) {
             error.PathAlreadyExists => {
                 types.writeErrno(results, .exist);
                 return;
@@ -1295,7 +1308,7 @@ pub const FdIO = struct {
         const buf_len = params[4].readAs(u32);
         const bufused_ptr = params[5].readAs(u32);
 
-        const dir_handle: std.fs.Dir = blk: {
+        const dir_handle: std.Io.Dir = blk: {
             if (self.preopens.get(fd)) |p| break :blk p.dir;
             if (self.files.get(fd)) |e| {
                 if (e.kind == .directory) break :blk e.handle.directory;
@@ -1318,9 +1331,9 @@ pub const FdIO = struct {
         }
 
         const available = @min(buf_len, @as(u32, @intCast(guest_mem.len - buf_ptr)));
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
 
-        const link_target = dir_handle.readLink(path, &buf) catch |err| switch (err) {
+        const link_len = dir_handle.readLink(self.io, path, &buf) catch |err| switch (err) {
             error.FileNotFound => {
                 types.writeErrno(results, .noent);
                 return;
@@ -1331,8 +1344,8 @@ pub const FdIO = struct {
             },
         };
 
-        const copy_len = @min(@as(u32, @intCast(link_target.len)), available);
-        @memcpy(guest_mem[buf_ptr .. buf_ptr + copy_len], link_target[0..copy_len]);
+        const copy_len = @min(@as(u32, @intCast(link_len)), available);
+        @memcpy(guest_mem[buf_ptr .. buf_ptr + copy_len], buf[0..copy_len]);
         try ctx.writeValue(bufused_ptr, copy_len);
         types.writeErrno(results, .success);
     }
@@ -1344,7 +1357,7 @@ pub const FdIO = struct {
         const path_ptr = params[1].readAs(u32);
         const path_len = params[2].readAs(u32);
 
-        const dir_handle: std.fs.Dir = blk: {
+        const dir_handle: std.Io.Dir = blk: {
             if (self.preopens.get(fd)) |p| break :blk p.dir;
             if (self.files.get(fd)) |e| {
                 if (e.kind == .directory) break :blk e.handle.directory;
@@ -1356,7 +1369,7 @@ pub const FdIO = struct {
         const path_bytes = try ctx.readBytes(path_ptr, path_len);
         const path = std.mem.sliceTo(path_bytes, 0);
 
-        dir_handle.deleteDir(path) catch |err| switch (err) {
+        dir_handle.deleteDir(self.io, path) catch |err| switch (err) {
             error.FileNotFound => {
                 types.writeErrno(results, .noent);
                 return;
@@ -1385,7 +1398,7 @@ pub const FdIO = struct {
         const new_path_ptr = params[4].readAs(u32);
         const new_path_len = params[5].readAs(u32);
 
-        const old_dir: std.fs.Dir = blk: {
+        const old_dir: std.Io.Dir = blk: {
             if (self.preopens.get(old_fd)) |p| break :blk p.dir;
             if (self.files.get(old_fd)) |e| {
                 if (e.kind == .directory) break :blk e.handle.directory;
@@ -1394,7 +1407,7 @@ pub const FdIO = struct {
             return;
         };
 
-        const new_dir: std.fs.Dir = blk: {
+        const new_dir: std.Io.Dir = blk: {
             if (self.preopens.get(new_fd)) |p| break :blk p.dir;
             if (self.files.get(new_fd)) |e| {
                 if (e.kind == .directory) break :blk e.handle.directory;
@@ -1408,7 +1421,7 @@ pub const FdIO = struct {
         const new_path_bytes = try ctx.readBytes(new_path_ptr, new_path_len);
         const new_path = std.mem.sliceTo(new_path_bytes, 0);
 
-        std.fs.rename(old_dir, old_path, new_dir, new_path) catch |err| switch (err) {
+        std.Io.Dir.rename(old_dir, old_path, new_dir, new_path, self.io) catch |err| switch (err) {
             error.FileNotFound => {
                 types.writeErrno(results, .noent);
                 return;
@@ -1431,7 +1444,7 @@ pub const FdIO = struct {
         const new_path_ptr = params[3].readAs(u32);
         const new_path_len = params[4].readAs(u32);
 
-        const dir_handle: std.fs.Dir = blk: {
+        const dir_handle: std.Io.Dir = blk: {
             if (self.preopens.get(fd)) |p| break :blk p.dir;
             if (self.files.get(fd)) |e| {
                 if (e.kind == .directory) break :blk e.handle.directory;
@@ -1445,7 +1458,7 @@ pub const FdIO = struct {
         const new_path_bytes = try ctx.readBytes(new_path_ptr, new_path_len);
         const new_path = std.mem.sliceTo(new_path_bytes, 0);
 
-        dir_handle.symLink(old_path, new_path, .{}) catch |err| switch (err) {
+        dir_handle.symLink(self.io, old_path, new_path, .{}) catch |err| switch (err) {
             error.PathAlreadyExists => {
                 types.writeErrno(results, .exist);
                 return;
@@ -1470,7 +1483,7 @@ pub const FdIO = struct {
         const path_ptr = params[1].readAs(u32);
         const path_len = params[2].readAs(u32);
 
-        const dir_handle: std.fs.Dir = blk: {
+        const dir_handle: std.Io.Dir = blk: {
             if (self.preopens.get(fd)) |p| break :blk p.dir;
             if (self.files.get(fd)) |e| {
                 if (e.kind == .directory) break :blk e.handle.directory;
@@ -1482,7 +1495,7 @@ pub const FdIO = struct {
         const path_bytes = try ctx.readBytes(path_ptr, path_len);
         const path = std.mem.sliceTo(path_bytes, 0);
 
-        dir_handle.deleteFile(path) catch |err| switch (err) {
+        dir_handle.deleteFile(self.io, path) catch |err| switch (err) {
             error.FileNotFound => {
                 types.writeErrno(results, .noent);
                 return;

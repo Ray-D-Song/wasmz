@@ -112,7 +112,7 @@ test "SharedMemory wait32/notify cross-thread round-trip" {
     const thread = try std.Thread.spawn(.{}, WaitCtx.run, .{&ctx});
 
     // Give the waiter thread time to park inside wait32.
-    std.Thread.sleep(10 * std.time.ns_per_ms);
+    var ti: std.Io.Threaded = .init_single_threaded; std.Io.sleep(ti.io(), std.Io.Duration.fromNanoseconds(10 * std.time.ns_per_ms), .awake) catch {};
 
     // Write a non-zero value so wait32 re-checks and sees a change, then notify.
     const mem_bytes = sm.bytes();

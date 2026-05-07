@@ -24,7 +24,7 @@ const c = @cImport({
 });
 
 // Simple bump allocator backed by wasm memory — enough for our test wrapper
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+var gpa = std.heap.DebugAllocator(.{}).init;
 const allocator = gpa.allocator();
 
 // Shared result buffer: sqlite3_exec stores rows here as length-prefixed text
