@@ -26,6 +26,11 @@ const instance_mod = @import("../wasmz/instance.zig");
 
 pub const enabled = build_options.profiling;
 
+fn nanoNow() i128 {
+    var t: std.Io.Threaded = .init_single_threaded;
+    return std.Io.Timestamp.now(t.io(), .awake).nanoseconds;
+}
+
 // RSS
 // Always available (not gated).  In release builds the call sites have
 // runtime guards that evaluate to false, so the function is never invoked.
@@ -485,11 +490,11 @@ pub const PhaseDiag = if (enabled) struct {
     after_start_ns: i128 = 0,
 
     pub fn now(self: *PhaseDiag, comptime field: []const u8) void {
-        @field(self, field) = std.time.nanoTimestamp();
+        @field(self, field) = nanoNow();
     }
 
     pub fn print(self: *const PhaseDiag, reason: []const u8) void {
-        const now_ns = std.time.nanoTimestamp();
+        const now_ns = nanoNow();
         const mmap_done = if (self.after_mmap_ns != 0) self.after_mmap_ns else now_ns;
         const compile_done = if (self.after_compile_ns != 0) self.after_compile_ns else now_ns;
         const store_done = if (self.after_store_ns != 0) self.after_store_ns else now_ns;
@@ -632,7 +637,7 @@ pub fn printMemStats(store: *store_mod.Store, instance: *instance_mod.Instance) 
             gc_alloc_count,            total_alloc_count,
         },
     ) catch {};
-    std.fs.File.stderr().writeAll(fbs.getWritten()) catch {};
+    std.Io.File.stderr().writeAll(fbs.getWritten()) catch {};
 }
 
 // On-exit (proc_exit callback)

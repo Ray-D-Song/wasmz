@@ -111,7 +111,7 @@ pub const GcHeap = struct {
             .free_list = .{},
             .allocator = allocator,
             .used = 0,
-            .live_objects = .{},
+            .live_objects = .empty,
             .budget = budget,
         };
     }
@@ -555,7 +555,7 @@ pub const GcHeap = struct {
         // Phase 1: Mark
         // Use an explicit ArrayListUnmanaged as the worklist so we never overflow
         // the native call stack regardless of object graph depth.
-        var worklist = std.ArrayListUnmanaged(u32){};
+        var worklist: std.ArrayListUnmanaged(u32) = .empty;
         defer worklist.deinit(self.allocator);
 
         // Seed the worklist with all heap references found in the root set.

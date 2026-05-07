@@ -40,6 +40,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const core = @import("root.zig");
 const arch = core.platform;
+const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 /// Maximum virtual address space reserved for an owned memory when the module
@@ -54,7 +55,6 @@ const use_mmap = builtin.os.tag == .linux or
     builtin.os.tag == .netbsd or
     builtin.os.tag == .openbsd or
     builtin.os.tag == .dragonfly or
-    builtin.os.tag == .solaris or
     builtin.os.tag == .illumos;
 
 // Owned memory helpers (POSIX mmap strategy)
@@ -72,13 +72,13 @@ fn ownedMmapInit(committed: usize, capacity: usize) Allocator.Error![]align(mmap
         const base = posix.mmap(
             null,
             capacity,
-            posix.PROT.NONE,
+            posix.PROT{},
             .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
             -1,
             0,
         ) catch return error.OutOfMemory;
         if (committed > 0) {
-            posix.mprotect(base[0..committed], posix.PROT.READ | posix.PROT.WRITE) catch {
+            std.process.protectMemory(base[0..committed], .{ .read = true, .write = true }) catch {
                 posix.munmap(base);
                 return error.OutOfMemory;
             };
@@ -94,9 +94,8 @@ fn ownedMmapInit(committed: usize, capacity: usize) Allocator.Error![]align(mmap
 /// `base` is the full reserved region (capacity bytes).
 fn ownedMmapGrow(base: []align(mmap_page_align) u8, old_committed: usize, new_committed: usize) bool {
     if (use_mmap) {
-        const posix = std.posix;
         const new_range: []align(mmap_page_align) u8 = @alignCast(base[old_committed..new_committed]);
-        posix.mprotect(new_range, posix.PROT.READ | posix.PROT.WRITE) catch return false;
+        std.process.protectMemory(new_range, .{ .read = true, .write = true }) catch return false;
         @memset(new_range, 0);
         return true;
     } else {
@@ -124,10 +123,18 @@ const FutexBucket = if (builtin.single_threaded) struct {
     waiters: u32 = 0,
     notify_seq: u32 = 0,
 } else struct {
-    mutex: std.Thread.Mutex = .{},
-    cond: std.Thread.Condition = .{},
+    slock: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     waiters: u32 = 0,
-    notify_seq: u32 = 0,
+    notify_seq: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+
+    fn acquire(bucket: *@This()) void {
+        while (bucket.slock.swap(1, .acquire) != 0) {
+            std.atomic.spinLoopHint();
+        }
+    }
+    fn release(bucket: *@This()) void {
+        bucket.slock.store(0, .release);
+    }
 };
 
 /// Wait result codes returned by `SharedMemoryInner.wait32` / `wait64`.
@@ -153,6 +160,7 @@ pub const WaitResult = enum(i32) {
 /// is dropped, the bytes are freed with the stored allocator.
 const SharedMemoryInner = struct {
     allocator: Allocator,
+    io: Io,
     /// Entire reserved region (capacity == max_size).
     bytes: []align(8) u8,
     /// Atomically-readable current size in bytes.
@@ -169,6 +177,10 @@ const SharedMemoryInner = struct {
         @memset(bytes, 0);
         ptr.* = .{
             .allocator = allocator,
+            .io = blk: {
+                var t: std.Io.Threaded = .init_single_threaded;
+                break :blk t.io();
+            },
             .bytes = bytes,
             .current_size = std.atomic.Value(usize).init(min_bytes),
             .futex = [_]FutexBucket{.{}} ** FUTEX_BUCKETS,
@@ -194,21 +206,12 @@ const SharedMemoryInner = struct {
         if (builtin.single_threaded) return 0;
         const idx = bucketIndex(ea);
         const bucket = &self.futex[idx];
-        bucket.mutex.lock();
-        defer bucket.mutex.unlock();
+        bucket.acquire();
+        defer bucket.release();
         const waiting = bucket.waiters;
         if (waiting == 0 or count == 0) return 0;
-        const to_wake = @min(count, waiting);
-        bucket.notify_seq +%= 1;
-        if (to_wake >= waiting) {
-            bucket.cond.broadcast();
-        } else {
-            var i: u32 = 0;
-            while (i < to_wake) : (i += 1) {
-                bucket.cond.signal();
-            }
-        }
-        return to_wake;
+        _ = bucket.notify_seq.fetchAdd(1, .release);
+        return waiting;
     }
 
     /// memory.atomic.wait32: block until mem[ea] != expected or timeout expires.
@@ -225,8 +228,8 @@ const SharedMemoryInner = struct {
         const idx = bucketIndex(ea);
         const bucket = &self.futex[idx];
 
-        bucket.mutex.lock();
-        defer bucket.mutex.unlock();
+        bucket.acquire();
+        defer bucket.release();
 
         const cur = @atomicLoad(u32, @as(*u32, @ptrCast(@alignCast(self.bytes.ptr + ea))), .seq_cst);
         if (cur != expected) return .not_equal;
@@ -234,25 +237,31 @@ const SharedMemoryInner = struct {
         bucket.waiters += 1;
         defer bucket.waiters -= 1;
 
-        const initial_seq = bucket.notify_seq;
+        const initial_seq = bucket.notify_seq.load(.acquire);
 
         if (timeout_ns < 0) {
-            while (bucket.notify_seq == initial_seq) {
-                bucket.cond.wait(&bucket.mutex);
+            bucket.release();
+            while (bucket.notify_seq.load(.acquire) == initial_seq) {
+                std.atomic.spinLoopHint();
             }
+            bucket.acquire();
             return .ok;
         } else {
-            const start_ns = std.time.nanoTimestamp();
-            const deadline_ns = start_ns + timeout_ns;
-            while (bucket.notify_seq == initial_seq) {
-                const now_ns = std.time.nanoTimestamp();
-                if (now_ns >= deadline_ns) return .timed_out;
-                const left: u64 = @intCast(deadline_ns - now_ns);
-                bucket.cond.timedWait(&bucket.mutex, left) catch {
+            bucket.release();
+            const start_ts = Io.Timestamp.now(self.io, .awake);
+            const deadline_ns = start_ts.nanoseconds + timeout_ns;
+            while (true) {
+                if (bucket.notify_seq.load(.acquire) != initial_seq) {
+                    bucket.acquire();
+                    return .ok;
+                }
+                const now_ts = Io.Timestamp.now(self.io, .awake);
+                if (now_ts.nanoseconds >= deadline_ns) {
+                    bucket.acquire();
                     return .timed_out;
-                };
+                }
+                std.atomic.spinLoopHint();
             }
-            return .ok;
         }
     }
 
@@ -269,8 +278,8 @@ const SharedMemoryInner = struct {
         const idx = bucketIndex(ea);
         const bucket = &self.futex[idx];
 
-        bucket.mutex.lock();
-        defer bucket.mutex.unlock();
+        bucket.acquire();
+        defer bucket.release();
 
         const AtomicUint = arch.AtomicUint;
         const cur = @atomicLoad(AtomicUint, @as(*AtomicUint, @ptrCast(@alignCast(self.bytes.ptr + ea))), .seq_cst);
@@ -279,25 +288,31 @@ const SharedMemoryInner = struct {
         bucket.waiters += 1;
         defer bucket.waiters -= 1;
 
-        const initial_seq = bucket.notify_seq;
+        const initial_seq = bucket.notify_seq.load(.acquire);
 
         if (timeout_ns < 0) {
-            while (bucket.notify_seq == initial_seq) {
-                bucket.cond.wait(&bucket.mutex);
+            bucket.release();
+            while (bucket.notify_seq.load(.acquire) == initial_seq) {
+                std.atomic.spinLoopHint();
             }
+            bucket.acquire();
             return .ok;
         } else {
-            const start_ns = std.time.nanoTimestamp();
-            const deadline_ns = start_ns + timeout_ns;
-            while (bucket.notify_seq == initial_seq) {
-                const now_ns = std.time.nanoTimestamp();
-                if (now_ns >= deadline_ns) return .timed_out;
-                const left: u64 = @intCast(deadline_ns - now_ns);
-                bucket.cond.timedWait(&bucket.mutex, left) catch {
+            bucket.release();
+            const start_ts = Io.Timestamp.now(self.io, .awake);
+            const deadline_ns = start_ts.nanoseconds + timeout_ns;
+            while (true) {
+                if (bucket.notify_seq.load(.acquire) != initial_seq) {
+                    bucket.acquire();
+                    return .ok;
+                }
+                const now_ts = Io.Timestamp.now(self.io, .awake);
+                if (now_ts.nanoseconds >= deadline_ns) {
+                    bucket.acquire();
                     return .timed_out;
-                };
+                }
+                std.atomic.spinLoopHint();
             }
-            return .ok;
         }
     }
 };

@@ -48,7 +48,7 @@ export fn wasmz_call(name_ptr: [*]const u8, name_len: usize, args: [*]const i32,
     const name = name_ptr[0..name_len];
     if (instance == null) return -1;
 
-    var call_args = std.ArrayList(wasmz.RawVal){};
+    var call_args: std.ArrayList(wasmz.RawVal) = .empty;
     defer call_args.deinit(ally);
     for (0..argc) |i| {
         call_args.append(ally, wasmz.RawVal.from(args[i])) catch return -2;
