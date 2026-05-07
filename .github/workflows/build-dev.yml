@@ -25,18 +25,20 @@ jobs:
           - target: wasm32-wasi
             runner: ubuntu-latest
             artifact_suffix: wasi
-          - target: wasm32-freestanding
-            runner: ubuntu-latest
-            artifact_suffix: wasm
+          # wasm32-freestanding disabled: Zig 0.16 Io.Threaded needs
+          # posix.system.getrandom/IOV_MAX which are absent on this target.
+          # - target: wasm32-freestanding
+          #   runner: ubuntu-latest
+          #   artifact_suffix: wasm
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Zig 0.15.2
+      - name: Install Zig 0.16.0
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.16.0
 
       - name: Get short git hash
         id: git_hash
