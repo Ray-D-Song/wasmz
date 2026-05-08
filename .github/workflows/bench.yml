@@ -32,5 +32,8 @@ jobs:
       - name: Build projects
         run: ./bench/build.sh all
 
+      - name: Cool down
+        run: sleep 10
+
       - name: Run benchmarks
         run: make bench
