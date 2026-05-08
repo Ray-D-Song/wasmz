@@ -26,8 +26,20 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake gcc g++ hyperfine
+      - name: Check dependencies
+        run: |
+          deps=(cmake gcc g++ hyperfine)
+          missing=()
+          for dep in "${deps[@]}"; do
+            if ! command -v "$dep" &> /dev/null; then
+              missing+=("$dep")
+            fi
+          done
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "Missing required dependencies: ${missing[*]}"
+            exit 1
+          fi
+          echo "All required dependencies are available."
 
       - name: Build projects
         run: ./bench/build.sh all
