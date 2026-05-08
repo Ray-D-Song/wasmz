@@ -42,14 +42,12 @@ pub const Output = struct {
     }
 
     fn write_stdout(_: ?*anyopaque, bytes: []const u8) WriteError!void {
-        var t: Io.Threaded = .init_single_threaded;
-        const local_io = t.io();
+        const local_io = Io.Threaded.global_single_threaded.io();
         std.Io.File.writeStreamingAll(std.Io.File.stdout(), local_io, bytes) catch return error.Io;
     }
 
     fn write_stderr(_: ?*anyopaque, bytes: []const u8) WriteError!void {
-        var t: Io.Threaded = .init_single_threaded;
-        const local_io = t.io();
+        const local_io = Io.Threaded.global_single_threaded.io();
         std.Io.File.writeStreamingAll(std.Io.File.stderr(), local_io, bytes) catch return error.Io;
     }
 

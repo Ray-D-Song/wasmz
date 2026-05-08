@@ -206,7 +206,7 @@ pub const Parser = struct {
         }
 
         var positional: std.ArrayList([]const u8) = .empty;
-        defer positional.deinit(self.allocator);
+        errdefer positional.deinit(self.allocator);
 
         var idx: usize = 1;
         while (idx < raw_args.len) : (idx += 1) {
