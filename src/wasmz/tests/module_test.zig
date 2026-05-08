@@ -49,7 +49,7 @@ test "module.compile builds exported function bodies" {
 
     var vm = VM.init(testing.allocator);
     defer vm.deinit();
-    var store = try Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
     var globals = [_]Global{};
     var raw_memory: [0]u8 = .{};

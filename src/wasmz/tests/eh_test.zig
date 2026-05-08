@@ -53,7 +53,7 @@ test "EH new: try_table catches thrown exception and returns payload" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = try Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
 
     var arc = try Module.compileArc(engine, eh_new_catch_wasm);
@@ -71,7 +71,7 @@ test "EH new: throw_ref rethrows exception causing UnhandledException trap" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = try Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
 
     var arc = try Module.compileArc(engine, eh_new_throw_ref_wasm);
@@ -98,7 +98,7 @@ test "EH legacy: try/catch catches thrown exception and returns payload" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = try Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
 
     var arc = try Module.compileArc(engine, eh_legacy_catch_wasm);
@@ -116,7 +116,7 @@ test "EH legacy: try/catch_all catches any exception and returns constant" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = try Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
 
     var arc = try Module.compileArc(engine, eh_legacy_catch_all_wasm);
@@ -134,7 +134,7 @@ test "EH legacy: rethrow propagates exception to outer catch" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = try Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
 
     var arc = try Module.compileArc(engine, eh_legacy_rethrow_wasm);
@@ -152,7 +152,7 @@ test "EH new: catch_ref delivers [payload, exnref] into multi-value block, drop 
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = try Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
 
     var arc = try Module.compileArc(engine, eh_new_catch_ref_wasm);

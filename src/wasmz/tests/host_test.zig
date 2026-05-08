@@ -21,7 +21,7 @@ test "HostContext userData and hostData cast opaque pointers" {
     defer engine.deinit();
 
     var user_value: i32 = 7;
-    var store = try Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
     store.setUserData(&user_value);
 
@@ -56,7 +56,7 @@ test "HostContext readBytes traps on out of bounds" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = try Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
 
     var globals = [_]Global{};

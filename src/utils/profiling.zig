@@ -26,9 +26,9 @@ const instance_mod = @import("../wasmz/instance.zig");
 
 pub const enabled = build_options.profiling;
 
-fn nanoNow() i128 {
-    var t: std.Io.Threaded = .init_single_threaded;
-    return std.Io.Timestamp.now(t.io(), .awake).nanoseconds;
+pub fn nanoNow() i128 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    return std.Io.Timestamp.now(io, .awake).nanoseconds;
 }
 
 // RSS
@@ -588,8 +588,7 @@ pub fn printMemStats(store: *store_mod.Store, instance: *instance_mod.Instance) 
     const shared_annotation: []const u8 = if (shared_bytes == 0) "(none)" else "";
 
     var stderr_buf: [2048]u8 = undefined;
-    var ti: std.Io.Threaded = .init_single_threaded;
-    const io = ti.io();
+    const io = std.Io.Threaded.global_single_threaded.io();
     var bw = std.Io.File.stderr().writer(io, &stderr_buf);
     bw.interface.print(
         \\Memory usage:

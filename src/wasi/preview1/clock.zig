@@ -25,8 +25,7 @@ pub const ClockSource = struct {
     }
 
     fn getIo() Io {
-        var t: Io.Threaded = .init_single_threaded;
-        return t.io();
+        return Io.Threaded.global_single_threaded.io();
     }
 
     fn default_realtime_now(_: ?*anyopaque) u64 {

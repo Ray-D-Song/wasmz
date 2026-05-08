@@ -167,7 +167,7 @@ export fn wasmz_store_new(engine_handle: ?*wasmz_engine_t) ?*wasmz_store_t {
     const eng: *Engine = @ptrCast(@alignCast(eh.ptr));
 
     const store_ptr = alloc.create(Store) catch return null;
-    store_ptr.* = Store.init(alloc, eng.*) catch {
+    store_ptr.* = Store.init(alloc, eng.*, std.Io.Threaded.global_single_threaded.io()) catch {
         alloc.destroy(store_ptr);
         return null;
     };

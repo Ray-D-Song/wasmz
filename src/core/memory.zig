@@ -168,16 +168,14 @@ const SharedMemoryInner = struct {
     /// Futex bucket table for wait/notify.
     futex: [FUTEX_BUCKETS]FutexBucket,
 
-    fn init(allocator: Allocator, min_bytes: usize, max_bytes: usize) Allocator.Error!*SharedMemoryInner {
+    fn init(allocator: Allocator, io: Io, min_bytes: usize, max_bytes: usize) Allocator.Error!*SharedMemoryInner {
         const ptr = try allocator.create(SharedMemoryInner);
         errdefer allocator.destroy(ptr);
-        // Reserve the full maximum region so the base address never moves.
-        // align(8) is required for Zig's @atomicLoad/@atomicStore on 64-bit values.
-        const bytes = try allocator.alignedAlloc(u8, @enumFromInt(3), max_bytes); // 2^3 = 8
+        const bytes = try allocator.alignedAlloc(u8, @enumFromInt(3), max_bytes);
         @memset(bytes, 0);
         ptr.* = .{
             .allocator = allocator,
-            .io = std.Io.Threaded.global_single_threaded.io(),
+            .io = io,
             .bytes = bytes,
             .current_size = std.atomic.Value(usize).init(min_bytes),
             .futex = [_]FutexBucket{.{}} ** FUTEX_BUCKETS,
@@ -323,13 +321,14 @@ pub const SharedMemory = struct {
 
     /// Create a new shared memory region with `min_pages` initially committed and `max_pages`
     /// reserved.  The max must be provided for shared memories (Wasm spec requirement).
-    pub fn init(allocator: Allocator, min_pages: u32, max_pages: u32) Allocator.Error!SharedMemory {
+    pub fn init(allocator: Allocator, io: Io, min_pages: u32, max_pages: u32) Allocator.Error!SharedMemory {
         const refcount = try allocator.create(std.atomic.Value(usize));
         errdefer allocator.destroy(refcount);
         refcount.* = std.atomic.Value(usize).init(1);
 
         const inner = try SharedMemoryInner.init(
             allocator,
+            io,
             @as(usize, min_pages) * WASM_PAGE_SIZE,
             @as(usize, max_pages) * WASM_PAGE_SIZE,
         );

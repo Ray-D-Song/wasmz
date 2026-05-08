@@ -102,7 +102,7 @@ fn run(init: std.process.Init, io: std.Io, allocator: std.mem.Allocator) !void {
 
     if (cli_args.mem_trace) profiling.tracePhase(&trace_prev, "after compile");
 
-    var store = Store.init(allocator, engine) catch |err|
+    var store = Store.init(allocator, engine, io) catch |err|
         fatal("Failed to init store: {s}", .{@errorName(err)});
     if (cli_args.mem_limit_mb != null) store.linkBudget();
     defer store.deinit();
@@ -114,7 +114,7 @@ fn run(init: std.process.Init, io: std.Io, allocator: std.mem.Allocator) !void {
     defer linker.deinit(allocator);
 
     if (moduleNeedsWasi(arc_module.value)) {
-        wasi_host = wasi_preview1.Host.init(allocator);
+        wasi_host = wasi_preview1.Host.init(allocator, io);
         wasi_host.?.setArgs(cli_args.wasi_args) catch |err|
             fatal("Failed to set WASI args: {s}", .{@errorName(err)});
         wasi_host.?.addToLinker(&linker, allocator) catch |err|
@@ -336,8 +336,7 @@ const CliArgs = struct {
 /// Release builds use a minimal panic handler to avoid pulling in DWARF stack-unwinding
 /// code (~127 KB).  Debug/ReleaseSafe builds use the default handler for readable backtraces.
 fn simplePanic(msg: []const u8, _: ?usize) noreturn {
-    var ti: std.Io.Threaded = .init_single_threaded;
-    const io = ti.io();
+    const io = std.Io.Threaded.global_single_threaded.io();
     std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, "panic: ") catch {};
     std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
     std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, "\n") catch {};
