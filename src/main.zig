@@ -227,7 +227,6 @@ const CliArgs = struct {
     eager_compile: bool,
     _parsed: arg_parse.Parsed,
     _wasm_args_parsed: [][]const u8,
-    _positional: []const []const u8,
 
     const flags = [_]arg_parse.Flag{
         arg_parse.Flag.boolFlag("help", "Show this help message"),
@@ -323,7 +322,6 @@ const CliArgs = struct {
             .passthrough = passthrough,
             ._parsed = parsed,
             ._wasm_args_parsed = wasm_args_parsed,
-            ._positional = positional,
         };
     }
 
@@ -331,7 +329,6 @@ const CliArgs = struct {
         allocator.free(self.wasi_args);
         for (self._wasm_args_parsed) |tok| allocator.free(tok);
         allocator.free(self._wasm_args_parsed);
-        allocator.free(self._positional);
         self._parsed.deinit();
     }
 };

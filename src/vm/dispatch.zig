@@ -27,8 +27,7 @@ pub inline fn comptime_call(
     func: anytype,
     args: anytype,
 ) void {
-    // .always_tail not supported by Zig native backend (Debug mode) on x86_64,
-    // nor by LLVM on MIPS / wasm32.
+    _ = modifier;
     if (builtin.mode == .Debug or builtin.target.cpu.arch == .mips or builtin.target.cpu.arch == .wasm32) {
         @call(.auto, func, args);
     } else {
