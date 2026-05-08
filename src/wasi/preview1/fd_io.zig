@@ -1,12 +1,22 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const core = @import("core");
 const wasmz = @import("wasmz");
 const types = @import("./types.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
+const posix = std.posix;
 const RawVal = core.RawVal;
 const HostContext = wasmz.HostContext;
+
+fn stdinRead(buf: []u8) !usize {
+    if (builtin.os.tag == .windows) {
+        const io = Io.Threaded.global_single_threaded.io();
+        return std.Io.File.stdin().readStreaming(io, &.{buf});
+    }
+    return posix.read(posix.STDIN_FILENO, buf);
+}
 
 fn wasiInode(inode: anytype) u64 {
     const T = @TypeOf(inode);
@@ -334,7 +344,7 @@ pub const FdIO = struct {
                     const bytes_to_read = @min(buf_len, @as(u32, @intCast(guest_mem.len - buf)));
                     const read_buf = guest_mem[buf .. buf + bytes_to_read];
 
-                    const bytes_read = std.Io.File.stdin().readStreaming(self.io, &.{read_buf}) catch {
+                    const bytes_read = stdinRead(read_buf) catch {
                         types.writeErrno(results, .io);
                         return;
                     };
