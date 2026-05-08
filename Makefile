@@ -44,7 +44,6 @@ clib:
 	@ls -lh zig-out/include/wasmz.h
 
 bench:
-	$(MAKE) install-release
 	./bench/bench.sh
 
 count-ops:
