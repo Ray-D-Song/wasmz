@@ -59,8 +59,7 @@ pub const Command = struct {
     args: []const Arg = &.{},
 
     pub fn printUsage(self: *const Command) void {
-        var t: Io.Threaded = .init_single_threaded;
-        const io = t.io();
+        const io = Io.Threaded.global_single_threaded.io();
         var buf: [1024]u8 = undefined;
         var bw = std.Io.File.stderr().writer(io, &buf);
         bw.interface.writeAll("Usage:\n") catch {};

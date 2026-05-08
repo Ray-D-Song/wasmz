@@ -89,12 +89,12 @@ pub const FdIO = struct {
     preopens: std.AutoHashMap(types.Fd, Preopen),
     next_fd: types.Fd,
 
-    pub fn init(allocator: Allocator) FdIO {
+    pub fn init(allocator: Allocator, io: Io) FdIO {
         return .{
             .stdout = Output.stdout(),
             .stderr = Output.stderr(),
             .allocator = allocator,
-            .io = Io.Threaded.global_single_threaded.io(),
+            .io = io,
             .files = std.AutoHashMap(types.Fd, FileEntry).init(allocator),
             .preopens = std.AutoHashMap(types.Fd, Preopen).init(allocator),
             .next_fd = 3,

@@ -14,10 +14,10 @@ test "preview1 args and env write guest memory correctly" {
     var engine = try wasmz.Engine.init(testing.allocator, wasmz.Config{});
     defer engine.deinit();
 
-    var store = try wasmz.Store.init(testing.allocator, engine);
+    var store = try wasmz.Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
 
-    var host = host_mod.Host.init(testing.allocator);
+    var host = host_mod.Host.init(testing.allocator, std.Io.Threaded.global_single_threaded.io());
     defer host.deinit();
     try host.setArgs(&.{ "echo", "hello" });
     try host.setEnv(&.{.{ .key = "A", .value = "1" }});
@@ -77,7 +77,7 @@ test "preview1 clock and fd_write use host implementations" {
     var engine = try wasmz.Engine.init(testing.allocator, wasmz.Config{});
     defer engine.deinit();
 
-    var store = try wasmz.Store.init(testing.allocator, engine);
+    var store = try wasmz.Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
 
     var sink: std.ArrayList(u8) = .empty;
@@ -90,7 +90,7 @@ test "preview1 clock and fd_write use host implementations" {
         }
     };
 
-    var host = host_mod.Host.init(testing.allocator);
+    var host = host_mod.Host.init(testing.allocator, std.Io.Threaded.global_single_threaded.io());
     defer host.deinit();
     host.setStdout(.{ .ctx = &sink, .write_fn = Sink.write });
     host.setRealtimeClock(.{ .ctx = null, .now_fn = struct {
@@ -148,10 +148,10 @@ test "preview1 linker only registers implemented imports" {
     var engine = try wasmz.Engine.init(testing.allocator, wasmz.Config{});
     defer engine.deinit();
 
-    var store = try wasmz.Store.init(testing.allocator, engine);
+    var store = try wasmz.Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
 
-    var host = host_mod.Host.init(testing.allocator);
+    var host = host_mod.Host.init(testing.allocator, std.Io.Threaded.global_single_threaded.io());
     defer host.deinit();
 
     var linker = Linker.empty;
@@ -196,10 +196,10 @@ test "preview1 file operations" {
     var engine = try wasmz.Engine.init(testing.allocator, wasmz.Config{});
     defer engine.deinit();
 
-    var store = try wasmz.Store.init(testing.allocator, engine);
+    var store = try wasmz.Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
 
-    var host = host_mod.Host.init(testing.allocator);
+    var host = host_mod.Host.init(testing.allocator, std.Io.Threaded.global_single_threaded.io());
     defer host.deinit();
 
     const preopen_fd = try host.addPreopen(".");

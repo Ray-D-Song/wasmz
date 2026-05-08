@@ -12,7 +12,7 @@ test "Store initializes GC heap lazily" {
     var engine = try engine_pkg.Engine.init(testing.allocator, config_pkg.Config{});
     defer engine.deinit();
 
-    var store = try Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
 
     // GC heap should not be initialized until needed

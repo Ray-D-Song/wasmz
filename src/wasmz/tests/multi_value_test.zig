@@ -29,7 +29,7 @@ test "multi-value block: block yields two i32 values that are then added" {
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();
 
-    var store = try Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
 
     var arc = try Module.compileArc(engine, multi_value_block_wasm);
