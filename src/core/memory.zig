@@ -177,10 +177,7 @@ const SharedMemoryInner = struct {
         @memset(bytes, 0);
         ptr.* = .{
             .allocator = allocator,
-            .io = blk: {
-                var t: std.Io.Threaded = .init_single_threaded;
-                break :blk t.io();
-            },
+            .io = std.Io.Threaded.global_single_threaded.io(),
             .bytes = bytes,
             .current_size = std.atomic.Value(usize).init(min_bytes),
             .futex = [_]FutexBucket{.{}} ** FUTEX_BUCKETS,
