@@ -50,11 +50,14 @@ const MAX_OWNED_CAPACITY: usize = arch.max_linear_memory_bytes;
 /// True when the platform supports mmap/mprotect for the virtual-reserve strategy.
 const use_mmap = builtin.os.tag == .linux or
     builtin.os.tag == .macos or
+    builtin.os.tag == .ios or
+    builtin.os.tag == .tvos or
+    builtin.os.tag == .watchos or
+    builtin.os.tag == .visionos or
     builtin.os.tag == .freebsd or
     builtin.os.tag == .netbsd or
     builtin.os.tag == .openbsd or
     builtin.os.tag == .dragonfly or
-    builtin.os.tag == .solaris or
     builtin.os.tag == .illumos;
 
 // Owned memory helpers (POSIX mmap strategy)
@@ -62,6 +65,22 @@ const use_mmap = builtin.os.tag == .linux or
 /// OS page alignment for mmap regions.  On macOS this is 16 KiB; on Linux 4 KiB.
 /// WASM_PAGE_SIZE (64 KiB) is always a multiple of this so all offsets are valid.
 const mmap_page_align = std.heap.page_size_min;
+
+/// PROT_NONE / PROT_READ|WRITE constants that work for both the Linux
+/// packed struct PROT and the Apple `vm_prot_t` packed struct.
+/// Both expose `READ`, `WRITE`, `EXEC` bool fields; default-initialised
+/// is "no access" (== PROT_NONE on the C side).
+const prot_none: std.posix.PROT = .{};
+const prot_rw: std.posix.PROT = .{ .READ = true, .WRITE = true };
+
+/// Replacement for `std.posix.mprotect`, which was removed in Zig 0.16.
+/// Calls `std.c.mprotect` directly and reports failure as a plain bool so
+/// callers can map it onto their own error path.
+fn mprotectRw(slice: []align(mmap_page_align) u8) bool {
+    if (slice.len == 0) return true;
+    const rc = std.c.mprotect(@ptrCast(slice.ptr), slice.len, prot_rw);
+    return rc == 0;
+}
 
 /// Allocate a virtual address region of `capacity` bytes with no physical pages
 /// committed (PROT_NONE), then commit the first `committed` bytes.
@@ -72,16 +91,16 @@ fn ownedMmapInit(committed: usize, capacity: usize) Allocator.Error![]align(mmap
         const base = posix.mmap(
             null,
             capacity,
-            posix.PROT.NONE,
+            prot_none,
             .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
             -1,
             0,
         ) catch return error.OutOfMemory;
         if (committed > 0) {
-            posix.mprotect(base[0..committed], posix.PROT.READ | posix.PROT.WRITE) catch {
+            if (!mprotectRw(base[0..committed])) {
                 posix.munmap(base);
                 return error.OutOfMemory;
-            };
+            }
             @memset(base[0..committed], 0);
         }
         return base;
@@ -94,9 +113,8 @@ fn ownedMmapInit(committed: usize, capacity: usize) Allocator.Error![]align(mmap
 /// `base` is the full reserved region (capacity bytes).
 fn ownedMmapGrow(base: []align(mmap_page_align) u8, old_committed: usize, new_committed: usize) bool {
     if (use_mmap) {
-        const posix = std.posix;
         const new_range: []align(mmap_page_align) u8 = @alignCast(base[old_committed..new_committed]);
-        posix.mprotect(new_range, posix.PROT.READ | posix.PROT.WRITE) catch return false;
+        if (!mprotectRw(new_range)) return false;
         @memset(new_range, 0);
         return true;
     } else {
@@ -119,13 +137,62 @@ pub const WASM_PAGE_SIZE: usize = 65536;
 /// Number of futex buckets in the wait/notify table.  Must be a power of two.
 const FUTEX_BUCKETS: usize = 64;
 
+/// Zig-0.16 stubs for `std.Thread.Mutex` / `std.Thread.Condition`.
+///
+/// In 0.15 these were callable without an `Io` parameter. In 0.16 the
+/// blocking synchronisation primitives live under `std.Io` and require an
+/// `Io` instance. wasmz only uses them for the wasm `atomic.wait` /
+/// `atomic.notify` path on **shared** memories — and every public entry
+/// point on `SharedMemoryInner` short-circuits with
+/// `if (builtin.single_threaded) return …;`. The benchmark workloads we
+/// care about never instantiate a shared memory, so the real lock /
+/// condition implementations are never reached. Provide the smallest
+/// possible API surface that lets the type-check pass; if a future user
+/// actually runs wasm threads through this build they'll trip an
+/// `unreachable` and we can plumb the real `std.Io.Mutex` / `Condition`
+/// through then.
+const StubMutex = struct {
+    pub fn lock(_: *StubMutex) void {
+        unreachable; // wasmz shared-memory wait/notify is not wired through Io in this build
+    }
+    pub fn unlock(_: *StubMutex) void {
+        unreachable;
+    }
+};
+const StubCondition = struct {
+    pub fn wait(_: *StubCondition, _: *StubMutex) void {
+        unreachable;
+    }
+    pub fn timedWait(_: *StubCondition, _: *StubMutex, _: u64) error{Timeout}!void {
+        unreachable;
+    }
+    pub fn signal(_: *StubCondition) void {
+        unreachable;
+    }
+    pub fn broadcast(_: *StubCondition) void {
+        unreachable;
+    }
+};
+
+/// Zig-0.16 replacement for `std.time.nanoTimestamp`. Reads CLOCK_MONOTONIC
+/// directly via libc; used only by the shared-memory wait paths that the
+/// stub Mutex/Condition above turn into compile-time-unreachable code on
+/// non-single-threaded builds. Returning a sensible value (rather than
+/// `unreachable`) keeps the arithmetic well-defined if a future revision
+/// re-enables real synchronisation primitives without touching this file.
+inline fn monotonicNanos() i128 {
+    var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+    _ = std.c.clock_gettime(.MONOTONIC, &ts);
+    return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+}
+
 /// One entry in the futex bucket table.
 const FutexBucket = if (builtin.single_threaded) struct {
     waiters: u32 = 0,
     notify_seq: u32 = 0,
 } else struct {
-    mutex: std.Thread.Mutex = .{},
-    cond: std.Thread.Condition = .{},
+    mutex: StubMutex = .{},
+    cond: StubCondition = .{},
     waiters: u32 = 0,
     notify_seq: u32 = 0,
 };
@@ -242,10 +309,10 @@ const SharedMemoryInner = struct {
             }
             return .ok;
         } else {
-            const start_ns = std.time.nanoTimestamp();
+            const start_ns: i128 = monotonicNanos();
             const deadline_ns = start_ns + timeout_ns;
             while (bucket.notify_seq == initial_seq) {
-                const now_ns = std.time.nanoTimestamp();
+                const now_ns: i128 = monotonicNanos();
                 if (now_ns >= deadline_ns) return .timed_out;
                 const left: u64 = @intCast(deadline_ns - now_ns);
                 bucket.cond.timedWait(&bucket.mutex, left) catch {
@@ -287,10 +354,10 @@ const SharedMemoryInner = struct {
             }
             return .ok;
         } else {
-            const start_ns = std.time.nanoTimestamp();
+            const start_ns: i128 = monotonicNanos();
             const deadline_ns = start_ns + timeout_ns;
             while (bucket.notify_seq == initial_seq) {
-                const now_ns = std.time.nanoTimestamp();
+                const now_ns: i128 = monotonicNanos();
                 if (now_ns >= deadline_ns) return .timed_out;
                 const left: u64 = @intCast(deadline_ns - now_ns);
                 bucket.cond.timedWait(&bucket.mutex, left) catch {

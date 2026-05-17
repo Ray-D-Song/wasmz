@@ -285,6 +285,29 @@ pub fn build(b: *std.Build) void {
     clib_step.dependOn(&b.addInstallArtifact(clib, .{}).step);
     clib_step.dependOn(&install_header.step);
 
+    // Static-lib companion of `clib` — built so Apple Store-eligible iOS /
+    // watchOS / tvOS apps can link wasmz in directly (no JIT, no dlopen).
+    // Mirrors the wasm-benchmark project convention (`zwasm` exposes the
+    // same `static-lib` step) so `scripts/build-wasmz.sh` can call it
+    // without a special case.
+    const clib_static = b.addLibrary(.{
+        .name = "wasmz",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/capi.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "wasmz", .module = mod },
+            },
+            .link_libc = true,
+        }),
+    });
+
+    const static_lib_step = b.step("static-lib", "Build the C static library (libwasmz.a)");
+    static_lib_step.dependOn(&b.addInstallArtifact(clib_static, .{}).step);
+    static_lib_step.dependOn(&install_header.step);
+
     // ── wasmz-as-WASI (self-hosted CLI) ─────────────────────────────────────
     //
     // Build with: zig build wasi

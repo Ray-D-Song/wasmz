@@ -2530,7 +2530,7 @@ fn decodeAndLower(
 
     if (!p.has_bytes(1)) return error.NeedMoreData;
     const code_raw = p.read_u8();
-    const code = std.meta.intToEnum(payload_mod.OperatorCode, code_raw) catch {
+    const code = std.enums.fromInt(payload_mod.OperatorCode, code_raw) orelse {
         return error.UnknownOperator;
     };
 
