@@ -58,7 +58,7 @@ fn collectGcRoots(
     frame: *DispatchState,
     globals: []const Global,
 ) Allocator.Error![]GcRef {
-    var roots = std.ArrayListUnmanaged(GcRef){};
+    var roots: std.ArrayListUnmanaged(GcRef) = .empty;
     errdefer roots.deinit(allocator);
 
     for (0..frame.call_depth) |i| {
