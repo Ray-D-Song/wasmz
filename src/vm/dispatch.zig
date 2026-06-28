@@ -149,6 +149,8 @@ pub const ExecEnv = struct {
     /// When true, memory.grow events log RSS snapshots to stderr.
     /// Controlled by the --mem-trace CLI flag.
     mem_trace: bool = false,
+    /// When true, linear-memory addresses are i64 (memory64 proposal).
+    memory64: bool = false,
 };
 
 // Call / EH frame
@@ -231,6 +233,8 @@ pub const DispatchState = struct {
     /// Back-pointer to the owning VM, used for dynamic stack growth.
     /// null when the DispatchState owns its stacks directly (non-persistent mode).
     vm: ?*vm_root.VM = null,
+    /// When true, linear-memory addresses are i64 (memory64 proposal).
+    memory64: bool = false,
 
     // Cached linear memory base/length
     // Avoids the `env.memory.bytes()` call (tagged-union dispatch + pointer

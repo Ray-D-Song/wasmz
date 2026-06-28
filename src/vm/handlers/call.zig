@@ -47,6 +47,11 @@ const OpsCallLeafResolved = extern struct {
 
 // Helpers
 
+inline fn pushCallFrame(frame: *DispatchState, env: *const ExecEnv, call_frame: CallFrame) error{ StackOverflow, OutOfMemory }!void {
+    frame.memory64 = env.memory64;
+    try frame.callStackPush(call_frame);
+}
+
 inline fn readOps(comptime T: type, ip: [*]u8) T {
     if (@sizeOf(T) == 0) return .{};
     const bytes = ip[HANDLER_SIZE..][0..@sizeOf(T)];
@@ -355,7 +360,7 @@ inline fn handle_call_resolved_impl(comptime known_arity: u32, ip: [*]u8, frame:
     const cur = frame.callStackTop();
     cur.ip = ip + instr_stride;
     const callee_dst: ?ir.Slot = if (ops.dst_valid != 0) @intCast(ops.dst) else null;
-    frame.callStackPush(.{
+    pushCallFrame(frame, env, .{
         .ip = callee.code.ptr,
         .slots = callee_slots,
         .slots_sp_base = sp_base,
@@ -440,7 +445,7 @@ inline fn handle_call_impl(comptime known_arity: ?u32, ip: [*]u8, slots: [*]RawV
         const cur = frame.callStackTop();
         cur.ip = ip + instr_stride;
         const callee_dst: ?ir.Slot = if (ops.dst_valid != 0) @intCast(ops.dst) else null;
-        frame.callStackPush(.{
+        pushCallFrame(frame, env, .{
             .ip = callee.code.ptr,
             .slots = callee_slots,
             .slots_sp_base = sp_base,
@@ -540,7 +545,7 @@ inline fn handle_call_to_local_resolved_impl(comptime known_arity: u32, ip: [*]u
     const cur = frame.callStackTop();
     cur.ip = ip + instr_stride;
 
-    frame.callStackPush(.{
+    pushCallFrame(frame, env, .{
         .ip = callee.code.ptr,
         .slots = callee_slots,
         .slots_sp_base = sp_base,
@@ -611,7 +616,7 @@ inline fn handle_call_to_local_impl(comptime known_arity: ?u32, ip: [*]u8, slots
         cur.ip = ip + instr_stride;
         const callee_dst: ?ir.Slot = ops.local;
 
-        frame.callStackPush(.{
+        pushCallFrame(frame, env, .{
             .ip = callee.code.ptr,
             .slots = callee_slots,
             .slots_sp_base = sp_base,
@@ -714,7 +719,7 @@ inline fn handle_call_leaf_resolved_impl(comptime known_arity: u32, ip: [*]u8, f
     const cur = frame.callStackTop();
     cur.ip = ip + instr_stride;
 
-    frame.callStackPush(.{
+    pushCallFrame(frame, env, .{
         .ip = callee.code.ptr,
         .slots = callee_slots,
         .slots_sp_base = sp_base,
@@ -785,7 +790,7 @@ inline fn handle_call_leaf_impl(comptime known_arity: ?u32, ip: [*]u8, slots: [*
         const cur = frame.callStackTop();
         cur.ip = ip + instr_stride;
 
-        frame.callStackPush(.{
+        pushCallFrame(frame, env, .{
             .ip = callee.code.ptr,
             .slots = callee_slots,
             .slots_sp_base = sp_base,
@@ -944,7 +949,7 @@ pub fn handle_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
 
         const callee_dst: ?ir.Slot = if (ops.dst_valid != 0) @intCast(ops.dst) else null;
 
-        frame.callStackPush(.{
+        pushCallFrame(frame, env, .{
             .ip = callee.code.ptr,
             .slots = callee_slots,
             .slots_sp_base = sp_base,
@@ -1237,7 +1242,7 @@ pub fn handle_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
 
         const callee_dst: ?ir.Slot = if (ops.dst_valid != 0) @intCast(ops.dst) else null;
 
-        frame.callStackPush(.{
+        pushCallFrame(frame, env, .{
             .ip = callee.code.ptr,
             .slots = callee_slots,
             .slots_sp_base = sp_base,

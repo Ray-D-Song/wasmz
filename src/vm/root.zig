@@ -74,6 +74,8 @@ pub const ExecEnv = struct {
     /// When true, memory.grow events log RSS snapshots to stderr.
     /// Controlled by the --mem-trace CLI flag.
     mem_trace: bool = false,
+    /// When true, linear-memory addresses are i64 (memory64 proposal).
+    memory64: bool = false,
 };
 
 pub const VM = struct {
@@ -148,6 +150,7 @@ pub const VM = struct {
             .type_ancestors = env.type_ancestors,
             .memory_budget = env.memory_budget,
             .mem_trace = env.mem_trace,
+            .memory64 = env.memory64,
         };
 
         // Ensure persistent buffers are allocated (lazy, first call only)
@@ -177,6 +180,7 @@ pub const VM = struct {
             .call_stack_owned = false, // VM owns call_stack
             .result = .{ .ok = null },
             .vm = self,
+            .memory64 = env.memory64,
         };
         // Populate cached memory base/length for fast access in handlers.
         frame.refreshMemCache(env.memory);
