@@ -4,9 +4,18 @@ on:
   push:
     tags:
       - '**'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.1.0)'
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -127,7 +136,7 @@ jobs:
         if: matrix.archive_kind == 'tar.gz'
         shell: bash
         env:
-          ARCHIVE_NAME: wasmz-${{ github.ref_name }}-${{ matrix.asset_suffix }}.${{ matrix.archive_kind }}
+          ARCHIVE_NAME: wasmz-${{ env.RELEASE_TAG }}-${{ matrix.asset_suffix }}.${{ matrix.archive_kind }}
         run: |
           tar -C dist/package -czf "dist/${ARCHIVE_NAME}" "${{ matrix.binary_name }}"
 
@@ -135,7 +144,7 @@ jobs:
         if: matrix.archive_kind == 'zip'
         shell: pwsh
         env:
-          ARCHIVE_NAME: wasmz-${{ github.ref_name }}-${{ matrix.asset_suffix }}.${{ matrix.archive_kind }}
+          ARCHIVE_NAME: wasmz-${{ env.RELEASE_TAG }}-${{ matrix.asset_suffix }}.${{ matrix.archive_kind }}
         run: |
           Compress-Archive -Path "dist/package/${{ matrix.binary_name }}" -DestinationPath "dist/${env:ARCHIVE_NAME}"
 
@@ -143,7 +152,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.asset_suffix }}
-          path: dist/wasmz-${{ github.ref_name }}-${{ matrix.asset_suffix }}.${{ matrix.archive_kind }}
+          path: dist/wasmz-${{ env.RELEASE_TAG }}-${{ matrix.asset_suffix }}.${{ matrix.archive_kind }}
           retention-days: 7
 
   publish:
@@ -161,5 +170,7 @@ jobs:
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
           files: dist/*
           generate_release_notes: true
