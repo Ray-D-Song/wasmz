@@ -1637,11 +1637,28 @@ pub const CatchHandlerEntry = struct {
     dst_ref: Slot,
 };
 
+/// Maps each Wasm local index to its base register slot and records v128 bases.
+pub const LocalSlotLayout = struct {
+    /// Base slot for each Wasm local (params then declared locals).
+    bases: []Slot,
+    /// Base slots of v128 locals (each occupies two consecutive slots).
+    v128_bases: []Slot,
+    /// Total register slots required for params + locals.
+    reserved_slots: Slot,
+
+    pub fn deinit(self: LocalSlotLayout, allocator: std.mem.Allocator) void {
+        allocator.free(self.bases);
+        allocator.free(self.v128_bases);
+    }
+};
+
 pub const CompiledFunction = struct {
     slots_len: Slot,
     /// Number of local variable slots (excluding parameters).
     /// Used to limit @memset in allocCalleeSlots to only the locals range.
     locals_count: u16,
+    /// Base slots of v128 locals; copied into EncodedFunction at encode time.
+    v128_local_slots: []Slot = &.{},
     /// True if any non-parameter local may be read before a definite write.
     /// Lowering computes this conservatively; when false, call entry can skip
     /// zero-initializing the Wasm locals range.
@@ -1681,6 +1698,8 @@ pub const PendingFunction = struct {
     reserved_slots: Slot,
     /// Number of local variable slots (excluding parameters).
     locals_count: u16,
+    /// Slot layout for params + declared locals (freed after compilation).
+    local_layout: LocalSlotLayout,
 };
 
 /// A slot in Module.functions[]: either a host-import placeholder, a not-yet-compiled
@@ -1708,7 +1727,10 @@ pub const FunctionSlot = union(enum) {
     pub fn deinit(self: *FunctionSlot, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .encoded => |*ef| ef.deinit(allocator),
-            .pending => |*pf| if (pf.body_owned) allocator.free(pf.body),
+            .pending => |*pf| {
+                if (pf.body_owned) allocator.free(pf.body);
+                pf.local_layout.deinit(allocator);
+            },
             .import => {},
         }
         self.* = undefined;
@@ -1756,12 +1778,15 @@ pub const EncodedFunction = struct {
     /// False when locals are SSA-style (all locals are written before first read).
     /// Skipping the zeroing eliminates a @memset per call.
     needs_zero: bool = true,
+    /// Base register slots for v128 locals (each uses two consecutive slots).
+    v128_local_slots: []Slot = &.{},
 
     pub fn deinit(self: *EncodedFunction, allocator: std.mem.Allocator) void {
         allocator.free(self.code);
         allocator.free(self.eh_dst_slots);
         allocator.free(self.br_table_targets);
         allocator.free(self.catch_handler_tables);
+        allocator.free(self.v128_local_slots);
         self.* = undefined;
     }
 };

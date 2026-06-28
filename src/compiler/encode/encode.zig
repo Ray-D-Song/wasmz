@@ -1616,5 +1616,6 @@ pub fn encode(
         .catch_handler_tables = catch_handler_tables,
         .is_leaf = cf.is_leaf,
         .needs_zero = cf.needs_zero,
+        .v128_local_slots = try allocator.dupe(Slot, cf.v128_local_slots),
     };
 }

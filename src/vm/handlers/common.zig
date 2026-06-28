@@ -88,6 +88,21 @@ pub inline fn trapReturn(frame: *DispatchState, code: core.TrapCode) void {
     frame.result = .{ .trap = trap };
 }
 
+pub inline fn readSimdFromSlots(slots: [*]RawVal, idx: ir.Slot) core.SimdVal {
+    return core.SimdVal.fromSlots(slots[idx], slots[idx + 1]);
+}
+
+pub inline fn writeSimdToSlots(slots: [*]RawVal, idx: ir.Slot, sv: core.SimdVal) void {
+    sv.toSlots(&slots[idx], &slots[idx + 1]);
+}
+
+pub inline fn localSlotIsV128(func: *const EncodedFunction, slot: ir.Slot) bool {
+    for (func.v128_local_slots) |base| {
+        if (base == slot) return true;
+    }
+    return false;
+}
+
 pub inline fn UnsignedOf(comptime T: type) type {
     return std.meta.Int(.unsigned, @bitSizeOf(T));
 }

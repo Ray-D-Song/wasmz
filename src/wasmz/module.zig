@@ -255,14 +255,14 @@ pub const FuncTranslatorAllocations = struct {
 
     /// Prepare the allocations for compiling a new function with the new EH path.
     /// Resets all lists retaining capacity; resets the scratch arena.
-    pub fn resetNew(self: *FuncTranslatorAllocations, reserved_slots: ir.Slot, locals_count: u16) void {
-        self.lower.reset(reserved_slots, locals_count);
+    pub fn resetNew(self: *FuncTranslatorAllocations, reserved_slots: ir.Slot, locals_count: u16, local_layout: ir.LocalSlotLayout) void {
+        self.lower.reset(reserved_slots, locals_count, local_layout);
         _ = self.scratch.reset(.retain_capacity);
     }
 
     /// Prepare the allocations for compiling a new function with the legacy EH path.
-    pub fn resetLegacy(self: *FuncTranslatorAllocations, reserved_slots: ir.Slot, locals_count: u16) void {
-        self.lower_legacy.reset(reserved_slots, locals_count);
+    pub fn resetLegacy(self: *FuncTranslatorAllocations, reserved_slots: ir.Slot, locals_count: u16, local_layout: ir.LocalSlotLayout) void {
+        self.lower_legacy.reset(reserved_slots, locals_count, local_layout);
         _ = self.scratch.reset(.retain_capacity);
     }
 };
@@ -685,6 +685,8 @@ const BuildState = struct {
         var params_slots: usize = 0;
         for (func_type.params()) |p| params_slots += if (p == .V128) 2 else 1;
         const locals_count: u16 = @intCast(reserved_slots - params_slots);
+        const local_layout = try Module.buildLocalSlotLayout(self.allocator, func_type, info.locals);
+        errdefer local_layout.deinit(self.allocator);
         // If body_owned is set (compileReader path), dupe the body into a
         // per-function heap allocation so it can be freed immediately after
         // compilation.  Otherwise (compile(bytes) path) borrow the slice
@@ -701,6 +703,7 @@ const BuildState = struct {
             .type_index = type_index,
             .reserved_slots = reserved_slots,
             .locals_count = locals_count,
+            .local_layout = local_layout,
         } });
     }
 
@@ -1187,6 +1190,7 @@ pub const Module = struct {
                 ta,
                 pending.reserved_slots,
                 pending.locals_count,
+                pending.local_layout,
                 func_type.results().len,
                 pending.body,
                 engine.config().*,
@@ -1198,6 +1202,7 @@ pub const Module = struct {
                 ta,
                 pending.reserved_slots,
                 pending.locals_count,
+                pending.local_layout,
                 func_type.results().len,
                 pending.body,
                 engine.config().*,
@@ -1210,7 +1215,10 @@ pub const Module = struct {
             compiled.call_args.deinit(self.allocator);
             compiled.br_table_targets.deinit(self.allocator);
             compiled.catch_handler_tables.deinit(self.allocator);
+            if (compiled.v128_local_slots.len > 0) self.allocator.free(compiled.v128_local_slots);
         }
+
+        compiled.v128_local_slots = try self.allocator.dupe(ir.Slot, pending.local_layout.v128_bases);
 
         var encode_timer = profiling.ScopedTimer.start();
         const encoded = try encode_mod.encode(
@@ -1223,6 +1231,7 @@ pub const Module = struct {
         // individually allocated for this function (compileReader path).
         // Borrowed bodies (compile(bytes) / mmap path) are left alone.
         if (pending.body_owned) self.allocator.free(pending.body);
+        pending.local_layout.deinit(self.allocator);
         var encoded_with_idx = encoded;
         encoded_with_idx.func_idx = func_index;
         slot.* = .{ .encoded = encoded_with_idx };
@@ -2075,17 +2084,58 @@ pub const Module = struct {
     ///
     /// V128 (SIMD) values occupy two consecutive slots; all other types occupy one slot.
     fn compute_reserved_slots(func_type: FuncType, function_info: payload_mod.FunctionInformation) ModuleCompileError!ir.Slot {
-        var params_slots: usize = 0;
+        const layout = try buildLocalSlotLayout(std.heap.page_allocator, func_type, function_info.locals);
+        defer layout.deinit(std.heap.page_allocator);
+        return layout.reserved_slots;
+    }
+
+    /// Build per-local base slot indices and the v128 base-slot list.
+    pub fn buildLocalSlotLayout(
+        allocator: Allocator,
+        func_type: FuncType,
+        declared_locals: []const payload_mod.Locals,
+    ) ModuleCompileError!ir.LocalSlotLayout {
+        var declared_count: usize = 0;
+        for (declared_locals) |group| declared_count += group.count;
+        const total_locals = func_type.params().len + declared_count;
+
+        const bases = try allocator.alloc(ir.Slot, total_locals);
+        errdefer allocator.free(bases);
+        var v128_list: std.ArrayListUnmanaged(ir.Slot) = .empty;
+        errdefer v128_list.deinit(allocator);
+
+        var slot: ir.Slot = 0;
+        var li: usize = 0;
         for (func_type.params()) |param| {
-            params_slots += if (param == .V128) 2 else 1;
+            bases[li] = slot;
+            if (param == .V128) {
+                try v128_list.append(allocator, slot);
+                slot += 2;
+            } else {
+                slot += 1;
+            }
+            li += 1;
         }
-        var locals_slots: usize = 0;
-        for (function_info.locals) |local_group| {
-            const is_v128 = (local_group.typ == .kind and local_group.typ.kind == .v128);
-            locals_slots += local_group.count * (if (is_v128) @as(usize, 2) else @as(usize, 1));
+        for (declared_locals) |group| {
+            const is_v128 = group.typ == .kind and group.typ.kind == .v128;
+            var i: u32 = 0;
+            while (i < group.count) : (i += 1) {
+                bases[li] = slot;
+                if (is_v128) {
+                    try v128_list.append(allocator, slot);
+                    slot += 2;
+                } else {
+                    slot += 1;
+                }
+                li += 1;
+            }
         }
-        const total = params_slots + locals_slots;
-        return std.math.cast(ir.Slot, total) orelse error.InvalidLocalCount;
+
+        return .{
+            .bases = bases,
+            .v128_bases = try v128_list.toOwnedSlice(allocator),
+            .reserved_slots = slot,
+        };
     }
 };
 
@@ -2339,6 +2389,7 @@ fn compileFunctionBodyNewInto(
     ta: *FuncTranslatorAllocations,
     reserved_slots: ir.Slot,
     locals_count: u16,
+    local_layout: ir.LocalSlotLayout,
     n_results: usize,
     body: []const u8,
     config: EngineConfig,
@@ -2350,7 +2401,7 @@ fn compileFunctionBodyNewInto(
     const start_total = timer.read();
 
     timer.lap(&profiling.compile_prof.ns_lower_init);
-    ta.resetNew(reserved_slots, locals_count);
+    ta.resetNew(reserved_slots, locals_count, local_layout);
     const lower = &ta.lower;
     lower.composite_types = resolver.composite_types;
 
@@ -2392,13 +2443,14 @@ fn compileFunctionBodyLegacyInto(
     ta: *FuncTranslatorAllocations,
     reserved_slots: ir.Slot,
     locals_count: u16,
+    local_layout: ir.LocalSlotLayout,
     n_results: usize,
     body: []const u8,
     config: EngineConfig,
     resolver: FuncTypeResolver,
     tags: []const TagDef,
 ) ModuleCompileError!CompiledFunction {
-    ta.resetLegacy(reserved_slots, locals_count);
+    ta.resetLegacy(reserved_slots, locals_count, local_layout);
     const lower_legacy = &ta.lower_legacy;
     lower_legacy.inner.composite_types = resolver.composite_types;
 
@@ -2758,8 +2810,10 @@ fn decodeAndLower(
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
             const local = p.read_var_uint32();
             const src = try lower.pop_slot();
-            const local_slot: ir.Slot = @intCast(local);
-            if (lower.try_fuse_local_set(local_slot, src) or
+            const local_slot = lower.local_to_slot(local);
+            if (lower.is_v128_wasm_local(local)) {
+                try lower.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
+            } else if (lower.try_fuse_local_set(local_slot, src) or
                 lower.try_fuse_const_to_local(local_slot, src) or
                 lower.try_fuse_global_get_to_local(local_slot, src) or
                 lower.try_fuse_load_to_local(local_slot, src) or
@@ -2774,8 +2828,10 @@ fn decodeAndLower(
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
             const local = p.read_var_uint32();
             const src = lower.stack.peek() orelse return error.StackUnderflow;
-            const local_slot: ir.Slot = @intCast(local);
-            if (!lower.try_fuse_local_tee(local_slot, src)) {
+            const local_slot = lower.local_to_slot(local);
+            if (lower.is_v128_wasm_local(local)) {
+                try lower.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
+            } else if (!lower.try_fuse_local_tee(local_slot, src)) {
                 try lower.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
             }
         },

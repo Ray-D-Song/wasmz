@@ -741,6 +741,10 @@ pub const Lower = struct {
     local_init: LocalInitSet = .{},
     /// Disabled once we see unsupported control flow or a read-before-write.
     local_init_analysis_active: bool = false,
+    /// Base slot for each Wasm local index (borrowed for the duration of lowering).
+    local_bases: []const Slot = &.{},
+    /// Base slots of v128 locals (borrowed for the duration of lowering).
+    v128_local_bases: []const Slot = &.{},
 
     pub fn init(allocator: Allocator) Lower {
         return .{ .allocator = allocator, .pending_call_dst = null };
@@ -919,7 +923,7 @@ pub const Lower = struct {
     /// After `reset`, the Lower is in the same logical state as a fresh
     /// `initWithReservedSlots(self.allocator, reserved_slots, locals_count)`
     /// but without freeing and reallocating any backing memory.
-    pub fn reset(self: *Lower, reserved_slots: Slot, locals_count: u16) void {
+    pub fn reset(self: *Lower, reserved_slots: Slot, locals_count: u16, layout: ir.LocalSlotLayout) void {
         // Clear value stack retaining capacity.
         self.stack.slots.clearRetainingCapacity();
 
@@ -931,6 +935,9 @@ pub const Lower = struct {
         self.compiled.slots_len = reserved_slots;
         self.compiled.locals_count = locals_count;
         self.compiled.needs_zero = locals_count > 0;
+        self.compiled.v128_local_slots = &.{};
+        self.local_bases = layout.bases;
+        self.v128_local_bases = layout.v128_bases;
 
         // Clear and deinit each ControlFrame's inner lists.
         // We free the per-frame inner lists (they are typically tiny) and clear
@@ -1067,8 +1074,17 @@ pub const Lower = struct {
         return slot;
     }
 
-    pub fn local_to_slot(_: *Lower, local: u32) Slot {
+    pub fn local_to_slot(self: *const Lower, local: u32) Slot {
+        if (local < self.local_bases.len) return self.local_bases[local];
         return @intCast(local);
+    }
+
+    pub fn is_v128_wasm_local(self: *const Lower, local: u32) bool {
+        const base = self.local_to_slot(local);
+        for (self.v128_local_bases) |s| {
+            if (s == base) return true;
+        }
+        return false;
     }
 
     // Control stack helpers
@@ -3530,9 +3546,10 @@ pub const Lower = struct {
             },
             .local_set => |local| {
                 const src = try self.pop_slot();
-                const local_slot: Slot = @intCast(local);
-                // Peephole D: i32_xxx + local_set → i32_xxx_to_local
-                if (self.try_fuse_local_set(local_slot, src) or
+                const local_slot = self.local_to_slot(local);
+                if (self.is_v128_wasm_local(local)) {
+                    try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
+                } else if (self.try_fuse_local_set(local_slot, src) or
                     self.try_fuse_const_to_local(local_slot, src) or
                     self.try_fuse_global_get_to_local(local_slot, src) or
                     self.try_fuse_load_to_local(local_slot, src) or
@@ -3548,8 +3565,10 @@ pub const Lower = struct {
             },
             .local_tee => |local| {
                 const src = self.stack.peek() orelse return error.StackUnderflow;
-                const local_slot: Slot = @intCast(local);
-                if (!self.try_fuse_local_tee(local_slot, src)) {
+                const local_slot = self.local_to_slot(local);
+                if (self.is_v128_wasm_local(local)) {
+                    try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
+                } else if (!self.try_fuse_local_tee(local_slot, src)) {
                     try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
                 }
                 self.recordLocalWrite(local);
@@ -5294,9 +5313,10 @@ pub const Lower = struct {
             .local_set => {
                 const local = info.local_index orelse return error.UnsupportedOperator;
                 const src = try self.pop_slot();
-                const local_slot: Slot = @intCast(local);
-                // Peephole D: i32_xxx + local_set → i32_xxx_to_local
-                if (self.try_fuse_local_set(local_slot, src) or
+                const local_slot = self.local_to_slot(local);
+                if (self.is_v128_wasm_local(local)) {
+                    try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
+                } else if (self.try_fuse_local_set(local_slot, src) or
                     self.try_fuse_const_to_local(local_slot, src) or
                     self.try_fuse_global_get_to_local(local_slot, src) or
                     self.try_fuse_load_to_local(local_slot, src) or
@@ -5312,8 +5332,10 @@ pub const Lower = struct {
             .local_tee => {
                 const local = info.local_index orelse return error.UnsupportedOperator;
                 const src = self.stack.peek() orelse return error.StackUnderflow;
-                const local_slot: Slot = @intCast(local);
-                if (!self.try_fuse_local_tee(local_slot, src)) {
+                const local_slot = self.local_to_slot(local);
+                if (self.is_v128_wasm_local(local)) {
+                    try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
+                } else if (!self.try_fuse_local_tee(local_slot, src)) {
                     try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
                 }
                 self.recordLocalWrite(local);
