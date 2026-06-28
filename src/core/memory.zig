@@ -43,10 +43,15 @@ const arch = core.platform;
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
-/// Maximum virtual address space reserved for an owned memory when the module
-/// declares no maximum page count.  4 GiB is the hard limit imposed by the
-/// 32-bit address space of WebAssembly linear memory.
-const MAX_OWNED_CAPACITY: usize = arch.max_linear_memory_bytes;
+/// Default reservation for wasm32 memories without an explicit maximum.
+const MAX_WASM32_CAPACITY: usize = arch.max_wasm32_linear_memory_bytes;
+/// Default reservation for memory64 memories without an explicit maximum.
+const MAX_MEMORY64_CAPACITY: usize = arch.max_linear_memory_bytes;
+
+inline fn pagesToBytes(pages: u64) ?usize {
+    const bytes = std.math.mul(u64, pages, WASM_PAGE_SIZE) catch return null;
+    return std.math.cast(usize, bytes);
+}
 
 /// True when the platform supports mmap/mprotect for the virtual-reserve strategy.
 const use_mmap = builtin.os.tag == .linux or
@@ -199,16 +204,17 @@ const SharedMemoryInner = struct {
     }
 
     /// Return the bucket index for an effective address (uses lower address bits).
-    inline fn bucketIndex(ea: u32) usize {
+    inline fn bucketIndex(ea: usize) usize {
         // Shift right by 2 (i.e., index by word, not byte) before masking to
         // reduce collisions for adjacent 32-bit accesses.
-        return (@as(usize, ea) >> 2) & (FUTEX_BUCKETS - 1);
+        return (ea >> 2) & (FUTEX_BUCKETS - 1);
     }
 
     /// memory.atomic.notify: wake up to `count` threads waiting on `ea`.
     /// Returns the number of threads actually woken.
-    pub fn notify(self: *SharedMemoryInner, ea: u32, count: u32) u32 {
+    pub fn notify(self: *SharedMemoryInner, ea: usize, count: u32) u32 {
         if (builtin.single_threaded) return 0;
+        if (ea >= self.bytes.len) return 0;
         const idx = bucketIndex(ea);
         const bucket = &self.futex[idx];
         bucket.acquire();
@@ -223,12 +229,13 @@ const SharedMemoryInner = struct {
     /// `timeout_ns`: negative means no timeout (wait forever).
     pub fn wait32(
         self: *SharedMemoryInner,
-        ea: u32,
+        ea: usize,
         expected: u32,
         timeout_ns: i64,
     ) WaitResult {
         if (builtin.single_threaded) return .not_equal;
         if (timeout_ns == 0) return .timed_out;
+        if (ea + @sizeOf(u32) > self.bytes.len) return .not_equal;
 
         const idx = bucketIndex(ea);
         const bucket = &self.futex[idx];
@@ -273,12 +280,14 @@ const SharedMemoryInner = struct {
     /// memory.atomic.wait64: same as wait32 but operates on a u64 value.
     pub fn wait64(
         self: *SharedMemoryInner,
-        ea: u32,
+        ea: usize,
         expected: u64,
         timeout_ns: i64,
     ) WaitResult {
         if (builtin.single_threaded) return .not_equal;
         if (timeout_ns == 0) return .timed_out;
+        const AtomicUint = arch.AtomicUint;
+        if (ea + @sizeOf(AtomicUint) > self.bytes.len) return .not_equal;
 
         const idx = bucketIndex(ea);
         const bucket = &self.futex[idx];
@@ -286,7 +295,6 @@ const SharedMemoryInner = struct {
         bucket.acquire();
         defer bucket.release();
 
-        const AtomicUint = arch.AtomicUint;
         const cur = @atomicLoad(AtomicUint, @as(*AtomicUint, @ptrCast(@alignCast(self.bytes.ptr + ea))), .seq_cst);
         if (cur != expected) return .not_equal;
 
@@ -331,7 +339,9 @@ pub const SharedMemory = struct {
 
     /// Create a new shared memory region with `min_pages` initially committed and `max_pages`
     /// reserved.  The max must be provided for shared memories (Wasm spec requirement).
-    pub fn init(allocator: Allocator, io: Io, min_pages: u32, max_pages: u32) Allocator.Error!SharedMemory {
+    pub fn init(allocator: Allocator, io: Io, min_pages: u64, max_pages: u64) Allocator.Error!SharedMemory {
+        const min_bytes = pagesToBytes(min_pages) orelse return error.OutOfMemory;
+        const max_bytes = pagesToBytes(max_pages) orelse return error.OutOfMemory;
         const refcount = try allocator.create(std.atomic.Value(usize));
         errdefer allocator.destroy(refcount);
         refcount.* = std.atomic.Value(usize).init(1);
@@ -339,8 +349,8 @@ pub const SharedMemory = struct {
         const inner = try SharedMemoryInner.init(
             allocator,
             io,
-            @as(usize, min_pages) * WASM_PAGE_SIZE,
-            @as(usize, max_pages) * WASM_PAGE_SIZE,
+            min_bytes,
+            max_bytes,
         );
         return .{ .inner = inner, .refcount = refcount };
     }
@@ -375,48 +385,41 @@ pub const SharedMemory = struct {
     }
 
     /// Forward memory.atomic.notify to the inner futex table.
-    pub fn notify(self: *SharedMemory, ea: u32, count: u32) u32 {
+    pub fn notify(self: *SharedMemory, ea: usize, count: u32) u32 {
         return self.inner.notify(ea, count);
     }
 
     /// Forward memory.atomic.wait32 to the inner futex table.
-    pub fn wait32(self: *SharedMemory, ea: u32, expected: u32, timeout_ns: i64) WaitResult {
+    pub fn wait32(self: *SharedMemory, ea: usize, expected: u32, timeout_ns: i64) WaitResult {
         return self.inner.wait32(ea, expected, timeout_ns);
     }
 
     /// Forward memory.atomic.wait64 to the inner futex table.
-    pub fn wait64(self: *SharedMemory, ea: u32, expected: u64, timeout_ns: i64) WaitResult {
+    pub fn wait64(self: *SharedMemory, ea: usize, expected: u64, timeout_ns: i64) WaitResult {
         return self.inner.wait64(ea, expected, timeout_ns);
     }
 
     /// memory.grow: atomically grow the shared memory by `delta` pages.
     ///
-    /// Because `SharedMemoryInner` pre-reserves the full `max_pages` region at
-    /// init time, grow only needs to advance the `current_size` counter.
-    ///
-    /// Returns the old page count on success, `maxInt(u32)` on failure.
-    pub fn grow(self: *SharedMemory, delta: u32) u32 {
-        const FAIL = std.math.maxInt(u32);
+    /// Returns the old page count on success, `maxInt(u64)` on failure.
+    pub fn grow(self: *SharedMemory, delta: u64) u64 {
+        const FAIL = std.math.maxInt(u64);
         if (delta == 0) {
             const old_bytes = self.inner.current_size.load(.acquire);
-            return @intCast(old_bytes / WASM_PAGE_SIZE);
+            return old_bytes / WASM_PAGE_SIZE;
         }
         const max_bytes = self.inner.bytes.len;
-        const max_pages: u32 = @intCast(max_bytes / WASM_PAGE_SIZE);
+        const max_pages = max_bytes / WASM_PAGE_SIZE;
 
-        // CAS loop: atomically bump current_size if room remains.
         while (true) {
             const old_bytes = self.inner.current_size.load(.acquire);
-            const old_pages: u32 = @intCast(old_bytes / WASM_PAGE_SIZE);
-            const new_pages = std.math.add(u32, old_pages, delta) catch return FAIL;
+            const old_pages = old_bytes / WASM_PAGE_SIZE;
+            const new_pages = std.math.add(u64, old_pages, delta) catch return FAIL;
             if (new_pages > max_pages) return FAIL;
-            const new_bytes = @as(usize, new_pages) * WASM_PAGE_SIZE;
-            // Try to atomically replace old_bytes with new_bytes.
+            const new_bytes = new_pages * WASM_PAGE_SIZE;
             if (self.inner.current_size.cmpxchgWeak(old_bytes, new_bytes, .acq_rel, .acquire) == null) {
-                // Success: memory zero-fill is already done at init time (bytes are pre-zeroed).
                 return old_pages;
             }
-            // Spurious failure — retry.
         }
     }
 };
@@ -452,7 +455,12 @@ else
     };
 
 /// The backing store tag: either exclusively-owned, shared, or borrowed (no-alloc view).
-pub const MemoryKind = enum { owned, shared, borrowed };
+pub const MemoryKind = enum { owned, owned_heap, shared, borrowed };
+
+const OwnedHeapMemory = struct {
+    allocator: Allocator,
+    bytes: []u8,
+};
 
 /// WebAssembly linear memory.
 ///
@@ -461,6 +469,7 @@ pub const MemoryKind = enum { owned, shared, borrowed };
 pub const Memory = struct {
     kind: union(MemoryKind) {
         owned: OwnedMemory,
+        owned_heap: OwnedHeapMemory,
         shared: SharedMemory,
         /// A non-owning view into an externally-managed byte slice.
         /// Used in tests that hand-construct HostInstance / ExecEnv without an allocator.
@@ -477,18 +486,19 @@ pub const Memory = struct {
     /// `grow` calls commit more pages without moving the base address (no copy).
     ///
     /// On non-POSIX: falls back to a plain heap allocation of `min_pages`; grow uses realloc.
-    pub fn initOwned(allocator: Allocator, min_pages: u32) Allocator.Error!Memory {
-        return initOwnedWithMax(allocator, min_pages, null);
+    pub fn initOwned(allocator: Allocator, min_pages: u64) Allocator.Error!Memory {
+        return initOwnedWithMax(allocator, min_pages, null, false);
     }
 
     /// Like `initOwned` but accepts an optional maximum page count for tighter reservation.
-    pub fn initOwnedWithMax(allocator: Allocator, min_pages: u32, max_pages: ?u32) Allocator.Error!Memory {
-        const committed = @as(usize, min_pages) * WASM_PAGE_SIZE;
-        if (use_mmap) {
+    pub fn initOwnedWithMax(allocator: Allocator, min_pages: u64, max_pages: ?u64, memory64: bool) Allocator.Error!Memory {
+        const committed = pagesToBytes(min_pages) orelse return error.OutOfMemory;
+        const use_heap_owned = memory64 and max_pages == null;
+        if (use_mmap and !use_heap_owned) {
             const capacity = if (max_pages) |m|
-                @as(usize, m) * WASM_PAGE_SIZE
+                pagesToBytes(m) orelse return error.OutOfMemory
             else
-                MAX_OWNED_CAPACITY;
+                MAX_WASM32_CAPACITY;
             const base = try ownedMmapInit(committed, capacity);
             return .{ .kind = .{ .owned = .{
                 .base = base,
@@ -497,7 +507,7 @@ pub const Memory = struct {
         } else {
             const buf = try allocator.alloc(u8, committed);
             @memset(buf, 0);
-            return .{ .kind = .{ .owned = .{
+            return .{ .kind = .{ .owned_heap = .{
                 .allocator = allocator,
                 .bytes = buf,
             } } };
@@ -514,7 +524,7 @@ pub const Memory = struct {
                 .committed = 0,
             } } };
         } else {
-            return .{ .kind = .{ .owned = .{
+            return .{ .kind = .{ .owned_heap = .{
                 .allocator = std.heap.page_allocator,
                 .bytes = &[0]u8{},
             } } };
@@ -539,30 +549,24 @@ pub const Memory = struct {
     pub fn deinit(self: *Memory) void {
         switch (self.kind) {
             .owned => |*o| {
-                if (use_mmap) {
-                    if (o.base.len > 0) ownedMmapDeinit(o.base);
-                } else {
-                    if (o.bytes.len > 0) o.allocator.free(o.bytes);
-                }
+                if (o.base.len > 0) ownedMmapDeinit(o.base);
+            },
+            .owned_heap => |*o| {
+                if (o.bytes.len > 0) o.allocator.free(o.bytes);
             },
             .shared => |*s| {
                 var shared = s.*;
                 shared.deinit();
             },
-            .borrowed => {}, // no-op: caller owns the storage
+            .borrowed => {},
         }
         self.* = undefined;
     }
 
-    // accessors
-
-    /// Return the currently-live byte slice.
-    ///
-    /// For shared memories, this performs an acquire load of the current size so the
-    /// caller always sees the most recently committed pages.
     pub fn bytes(self: *const Memory) []u8 {
         return switch (self.kind) {
             .owned => |*o| o.liveSlice(),
+            .owned_heap => |*o| o.bytes,
             .shared => |*s| s.bytes(),
             .borrowed => |b| b,
         };
@@ -579,8 +583,8 @@ pub const Memory = struct {
     }
 
     /// Current size in pages (each page is 64 KiB).
-    pub fn pageCount(self: *const Memory) u32 {
-        return @intCast(self.byteLen() / WASM_PAGE_SIZE);
+    pub fn pageCount(self: *const Memory) u64 {
+        return @divTrunc(@as(u64, self.byteLen()), WASM_PAGE_SIZE);
     }
 
     // Wait / Notify public API
@@ -593,66 +597,61 @@ pub const Memory = struct {
 
     /// memory.atomic.notify: wake up to `count` threads waiting on `ea`.
     /// Returns the number of threads actually woken (0 for non-shared memories).
-    pub fn notify(self: *Memory, ea: u32, count: u32) u32 {
+    pub fn notify(self: *Memory, ea: usize, count: u32) u32 {
         return switch (self.kind) {
             .shared => |*s| s.notify(ea, count),
-            .owned, .borrowed => 0,
+            .owned, .owned_heap, .borrowed => 0,
         };
     }
 
-    /// memory.atomic.wait32: block until mem[ea] != expected or timeout expires.
-    /// For non-shared memories returns `.not_equal` immediately (per Wasm spec).
-    pub fn wait32(self: *Memory, ea: u32, expected: u32, timeout_ns: i64) WaitResult {
+    pub fn wait32(self: *Memory, ea: usize, expected: u32, timeout_ns: i64) WaitResult {
         return switch (self.kind) {
             .shared => |*s| s.wait32(ea, expected, timeout_ns),
-            .owned, .borrowed => .not_equal,
+            .owned, .owned_heap, .borrowed => .not_equal,
         };
     }
 
-    /// memory.atomic.wait64: same as wait32 but for a u64 value.
-    pub fn wait64(self: *Memory, ea: u32, expected: u64, timeout_ns: i64) WaitResult {
+    pub fn wait64(self: *Memory, ea: usize, expected: u64, timeout_ns: i64) WaitResult {
         return switch (self.kind) {
             .shared => |*s| s.wait64(ea, expected, timeout_ns),
-            .owned, .borrowed => .not_equal,
+            .owned, .owned_heap, .borrowed => .not_equal,
         };
     }
 
-    // memory.grow
-    //
-    // Attempts to grow the memory by `delta` pages.
-    // Returns the previous page count on success, or std.math.maxInt(u32) on
-    // failure (the VM interprets maxInt(u32) as the Wasm -1 result sentinel).
-
-    /// Attempt to grow by `delta` pages.
-    /// Returns the old page count on success, `maxInt(u32)` on failure.
-    pub fn grow(self: *Memory, delta: u32) u32 {
-        const FAIL = std.math.maxInt(u32);
+    pub fn grow(self: *Memory, delta: u64) u64 {
+        const FAIL = std.math.maxInt(u64);
         return switch (self.kind) {
             .owned => |*o| blk: {
-                if (use_mmap) {
-                    const old_committed = o.committed;
-                    const old_pages: u32 = @intCast(old_committed / WASM_PAGE_SIZE);
-                    if (delta == 0) break :blk old_pages;
-                    const new_pages = std.math.add(u32, old_pages, delta) catch break :blk FAIL;
-                    const new_committed = @as(usize, new_pages) * WASM_PAGE_SIZE;
-                    if (new_committed > o.base.len) break :blk FAIL; // exceeds reservation
-                    if (!ownedMmapGrow(o.base, old_committed, new_committed)) break :blk FAIL;
-                    o.committed = new_committed;
-                    break :blk old_pages;
-                } else {
-                    const old_bytes = o.bytes.len;
-                    const old_pages: u32 = @intCast(old_bytes / WASM_PAGE_SIZE);
-                    if (delta == 0) break :blk old_pages;
-                    const new_pages = std.math.add(u32, old_pages, delta) catch break :blk FAIL;
-                    const new_bytes = @as(usize, new_pages) * WASM_PAGE_SIZE;
-                    const new_buf = o.allocator.realloc(o.bytes, new_bytes) catch break :blk FAIL;
-                    @memset(new_buf[old_bytes..], 0);
-                    o.bytes = new_buf;
-                    break :blk old_pages;
-                }
+                const old_committed = o.committed;
+                const old_pages = old_committed / WASM_PAGE_SIZE;
+                if (delta == 0) break :blk old_pages;
+                const new_pages = std.math.add(u64, old_pages, delta) catch break :blk FAIL;
+                const new_committed = pagesToBytes(new_pages) orelse break :blk FAIL;
+                if (new_committed > o.base.len) break :blk FAIL;
+                if (!ownedMmapGrow(o.base, old_committed, new_committed)) break :blk FAIL;
+                o.committed = new_committed;
+                break :blk old_pages;
+            },
+            .owned_heap => |*o| blk: {
+                const old_bytes = o.bytes.len;
+                const old_pages = @divTrunc(@as(u64, old_bytes), WASM_PAGE_SIZE);
+                if (delta == 0) break :blk old_pages;
+                const new_pages = std.math.add(u64, old_pages, delta) catch break :blk FAIL;
+                const new_bytes = pagesToBytes(new_pages) orelse break :blk FAIL;
+                const new_buf = o.allocator.realloc(o.bytes, new_bytes) catch break :blk FAIL;
+                @memset(new_buf[old_bytes..], 0);
+                o.bytes = new_buf;
+                break :blk old_pages;
             },
             .shared => |*s| s.grow(delta),
-            .borrowed => FAIL, // borrowed memories cannot grow
+            .borrowed => FAIL,
+        };
+    }
+
+    pub fn clone(self: Memory) Memory {
+        return switch (self.kind) {
+            .shared => |s| .{ .kind = .{ .shared = s.clone() } },
+            .owned, .owned_heap, .borrowed => self,
         };
     }
 };
