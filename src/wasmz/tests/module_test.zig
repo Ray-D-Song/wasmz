@@ -84,6 +84,7 @@ test "module.compile builds exported function bodies" {
         .struct_layouts = module.struct_layouts,
         .array_layouts = module.array_layouts,
         .type_ancestors = module.type_ancestors,
+        .type_canonical = module.type_canonical,
         .memory_budget = null,
     };
     const result = (try vm.execute(

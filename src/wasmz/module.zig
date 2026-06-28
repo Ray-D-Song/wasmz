@@ -28,6 +28,7 @@ const simd = core.simd;
 const typed_mod = core.typed;
 const value_type_mod = core.value_type;
 const gc_mod = @import("../vm/gc/root.zig");
+const type_equiv_mod = @import("type_equiv.zig");
 const profiling = @import("../utils/profiling.zig");
 
 const Allocator = std.mem.Allocator;
@@ -279,6 +280,7 @@ const BuildState = struct {
     struct_layouts_list: std.ArrayListUnmanaged(?StructLayout) = .empty,
     array_layouts_list: std.ArrayListUnmanaged(?ArrayLayout) = .empty,
     direct_parents_list: std.ArrayListUnmanaged(?u32) = .empty,
+    type_final_list: std.ArrayListUnmanaged(bool) = .empty,
     function_type_indices: std.ArrayListUnmanaged(u32) = .empty,
     imported_funcs_list: std.ArrayListUnmanaged(ImportedFuncDef) = .empty,
     imported_globals_list: std.ArrayListUnmanaged(ImportedGlobalDef) = .empty,
@@ -328,6 +330,7 @@ const BuildState = struct {
         self.struct_layouts_list.deinit(self.allocator);
         self.array_layouts_list.deinit(self.allocator);
         self.direct_parents_list.deinit(self.allocator);
+        self.type_final_list.deinit(self.allocator);
         self.function_type_indices.deinit(self.allocator);
 
         for (self.imported_funcs_list.items) |def| {
@@ -406,6 +409,7 @@ const BuildState = struct {
                         try self.struct_layouts_list.append(self.allocator, null);
                         try self.array_layouts_list.append(self.allocator, null);
                         try self.direct_parents_list.append(self.allocator, null);
+                        try self.type_final_list.append(self.allocator, false);
                     },
                     .struct_type, .array_type => {
                         self.has_gc_types = true;
@@ -422,6 +426,7 @@ const BuildState = struct {
                             break :blk null;
                         };
                         try self.direct_parents_list.append(self.allocator, direct_parent);
+                        try self.type_final_list.append(self.allocator, entry.final orelse false);
 
                         switch (composite_type) {
                             .struct_type => |s| {
@@ -824,6 +829,16 @@ const BuildState = struct {
             }
         }
 
+        const type_final = try self.type_final_list.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(type_final);
+        const type_canonical = try type_equiv_mod.computeTypeCanonical(
+            self.allocator,
+            composite_types,
+            self.direct_parents_list.items,
+            type_final,
+        );
+        errdefer self.allocator.free(type_canonical);
+
         const exports = self.exports;
         self.exports = .empty;
 
@@ -872,6 +887,8 @@ const BuildState = struct {
             .struct_layouts = struct_layouts,
             .array_layouts = array_layouts,
             .type_ancestors = type_ancestors_outer,
+            .type_final = type_final,
+            .type_canonical = type_canonical,
             .tags = tags,
             .func_names = func_names,
             .config = .{ .eh_mode = self.detected_eh_mode },
@@ -953,6 +970,10 @@ pub const Module = struct {
     /// Empty slice for types with no declared supertypes.
     /// Indexed by composite type index (same index space as composite_types).
     type_ancestors: []const []const u32,
+    /// Whether each composite type was declared final in the type section.
+    type_final: []const bool,
+    /// Structural equivalence class representative for each composite type index.
+    type_canonical: []const u32,
     /// Exception tags defined in the Tag Section (and imported tag entries).
     /// tags[i].type_index is the FuncType index for tag i.
     tags: []TagDef,
@@ -1855,6 +1876,9 @@ pub const Module = struct {
             self.allocator.free(anc_slice);
         }
         self.allocator.free(self.type_ancestors);
+
+        self.allocator.free(self.type_final);
+        self.allocator.free(self.type_canonical);
 
         self.allocator.free(self.tags);
 

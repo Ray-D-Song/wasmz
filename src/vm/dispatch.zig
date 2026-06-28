@@ -145,6 +145,7 @@ pub const ExecEnv = struct {
     struct_layouts: []const ?StructLayout,
     array_layouts: []const ?ArrayLayout,
     type_ancestors: []const []const u32,
+    type_canonical: []const u32,
     memory_budget: ?*MemoryBudget,
     /// When true, memory.grow events log RSS snapshots to stderr.
     /// Controlled by the --mem-trace CLI flag.

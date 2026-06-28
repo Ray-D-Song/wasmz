@@ -296,6 +296,7 @@ fn executeWithEmptyRuntime(
         .struct_layouts = &.{},
         .array_layouts = &.{},
         .type_ancestors = &.{},
+        .type_canonical = &.{},
         .memory_budget = null,
     };
 
@@ -754,6 +755,7 @@ test "return_call: tail call replaces current frame" {
         .struct_layouts = &.{},
         .array_layouts = &.{},
         .type_ancestors = &.{},
+        .type_canonical = &.{},
         .memory_budget = null,
     };
 

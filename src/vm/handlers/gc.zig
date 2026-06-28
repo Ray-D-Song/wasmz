@@ -12,6 +12,7 @@ const dispatch = @import("../dispatch.zig");
 const core = @import("core");
 const gc_mod = @import("../gc/root.zig");
 const store_mod = @import("../../wasmz/store.zig");
+const type_equiv_mod = @import("../../wasmz/type_equiv.zig");
 
 const Allocator = std.mem.Allocator;
 const RawVal = dispatch.RawVal;
@@ -941,14 +942,12 @@ pub fn handle_ref_test(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
                 return;
             };
             const obj_idx = obj_header.type_index;
-            const is_match = obj_idx == target_type_idx or blk: {
-                if (obj_idx < env.type_ancestors.len) {
-                    for (env.type_ancestors[obj_idx]) |anc| {
-                        if (anc == target_type_idx) break :blk true;
-                    }
-                }
-                break :blk false;
-            };
+            const is_match = type_equiv_mod.concreteTypeMatches(
+                obj_idx,
+                target_type_idx,
+                env.type_canonical,
+                env.type_ancestors,
+            );
             slots[ops.dst] = RawVal.from(@as(i32, if (is_match) 1 else 0));
         }
     }
@@ -1003,14 +1002,12 @@ pub fn handle_ref_cast(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
                 return;
             };
             const obj_idx = obj_header.type_index;
-            const is_match = obj_idx == target_type_idx or blk: {
-                if (obj_idx < env.type_ancestors.len) {
-                    for (env.type_ancestors[obj_idx]) |anc| {
-                        if (anc == target_type_idx) break :blk true;
-                    }
-                }
-                break :blk false;
-            };
+            const is_match = type_equiv_mod.concreteTypeMatches(
+                obj_idx,
+                target_type_idx,
+                env.type_canonical,
+                env.type_ancestors,
+            );
             if (!is_match) {
                 trapReturn(frame, .CastFailure);
                 return;
@@ -1089,14 +1086,12 @@ pub fn handle_br_on_cast(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
             const target_heap = @as(core.HeapType, @enumFromInt(ops.to_type_idx));
             if (target_heap.concreteType()) |target_type_idx| {
                 const obj_idx = obj_header.type_index;
-                should_branch = obj_idx == target_type_idx or blk: {
-                    if (obj_idx < env.type_ancestors.len) {
-                        for (env.type_ancestors[obj_idx]) |anc| {
-                            if (anc == target_type_idx) break :blk true;
-                        }
-                    }
-                    break :blk false;
-                };
+                should_branch = type_equiv_mod.concreteTypeMatches(
+                    obj_idx,
+                    target_type_idx,
+                    env.type_canonical,
+                    env.type_ancestors,
+                );
             }
         }
     }
@@ -1137,14 +1132,12 @@ pub fn handle_br_on_cast_fail(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
             const target_heap = @as(core.HeapType, @enumFromInt(ops.to_type_idx));
             if (target_heap.concreteType()) |target_type_idx| {
                 const obj_idx = obj_header.type_index;
-                const is_match = obj_idx == target_type_idx or blk: {
-                    if (obj_idx < env.type_ancestors.len) {
-                        for (env.type_ancestors[obj_idx]) |anc| {
-                            if (anc == target_type_idx) break :blk true;
-                        }
-                    }
-                    break :blk false;
-                };
+                const is_match = type_equiv_mod.concreteTypeMatches(
+                    obj_idx,
+                    target_type_idx,
+                    env.type_canonical,
+                    env.type_ancestors,
+                );
                 should_branch = !is_match;
             } else {
                 should_branch = true;

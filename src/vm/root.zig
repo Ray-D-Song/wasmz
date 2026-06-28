@@ -68,6 +68,8 @@ pub const ExecEnv = struct {
     /// type_ancestors[i] lists all strict ancestor composite type indices of type i.
     /// Empty for types with no declared supertypes.
     type_ancestors: []const []const u32,
+    /// Structural equivalence class representative per composite type index.
+    type_canonical: []const u32,
     /// Optional pointer to the Store's MemoryBudget for linear-memory limit enforcement.
     /// null when the Store has no limit configured.
     memory_budget: ?*MemoryBudget,
@@ -148,6 +150,7 @@ pub const VM = struct {
             .struct_layouts = env.struct_layouts,
             .array_layouts = env.array_layouts,
             .type_ancestors = env.type_ancestors,
+            .type_canonical = env.type_canonical,
             .memory_budget = env.memory_budget,
             .mem_trace = env.mem_trace,
             .memory64 = env.memory64,

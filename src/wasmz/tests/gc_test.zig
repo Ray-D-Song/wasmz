@@ -26,6 +26,10 @@ fn releaseArc(arc: ArcModule) void {
 /// Issue #7: br_on_cast must forward the cast operand to the taken branch label
 const br_on_cast_forward_wasm = @embedFile("fixtures/br_on_cast_forward.wasm");
 
+/// Issue #6: structurally identical separately-declared struct types
+const ref_test_struct_equiv_wasm = @embedFile("fixtures/ref_test_struct_equiv.wasm");
+const ref_test_struct_final_mismatch_wasm = @embedFile("fixtures/ref_test_struct_final_mismatch.wasm");
+
 fn callExported(arc: ArcModule, store: *Store, name: []const u8) !RawVal {
     var instance = try Instance.init(store, arc.retain(), Linker.empty);
     defer instance.deinit();
@@ -59,4 +63,35 @@ test "GC issue #7: br_on_cast forwarded ref is readable (struct.get)" {
 
     const result = try callExported(arc, &store, "get_field");
     try testing.expectEqual(@as(i32, 42), result.readAs(i32));
+}
+
+test "GC issue #6: ref.test matches structurally equivalent separate struct type" {
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
+    defer store.deinit();
+
+    const arc = try module_mod.Module.compileArc(engine, ref_test_struct_equiv_wasm);
+    defer releaseArc(arc);
+
+    const a_on_b = try callExported(arc, &store, "test_a_on_b");
+    try testing.expectEqual(@as(i32, 1), a_on_b.readAs(i32));
+
+    const b_on_a = try callExported(arc, &store, "test_b_on_a");
+    try testing.expectEqual(@as(i32, 1), b_on_a.readAs(i32));
+}
+
+test "GC issue #6: ref.test rejects finality mismatch between struct types" {
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
+    defer store.deinit();
+
+    const arc = try module_mod.Module.compileArc(engine, ref_test_struct_final_mismatch_wasm);
+    defer releaseArc(arc);
+
+    const result = try callExported(arc, &store, "f");
+    try testing.expectEqual(@as(i32, 0), result.readAs(i32));
 }

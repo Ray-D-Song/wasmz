@@ -532,6 +532,7 @@ pub const Instance = struct {
             .struct_layouts = m.struct_layouts,
             .array_layouts = m.array_layouts,
             .type_ancestors = m.type_ancestors,
+            .type_canonical = m.type_canonical,
             .memory_budget = budget_ptr,
             .mem_trace = self.mem_trace,
             .memory64 = self.memory64,
