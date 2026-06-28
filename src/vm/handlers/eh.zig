@@ -129,7 +129,8 @@ fn dispatchException(
                     const dst_slots = tgt_func.eh_dst_slots[dst_start .. dst_start + n];
                     var i: u32 = 0;
                     while (i < n) : (i += 1) {
-                        tgt_slots[dst_slots[i]] = store.gc_heap.?.exceptionArg(exn_ref, i);
+                        const val = store.gc_heap.?.exceptionArg(exn_ref, i);
+                        tgt_slots[dst_slots[i]] = val;
                     }
                 },
                 .catch_tag_ref => {

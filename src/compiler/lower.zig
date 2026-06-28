@@ -5901,7 +5901,9 @@ pub const Lower = struct {
         try self.unwind_stack_to_frame(&frame);
         try self.finalizeFrameLocalInit(&frame, was_unreachable);
 
-        for (frame.result_slots.items()) |slot| self.recycle_slot(slot);
+        // Result slots were just pushed onto the value stack; recycling them here
+        // would let alloc_slot() reuse the same index and clobber live values at
+        // runtime (e.g. EH catch writing a GC ref into a block result slot).
         for (frame.param_slots.items()) |slot| self.recycle_slot(slot);
     }
 

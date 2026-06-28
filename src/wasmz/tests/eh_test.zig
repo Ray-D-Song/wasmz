@@ -47,6 +47,19 @@ const eh_legacy_catch_all_wasm = @embedFile("fixtures/eh_legacy_catch_all.wasm")
 /// Legacy proposal: inner catch_all rethrows (rethrow 0) → outer catch $t returns 42
 const eh_legacy_rethrow_wasm = @embedFile("fixtures/eh_legacy_rethrow.wasm");
 
+/// Issue #9: array ref forwarded through exception tag parameter
+const eh_array_throw_wasm = @embedFile("fixtures/eh_array_throw.wasm");
+
+/// Issue #9: array ref used for digit decoding after catch
+const eh_array_digits_wasm = @embedFile("fixtures/eh_array_digits.wasm");
+
+fn callExported(arc: ArcModule, store: *Store, name: []const u8) !RawVal {
+    var instance = try Instance.init(store, arc.retain(), Linker.empty);
+    defer instance.deinit();
+    const exec_r = try instance.call(name, &.{});
+    return exec_r.ok orelse return error.MissingReturnValue;
+}
+
 // New proposal tests
 
 test "EH new: try_table catches thrown exception and returns payload" {
@@ -90,6 +103,34 @@ test "EH new: throw_ref rethrows exception causing UnhandledException trap" {
             try testing.expectEqual(TrapCode.UnhandledException, code);
         },
     }
+}
+
+test "EH issue #9: array ref survives catch tag parameter" {
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
+    defer store.deinit();
+
+    const arc = try Module.compileArc(engine, eh_array_throw_wasm);
+    defer releaseArc(arc);
+
+    const result = try callExported(arc, &store, "f");
+    try testing.expectEqual(@as(i32, 15), result.readAs(i32));
+}
+
+test "EH issue #9: caught array ref reads all elements correctly" {
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
+    defer store.deinit();
+
+    const arc = try Module.compileArc(engine, eh_array_digits_wasm);
+    defer releaseArc(arc);
+
+    const result = try callExported(arc, &store, "f");
+    try testing.expectEqual(@as(i32, 1212), result.readAs(i32));
 }
 
 // Legacy proposal tests
