@@ -44,7 +44,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 /// Default reservation for wasm32 memories without an explicit maximum.
-const MAX_WASM32_CAPACITY: usize = arch.max_wasm32_linear_memory_bytes;
+const MAX_WASM32_CAPACITY: usize = std.math.cast(usize, arch.max_wasm32_linear_memory_bytes) orelse std.math.maxInt(usize);
 /// Default reservation for memory64 memories without an explicit maximum.
 const MAX_MEMORY64_CAPACITY: usize = arch.max_linear_memory_bytes;
 
@@ -416,7 +416,8 @@ pub const SharedMemory = struct {
             const new_pages = std.math.add(u64, old_pages, delta) catch return FAIL;
             if (new_pages > max_pages) return FAIL;
             const new_bytes = new_pages * WASM_PAGE_SIZE;
-            if (self.inner.current_size.cmpxchgWeak(old_bytes, new_bytes, .acq_rel, .acquire) == null) {
+            const new_bytes_usize = std.math.cast(usize, new_bytes) orelse return FAIL;
+            if (self.inner.current_size.cmpxchgWeak(old_bytes, new_bytes_usize, .acq_rel, .acquire) == null) {
                 return old_pages;
             }
         }

@@ -500,7 +500,7 @@ fn poll_oneoff(_: ?*anyopaque, ctx: *HostContext, params: []const RawVal, result
             .fd_readwrite = .{ .nbytes = 0, .flags = 0 },
         };
 
-        const out_offset = out_ptr + nevents * event_size;
+        const out_offset = fd_io.guestIndex(out_ptr) + @as(usize, nevents) * event_size;
         if (out_offset + event_size > guest_mem.len) break;
 
         @memcpy(guest_mem[out_offset .. out_offset + event_size], std.mem.asBytes(&event));

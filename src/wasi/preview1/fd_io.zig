@@ -15,6 +15,10 @@ const GuestIov = struct {
     buf_len: u32,
 };
 
+pub fn guestIndex(addr: u64) usize {
+    return std.math.cast(usize, addr) orelse @panic("guest address overflow");
+}
+
 fn guestPtr(ctx: *HostContext, val: RawVal) u64 {
     return ctx.guestAddr(val);
 }
@@ -1032,12 +1036,12 @@ pub const FdIO = struct {
             return;
         };
 
-        if (buf_ptr >= guest_mem.len) {
+        if (guestIndex(buf_ptr) >= guest_mem.len) {
             types.writeErrno(results, .fault);
             return;
         }
 
-        const available = @min(buf_len, @as(u32, @intCast(guest_mem.len - buf_ptr)));
+        const available = @min(buf_len, @as(u32, @intCast(guest_mem.len - guestIndex(buf_ptr))));
         var write_offset: u32 = 0;
 
         // Open an iterator — we need to re-iterate from the cookie position
@@ -1083,9 +1087,10 @@ pub const FdIO = struct {
             };
 
             const dirent_bytes = std.mem.asBytes(&dirent);
-            @memcpy(guest_mem[buf_ptr + write_offset .. buf_ptr + write_offset + dirent_size], dirent_bytes);
+            const base = guestIndex(buf_ptr);
+            @memcpy(guest_mem[base + write_offset .. base + write_offset + dirent_size], dirent_bytes);
             write_offset += dirent_size;
-            @memcpy(guest_mem[buf_ptr + write_offset .. buf_ptr + write_offset + name_len], name_bytes);
+            @memcpy(guest_mem[base + write_offset .. base + write_offset + name_len], name_bytes);
             write_offset += name_len;
         }
 
@@ -1379,12 +1384,12 @@ pub const FdIO = struct {
             return;
         };
 
-        if (buf_ptr >= guest_mem.len) {
+        if (guestIndex(buf_ptr) >= guest_mem.len) {
             types.writeErrno(results, .fault);
             return;
         }
 
-        const available = @min(buf_len, @as(u32, @intCast(guest_mem.len - buf_ptr)));
+        const available = @min(buf_len, @as(u32, @intCast(guest_mem.len - guestIndex(buf_ptr))));
         var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
 
         const link_len = dir_handle.readLink(self.io, path, &buf) catch |err| switch (err) {
@@ -1399,7 +1404,8 @@ pub const FdIO = struct {
         };
 
         const copy_len = @min(@as(u32, @intCast(link_len)), available);
-        @memcpy(guest_mem[buf_ptr .. buf_ptr + copy_len], buf[0..copy_len]);
+        const base = guestIndex(buf_ptr);
+        @memcpy(guest_mem[base .. base + copy_len], buf[0..copy_len]);
         try ctx.writeValue(bufused_ptr, copy_len);
         types.writeErrno(results, .success);
     }
