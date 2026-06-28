@@ -180,6 +180,40 @@ inline fn copyArgsKnown(comptime known_arity: ?u32, callee_slots: []RawVal, call
     }
 }
 
+/// Copy tail-call arguments into a new frame. When the callee reuses the caller's
+/// val_stack region, forward copies can clobber source slots (e.g. arg slot 3 →
+/// callee[0] aliases slot 0, then arg slot 0 reads the clobbered value).
+inline fn copyTailCallArgs(callee_slots: []RawVal, caller_slots: [*]RawVal, arg_slots: []align(1) const ir.Slot) void {
+    const overlaps = @intFromPtr(caller_slots) == @intFromPtr(callee_slots.ptr);
+    if (!overlaps) {
+        copyArgsKnown(null, callee_slots, caller_slots, arg_slots);
+        return;
+    }
+
+    inline for (0..4) |i| {
+        if (arg_slots.len == i) {
+            var snap: [4]RawVal = undefined;
+            inline for (0..i) |j| snap[j] = caller_slots[arg_slots[j]];
+            inline for (0..i) |j| callee_slots[j] = snap[j];
+            return;
+        }
+    }
+
+    var snap: [16]RawVal = undefined;
+    if (arg_slots.len <= snap.len) {
+        for (arg_slots, 0..) |arg_slot, idx| snap[idx] = caller_slots[arg_slot];
+        for (snap[0..arg_slots.len], 0..) |val, idx| callee_slots[idx] = val;
+        return;
+    }
+
+    // Very large arities: reverse copy avoids clobber in the common same-base layout.
+    var ri = arg_slots.len;
+    while (ri > 0) {
+        ri -= 1;
+        callee_slots[ri] = caller_slots[arg_slots[ri]];
+    }
+}
+
 inline fn countCallArity(args_len: usize) void {
     if (!profiling.enabled) return;
     switch (args_len) {
@@ -1027,18 +1061,7 @@ pub fn handle_return_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
         // invalidating the handler's original `slots` parameter.
         const caller_slots = frame.callStackTop().slots.ptr;
 
-        inline for (0..4) |i| {
-            if (arg_slots.len == i) {
-                inline for (0..i) |j| {
-                    callee_slots[j] = caller_slots[arg_slots[j]];
-                }
-                break;
-            }
-        } else {
-            for (arg_slots, 0..) |arg_slot, idx| {
-                callee_slots[idx] = caller_slots[arg_slot];
-            }
-        }
+        copyTailCallArgs(callee_slots, caller_slots, arg_slots);
 
         // Preserve the dst from current frame (return to caller's caller)
         const tail_dst = frame.callStackAt(frame_idx).dst;
@@ -1142,18 +1165,7 @@ pub fn handle_return_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
         // invalidating the handler's original `slots` parameter.
         const caller_slots = frame.callStackTop().slots.ptr;
 
-        inline for (0..4) |i| {
-            if (arg_slots.len == i) {
-                inline for (0..i) |j| {
-                    callee_slots[j] = caller_slots[arg_slots[j]];
-                }
-                break;
-            }
-        } else {
-            for (arg_slots, 0..) |arg_slot, idx| {
-                callee_slots[idx] = caller_slots[arg_slot];
-            }
-        }
+        copyTailCallArgs(callee_slots, caller_slots, arg_slots);
 
         const tail_dst = frame.callStackAt(frame_idx).dst;
 
@@ -1331,18 +1343,7 @@ pub fn handle_return_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
         // invalidating the handler's original `slots` parameter.
         const caller_slots = frame.callStackTop().slots.ptr;
 
-        inline for (0..4) |i| {
-            if (arg_slots.len == i) {
-                inline for (0..i) |j| {
-                    callee_slots[j] = caller_slots[arg_slots[j]];
-                }
-                break;
-            }
-        } else {
-            for (arg_slots, 0..) |arg_slot, idx| {
-                callee_slots[idx] = caller_slots[arg_slot];
-            }
-        }
+        copyTailCallArgs(callee_slots, caller_slots, arg_slots);
 
         const tail_dst = frame.callStackAt(frame_idx).dst;
 
