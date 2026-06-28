@@ -58,6 +58,10 @@ pub const InstanceError = Allocator.Error || error{
     GcConstExprError,
     /// An active data segment's target range exceeds the linear memory size.
     DataSegmentOutOfBounds,
+    /// A host-provided memory does not match the imported memory type.
+    ImportMemoryMismatch,
+    /// memory64 linear memory is not supported on 32-bit hosts.
+    Memory64UnsupportedOn32BitHost,
 };
 
 pub fn printInitError(arc: ArcModule, imports: Linker, err: InstanceError) void {
@@ -120,6 +124,8 @@ pub const Instance = struct {
     mem_trace: bool = false,
     /// Number of allocations performed by this instance (excluding VM).
     alloc_count: usize = 0,
+    /// When true, linear-memory addresses are i64 (memory64 proposal).
+    memory64: bool = false,
 
     /// Instantiate a Module.
     ///
@@ -188,18 +194,30 @@ pub const Instance = struct {
         }
 
         // 2. allocate memory
-        var mem: Memory = if (module.memory) |mem_def| blk: {
+        if (module.memory64() and !core.platform.is_64bit) {
+            return error.Memory64UnsupportedOn32BitHost;
+        }
+
+        var mem: Memory = if (module.imported_memory) |imp| blk: {
+            const provided = imports.getMemory(imp.module_name, imp.memory_name) orelse {
+                return error.ImportNotSatisfied;
+            };
+            if (imp.shared != provided.isShared()) return error.ImportMemoryMismatch;
+            const min_bytes = imp.min_pages * core.WASM_PAGE_SIZE;
+            if (provided.byteLen() < min_bytes) return error.ImportMemoryMismatch;
+            break :blk provided.clone();
+        } else if (module.memory) |mem_def| blk: {
             if (mem_def.shared) {
                 const max = mem_def.max_pages orelse return error.SharedMemoryMissingMax;
                 const shared = try SharedMemory.init(allocator, store.io, mem_def.min_pages, max);
                 instance_alloc_count += 1;
                 break :blk Memory.initShared(shared);
             } else {
-                break :blk try Memory.initOwnedWithMax(allocator, mem_def.min_pages, mem_def.max_pages);
+                break :blk try Memory.initOwnedWithMax(allocator, mem_def.min_pages, mem_def.max_pages, mem_def.memory64);
             }
         } else Memory.initEmpty();
         errdefer mem.deinit();
-        if (module.memory != null) instance_alloc_count += 1;
+        if (module.imported_memory != null or module.memory != null) instance_alloc_count += 1;
 
         // 3. resolve host functions
         // Build a flat slice parallel to module.imported_funcs, looking up each
@@ -242,7 +260,7 @@ pub const Instance = struct {
             const mem_bytes = mem.bytes();
             for (module.data_segments, 0..) |seg, i| {
                 if (seg.mode != .active) continue;
-                const dst: usize = seg.offset;
+                const dst: usize = std.math.cast(usize, seg.offset) orelse return error.DataSegmentOutOfBounds;
                 const len: usize = seg.data.len;
                 if (dst + len > mem_bytes.len) return error.DataSegmentOutOfBounds;
                 @memcpy(mem_bytes[dst..][0..len], seg.data);
@@ -279,6 +297,7 @@ pub const Instance = struct {
             .elem_segments_dropped = elem_segments_dropped,
             .vm = VM.init(allocator),
             .alloc_count = instance_alloc_count,
+            .memory64 = module.memory64(),
         };
     }
 
@@ -309,6 +328,10 @@ pub const Instance = struct {
         const module = arc.value;
         const allocator = store.allocator;
         var instance_alloc_count: usize = 0;
+
+        if (module.memory64() and !core.platform.is_64bit) {
+            return error.Memory64UnsupportedOn32BitHost;
+        }
 
         // Validate that the module declares a shared memory
         const mem_def = module.memory orelse return error.ModuleMemoryNotShared;
@@ -401,7 +424,7 @@ pub const Instance = struct {
             const mem_bytes = mem.bytes();
             for (module.data_segments, 0..) |seg, i| {
                 if (seg.mode != .active) continue;
-                const dst: usize = seg.offset;
+                const dst: usize = std.math.cast(usize, seg.offset) orelse return error.DataSegmentOutOfBounds;
                 const len: usize = seg.data.len;
                 if (dst + len > mem_bytes.len) return error.DataSegmentOutOfBounds;
                 @memcpy(mem_bytes[dst..][0..len], seg.data);
@@ -432,6 +455,7 @@ pub const Instance = struct {
             .elem_segments_dropped = elem_segments_dropped,
             .vm = VM.init(allocator),
             .alloc_count = instance_alloc_count,
+            .memory64 = module.memory64(),
         };
     }
 
@@ -510,6 +534,7 @@ pub const Instance = struct {
             .type_ancestors = m.type_ancestors,
             .memory_budget = budget_ptr,
             .mem_trace = self.mem_trace,
+            .memory64 = self.memory64,
         };
     }
 

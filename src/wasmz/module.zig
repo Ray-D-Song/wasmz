@@ -114,6 +114,19 @@ pub const ImportedGlobalDef = struct {
     mutability: Mutability,
 };
 
+/// Metadata for an imported linear memory, extracted from the Wasm Import Section.
+/// The module_name / memory_name slices are owned by the Module allocator.
+pub const ImportedMemoryDef = struct {
+    /// The module namespace string (e.g. "env").
+    module_name: []const u8,
+    /// The memory name within that namespace.
+    memory_name: []const u8,
+    min_pages: u64,
+    max_pages: ?u64,
+    shared: bool = false,
+    memory64: bool = false,
+};
+
 /// Global variable compilation result, including mutability and the initial value evaluated from constant expressions.
 /// For simple const exprs (i32.const, ref.null, etc.) the value is pre-computed at compile time.
 /// For GC const exprs (struct.new, array.new_fixed, etc.) the value cannot be evaluated until
@@ -132,9 +145,10 @@ pub const GlobalInit = struct {
 /// shared being true means the memory was declared `shared` (Wasm Threads proposal).
 /// Note: shared memories MUST have a max_pages (Wasm spec requirement).
 pub const MemoryDef = struct {
-    min_pages: u32,
-    max_pages: ?u32,
+    min_pages: u64,
+    max_pages: ?u64,
     shared: bool = false,
+    memory64: bool = false,
 };
 
 /// Compiled data segment, holding the data bytes and metadata for runtime initialization.
@@ -143,7 +157,7 @@ pub const CompiledDataSegment = struct {
     memory_index: u32,
     /// For active segments, the offset in linear memory where data should be written.
     /// For passive segments, this is unused.
-    offset: u32,
+    offset: u64,
     /// The actual data bytes.
     ///
     /// Ownership rules:
@@ -197,6 +211,7 @@ pub const ModuleCompileError = Allocator.Error ||
         DisabledRelaxedSimd,
         InvalidTagIndex,
         InvalidTagImport,
+        DuplicateImportMemory,
     };
 
 pub const ModuleCompileReaderError = ModuleCompileError || std.Io.Reader.ShortError;
@@ -267,9 +282,11 @@ const BuildState = struct {
     function_type_indices: std.ArrayListUnmanaged(u32) = .empty,
     imported_funcs_list: std.ArrayListUnmanaged(ImportedFuncDef) = .empty,
     imported_globals_list: std.ArrayListUnmanaged(ImportedGlobalDef) = .empty,
+    imported_memory: ?ImportedMemoryDef = null,
     globals_list: std.ArrayListUnmanaged(GlobalInit) = .empty,
     exports: std.StringHashMapUnmanaged(ExportEntry) = .empty,
     memory: ?MemoryDef = null,
+    memory_export_name: ?[]const u8 = null,
     start_function: ?u32 = null,
     pending_element_mode: payload_mod.ElementMode = .passive,
     pending_element_table_index: ?u32 = null,
@@ -325,6 +342,12 @@ const BuildState = struct {
         }
         self.imported_globals_list.deinit(self.allocator);
 
+        if (self.imported_memory) |imp| {
+            self.allocator.free(imp.module_name);
+            self.allocator.free(imp.memory_name);
+        }
+        if (self.memory_export_name) |name| self.allocator.free(name);
+
         for (self.globals_list.items) |g| {
             if (g.init_expr) |expr| self.allocator.free(expr);
         }
@@ -365,6 +388,12 @@ const BuildState = struct {
 
     fn parserAllocator(self: *BuildState) Allocator {
         return self.arena.allocator();
+    }
+
+    fn usesMemory64(self: *const BuildState) bool {
+        if (self.memory) |m| return m.memory64;
+        if (self.imported_memory) |m| return m.memory64;
+        return false;
     }
 
     fn handlePayload(self: *BuildState, payload: Payload) ModuleCompileError!void {
@@ -446,6 +475,24 @@ const BuildState = struct {
                 } else if (entry.kind == .tag) {
                     const tt = if (entry.typ) |t| t.tag else return error.InvalidTagImport;
                     try self.tags_list.append(self.allocator, .{ .type_index = tt.type_index });
+                } else if (entry.kind == .memory) {
+                    if (self.imported_memory != null) return error.DuplicateImportMemory;
+                    const mem_typ = if (entry.typ) |t| switch (t) {
+                        .memory => |m| m,
+                        else => return error.UnsupportedFunctionType,
+                    } else return error.UnsupportedFunctionType;
+                    const mod_name = try self.allocator.dupe(u8, entry.module);
+                    errdefer self.allocator.free(mod_name);
+                    const mem_name = try self.allocator.dupe(u8, entry.field);
+                    errdefer self.allocator.free(mem_name);
+                    self.imported_memory = .{
+                        .module_name = mod_name,
+                        .memory_name = mem_name,
+                        .min_pages = mem_typ.limits.initial,
+                        .max_pages = mem_typ.limits.maximum,
+                        .shared = mem_typ.shared,
+                        .memory64 = mem_typ.memory64,
+                    };
                 }
             },
             .function_entry => |entry| {
@@ -463,6 +510,7 @@ const BuildState = struct {
                     .min_pages = entry.limits.initial,
                     .max_pages = entry.limits.maximum,
                     .shared = entry.shared,
+                    .memory64 = entry.memory64,
                 };
             },
             .export_entry => |entry| {
@@ -479,6 +527,15 @@ const BuildState = struct {
                         entry.field,
                         .{ .tag_index = entry.index },
                     ),
+                    .memory => {
+                        const owned = try self.allocator.dupe(u8, entry.field);
+                        errdefer self.allocator.free(owned);
+                        if (self.memory_export_name != null) {
+                            self.allocator.free(owned);
+                            return error.DuplicateExport;
+                        }
+                        self.memory_export_name = owned;
+                    },
                     else => {},
                 }
             },
@@ -488,7 +545,7 @@ const BuildState = struct {
             .table_type => |tbl| {
                 const tbl_idx = self.tables_lists.items.len;
                 try self.tables_lists.append(self.allocator, .empty);
-                const initial_size = tbl.limits.initial;
+                const initial_size: usize = @intCast(tbl.limits.initial);
                 try self.tables_lists.items[tbl_idx].resize(self.allocator, initial_size);
                 @memset(self.tables_lists.items[tbl_idx].items, std.math.maxInt(u32));
             },
@@ -552,7 +609,10 @@ const BuildState = struct {
                     .mode = self.pending_data_mode,
                     .memory_index = self.pending_data_memory_index orelse 0,
                     .offset = if (is_active)
-                        (try Module.evaluate_const_expr(self.parserAllocator(), body.offset_expr, .I32)).readAs(u32)
+                        if (self.usesMemory64())
+                            (try Module.evaluate_const_expr(self.parserAllocator(), body.offset_expr, .I64)).readAs(u64)
+                        else
+                            (try Module.evaluate_const_expr(self.parserAllocator(), body.offset_expr, .I32)).readAs(u64)
                     else
                         0,
                     .data = data_slice,
@@ -788,12 +848,19 @@ const BuildState = struct {
             }
         }
 
+        const imported_memory = self.imported_memory;
+        self.imported_memory = null;
+        const memory_export_name = self.memory_export_name;
+        self.memory_export_name = null;
+
         return .{
             .allocator = self.allocator,
             .functions = functions,
             .exports = exports,
             .globals = globals,
             .memory = self.memory,
+            .imported_memory = imported_memory,
+            .memory_export_name = memory_export_name,
             .start_function = self.start_function,
             .imported_funcs = imported_funcs,
             .imported_globals = imported_globals,
@@ -846,6 +913,10 @@ pub const Module = struct {
     exports: std.StringHashMapUnmanaged(ExportEntry),
     globals: []GlobalInit,
     memory: ?MemoryDef,
+    /// When set, the module imports its sole linear memory from the host.
+    imported_memory: ?ImportedMemoryDef = null,
+    /// Export name of the module's linear memory, when exported.
+    memory_export_name: ?[]const u8 = null,
     /// Wasm Start Section (optional).
     /// If present, Instance.init will automatically call this function after instantiation.
     start_function: ?u32,
@@ -903,6 +974,13 @@ pub const Module = struct {
     /// True when the module defines any struct or array types.
     /// Used to lazily initialize the GC heap only when needed.
     has_gc_types: bool,
+
+    /// Returns true when the module's linear memory uses the memory64 address space.
+    pub fn memory64(self: *const Module) bool {
+        if (self.memory) |m| return m.memory64;
+        if (self.imported_memory) |m| return m.memory64;
+        return false;
+    }
 
     /// Compile WebAssembly bytecode held in memory into a Module.
     ///
@@ -1733,6 +1811,12 @@ pub const Module = struct {
             self.allocator.free(def.global_name);
         }
         self.allocator.free(self.imported_globals);
+
+        if (self.imported_memory) |imp| {
+            self.allocator.free(imp.module_name);
+            self.allocator.free(imp.memory_name);
+        }
+        if (self.memory_export_name) |name| self.allocator.free(name);
 
         for (self.tables) |t| {
             self.allocator.free(t);

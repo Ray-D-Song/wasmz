@@ -74,12 +74,28 @@ pub const HostContext = struct {
         return self.host_instance;
     }
 
-    pub fn readBytes(self: *HostContext, ptr: u32, len: usize) HostError![]const u8 {
+    /// True when the guest module uses memory64 linear-memory addresses.
+    pub fn memory64(self: *const HostContext) bool {
+        return self.host_instance.module.memory64();
+    }
+
+    /// Read a guest linear-memory pointer from a host-call parameter.
+    pub fn guestAddr(self: *const HostContext, val: RawVal) u64 {
+        if (self.memory64()) {
+            return @bitCast(val.readAs(i64));
+        }
+        return val.readAs(u32);
+    }
+
+    pub fn readBytes(self: *HostContext, ptr: u64, len: usize) HostError![]const u8 {
         const mem = self.memory() orelse {
             try self.raiseTrap(Trap.fromTrapCode(.MemoryOutOfBounds));
             unreachable;
         };
-        const start: usize = ptr;
+        const start = std.math.cast(usize, ptr) orelse {
+            try self.raiseTrap(Trap.fromTrapCode(.MemoryOutOfBounds));
+            unreachable;
+        };
         const end = std.math.add(usize, start, len) catch {
             try self.raiseTrap(Trap.fromTrapCode(.MemoryOutOfBounds));
             unreachable;
@@ -91,12 +107,15 @@ pub const HostContext = struct {
         return mem[start..end];
     }
 
-    pub fn writeBytes(self: *HostContext, ptr: u32, bytes: []const u8) HostError!void {
+    pub fn writeBytes(self: *HostContext, ptr: u64, bytes: []const u8) HostError!void {
         const mem = self.memory() orelse {
             try self.raiseTrap(Trap.fromTrapCode(.MemoryOutOfBounds));
             unreachable;
         };
-        const start: usize = ptr;
+        const start = std.math.cast(usize, ptr) orelse {
+            try self.raiseTrap(Trap.fromTrapCode(.MemoryOutOfBounds));
+            unreachable;
+        };
         const end = std.math.add(usize, start, bytes.len) catch {
             try self.raiseTrap(Trap.fromTrapCode(.MemoryOutOfBounds));
             unreachable;
@@ -108,17 +127,17 @@ pub const HostContext = struct {
         @memcpy(mem[start..end], bytes);
     }
 
-    pub fn readValue(self: *HostContext, ptr: u32, comptime T: type) HostError!T {
+    pub fn readValue(self: *HostContext, ptr: u64, comptime T: type) HostError!T {
         const bytes = try self.readBytes(ptr, @sizeOf(T));
         return std.mem.bytesToValue(T, bytes[0..@sizeOf(T)]);
     }
 
-    pub fn writeValue(self: *HostContext, ptr: u32, value: anytype) HostError!void {
+    pub fn writeValue(self: *HostContext, ptr: u64, value: anytype) HostError!void {
         var copy = value;
         return self.writeBytes(ptr, std.mem.asBytes(&copy));
     }
 
-    pub fn readSlice(self: *HostContext, ptr: u32, len: usize, comptime T: type) HostError![]align(1) const T {
+    pub fn readSlice(self: *HostContext, ptr: u64, len: usize, comptime T: type) HostError![]align(1) const T {
         const byte_len = std.math.mul(usize, len, @sizeOf(T)) catch {
             try self.raiseTrap(Trap.fromTrapCode(.MemoryOutOfBounds));
             unreachable;
@@ -212,8 +231,10 @@ pub const Linker = struct {
     map: std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(HostFunc)),
     /// Two-level string map for imported globals: module name -> global name -> RawVal (initial value).
     global_map: std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(RawVal)),
+    /// Two-level string map for imported memories: module name -> field name -> Memory.
+    memory_map: std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(Memory)),
 
-    pub const empty: Linker = .{ .map = .empty, .global_map = .empty };
+    pub const empty: Linker = .{ .map = .empty, .global_map = .empty, .memory_map = .empty };
 
     pub fn define(
         self: *Linker,
@@ -264,6 +285,32 @@ pub const Linker = struct {
         return inner.get(global_name);
     }
 
+    /// Register an imported linear memory with the linker.
+    /// The module_name and field_name keys are not copied; the caller must ensure they remain valid.
+    pub fn defineMemory(
+        self: *Linker,
+        allocator: Allocator,
+        module_name: []const u8,
+        field_name: []const u8,
+        memory: Memory,
+    ) Allocator.Error!void {
+        const gop = try self.memory_map.getOrPut(allocator, module_name);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = .empty;
+        }
+        try gop.value_ptr.put(allocator, field_name, memory.clone());
+    }
+
+    /// Look up an imported linear memory by (module_name, field_name).
+    pub fn getMemory(
+        self: *const Linker,
+        module_name: []const u8,
+        field_name: []const u8,
+    ) ?Memory {
+        const inner = self.memory_map.get(module_name) orelse return null;
+        return inner.get(field_name);
+    }
+
     pub fn deinit(self: *Linker, allocator: Allocator) void {
         var it = self.map.valueIterator();
         while (it.next()) |inner| {
@@ -275,6 +322,16 @@ pub const Linker = struct {
             inner.deinit(allocator);
         }
         self.global_map.deinit(allocator);
+        var mem_it = self.memory_map.valueIterator();
+        while (mem_it.next()) |inner| {
+            var entry_it = inner.iterator();
+            while (entry_it.next()) |entry| {
+                var mem = entry.value_ptr.*;
+                mem.deinit();
+            }
+            inner.deinit(allocator);
+        }
+        self.memory_map.deinit(allocator);
         self.* = .empty;
     }
 };
