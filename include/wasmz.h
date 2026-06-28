@@ -269,7 +269,12 @@ size_t wasmz_instance_memory_size(const wasmz_instance_t *instance);
  * @param pages    Number of 64 KiB pages to add.
  * @return 0 on success, non-zero error code on failure (invalid page count or OOM).
  */
-int32_t wasmz_instance_memory_grow(wasmz_instance_t *instance, uint32_t pages);
+int32_t wasmz_instance_memory_grow(wasmz_instance_t *instance, uint64_t pages);
+
+/**
+ * Returns 1 when the instance uses memory64 linear-memory addresses, else 0.
+ */
+int32_t wasmz_instance_memory64(const wasmz_instance_t *instance);
 
 /* ── Linker (host function registration) ─────────────────────────────────────── */
 
@@ -397,6 +402,16 @@ int wasmz_context_read_memory(void *ctx, uint32_t addr, size_t len, uint8_t *out
 int wasmz_context_write_memory(void *ctx, uint32_t addr, const uint8_t *data, size_t len);
 
 /**
+ * Read bytes from linear memory using a 64-bit guest address (memory64 modules).
+ */
+int wasmz_context_read_memory64(void *ctx, uint64_t addr, size_t len, uint8_t *out);
+
+/**
+ * Write bytes to linear memory using a 64-bit guest address (memory64 modules).
+ */
+int wasmz_context_write_memory64(void *ctx, uint64_t addr, const uint8_t *data, size_t len);
+
+/**
  * Read a typed value from memory.
  *
  * @param ctx   Host context.
@@ -438,10 +453,21 @@ int wasmz_module_has_memory(const wasmz_module_t *module);
 uint32_t wasmz_module_memory_min(const wasmz_module_t *module);
 
 /**
+ * Get the module's memory minimum pages (full u64 range).
+ */
+uint64_t wasmz_module_memory_min64(const wasmz_module_t *module);
+
+/**
  * Get the module's memory maximum pages.
  * Returns 0xFFFFFFFF (UINT32_MAX) if unlimited.
  */
 uint32_t wasmz_module_memory_max(const wasmz_module_t *module);
+
+/**
+ * Get the module's memory maximum pages (full u64 range).
+ * Returns UINT64_MAX if unlimited.
+ */
+uint64_t wasmz_module_memory_max64(const wasmz_module_t *module);
 
 /**
  * Get the number of exported functions.

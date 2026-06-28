@@ -414,12 +414,18 @@ export fn wasmz_instance_memory_size(handle: ?*const wasmz_instance_t) usize {
     return inst.memory.bytes().len;
 }
 
-export fn wasmz_instance_memory_grow(handle: ?*wasmz_instance_t, pages: u32) c_int {
+export fn wasmz_instance_memory_grow(handle: ?*wasmz_instance_t, pages: u64) c_int {
     const h = handle orelse return -1;
     const inst: *Instance = @ptrCast(@alignCast(h.ptr));
     const prev_pages = inst.memory.grow(pages);
-    if (prev_pages == std.math.maxInt(u32)) return -1;
+    if (prev_pages == std.math.maxInt(u64)) return -1;
     return 0;
+}
+
+export fn wasmz_instance_memory64(handle: ?*const wasmz_instance_t) c_int {
+    const h = handle orelse return 0;
+    const inst: *const Instance = @ptrCast(@alignCast(h.ptr));
+    return if (inst.memory64) 1 else 0;
 }
 
 // Linker
@@ -600,6 +606,20 @@ export fn wasmz_context_write_memory(ctx: ?*anyopaque, addr: u32, data: ?[*]cons
     return 0;
 }
 
+export fn wasmz_context_read_memory64(ctx: ?*anyopaque, addr: u64, len: usize, out: [*]u8) c_int {
+    const c: *HostContext = @ptrCast(@alignCast(ctx));
+    const bytes = c.readBytes(addr, len) catch return -1;
+    @memcpy(out, bytes.ptr[0..len]);
+    return 0;
+}
+
+export fn wasmz_context_write_memory64(ctx: ?*anyopaque, addr: u64, data: ?[*]const u8, len: usize) c_int {
+    const c: *HostContext = @ptrCast(@alignCast(ctx));
+    const d = data orelse return -1;
+    c.writeBytes(addr, d[0..len]) catch return -1;
+    return 0;
+}
+
 export fn wasmz_context_read_value(ctx: ?*anyopaque, addr: u32, out: ?*anyopaque, size: usize) c_int {
     const c: *HostContext = @ptrCast(@alignCast(ctx));
     const o = out orelse return -1;
@@ -630,22 +650,47 @@ export fn wasmz_context_trap(ctx: ?*anyopaque, msg_ptr: ?[*:0]const u8) void {
 export fn wasmz_module_has_memory(handle: ?*const wasmz_module_t) c_int {
     const h = handle orelse return 0;
     const arc: *const ArcModule = @ptrCast(@alignCast(h.ptr));
-    const m = arc.value.memory;
-    return if (m != null) 1 else 0;
+    const m = arc.value;
+    return if (m.memory != null or m.imported_memory != null) 1 else 0;
 }
 
 export fn wasmz_module_memory_min(handle: ?*const wasmz_module_t) u32 {
     const h = handle orelse return 0;
     const arc: *const ArcModule = @ptrCast(@alignCast(h.ptr));
-    const m = arc.value.memory orelse return 0;
-    return m.min_pages;
+    const pages = if (arc.value.memory) |mem| mem.min_pages else if (arc.value.imported_memory) |mem| mem.min_pages else 0;
+    return @truncate(pages);
+}
+
+export fn wasmz_module_memory_min64(handle: ?*const wasmz_module_t) u64 {
+    const h = handle orelse return 0;
+    const arc: *const ArcModule = @ptrCast(@alignCast(h.ptr));
+    if (arc.value.memory) |mem| return mem.min_pages;
+    if (arc.value.imported_memory) |mem| return mem.min_pages;
+    return 0;
 }
 
 export fn wasmz_module_memory_max(handle: ?*const wasmz_module_t) u32 {
     const h = handle orelse return std.math.maxInt(u32);
     const arc: *const ArcModule = @ptrCast(@alignCast(h.ptr));
-    const m = arc.value.memory;
-    return m.?.max_pages orelse std.math.maxInt(u32);
+    const max = if (arc.value.memory) |mem|
+        mem.max_pages
+    else if (arc.value.imported_memory) |mem|
+        mem.max_pages
+    else
+        null;
+    return @truncate(max orelse std.math.maxInt(u64));
+}
+
+export fn wasmz_module_memory_max64(handle: ?*const wasmz_module_t) u64 {
+    const h = handle orelse return std.math.maxInt(u64);
+    const arc: *const ArcModule = @ptrCast(@alignCast(h.ptr));
+    const max = if (arc.value.memory) |mem|
+        mem.max_pages
+    else if (arc.value.imported_memory) |mem|
+        mem.max_pages
+    else
+        null;
+    return max orelse std.math.maxInt(u64);
 }
 
 export fn wasmz_module_export_count(handle: ?*const wasmz_module_t) usize {

@@ -473,10 +473,10 @@ fn poll_oneoff(_: ?*anyopaque, ctx: *HostContext, params: []const RawVal, result
     const host: *Host = @ptrCast(@alignCast(ctx.host_data_ptr.?));
     const t0 = if (profiling.enabled) profiling.nanoNow() else 0;
     defer host.diag.record(.poll_oneoff, profiling.nanoNow() - t0);
-    const in_ptr = params[0].readAs(u32);
-    const out_ptr = params[1].readAs(u32);
+    const in_ptr = ctx.guestAddr(params[0]);
+    const out_ptr = ctx.guestAddr(params[1]);
     const nsubscriptions = params[2].readAs(u32);
-    const nevents_ptr = params[3].readAs(u32);
+    const nevents_ptr = ctx.guestAddr(params[3]);
 
     if (nsubscriptions == 0) {
         types.writeErrno(results, .inval);

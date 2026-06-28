@@ -42,34 +42,35 @@ pub const EnvArgs = struct {
     }
 
     pub fn argsSizesGet(self: *EnvArgs, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-        try ctx.writeValue(paramsArg(params, 0), @as(types.Size, @intCast(self.args.len)));
-        try ctx.writeValue(paramsArg(params, 1), totalByteLen(self.args));
+        try ctx.writeValue(paramsArg(ctx, params, 0), @as(types.Size, @intCast(self.args.len)));
+        try ctx.writeValue(paramsArg(ctx, params, 1), totalByteLen(self.args));
         types.writeErrno(results, .success);
     }
 
     pub fn argsGet(self: *EnvArgs, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-        try writeStringList(ctx, self.args, paramsArg(params, 0), paramsArg(params, 1));
+        try writeStringList(ctx, self.args, paramsArg(ctx, params, 0), paramsArg(ctx, params, 1));
         types.writeErrno(results, .success);
     }
 
     pub fn environSizesGet(self: *EnvArgs, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-        try ctx.writeValue(paramsArg(params, 0), @as(types.Size, @intCast(self.env.len)));
-        try ctx.writeValue(paramsArg(params, 1), totalEnvByteLen(self.env));
+        try ctx.writeValue(paramsArg(ctx, params, 0), @as(types.Size, @intCast(self.env.len)));
+        try ctx.writeValue(paramsArg(ctx, params, 1), totalEnvByteLen(self.env));
         types.writeErrno(results, .success);
     }
 
     pub fn environGet(self: *EnvArgs, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-        const ptrs_base = paramsArg(params, 0);
-        var buf_cursor = paramsArg(params, 1);
+        const ptrs_base = paramsArg(ctx, params, 0);
+        var buf_cursor = paramsArg(ctx, params, 1);
+        const ptr_size: u64 = if (ctx.memory64()) 8 else 4;
 
         for (self.env, 0..) |entry, index| {
-            try ctx.writeValue(ptrs_base + @as(u32, @intCast(index * @sizeOf(u32))), buf_cursor);
+            try writeGuestPtr(ctx, ptrs_base + index * ptr_size, buf_cursor);
             try ctx.writeBytes(buf_cursor, entry.key);
-            buf_cursor +%= @as(u32, @intCast(entry.key.len));
+            buf_cursor +%= @intCast(entry.key.len);
             try ctx.writeBytes(buf_cursor, "=");
             buf_cursor +%= 1;
             try ctx.writeBytes(buf_cursor, entry.value);
-            buf_cursor +%= @as(u32, @intCast(entry.value.len));
+            buf_cursor +%= @intCast(entry.value.len);
             try ctx.writeBytes(buf_cursor, &[_]u8{0});
             buf_cursor +%= 1;
         }
@@ -78,12 +79,25 @@ pub const EnvArgs = struct {
     }
 };
 
-fn writeStringList(ctx: *HostContext, items: []const []const u8, ptrs_base: u32, buf_base: u32) wasmz.HostError!void {
+fn paramsArg(ctx: *HostContext, params: []const RawVal, index: usize) u64 {
+    return ctx.guestAddr(params[index]);
+}
+
+fn writeGuestPtr(ctx: *HostContext, ptr: u64, value: u64) wasmz.HostError!void {
+    if (ctx.memory64()) {
+        try ctx.writeValue(ptr, value);
+    } else {
+        try ctx.writeValue(ptr, @as(u32, @truncate(value)));
+    }
+}
+
+fn writeStringList(ctx: *HostContext, items: []const []const u8, ptrs_base: u64, buf_base: u64) wasmz.HostError!void {
     var buf_cursor = buf_base;
+    const ptr_size: u64 = if (ctx.memory64()) 8 else 4;
     for (items, 0..) |item, index| {
-        try ctx.writeValue(ptrs_base + @as(u32, @intCast(index * @sizeOf(u32))), buf_cursor);
+        try writeGuestPtr(ctx, ptrs_base + index * ptr_size, buf_cursor);
         try ctx.writeBytes(buf_cursor, item);
-        buf_cursor +%= @as(u32, @intCast(item.len));
+        buf_cursor +%= @intCast(item.len);
         try ctx.writeBytes(buf_cursor, &[_]u8{0});
         buf_cursor +%= 1;
     }
@@ -103,10 +117,6 @@ fn totalEnvByteLen(items: []const EnvVar) types.Size {
         total += item.key.len + 1 + item.value.len + 1;
     }
     return @intCast(total);
-}
-
-fn paramsArg(params: []const RawVal, index: usize) u32 {
-    return params[index].readAs(u32);
 }
 
 fn dupStringList(allocator: Allocator, items: []const []const u8) Allocator.Error![]const []const u8 {

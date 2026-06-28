@@ -67,7 +67,7 @@ pub const Clock = struct {
                 return;
             },
         };
-        try ctx.writeValue(params[1].readAs(u32), resolution);
+        try ctx.writeValue(ctx.guestAddr(params[1]), resolution);
         types.writeErrno(results, .success);
     }
 
@@ -82,7 +82,7 @@ pub const Clock = struct {
                 return;
             },
         };
-        try ctx.writeValue(params[2].readAs(u32), now);
+        try ctx.writeValue(ctx.guestAddr(params[2]), now);
         types.writeErrno(results, .success);
     }
 };

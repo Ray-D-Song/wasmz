@@ -10,6 +10,37 @@ const posix = std.posix;
 const RawVal = core.RawVal;
 const HostContext = wasmz.HostContext;
 
+const GuestIov = struct {
+    buf: u64,
+    buf_len: u32,
+};
+
+fn guestPtr(ctx: *HostContext, val: RawVal) u64 {
+    return ctx.guestAddr(val);
+}
+
+fn readGuestIovs(ctx: *HostContext, ptr: u64, len: u32) wasmz.HostError![]GuestIov {
+    const count: usize = len;
+    if (ctx.memory64()) {
+        const iovs = try ctx.allocator().alloc(GuestIov, count);
+        errdefer ctx.allocator().free(iovs);
+        const stride: u64 = 16;
+        for (0..count) |i| {
+            const base = ptr + @as(u64, @intCast(i)) * stride;
+            iovs[i].buf = try ctx.readValue(base, u64);
+            iovs[i].buf_len = try ctx.readValue(base + 8, u32);
+        }
+        return iovs;
+    }
+    const iovs = try ctx.readSlice(@intCast(ptr), len, types.Ciovec);
+    const out = try ctx.allocator().alloc(GuestIov, iovs.len);
+    errdefer ctx.allocator().free(out);
+    for (iovs, out) |src, *dst| {
+        dst.* = .{ .buf = src.buf, .buf_len = src.buf_len };
+    }
+    return out;
+}
+
 fn stdinRead(buf: []u8) !usize {
     if (builtin.os.tag == .windows) {
         const io = Io.Threaded.global_single_threaded.io();
@@ -153,13 +184,13 @@ pub const FdIO = struct {
     pub fn pathOpen(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
         const _dirflags: types.LookupFlags = @bitCast(params[1].readAs(u32));
-        const path_ptr = params[2].readAs(u32);
+        const path_ptr = guestPtr(ctx, params[2]);
         const path_len = params[3].readAs(u32);
         const oflags: types.OFlags = @bitCast(params[4].readAs(u32));
         const fs_rights_base: types.Rights = @bitCast(params[5].readAs(u64));
         const fs_rights_inheriting: types.Rights = @bitCast(params[6].readAs(u64));
         const fdflags: types.FdFlags = @bitCast(params[7].readAs(u32));
-        const fd_ptr = params[8].readAs(u32);
+        const fd_ptr = guestPtr(ctx, params[8]);
 
         _ = _dirflags;
         _ = fs_rights_inheriting;
@@ -253,13 +284,14 @@ pub const FdIO = struct {
 
     pub fn fdWrite(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
-        const iovs_ptr = params[1].readAs(u32);
+        const iovs_ptr = guestPtr(ctx, params[1]);
         const iovs_len = params[2].readAs(u32);
-        const nwritten_ptr = params[3].readAs(u32);
+        const nwritten_ptr = guestPtr(ctx, params[3]);
 
         switch (fd) {
             1 => {
-                const iovs = try ctx.readSlice(iovs_ptr, iovs_len, types.Ciovec);
+                const iovs = try readGuestIovs(ctx, iovs_ptr, iovs_len);
+                defer ctx.allocator().free(iovs);
                 var total_written: u32 = 0;
                 for (iovs) |iov| {
                     const bytes = try ctx.readBytes(iov.buf, iov.buf_len);
@@ -273,7 +305,8 @@ pub const FdIO = struct {
                 types.writeErrno(results, .success);
             },
             2 => {
-                const iovs = try ctx.readSlice(iovs_ptr, iovs_len, types.Ciovec);
+                const iovs = try readGuestIovs(ctx, iovs_ptr, iovs_len);
+                defer ctx.allocator().free(iovs);
                 var total_written: u32 = 0;
                 for (iovs) |iov| {
                     const bytes = try ctx.readBytes(iov.buf, iov.buf_len);
@@ -292,7 +325,8 @@ pub const FdIO = struct {
                     return;
                 };
 
-                const iovs = try ctx.readSlice(iovs_ptr, iovs_len, types.Ciovec);
+                const iovs = try readGuestIovs(ctx, iovs_ptr, iovs_len);
+                defer ctx.allocator().free(iovs);
                 var total_written: u32 = 0;
 
                 var reader = entry.handle.file.reader(self.io, &[_]u8{});
@@ -319,30 +353,34 @@ pub const FdIO = struct {
 
     pub fn fdRead(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
-        const iovs_ptr = params[1].readAs(u32);
+        const iovs_ptr = guestPtr(ctx, params[1]);
         const iovs_len = params[2].readAs(u32);
-        const nread_ptr = params[3].readAs(u32);
+        const nread_ptr = guestPtr(ctx, params[3]);
 
         switch (fd) {
             0 => {
-                const iovs = try ctx.readSlice(iovs_ptr, iovs_len, types.Iovec);
+                const iovs = try readGuestIovs(ctx, iovs_ptr, iovs_len);
+                defer ctx.allocator().free(iovs);
                 var total_read: u32 = 0;
 
                 for (iovs) |iov| {
-                    const buf = iov.buf;
                     const buf_len = iov.buf_len;
                     const guest_mem = ctx.memory() orelse {
                         types.writeErrno(results, .fault);
                         return;
                     };
 
-                    if (buf >= guest_mem.len) {
+                    const buf_start = std.math.cast(usize, iov.buf) orelse {
+                        types.writeErrno(results, .fault);
+                        return;
+                    };
+                    if (buf_start >= guest_mem.len) {
                         types.writeErrno(results, .fault);
                         return;
                     }
 
-                    const bytes_to_read = @min(buf_len, @as(u32, @intCast(guest_mem.len - buf)));
-                    const read_buf = guest_mem[buf .. buf + bytes_to_read];
+                    const bytes_to_read = @min(buf_len, @as(u32, @intCast(guest_mem.len - buf_start)));
+                    const read_buf = guest_mem[buf_start .. buf_start + bytes_to_read];
 
                     const bytes_read = stdinRead(read_buf) catch {
                         types.writeErrno(results, .io);
@@ -362,7 +400,8 @@ pub const FdIO = struct {
                     return;
                 };
 
-                const iovs = try ctx.readSlice(iovs_ptr, iovs_len, types.Iovec);
+                const iovs = try readGuestIovs(ctx, iovs_ptr, iovs_len);
+                defer ctx.allocator().free(iovs);
                 var total_read: u32 = 0;
 
                 var reader = entry.handle.file.reader(self.io, &[_]u8{});
@@ -372,20 +411,23 @@ pub const FdIO = struct {
                 };
 
                 for (iovs) |iov| {
-                    const buf = iov.buf;
                     const buf_len = iov.buf_len;
                     const guest_mem = ctx.memory() orelse {
                         types.writeErrno(results, .fault);
                         return;
                     };
 
-                    if (buf >= guest_mem.len) {
+                    const buf_start = std.math.cast(usize, iov.buf) orelse {
+                        types.writeErrno(results, .fault);
+                        return;
+                    };
+                    if (buf_start >= guest_mem.len) {
                         types.writeErrno(results, .fault);
                         return;
                     }
 
-                    const bytes_to_read = @min(buf_len, @as(u32, @intCast(guest_mem.len - buf)));
-                    const read_buf = guest_mem[buf .. buf + bytes_to_read];
+                    const bytes_to_read = @min(buf_len, @as(u32, @intCast(guest_mem.len - buf_start)));
+                    const read_buf = guest_mem[buf_start .. buf_start + bytes_to_read];
 
                     const bytes_read = entry.handle.file.readStreaming(self.io, &.{read_buf}) catch {
                         types.writeErrno(results, .io);
@@ -407,7 +449,7 @@ pub const FdIO = struct {
         const fd = params[0].readAs(u32);
         const offset = params[1].readAs(i64);
         const whence: types.Whence = @enumFromInt(params[2].readAs(u32));
-        const newoffset_ptr = params[3].readAs(u32);
+        const newoffset_ptr = guestPtr(ctx, params[3]);
 
         switch (fd) {
             0, 1, 2 => {
@@ -461,7 +503,7 @@ pub const FdIO = struct {
 
     pub fn fdFilestatGet(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
-        const buf_ptr = params[1].readAs(u32);
+        const buf_ptr = guestPtr(ctx, params[1]);
 
         const stat: types.Filestat = switch (fd) {
             0 => .{
@@ -545,10 +587,10 @@ pub const FdIO = struct {
 
     pub fn fdPwrite(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
-        const iovs_ptr = params[1].readAs(u32);
+        const iovs_ptr = guestPtr(ctx, params[1]);
         const iovs_len = params[2].readAs(u32);
         const offset = params[3].readAs(i64);
-        const nwritten_ptr = params[4].readAs(u32);
+        const nwritten_ptr = guestPtr(ctx, params[4]);
 
         switch (fd) {
             0, 1, 2 => {
@@ -565,7 +607,8 @@ pub const FdIO = struct {
                     return;
                 };
 
-                const iovs = try ctx.readSlice(iovs_ptr, iovs_len, types.Ciovec);
+                const iovs = try readGuestIovs(ctx, iovs_ptr, iovs_len);
+                defer ctx.allocator().free(iovs);
                 var total_written: u32 = 0;
 
                 var reader = entry.handle.file.reader(self.io, &[_]u8{});
@@ -591,10 +634,10 @@ pub const FdIO = struct {
 
     pub fn fdPread(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
-        const iovs_ptr = params[1].readAs(u32);
+        const iovs_ptr = guestPtr(ctx, params[1]);
         const iovs_len = params[2].readAs(u32);
         const offset = params[3].readAs(i64);
-        const nread_ptr = params[4].readAs(u32);
+        const nread_ptr = guestPtr(ctx, params[4]);
 
         switch (fd) {
             0, 1, 2 => {
@@ -611,7 +654,8 @@ pub const FdIO = struct {
                     return;
                 };
 
-                const iovs = try ctx.readSlice(iovs_ptr, iovs_len, types.Iovec);
+                const iovs = try readGuestIovs(ctx, iovs_ptr, iovs_len);
+                defer ctx.allocator().free(iovs);
                 var total_read: u32 = 0;
 
                 var reader = entry.handle.file.reader(self.io, &[_]u8{});
@@ -621,20 +665,23 @@ pub const FdIO = struct {
                 };
 
                 for (iovs) |iov| {
-                    const buf = iov.buf;
                     const buf_len = iov.buf_len;
                     const guest_mem = ctx.memory() orelse {
                         types.writeErrno(results, .fault);
                         return;
                     };
 
-                    if (buf >= guest_mem.len) {
+                    const buf_start = std.math.cast(usize, iov.buf) orelse {
+                        types.writeErrno(results, .fault);
+                        return;
+                    };
+                    if (buf_start >= guest_mem.len) {
                         types.writeErrno(results, .fault);
                         return;
                     }
 
-                    const bytes_to_read = @min(buf_len, @as(u32, @intCast(guest_mem.len - buf)));
-                    const read_buf = guest_mem[buf .. buf + bytes_to_read];
+                    const bytes_to_read = @min(buf_len, @as(u32, @intCast(guest_mem.len - buf_start)));
+                    const read_buf = guest_mem[buf_start .. buf_start + bytes_to_read];
 
                     const bytes_read = entry.handle.file.readStreaming(self.io, &.{read_buf}) catch {
                         types.writeErrno(results, .io);
@@ -653,7 +700,7 @@ pub const FdIO = struct {
 
     pub fn fdFdstatGet(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
-        const buf_ptr = params[1].readAs(u32);
+        const buf_ptr = guestPtr(ctx, params[1]);
 
         const fdstat: types.FdStat = switch (fd) {
             0 => .{
@@ -727,7 +774,7 @@ pub const FdIO = struct {
 
     pub fn fdPrestatGet(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
-        const buf_ptr = params[1].readAs(u32);
+        const buf_ptr = guestPtr(ctx, params[1]);
 
         const preopen = self.preopens.get(fd) orelse {
             types.writeErrno(results, .badf);
@@ -754,7 +801,7 @@ pub const FdIO = struct {
 
     pub fn fdPrestatDirName(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
-        const path_ptr = params[1].readAs(u32);
+        const path_ptr = guestPtr(ctx, params[1]);
         const path_len = params[2].readAs(u32);
 
         const preopen = self.preopens.get(fd) orelse {
@@ -959,10 +1006,10 @@ pub const FdIO = struct {
     /// params: fd(i32), buf_ptr(i32), buf_len(i32), cookie(i64), bufused_ptr(i32)
     pub fn fdReaddir(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
-        const buf_ptr = params[1].readAs(u32);
+        const buf_ptr = guestPtr(ctx, params[1]);
         const buf_len = params[2].readAs(u32);
         const cookie = params[3].readAs(u64);
-        const bufused_ptr = params[4].readAs(u32);
+        const bufused_ptr = guestPtr(ctx, params[4]);
 
         // Get the directory handle
         const dir_handle: std.Io.Dir = blk: {
@@ -1121,7 +1168,7 @@ pub const FdIO = struct {
     /// params: fd(i32), offset_ptr(i32)
     pub fn fdTell(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
-        const offset_ptr = params[1].readAs(u32);
+        const offset_ptr = guestPtr(ctx, params[1]);
 
         switch (fd) {
             0, 1, 2 => {
@@ -1142,7 +1189,7 @@ pub const FdIO = struct {
     /// params: fd(i32), path_ptr(i32), path_len(i32)
     pub fn pathCreateDirectory(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
-        const path_ptr = params[1].readAs(u32);
+        const path_ptr = guestPtr(ctx, params[1]);
         const path_len = params[2].readAs(u32);
 
         const dir_handle: std.Io.Dir = blk: {
@@ -1180,9 +1227,9 @@ pub const FdIO = struct {
     pub fn pathFilestatGet(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
         _ = params[1]; // flags (symlink_follow)
-        const path_ptr = params[2].readAs(u32);
+        const path_ptr = guestPtr(ctx, params[2]);
         const path_len = params[3].readAs(u32);
-        const buf_ptr = params[4].readAs(u32);
+        const buf_ptr = guestPtr(ctx, params[4]);
 
         const dir_handle: std.Io.Dir = blk: {
             if (self.preopens.get(fd)) |p| break :blk p.dir;
@@ -1232,7 +1279,7 @@ pub const FdIO = struct {
     pub fn pathFilestatSetTimes(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
         _ = params[1]; // flags
-        const path_ptr = params[2].readAs(u32);
+        const path_ptr = guestPtr(ctx, params[2]);
         const path_len = params[3].readAs(u32);
         _ = params[4]; // atim
         _ = params[5]; // mtim
@@ -1256,10 +1303,10 @@ pub const FdIO = struct {
     pub fn pathLink(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const old_fd = params[0].readAs(u32);
         _ = params[1]; // old_flags
-        const old_path_ptr = params[2].readAs(u32);
+        const old_path_ptr = guestPtr(ctx, params[2]);
         const old_path_len = params[3].readAs(u32);
         const new_fd = params[4].readAs(u32);
-        const new_path_ptr = params[5].readAs(u32);
+        const new_path_ptr = guestPtr(ctx, params[5]);
         const new_path_len = params[6].readAs(u32);
 
         const old_dir: std.Io.Dir = blk: {
@@ -1309,11 +1356,11 @@ pub const FdIO = struct {
     /// params: fd(i32), path_ptr(i32), path_len(i32), buf_ptr(i32), buf_len(i32), bufused_ptr(i32)
     pub fn pathReadlink(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
-        const path_ptr = params[1].readAs(u32);
+        const path_ptr = guestPtr(ctx, params[1]);
         const path_len = params[2].readAs(u32);
-        const buf_ptr = params[3].readAs(u32);
+        const buf_ptr = guestPtr(ctx, params[3]);
         const buf_len = params[4].readAs(u32);
-        const bufused_ptr = params[5].readAs(u32);
+        const bufused_ptr = guestPtr(ctx, params[5]);
 
         const dir_handle: std.Io.Dir = blk: {
             if (self.preopens.get(fd)) |p| break :blk p.dir;
@@ -1361,7 +1408,7 @@ pub const FdIO = struct {
     /// params: fd(i32), path_ptr(i32), path_len(i32)
     pub fn pathRemoveDirectory(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
-        const path_ptr = params[1].readAs(u32);
+        const path_ptr = guestPtr(ctx, params[1]);
         const path_len = params[2].readAs(u32);
 
         const dir_handle: std.Io.Dir = blk: {
@@ -1399,10 +1446,10 @@ pub const FdIO = struct {
     ///         new_fd(i32), new_path_ptr(i32), new_path_len(i32)
     pub fn pathRename(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const old_fd = params[0].readAs(u32);
-        const old_path_ptr = params[1].readAs(u32);
+        const old_path_ptr = guestPtr(ctx, params[1]);
         const old_path_len = params[2].readAs(u32);
         const new_fd = params[3].readAs(u32);
-        const new_path_ptr = params[4].readAs(u32);
+        const new_path_ptr = guestPtr(ctx, params[4]);
         const new_path_len = params[5].readAs(u32);
 
         const old_dir: std.Io.Dir = blk: {
@@ -1445,10 +1492,10 @@ pub const FdIO = struct {
     /// path_symlink: Create a symbolic link
     /// params: old_path_ptr(i32), old_path_len(i32), fd(i32), new_path_ptr(i32), new_path_len(i32)
     pub fn pathSymlink(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
-        const old_path_ptr = params[0].readAs(u32);
+        const old_path_ptr = guestPtr(ctx, params[0]);
         const old_path_len = params[1].readAs(u32);
         const fd = params[2].readAs(u32);
-        const new_path_ptr = params[3].readAs(u32);
+        const new_path_ptr = guestPtr(ctx, params[3]);
         const new_path_len = params[4].readAs(u32);
 
         const dir_handle: std.Io.Dir = blk: {
@@ -1487,7 +1534,7 @@ pub const FdIO = struct {
     /// params: fd(i32), path_ptr(i32), path_len(i32)
     pub fn pathUnlinkFile(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
-        const path_ptr = params[1].readAs(u32);
+        const path_ptr = guestPtr(ctx, params[1]);
         const path_len = params[2].readAs(u32);
 
         const dir_handle: std.Io.Dir = blk: {
