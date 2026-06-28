@@ -66,4 +66,6 @@ test {
     _ = @import("wasmz/tests/multi_value_test.zig");
     _ = @import("wasmz/tests/atomic_test.zig");
     _ = @import("wasmz/tests/threads_test.zig");
+    _ = @import("wasmz/tests/memory64_test.zig");
+    _ = @import("core/tests/memory_test.zig");
 }

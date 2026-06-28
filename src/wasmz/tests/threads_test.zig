@@ -193,7 +193,7 @@ test "memory.size returns current page count" {
     defer instance.deinit();
 
     // Verify we started with 1 page.
-    try testing.expectEqual(@as(u32, 1), instance.memory.pageCount());
+    try testing.expectEqual(@as(u64, 1), instance.memory.pageCount());
 }
 
 test "SharedMemory.grow atomically advances current_size" {
@@ -203,11 +203,10 @@ test "SharedMemory.grow atomically advances current_size" {
     try testing.expectEqual(@as(usize, WASM_PAGE_SIZE), sm.bytes().len);
 
     const old = sm.grow(2);
-    try testing.expectEqual(@as(u32, 1), old); // old page count was 1
+    try testing.expectEqual(@as(u64, 1), old);
     try testing.expectEqual(@as(usize, 3 * WASM_PAGE_SIZE), sm.bytes().len);
 
-    // Cannot exceed max (4 pages), so grow by 2 more should fail.
     const fail = sm.grow(2);
-    try testing.expectEqual(std.math.maxInt(u32), fail);
+    try testing.expectEqual(std.math.maxInt(u64), fail);
     try testing.expectEqual(@as(usize, 3 * WASM_PAGE_SIZE), sm.bytes().len);
 }
