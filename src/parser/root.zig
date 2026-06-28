@@ -424,6 +424,21 @@ pub const Parser = struct {
         return @as(i64, @bitCast(result));
     }
 
+    /// Read a 64-bit unsigned LEB128 integer (varuint64).
+    pub fn read_var_uint64(self: *Parser) u64 {
+        var result: u64 = 0;
+        var shift: u32 = 0;
+
+        while (true) {
+            const byte = self.read_u8();
+            result |= @as(u64, byte & 0x7f) << @intCast(shift);
+            shift += 7;
+            if ((byte & 0x80) == 0) break;
+        }
+
+        return result;
+    }
+
     fn read_sect(self: *Parser) ParseResult {
         const start_pos = self.cur_pos;
         if (!self.has_more_bytes() and self.cur_eof) {
@@ -1456,13 +1471,15 @@ pub const Parser = struct {
         };
     }
 
-    fn read_resizable_limits(self: *Parser, max_present: bool) ResizableLimits {
-        const initial = self.read_var_uint32();
-        const maximum = if (max_present) self.read_var_uint32() else null;
-        return .{
-            .initial = initial,
-            .maximum = maximum,
-        };
+    fn read_resizable_limits(self: *Parser, max_present: bool, use_i64: bool) ResizableLimits {
+        if (use_i64) {
+            const initial = self.read_var_uint64();
+            const maximum = if (max_present) self.read_var_uint64() else null;
+            return .{ .initial = initial, .maximum = maximum };
+        }
+        const initial: u64 = self.read_var_uint32();
+        const maximum: ?u64 = if (max_present) self.read_var_uint32() else null;
+        return .{ .initial = initial, .maximum = maximum };
     }
 
     fn read_table_type(self: *Parser) TableType {
@@ -1470,15 +1487,17 @@ pub const Parser = struct {
         const flags = self.read_var_uint32();
         return .{
             .element_type = element_type,
-            .limits = self.read_resizable_limits((flags & 0x01) != 0),
+            .limits = self.read_resizable_limits((flags & 0x01) != 0, false),
         };
     }
 
     fn read_memory_type(self: *Parser) MemoryType {
         const flags = self.read_var_uint32();
+        const memory64 = (flags & 0x04) != 0;
         return .{
-            .limits = self.read_resizable_limits((flags & 0x01) != 0),
+            .limits = self.read_resizable_limits((flags & 0x01) != 0, memory64),
             .shared = (flags & 0x02) != 0,
+            .memory64 = memory64,
         };
     }
 
@@ -2716,13 +2735,14 @@ pub const Parser = struct {
         if (!self.skip_type()) return false;
         if (!self.has_var_int_bytes()) return false;
         const flags = self.read_var_uint32();
-        return self.skip_resizable_limits((flags & 0x01) != 0);
+        return self.skip_resizable_limits((flags & 0x01) != 0, false);
     }
 
     fn skip_memory_type(self: *Parser) bool {
         if (!self.has_var_int_bytes()) return false;
         const flags = self.read_var_uint32();
-        return self.skip_resizable_limits((flags & 0x01) != 0);
+        const memory64 = (flags & 0x04) != 0;
+        return self.skip_resizable_limits((flags & 0x01) != 0, memory64);
     }
 
     fn skip_global_type(self: *Parser) bool {
@@ -2740,12 +2760,20 @@ pub const Parser = struct {
         return true;
     }
 
-    fn skip_resizable_limits(self: *Parser, max_present: bool) bool {
+    fn skip_resizable_limits(self: *Parser, max_present: bool, use_i64: bool) bool {
         if (!self.has_var_int_bytes()) return false;
-        _ = self.read_var_uint32();
+        if (use_i64) {
+            _ = self.read_var_uint64();
+        } else {
+            _ = self.read_var_uint32();
+        }
         if (max_present) {
             if (!self.has_var_int_bytes()) return false;
-            _ = self.read_var_uint32();
+            if (use_i64) {
+                _ = self.read_var_uint64();
+            } else {
+                _ = self.read_var_uint32();
+            }
         }
         return true;
     }

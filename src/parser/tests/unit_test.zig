@@ -1024,6 +1024,49 @@ test "read_next_operator consumes padded zero reserved immediate for memory.grow
     try std.testing.expectEqual(OperatorCode.memory_grow, parsed.info.code);
 }
 
+test "parses memory64 type with i64 limits" {
+    // memory section: 1 memory, flags=0x04 (memory64), initial=1 page
+    const memory_section = [_]u8{ 0x05, 0x03, 0x01, 0x04, 0x01 };
+
+    var parser = Parser.init(std.testing.allocator);
+    const result = parser.parse(&memory_section, false);
+
+    switch (result) {
+        .parsed => |parsed| {
+            switch (parsed.payload) {
+                .memory_type => |mem| {
+                    try std.testing.expect(mem.memory64);
+                    try std.testing.expect(!mem.shared);
+                    try std.testing.expectEqual(@as(u64, 1), mem.limits.initial);
+                    try std.testing.expectEqual(@as(?u64, null), mem.limits.maximum);
+                },
+                else => return error.UnexpectedPayload,
+            }
+        },
+        else => return error.UnexpectedParseResult,
+    }
+}
+
+test "parses wasm32 memory type unchanged" {
+    const memory_section = [_]u8{ 0x05, 0x03, 0x01, 0x00, 0x01 };
+
+    var parser = Parser.init(std.testing.allocator);
+    const result = parser.parse(&memory_section, false);
+
+    switch (result) {
+        .parsed => |parsed| {
+            switch (parsed.payload) {
+                .memory_type => |mem| {
+                    try std.testing.expect(!mem.memory64);
+                    try std.testing.expectEqual(@as(u64, 1), mem.limits.initial);
+                },
+                else => return error.UnexpectedPayload,
+            }
+        },
+        else => return error.UnexpectedParseResult,
+    }
+}
+
 fn expect_need_more_data(result: ParseResult) !void {
     switch (result) {
         .need_more_data => {},

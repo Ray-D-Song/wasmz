@@ -813,8 +813,8 @@ pub const ModuleHeader = struct {
 };
 
 pub const ResizableLimits = struct {
-    initial: u32,
-    maximum: ?u32 = null,
+    initial: u64,
+    maximum: ?u64 = null,
 };
 
 pub const TableType = struct {
@@ -825,6 +825,7 @@ pub const TableType = struct {
 pub const MemoryType = struct {
     limits: ResizableLimits,
     shared: bool,
+    memory64: bool = false,
 };
 
 pub const GlobalType = struct {
