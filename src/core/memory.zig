@@ -76,14 +76,13 @@ const mmap_page_align = std.heap.page_size_min;
 /// packed struct PROT and the Apple `vm_prot_t` packed struct.
 /// Both expose `READ`, `WRITE`, `EXEC` bool fields; default-initialised
 /// is "no access" (== PROT_NONE on the C side).
-const prot_none: std.posix.PROT = .{};
-
 /// Allocate a virtual address region of `capacity` bytes with no physical pages
 /// committed (PROT_NONE), then commit the first `committed` bytes.
 /// Returns a pointer to the base of the region and the full capacity slice.
 fn ownedMmapInit(committed: usize, capacity: usize) Allocator.Error![]align(mmap_page_align) u8 {
     if (use_mmap) {
         const posix = std.posix;
+        const prot_none: posix.PROT = .{};
         const base = posix.mmap(
             null,
             capacity,
@@ -549,7 +548,9 @@ pub const Memory = struct {
     pub fn deinit(self: *Memory) void {
         switch (self.kind) {
             .owned => |*o| {
-                if (o.base.len > 0) ownedMmapDeinit(o.base);
+                if (comptime use_mmap) {
+                    if (o.base.len > 0) ownedMmapDeinit(o.base);
+                }
             },
             .owned_heap => |*o| {
                 if (o.bytes.len > 0) o.allocator.free(o.bytes);
@@ -622,6 +623,7 @@ pub const Memory = struct {
         const FAIL = std.math.maxInt(u64);
         return switch (self.kind) {
             .owned => |*o| blk: {
+                if (comptime !use_mmap) break :blk FAIL;
                 const old_committed = o.committed;
                 const old_pages = old_committed / WASM_PAGE_SIZE;
                 if (delta == 0) break :blk old_pages;

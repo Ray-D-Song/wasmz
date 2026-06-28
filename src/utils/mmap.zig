@@ -101,11 +101,17 @@ fn mapFileWindows(handle: std.os.windows.HANDLE, size: u64) MapError!MappedFile 
     var section_handle: windows.HANDLE = undefined;
     const create_rc = ntdll.NtCreateSection(
         &section_handle,
-        windows.STANDARD_RIGHTS_REQUIRED | windows.SECTION_QUERY | windows.SECTION_MAP_READ,
+        .{
+            .SPECIFIC = .{ .SECTION = .{
+                .QUERY = true,
+                .MAP_READ = true,
+            } },
+            .STANDARD = .{ .RIGHTS = .REQUIRED },
+        },
         null,
         null,
-        windows.PAGE_READONLY,
-        windows.SEC_COMMIT,
+        .{ .READONLY = true },
+        .{ .COMMIT = true },
         handle,
     );
     if (create_rc != .SUCCESS) return error.MapFailed;
@@ -115,15 +121,15 @@ fn mapFileWindows(handle: std.os.windows.HANDLE, size: u64) MapError!MappedFile 
     var view_size: usize = 0;
     const map_rc = ntdll.NtMapViewOfSection(
         section_handle,
-        windows.self_process_handle,
+        windows.current_process,
         @ptrCast(&base_addr),
         null,
         0,
         null,
         &view_size,
-        .ViewUnmap,
-        0,
-        windows.PAGE_READONLY,
+        .Unmap,
+        .{},
+        .{ .READONLY = true },
     );
     if (map_rc != .SUCCESS) return error.MapFailed;
 
@@ -148,7 +154,7 @@ fn unmapWindows(m: MappedFile) void {
 fn unmapViewRaw(base_addr: usize) void {
     const windows = std.os.windows;
     _ = windows.ntdll.NtUnmapViewOfSection(
-        windows.self_process_handle,
+        windows.current_process,
         @ptrFromInt(base_addr),
     );
 }

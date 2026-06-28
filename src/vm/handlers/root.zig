@@ -146,7 +146,7 @@ fn currentRssWindows() usize {
     var counters: PROCESS_MEMORY_COUNTERS = undefined;
     counters.cb = @sizeOf(PROCESS_MEMORY_COUNTERS);
     if (k32.K32GetProcessMemoryInfo(
-        windows.self_process_handle,
+        windows.current_process,
         &counters,
         @sizeOf(PROCESS_MEMORY_COUNTERS),
     ) == 0) return 0;
