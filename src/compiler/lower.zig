@@ -1272,6 +1272,19 @@ pub const Lower = struct {
         return jump_pc;
     }
 
+    /// Copy a single ref operand into the target label's param/result slots before a
+    /// conditional GC branch (br_on_non_null / br_on_cast / br_on_cast_fail).
+    /// Matches br/br_if: the jump target is block `end`, which skips the fall-through
+    /// copy at `end`, so the ref must be written to label slots before branching.
+    fn emit_forward_ref_to_label(self: *Lower, frame: *ControlFrame, ref: Slot) !void {
+        const target_slots = if (frame.kind == .loop)
+            frame.param_slots.items()
+        else
+            frame.result_slots.items();
+        if (target_slots.len == 0) return;
+        try self.emit_copy(target_slots[0], ref);
+    }
+
     // Generic operation helpers
 
     /// Peephole F helper: attempts to fuse the last emitted compare op with
@@ -4792,6 +4805,8 @@ pub const Lower = struct {
                 const frame = try self.frame_at_depth(br_depth);
                 const ref = try self.pop_slot();
 
+                try self.emit_forward_ref_to_label(frame, ref);
+
                 const op_pc = self.current_pc();
                 try self.emit(.{
                     .br_on_non_null = .{
@@ -4819,6 +4834,8 @@ pub const Lower = struct {
                 const frame = try self.frame_at_depth(inst.br_depth);
                 const ref = try self.pop_slot();
 
+                try self.emit_forward_ref_to_label(frame, ref);
+
                 const op_pc = self.current_pc();
                 try self.emit(.{ .br_on_cast = .{
                     .ref = ref,
@@ -4844,6 +4861,8 @@ pub const Lower = struct {
                 self.disableLocalInitAnalysis();
                 const frame = try self.frame_at_depth(inst.br_depth);
                 const ref = try self.pop_slot();
+
+                try self.emit_forward_ref_to_label(frame, ref);
 
                 const op_pc = self.current_pc();
                 try self.emit(.{ .br_on_cast_fail = .{

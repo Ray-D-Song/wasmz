@@ -1,0 +1,12 @@
+(module
+  (type $s (struct (field i32)))
+  (func (export "is_null") (result i32)
+    (block $hit (result (ref $s))
+      (br_on_cast $hit anyref (ref $s) (struct.new $s (i32.const 42)))
+      (unreachable))
+    (ref.is_null))
+  (func (export "get_field") (result i32)
+    (block $hit (result (ref $s))
+      (br_on_cast $hit anyref (ref $s) (struct.new $s (i32.const 42)))
+      (unreachable))
+    (struct.get $s 0)))
