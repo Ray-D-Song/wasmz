@@ -9,6 +9,7 @@ const core = @import("core");
 const store_mod = @import("../../wasmz/store.zig");
 const host_mod = @import("../../wasmz/host.zig");
 const module_mod = @import("../../wasmz/module.zig");
+const type_equiv_mod = @import("../../wasmz/type_equiv.zig");
 
 const Allocator = std.mem.Allocator;
 const RawVal = dispatch.RawVal;
@@ -898,7 +899,7 @@ pub fn handle_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
         trapReturn(frame, .BadSignature);
         return;
     }
-    if (env.func_type_indices[callee_func_idx] != ops.type_index) {
+    if (!type_equiv_mod.funcTypeMatches(env.func_type_indices[callee_func_idx], ops.type_index, env.type_canonical)) {
         trapReturn(frame, .BadSignature);
         return;
     }
@@ -1095,7 +1096,7 @@ pub fn handle_return_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
         trapReturn(frame, .BadSignature);
         return;
     }
-    if (env.func_type_indices[callee_func_idx] != ops.type_index) {
+    if (!type_equiv_mod.funcTypeMatches(env.func_type_indices[callee_func_idx], ops.type_index, env.type_canonical)) {
         trapReturn(frame, .BadSignature);
         return;
     }
@@ -1192,7 +1193,7 @@ pub fn handle_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
         trapReturn(frame, .BadSignature);
         return;
     }
-    if (env.func_type_indices[callee_func_idx] != ops.type_idx) {
+    if (!type_equiv_mod.funcTypeMatches(env.func_type_indices[callee_func_idx], ops.type_idx, env.type_canonical)) {
         trapReturn(frame, .BadSignature);
         return;
     }
@@ -1285,7 +1286,7 @@ pub fn handle_return_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
         trapReturn(frame, .BadSignature);
         return;
     }
-    if (env.func_type_indices[callee_func_idx] != ops.type_idx) {
+    if (!type_equiv_mod.funcTypeMatches(env.func_type_indices[callee_func_idx], ops.type_idx, env.type_canonical)) {
         trapReturn(frame, .BadSignature);
         return;
     }
