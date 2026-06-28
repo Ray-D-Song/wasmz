@@ -9,7 +9,7 @@ const classify = @import("classify.zig");
 const V128 = ops.V128;
 const SimdOpcode = classify.SimdOpcode;
 
-inline fn memOffset(memory: []const u8, addr: u64, offset: u32) usize {
+inline fn memOffset(addr: u64, offset: u32) usize {
     const ea = addr +% offset;
     return std.math.cast(usize, ea) orelse @panic("SIMD address overflow");
 }
@@ -22,24 +22,24 @@ pub fn load(opcode: SimdOpcode, memory: []const u8, addr: u64, offset: u32, lane
     return switch (opcode) {
         .v128_load => blk: {
             var out: [16]u8 = undefined;
-            const ea = memOffset(memory, addr, offset);
+            const ea = memOffset(addr, offset);
             @memcpy(out[0..], memory[ea .. ea + 16]);
             break :blk ops.v128FromBytes(out);
         },
-        .i16x8_load8x8_s => wideningLoad(i8, i16, 8, memory[memOffset(memory, addr, offset) ..][0..8], true),
-        .i16x8_load8x8_u => wideningLoad(u8, i16, 8, memory[memOffset(memory, addr, offset) ..][0..8], false),
-        .i32x4_load16x4_s => wideningLoad(i16, i32, 4, memory[memOffset(memory, addr, offset) ..][0..8], true),
-        .i32x4_load16x4_u => wideningLoad(u16, i32, 4, memory[memOffset(memory, addr, offset) ..][0..8], false),
-        .i64x2_load32x2_s => wideningLoad(i32, i64, 2, memory[memOffset(memory, addr, offset) ..][0..8], true),
-        .i64x2_load32x2_u => wideningLoad(u32, i64, 2, memory[memOffset(memory, addr, offset) ..][0..8], false),
-        .v8x16_load_splat => loadSplat(u8, i8, 16, memory[memOffset(memory, addr, offset) ..][0..1]),
-        .v16x8_load_splat => loadSplat(u16, i16, 8, memory[memOffset(memory, addr, offset) ..][0..2]),
-        .v32x4_load_splat => loadSplat(u32, i32, 4, memory[memOffset(memory, addr, offset) ..][0..4]),
-        .v64x2_load_splat => loadSplat(u64, i64, 2, memory[memOffset(memory, addr, offset) ..][0..8]),
+        .i16x8_load8x8_s => wideningLoad(i8, i16, 8, memory[memOffset(addr, offset) ..][0..8], true),
+        .i16x8_load8x8_u => wideningLoad(u8, i16, 8, memory[memOffset(addr, offset) ..][0..8], false),
+        .i32x4_load16x4_s => wideningLoad(i16, i32, 4, memory[memOffset(addr, offset) ..][0..8], true),
+        .i32x4_load16x4_u => wideningLoad(u16, i32, 4, memory[memOffset(addr, offset) ..][0..8], false),
+        .i64x2_load32x2_s => wideningLoad(i32, i64, 2, memory[memOffset(addr, offset) ..][0..8], true),
+        .i64x2_load32x2_u => wideningLoad(u32, i64, 2, memory[memOffset(addr, offset) ..][0..8], false),
+        .v8x16_load_splat => loadSplat(u8, i8, 16, memory[memOffset(addr, offset) ..][0..1]),
+        .v16x8_load_splat => loadSplat(u16, i16, 8, memory[memOffset(addr, offset) ..][0..2]),
+        .v32x4_load_splat => loadSplat(u32, i32, 4, memory[memOffset(addr, offset) ..][0..4]),
+        .v64x2_load_splat => loadSplat(u64, i64, 2, memory[memOffset(addr, offset) ..][0..8]),
         // Fix 8: removed unused T and width parameters from loadZeroExtended
-        .v128_load32_zero => loadZeroExtended(memory[memOffset(memory, addr, offset) ..][0..4]),
-        .v128_load64_zero => loadZeroExtended(memory[memOffset(memory, addr, offset) ..][0..8]),
-        .v128_load8_lane, .v128_load16_lane, .v128_load32_lane, .v128_load64_lane => loadLane(opcode, src_vec.?, memory[memOffset(memory, addr, offset) ..][0..classify.laneImmediateFromOpcode(opcode)], lane.?),
+        .v128_load32_zero => loadZeroExtended(memory[memOffset(addr, offset) ..][0..4]),
+        .v128_load64_zero => loadZeroExtended(memory[memOffset(addr, offset) ..][0..8]),
+        .v128_load8_lane, .v128_load16_lane, .v128_load32_lane, .v128_load64_lane => loadLane(opcode, src_vec.?, memory[memOffset(addr, offset) ..][0..classify.laneImmediateFromOpcode(opcode)], lane.?),
         else => unreachable,
     };
 }
@@ -47,7 +47,7 @@ pub fn load(opcode: SimdOpcode, memory: []const u8, addr: u64, offset: u32, lane
 /// Stores a V128 value (or a single lane) to linear memory.
 /// `src` is passed as V128 (the exec layer converts from RawVal).
 pub fn store(opcode: SimdOpcode, memory: []u8, addr: u64, offset: u32, lane: ?u8, src: V128) void {
-    const ea = memOffset(memory, addr, offset);
+    const ea = memOffset(addr, offset);
     switch (opcode) {
         .v128_store => {
             const bytes = src.bytes;

@@ -31,7 +31,7 @@ pub const MapError = error{
     MapFailed,
 };
 
-const PosixFileMap = if (comptime !is_wasi and !is_windows) struct {
+const PosixFileMap = if (!is_wasi and !is_windows) struct {
     fn map(fd: std.posix.fd_t, size: u64) MapError!MappedFile {
         const len: usize = std.math.cast(usize, size) orelse return error.MapFailed;
         const mapped = std.posix.mmap(
