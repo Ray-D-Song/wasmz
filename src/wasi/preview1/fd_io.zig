@@ -1,12 +1,10 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const core = @import("core");
 const wasmz = @import("wasmz");
 const types = @import("./types.zig");
 
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
-const posix = std.posix;
 const RawVal = core.RawVal;
 const HostContext = wasmz.HostContext;
 
@@ -46,11 +44,8 @@ fn readGuestIovs(ctx: *HostContext, ptr: u64, len: u32) wasmz.HostError![]GuestI
 }
 
 fn stdinRead(buf: []u8) !usize {
-    if (builtin.os.tag == .windows) {
-        const io = Io.Threaded.global_single_threaded.io();
-        return std.Io.File.stdin().readStreaming(io, &.{buf});
-    }
-    return posix.read(posix.STDIN_FILENO, buf);
+    const io = Io.Threaded.global_single_threaded.io();
+    return std.Io.File.stdin().readStreaming(io, &.{buf});
 }
 
 fn wasiInode(inode: anytype) u64 {

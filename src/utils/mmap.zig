@@ -31,6 +31,33 @@ pub const MapError = error{
     MapFailed,
 };
 
+const PosixFileMap = if (comptime !is_wasi and !is_windows) struct {
+    fn map(fd: std.posix.fd_t, size: u64) MapError!MappedFile {
+        const len: usize = std.math.cast(usize, size) orelse return error.MapFailed;
+        const mapped = std.posix.mmap(
+            null,
+            len,
+            std.posix.PROT{ .READ = true },
+            .{ .TYPE = .PRIVATE },
+            fd,
+            0,
+        ) catch return error.MapFailed;
+        return .{ .data = mapped };
+    }
+
+    fn unmap(data: []align(page_align) const u8) void {
+        std.posix.munmap(data);
+    }
+} else struct {
+    fn map(_: usize, _: u64) MapError!MappedFile {
+        unreachable;
+    }
+
+    fn unmap(_: []align(page_align) const u8) void {
+        unreachable;
+    }
+};
+
 /// Memory-map (or read) an open file for reading.
 pub fn mapFile(file: std.Io.File, io: Io) MapError!MappedFile {
     const stat = file.stat(io) catch return error.MapFailed;
@@ -41,7 +68,7 @@ pub fn mapFile(file: std.Io.File, io: Io) MapError!MappedFile {
     } else if (comptime is_windows) {
         return mapFileWindows(file.handle, stat.size);
     } else {
-        return mapFilePosix(file.handle, stat.size);
+        return PosixFileMap.map(file.handle, stat.size);
     }
 }
 
@@ -52,7 +79,7 @@ pub fn unmap(m: MappedFile) void {
     } else if (comptime is_windows) {
         unmapWindows(m);
     } else {
-        std.posix.munmap(m.data);
+        PosixFileMap.unmap(m.data);
     }
 }
 
@@ -75,21 +102,6 @@ fn mapFileWasi(file: std.Io.File, io: Io, size: u64) MapError!MappedFile {
 
 fn unmapWasi(m: MappedFile) void {
     std.heap.page_allocator.free(m.wasi_buf);
-}
-
-// POSIX implementation
-
-fn mapFilePosix(fd: std.posix.fd_t, size: u64) MapError!MappedFile {
-    const len: usize = std.math.cast(usize, size) orelse return error.MapFailed;
-    const mapped = std.posix.mmap(
-        null,
-        len,
-        std.posix.PROT{ .READ = true },
-        .{ .TYPE = .PRIVATE },
-        fd,
-        0,
-    ) catch return error.MapFailed;
-    return .{ .data = mapped };
 }
 
 // Windows implementation
