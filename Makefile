@@ -1,7 +1,7 @@
 BIN      := wasmz
 INSTALL  := $(HOME)/.local/bin
 
-.PHONY: build-debug build release install install-debug install-release uninstall test clib bench build-wasi build-wasm
+.PHONY: build-debug build release install install-debug install-release uninstall test clib deps bench build-wasi build-wasm
 
 build-debug:
 	zig build -Doptimize=Debug -Dprofiling=true
@@ -43,7 +43,10 @@ clib:
 	@ls -lh zig-out/lib/libwasmz.* 2>/dev/null || ls -lh zig-out/lib/
 	@ls -lh zig-out/include/wasmz.h
 
-bench:
+deps:
+	./bench/deps.sh
+
+bench: deps
 	./bench/bench.sh
 
 count-ops:
