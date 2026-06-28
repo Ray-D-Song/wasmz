@@ -693,3 +693,43 @@ test "Instance.call: elem.drop makes table.init trap" {
     defer trap3.deinit();
     try testing.expectEqual(TrapCode.TableOutOfBounds, trap3.trapCode().?);
 }
+
+/// Issue #4: i31ref / funcref globals defer const expr without struct/array types
+const global_i31ref_wasm = @embedFile("fixtures/global_i31ref.wasm");
+const global_funcref_wasm = @embedFile("fixtures/global_funcref.wasm");
+
+test "Instance issue #4: i31ref global initialized by ref.i31" {
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
+    defer store.deinit();
+
+    var arc = try compileArc(global_i31ref_wasm, engine);
+    defer releaseArc(arc);
+
+    var instance = try Instance.init(&store, arc.retain(), Imports.empty);
+    defer instance.deinit();
+
+    const exec_r = try instance.call("f", &.{});
+    const result = exec_r.ok orelse return error.MissingReturnValue;
+    try testing.expectEqual(@as(i32, 42), result.readAs(i32));
+}
+
+test "Instance issue #4: funcref global initialized by ref.func" {
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
+    defer store.deinit();
+
+    var arc = try compileArc(global_funcref_wasm, engine);
+    defer releaseArc(arc);
+
+    var instance = try Instance.init(&store, arc.retain(), Imports.empty);
+    defer instance.deinit();
+
+    const exec_r = try instance.call("is_null", &.{});
+    const result = exec_r.ok orelse return error.MissingReturnValue;
+    try testing.expectEqual(@as(i32, 0), result.readAs(i32));
+}
