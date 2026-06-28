@@ -12,6 +12,7 @@ const dispatch = @import("../dispatch.zig");
 const vm_root = @import("../root.zig");
 const gc_mod = @import("../gc/root.zig");
 const core = @import("core");
+const common = @import("common.zig");
 const store_mod = @import("../../wasmz/store.zig");
 const host_mod = @import("../../wasmz/host.zig");
 const module_mod = @import("../../wasmz/module.zig");
@@ -47,6 +48,8 @@ const heap_type = core.heap_type;
 const gcRefKindFromHeapType = heap_type.gcRefKindFromHeapType;
 const helper = core.helper;
 const simd = core.simd;
+const effectiveAddr = common.effectiveAddr;
+const trapReturn = common.trapReturn;
 
 const HANDLER_SIZE = dispatch.HANDLER_SIZE;
 // Helpers
@@ -148,24 +151,6 @@ fn currentRssWindows() usize {
         @sizeOf(PROCESS_MEMORY_COUNTERS),
     ) == 0) return 0;
     return counters.WorkingSetSize;
-}
-
-/// Compute effective address with bounds check.
-/// Returns null if out-of-bounds.
-inline fn effectiveAddr(slots: [*]RawVal, addr_slot: Slot, offset: u32, size: usize, mem: []const u8) ?u32 {
-    const base = slots[addr_slot].readAs(u32);
-    const ea = base +% offset;
-    if (@as(usize, ea) + size > mem.len) return null;
-    return ea;
-}
-
-inline fn trapReturn(frame: *DispatchState, code: core.TrapCode) void {
-    var trap = Trap.fromTrapCode(code);
-    if (frame.captureStackTrace()) |trace| {
-        trap.allocator = frame.allocator;
-        trap.stack_trace = trace;
-    }
-    frame.result = .{ .trap = trap };
 }
 
 inline fn UnsignedOf(comptime T: type) type {
@@ -4488,7 +4473,7 @@ pub fn handle_i32_load_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchSta
     dispatch.countOp("load_to_local");
     const ops = readOps(encode.ops.OpsLoadToLocal, ip);
     const mem = frame.memSlice();
-    const ea = effectiveAddr(slots, ops.addr, ops.offset, 4, mem) orelse {
+    const ea = effectiveAddr(slots, ops.addr, ops.offset, 4, mem, frame.memory64) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
     };
@@ -4500,7 +4485,7 @@ pub fn handle_i64_load_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchSta
     dispatch.countOp("load_to_local");
     const ops = readOps(encode.ops.OpsLoadToLocal, ip);
     const mem = frame.memSlice();
-    const ea = effectiveAddr(slots, ops.addr, ops.offset, 8, mem) orelse {
+    const ea = effectiveAddr(slots, ops.addr, ops.offset, 8, mem, frame.memory64) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
     };

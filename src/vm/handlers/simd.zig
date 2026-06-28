@@ -8,6 +8,7 @@ const encode = @import("../../compiler/encode/encode.zig");
 const dispatch = @import("../dispatch.zig");
 const core = @import("core");
 const simd = core.simd;
+const common = @import("common.zig");
 
 const RawVal = dispatch.RawVal;
 const SimdVal = core.SimdVal;
@@ -16,35 +17,10 @@ const Handler = dispatch.Handler;
 const DispatchState = dispatch.DispatchState;
 const ExecEnv = dispatch.ExecEnv;
 
-const HANDLER_SIZE = dispatch.HANDLER_SIZE;
-
-// Helpers
-
-inline fn readOps(comptime T: type, ip: [*]u8) T {
-    if (@sizeOf(T) == 0) return .{};
-    const bytes = ip[HANDLER_SIZE..][0..@sizeOf(T)];
-    return std.mem.bytesAsValue(T, bytes).*;
-}
-
-inline fn stride(comptime OpsT: type) usize {
-    return HANDLER_SIZE + @sizeOf(OpsT);
-}
-
-inline fn trapReturn(frame: *DispatchState, code: core.TrapCode) void {
-    var trap = Trap.fromTrapCode(code);
-    if (frame.captureStackTrace()) |trace| {
-        trap.allocator = frame.allocator;
-        trap.stack_trace = trace;
-    }
-    frame.result = .{ .trap = trap };
-}
-
-inline fn effectiveAddr(slots: [*]RawVal, addr_slot: u32, offset: u32, size: usize, mem: []const u8) ?u32 {
-    const base = slots[addr_slot].readAs(u32);
-    const ea = base +% offset;
-    if (@as(usize, ea) + size > mem.len) return null;
-    return ea;
-}
+const readOps = common.readOps;
+const stride = common.stride;
+const trapReturn = common.trapReturn;
+const effectiveAddr = common.effectiveAddr;
 
 /// Read a V128 from two consecutive RawVal slots.
 inline fn readSimd(slots: [*]RawVal, idx: u32) SimdVal {
@@ -152,7 +128,7 @@ pub fn handle_simd_shuffle(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
 pub fn handle_simd_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops_val = readOps(encode.ops.OpsSimdLoad, ip);
     const opcode: core.simd.SimdOpcode = @enumFromInt(ops_val.opcode);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
 
     const access_size: usize = if (simd.isLaneLoadOpcode(opcode))
         simd.laneImmediateFromOpcode(opcode)
@@ -168,17 +144,18 @@ pub fn handle_simd_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
         else => unreachable,
     };
 
-    _ = effectiveAddr(slots, ops_val.addr, ops_val.offset, access_size, memory) orelse {
+    _ = effectiveAddr(slots, ops_val.addr, ops_val.offset, access_size, memory, frame.memory64) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
     };
 
+    const base: u64 = if (frame.memory64) @bitCast(slots[ops_val.addr].readAs(i64)) else slots[ops_val.addr].readAs(u32);
     const src_vec: ?SimdVal = if (ops_val.src_vec_valid != 0) readSimd(slots, ops_val.src_vec) else null;
 
     const result = simd.load(
         opcode,
         memory,
-        slots[ops_val.addr].readAs(u32),
+        base,
         ops_val.offset,
         ops_val.lane,
         src_vec,
@@ -192,7 +169,7 @@ pub fn handle_simd_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
 pub fn handle_simd_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops_val = readOps(encode.ops.OpsSimdStore, ip);
     const opcode: core.simd.SimdOpcode = @enumFromInt(ops_val.opcode);
-    const memory = env.memory.bytes();
+    const memory = frame.memSlice();
 
     const access_size: usize = if (simd.isLaneStoreOpcode(opcode))
         simd.laneImmediateFromOpcode(opcode)
@@ -201,11 +178,12 @@ pub fn handle_simd_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
         else => unreachable,
     };
 
-    _ = effectiveAddr(slots, ops_val.addr, ops_val.offset, access_size, memory) orelse {
+    _ = effectiveAddr(slots, ops_val.addr, ops_val.offset, access_size, memory, frame.memory64) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
     };
 
-    simd.store(opcode, memory, slots[ops_val.addr].readAs(u32), ops_val.offset, ops_val.lane, readSimd(slots, ops_val.src));
+    const base: u64 = if (frame.memory64) @bitCast(slots[ops_val.addr].readAs(i64)) else slots[ops_val.addr].readAs(u32);
+    simd.store(opcode, memory, base, ops_val.offset, ops_val.lane, readSimd(slots, ops_val.src));
     dispatch.next(ip, stride(encode.ops.OpsSimdStore), slots, frame, env, r0, fp0);
 }

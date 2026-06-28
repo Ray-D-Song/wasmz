@@ -13,7 +13,7 @@ const SimdOpcode = classify.SimdOpcode;
 /// (e.g. i16x8.load8x8_s), splat loads, zero-extending loads, and lane loads.
 /// `ea` = addr +% offset (wrapping add per wasm spec).
 /// `src_vec` is passed as ?V128 (the exec layer converts from RawVal).
-pub fn load(opcode: SimdOpcode, memory: []const u8, addr: u32, offset: u32, lane: ?u8, src_vec: ?V128) V128 {
+pub fn load(opcode: SimdOpcode, memory: []const u8, addr: u64, offset: u32, lane: ?u8, src_vec: ?V128) V128 {
     const ea = addr +% offset;
     return switch (opcode) {
         .v128_load => blk: {
@@ -41,7 +41,7 @@ pub fn load(opcode: SimdOpcode, memory: []const u8, addr: u32, offset: u32, lane
 
 /// Stores a V128 value (or a single lane) to linear memory.
 /// `src` is passed as V128 (the exec layer converts from RawVal).
-pub fn store(opcode: SimdOpcode, memory: []u8, addr: u32, offset: u32, lane: ?u8, src: V128) void {
+pub fn store(opcode: SimdOpcode, memory: []u8, addr: u64, offset: u32, lane: ?u8, src: V128) void {
     const ea = addr +% offset;
     switch (opcode) {
         .v128_store => {

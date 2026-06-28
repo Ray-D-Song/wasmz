@@ -346,13 +346,13 @@ pub fn shuffleVectors(lhs: SimdVal, rhs: SimdVal, lanes_arr: [16]u8) SimdVal {
 }
 
 /// Loads a V128 from memory. Returns a SimdVal.
-pub fn load(opcode: SimdOpcode, memory: []const u8, addr: u32, offset: u32, lane: ?u8, src_vec: ?SimdVal) SimdVal {
+pub fn load(opcode: SimdOpcode, memory: []const u8, addr: u64, offset: u32, lane: ?u8, src_vec: ?SimdVal) SimdVal {
     const sv: ?V128 = if (src_vec) |sv| sv.toV128() else null;
     return v2sv(mem_ops.load(opcode, memory, addr, offset, lane, sv));
 }
 
 /// Stores a V128 to memory from a SimdVal.
-pub fn store(opcode: SimdOpcode, memory: []u8, addr: u32, offset: u32, lane: ?u8, src: SimdVal) void {
+pub fn store(opcode: SimdOpcode, memory: []u8, addr: u64, offset: u32, lane: ?u8, src: SimdVal) void {
     mem_ops.store(opcode, memory, addr, offset, lane, src.toV128());
 }
 

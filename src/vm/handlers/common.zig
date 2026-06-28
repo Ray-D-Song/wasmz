@@ -71,11 +71,12 @@ pub inline fn stride(comptime OpsT: type) usize {
 
 /// Compute effective address with bounds check.
 /// Returns null if out-of-bounds.
-pub inline fn effectiveAddr(slots: [*]RawVal, addr_slot: Slot, offset: u32, size: usize, mem: []const u8) ?u32 {
-    const base = slots[addr_slot].readAs(u32);
-    const ea = base +% offset;
-    if (@as(usize, ea) + size > mem.len) return null;
-    return ea;
+pub inline fn effectiveAddr(slots: [*]RawVal, addr_slot: Slot, offset: u32, size: usize, mem: []const u8, memory64: bool) ?usize {
+    const base: u64 = if (memory64) @bitCast(slots[addr_slot].readAs(i64)) else slots[addr_slot].readAs(u32);
+    const ea = std.math.add(u64, base, offset) catch return null;
+    const end = std.math.add(u64, ea, @as(u64, size)) catch return null;
+    if (end > mem.len) return null;
+    return @intCast(ea);
 }
 
 pub inline fn trapReturn(frame: *DispatchState, code: core.TrapCode) void {

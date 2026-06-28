@@ -8,6 +8,7 @@ const encode = @import("../../compiler/encode/encode.zig");
 const dispatch = @import("../dispatch.zig");
 const core = @import("core");
 const arch = core.platform;
+const common = @import("common.zig");
 
 const RawVal = dispatch.RawVal;
 const Trap = dispatch.Trap;
@@ -15,28 +16,10 @@ const Handler = dispatch.Handler;
 const DispatchState = dispatch.DispatchState;
 const ExecEnv = dispatch.ExecEnv;
 
-const HANDLER_SIZE = dispatch.HANDLER_SIZE;
-
-// Helpers
-
-inline fn readOps(comptime T: type, ip: [*]u8) T {
-    if (@sizeOf(T) == 0) return .{};
-    const bytes = ip[HANDLER_SIZE..][0..@sizeOf(T)];
-    return std.mem.bytesAsValue(T, bytes).*;
-}
-
-inline fn stride(comptime OpsT: type) usize {
-    return HANDLER_SIZE + @sizeOf(OpsT);
-}
-
-inline fn trapReturn(frame: *DispatchState, code: core.TrapCode) void {
-    var trap = Trap.fromTrapCode(code);
-    if (frame.captureStackTrace()) |trace| {
-        trap.allocator = frame.allocator;
-        trap.stack_trace = trace;
-    }
-    frame.result = .{ .trap = trap };
-}
+const readOps = common.readOps;
+const stride = common.stride;
+const trapReturn = common.trapReturn;
+const effectiveAddr = common.effectiveAddr;
 
 // atomic_fence
 
@@ -52,19 +35,17 @@ pub fn handle_atomic_fence(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
 
 pub fn handle_atomic_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsAtomicLoad, ip);
-    const mem = env.memory.bytes();
+    const mem = frame.memSlice();
     const width: ir.AtomicWidth = @enumFromInt(ops.width);
     const ty: ir.AtomicType = @enumFromInt(ops.ty);
     const access_size = width.byteSize();
-    const base = slots[ops.addr].readAs(u32);
-    const ea = base +% ops.offset;
+    const ea = effectiveAddr(slots, ops.addr, ops.offset, access_size, mem, frame.memory64) orelse {
+        trapReturn(frame, .MemoryOutOfBounds);
+        return;
+    };
 
     if (ea % access_size != 0) {
         trapReturn(frame, .UnalignedAtomicAccess);
-        return;
-    }
-    if (@as(usize, ea) + access_size > mem.len) {
-        trapReturn(frame, .MemoryOutOfBounds);
         return;
     }
 
@@ -87,19 +68,17 @@ pub fn handle_atomic_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
 
 pub fn handle_atomic_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsAtomicStore, ip);
-    const mem = env.memory.bytes();
+    const mem = frame.memSlice();
     const width: ir.AtomicWidth = @enumFromInt(ops.width);
     const ty: ir.AtomicType = @enumFromInt(ops.ty);
     const access_size = width.byteSize();
-    const base = slots[ops.addr].readAs(u32);
-    const ea = base +% ops.offset;
+    const ea = effectiveAddr(slots, ops.addr, ops.offset, access_size, mem, frame.memory64) orelse {
+        trapReturn(frame, .MemoryOutOfBounds);
+        return;
+    };
 
     if (ea % access_size != 0) {
         trapReturn(frame, .UnalignedAtomicAccess);
-        return;
-    }
-    if (@as(usize, ea) + access_size > mem.len) {
-        trapReturn(frame, .MemoryOutOfBounds);
         return;
     }
 
@@ -122,20 +101,18 @@ pub fn handle_atomic_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
 
 pub fn handle_atomic_rmw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsAtomicRmw, ip);
-    const mem = env.memory.bytes();
+    const mem = frame.memSlice();
     const width: ir.AtomicWidth = @enumFromInt(ops.width);
     const ty: ir.AtomicType = @enumFromInt(ops.ty);
     const rmw_op: ir.AtomicRmwOp = @enumFromInt(ops.op);
     const access_size = width.byteSize();
-    const base = slots[ops.addr].readAs(u32);
-    const ea = base +% ops.offset;
+    const ea = effectiveAddr(slots, ops.addr, ops.offset, access_size, mem, frame.memory64) orelse {
+        trapReturn(frame, .MemoryOutOfBounds);
+        return;
+    };
 
     if (ea % access_size != 0) {
         trapReturn(frame, .UnalignedAtomicAccess);
-        return;
-    }
-    if (@as(usize, ea) + access_size > mem.len) {
-        trapReturn(frame, .MemoryOutOfBounds);
         return;
     }
 
@@ -207,19 +184,17 @@ pub fn handle_atomic_rmw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
 
 pub fn handle_atomic_cmpxchg(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsAtomicCmpxchg, ip);
-    const mem = env.memory.bytes();
+    const mem = frame.memSlice();
     const width: ir.AtomicWidth = @enumFromInt(ops.width);
     const ty: ir.AtomicType = @enumFromInt(ops.ty);
     const access_size = width.byteSize();
-    const base = slots[ops.addr].readAs(u32);
-    const ea = base +% ops.offset;
+    const ea = effectiveAddr(slots, ops.addr, ops.offset, access_size, mem, frame.memory64) orelse {
+        trapReturn(frame, .MemoryOutOfBounds);
+        return;
+    };
 
     if (ea % access_size != 0) {
         trapReturn(frame, .UnalignedAtomicAccess);
-        return;
-    }
-    if (@as(usize, ea) + access_size > mem.len) {
-        trapReturn(frame, .MemoryOutOfBounds);
         return;
     }
 
@@ -275,16 +250,14 @@ pub fn handle_atomic_cmpxchg(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState,
 
 pub fn handle_atomic_notify(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsAtomicNotify, ip);
-    const mem = env.memory.bytes();
-    const base = slots[ops.addr].readAs(u32);
-    const ea = base +% ops.offset;
+    const mem = frame.memSlice();
+    const ea = effectiveAddr(slots, ops.addr, ops.offset, 4, mem, frame.memory64) orelse {
+        trapReturn(frame, .MemoryOutOfBounds);
+        return;
+    };
 
     if (ea % 4 != 0) {
         trapReturn(frame, .UnalignedAtomicAccess);
-        return;
-    }
-    if (@as(usize, ea) + 4 > mem.len) {
-        trapReturn(frame, .MemoryOutOfBounds);
         return;
     }
 
@@ -304,16 +277,14 @@ pub fn handle_atomic_wait32(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
         return;
     }
 
-    const mem = env.memory.bytes();
-    const base = slots[ops.addr].readAs(u32);
-    const ea = base +% ops.offset;
+    const mem = frame.memSlice();
+    const ea = effectiveAddr(slots, ops.addr, ops.offset, 4, mem, frame.memory64) orelse {
+        trapReturn(frame, .MemoryOutOfBounds);
+        return;
+    };
 
     if (ea % 4 != 0) {
         trapReturn(frame, .UnalignedAtomicAccess);
-        return;
-    }
-    if (@as(usize, ea) + 4 > mem.len) {
-        trapReturn(frame, .MemoryOutOfBounds);
         return;
     }
 
@@ -334,16 +305,14 @@ pub fn handle_atomic_wait64(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
         return;
     }
 
-    const mem = env.memory.bytes();
-    const base = slots[ops.addr].readAs(u32);
-    const ea = base +% ops.offset;
+    const mem = frame.memSlice();
+    const ea = effectiveAddr(slots, ops.addr, ops.offset, 8, mem, frame.memory64) orelse {
+        trapReturn(frame, .MemoryOutOfBounds);
+        return;
+    };
 
     if (ea % 8 != 0) {
         trapReturn(frame, .UnalignedAtomicAccess);
-        return;
-    }
-    if (@as(usize, ea) + 8 > mem.len) {
-        trapReturn(frame, .MemoryOutOfBounds);
         return;
     }
 
