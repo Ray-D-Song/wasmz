@@ -30,7 +30,7 @@ export fn wasmz_init() void {
 export fn wasmz_load(ptr: [*]const u8, len: usize) i32 {
     const bytes = ptr[0..len];
     arc_module = wasmz.Module.compileArc(engine, bytes) catch return -1;
-    store = wasmz.Store.init(ally, engine) catch {
+    store = wasmz.Store.init(ally, engine, std.Io.Threaded.global_single_threaded.io()) catch {
         var mod = if (arc_module.releaseUnwrap()) |m| m else unreachable;
         mod.deinit();
         return -2;
@@ -48,7 +48,7 @@ export fn wasmz_call(name_ptr: [*]const u8, name_len: usize, args: [*]const i32,
     const name = name_ptr[0..name_len];
     if (instance == null) return -1;
 
-    var call_args = std.ArrayList(wasmz.RawVal){};
+    var call_args: std.ArrayList(wasmz.RawVal) = .empty;
     defer call_args.deinit(ally);
     for (0..argc) |i| {
         call_args.append(ally, wasmz.RawVal.from(args[i])) catch return -2;

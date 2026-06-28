@@ -3054,7 +3054,7 @@ fn contains_u32(values: []const u32, value: u32) bool {
 }
 
 fn parse_section_code(raw: u7) ?SectionCode {
-    return std.enums.fromInt(SectionCode, raw);
+    return std.enums.fromInt(SectionCode, raw) orelse null;
 }
 
 fn parse_type_kind(kind: i64) TypeKind {

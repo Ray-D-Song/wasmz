@@ -40,6 +40,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const core = @import("root.zig");
 const arch = core.platform;
+const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 /// Maximum virtual address space reserved for an owned memory when the module
@@ -71,16 +72,6 @@ const mmap_page_align = std.heap.page_size_min;
 /// Both expose `READ`, `WRITE`, `EXEC` bool fields; default-initialised
 /// is "no access" (== PROT_NONE on the C side).
 const prot_none: std.posix.PROT = .{};
-const prot_rw: std.posix.PROT = .{ .READ = true, .WRITE = true };
-
-/// Replacement for `std.posix.mprotect`, which was removed in Zig 0.16.
-/// Calls `std.c.mprotect` directly and reports failure as a plain bool so
-/// callers can map it onto their own error path.
-fn mprotectRw(slice: []align(mmap_page_align) u8) bool {
-    if (slice.len == 0) return true;
-    const rc = std.c.mprotect(@ptrCast(slice.ptr), slice.len, prot_rw);
-    return rc == 0;
-}
 
 /// Allocate a virtual address region of `capacity` bytes with no physical pages
 /// committed (PROT_NONE), then commit the first `committed` bytes.
@@ -97,10 +88,10 @@ fn ownedMmapInit(committed: usize, capacity: usize) Allocator.Error![]align(mmap
             0,
         ) catch return error.OutOfMemory;
         if (committed > 0) {
-            if (!mprotectRw(base[0..committed])) {
+            std.process.protectMemory(base[0..committed], .{ .read = true, .write = true }) catch {
                 posix.munmap(base);
                 return error.OutOfMemory;
-            }
+            };
             @memset(base[0..committed], 0);
         }
         return base;
@@ -114,7 +105,7 @@ fn ownedMmapInit(committed: usize, capacity: usize) Allocator.Error![]align(mmap
 fn ownedMmapGrow(base: []align(mmap_page_align) u8, old_committed: usize, new_committed: usize) bool {
     if (use_mmap) {
         const new_range: []align(mmap_page_align) u8 = @alignCast(base[old_committed..new_committed]);
-        if (!mprotectRw(new_range)) return false;
+        std.process.protectMemory(new_range, .{ .read = true, .write = true }) catch return false;
         @memset(new_range, 0);
         return true;
     } else {
@@ -137,64 +128,23 @@ pub const WASM_PAGE_SIZE: usize = 65536;
 /// Number of futex buckets in the wait/notify table.  Must be a power of two.
 const FUTEX_BUCKETS: usize = 64;
 
-/// Zig-0.16 stubs for `std.Thread.Mutex` / `std.Thread.Condition`.
-///
-/// In 0.15 these were callable without an `Io` parameter. In 0.16 the
-/// blocking synchronisation primitives live under `std.Io` and require an
-/// `Io` instance. wasmz only uses them for the wasm `atomic.wait` /
-/// `atomic.notify` path on **shared** memories — and every public entry
-/// point on `SharedMemoryInner` short-circuits with
-/// `if (builtin.single_threaded) return …;`. The benchmark workloads we
-/// care about never instantiate a shared memory, so the real lock /
-/// condition implementations are never reached. Provide the smallest
-/// possible API surface that lets the type-check pass; if a future user
-/// actually runs wasm threads through this build they'll trip an
-/// `unreachable` and we can plumb the real `std.Io.Mutex` / `Condition`
-/// through then.
-const StubMutex = struct {
-    pub fn lock(_: *StubMutex) void {
-        unreachable; // wasmz shared-memory wait/notify is not wired through Io in this build
-    }
-    pub fn unlock(_: *StubMutex) void {
-        unreachable;
-    }
-};
-const StubCondition = struct {
-    pub fn wait(_: *StubCondition, _: *StubMutex) void {
-        unreachable;
-    }
-    pub fn timedWait(_: *StubCondition, _: *StubMutex, _: u64) error{Timeout}!void {
-        unreachable;
-    }
-    pub fn signal(_: *StubCondition) void {
-        unreachable;
-    }
-    pub fn broadcast(_: *StubCondition) void {
-        unreachable;
-    }
-};
-
-/// Zig-0.16 replacement for `std.time.nanoTimestamp`. Reads CLOCK_MONOTONIC
-/// directly via libc; used only by the shared-memory wait paths that the
-/// stub Mutex/Condition above turn into compile-time-unreachable code on
-/// non-single-threaded builds. Returning a sensible value (rather than
-/// `unreachable`) keeps the arithmetic well-defined if a future revision
-/// re-enables real synchronisation primitives without touching this file.
-inline fn monotonicNanos() i128 {
-    var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
-    _ = std.c.clock_gettime(.MONOTONIC, &ts);
-    return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-}
-
 /// One entry in the futex bucket table.
 const FutexBucket = if (builtin.single_threaded) struct {
     waiters: u32 = 0,
     notify_seq: u32 = 0,
 } else struct {
-    mutex: StubMutex = .{},
-    cond: StubCondition = .{},
+    slock: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     waiters: u32 = 0,
-    notify_seq: u32 = 0,
+    notify_seq: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+
+    fn acquire(bucket: *@This()) void {
+        while (bucket.slock.swap(1, .acquire) != 0) {
+            std.atomic.spinLoopHint();
+        }
+    }
+    fn release(bucket: *@This()) void {
+        bucket.slock.store(0, .release);
+    }
 };
 
 /// Wait result codes returned by `SharedMemoryInner.wait32` / `wait64`.
@@ -220,6 +170,7 @@ pub const WaitResult = enum(i32) {
 /// is dropped, the bytes are freed with the stored allocator.
 const SharedMemoryInner = struct {
     allocator: Allocator,
+    io: Io,
     /// Entire reserved region (capacity == max_size).
     bytes: []align(8) u8,
     /// Atomically-readable current size in bytes.
@@ -227,15 +178,14 @@ const SharedMemoryInner = struct {
     /// Futex bucket table for wait/notify.
     futex: [FUTEX_BUCKETS]FutexBucket,
 
-    fn init(allocator: Allocator, min_bytes: usize, max_bytes: usize) Allocator.Error!*SharedMemoryInner {
+    fn init(allocator: Allocator, io: Io, min_bytes: usize, max_bytes: usize) Allocator.Error!*SharedMemoryInner {
         const ptr = try allocator.create(SharedMemoryInner);
         errdefer allocator.destroy(ptr);
-        // Reserve the full maximum region so the base address never moves.
-        // align(8) is required for Zig's @atomicLoad/@atomicStore on 64-bit values.
-        const bytes = try allocator.alignedAlloc(u8, @enumFromInt(3), max_bytes); // 2^3 = 8
+        const bytes = try allocator.alignedAlloc(u8, @enumFromInt(3), max_bytes);
         @memset(bytes, 0);
         ptr.* = .{
             .allocator = allocator,
+            .io = io,
             .bytes = bytes,
             .current_size = std.atomic.Value(usize).init(min_bytes),
             .futex = [_]FutexBucket{.{}} ** FUTEX_BUCKETS,
@@ -261,21 +211,12 @@ const SharedMemoryInner = struct {
         if (builtin.single_threaded) return 0;
         const idx = bucketIndex(ea);
         const bucket = &self.futex[idx];
-        bucket.mutex.lock();
-        defer bucket.mutex.unlock();
+        bucket.acquire();
+        defer bucket.release();
         const waiting = bucket.waiters;
         if (waiting == 0 or count == 0) return 0;
-        const to_wake = @min(count, waiting);
-        bucket.notify_seq +%= 1;
-        if (to_wake >= waiting) {
-            bucket.cond.broadcast();
-        } else {
-            var i: u32 = 0;
-            while (i < to_wake) : (i += 1) {
-                bucket.cond.signal();
-            }
-        }
-        return to_wake;
+        _ = bucket.notify_seq.fetchAdd(1, .release);
+        return waiting;
     }
 
     /// memory.atomic.wait32: block until mem[ea] != expected or timeout expires.
@@ -292,8 +233,8 @@ const SharedMemoryInner = struct {
         const idx = bucketIndex(ea);
         const bucket = &self.futex[idx];
 
-        bucket.mutex.lock();
-        defer bucket.mutex.unlock();
+        bucket.acquire();
+        defer bucket.release();
 
         const cur = @atomicLoad(u32, @as(*u32, @ptrCast(@alignCast(self.bytes.ptr + ea))), .seq_cst);
         if (cur != expected) return .not_equal;
@@ -301,25 +242,31 @@ const SharedMemoryInner = struct {
         bucket.waiters += 1;
         defer bucket.waiters -= 1;
 
-        const initial_seq = bucket.notify_seq;
+        const initial_seq = bucket.notify_seq.load(.acquire);
 
         if (timeout_ns < 0) {
-            while (bucket.notify_seq == initial_seq) {
-                bucket.cond.wait(&bucket.mutex);
+            bucket.release();
+            while (bucket.notify_seq.load(.acquire) == initial_seq) {
+                std.atomic.spinLoopHint();
             }
+            bucket.acquire();
             return .ok;
         } else {
-            const start_ns: i128 = monotonicNanos();
-            const deadline_ns = start_ns + timeout_ns;
-            while (bucket.notify_seq == initial_seq) {
-                const now_ns: i128 = monotonicNanos();
-                if (now_ns >= deadline_ns) return .timed_out;
-                const left: u64 = @intCast(deadline_ns - now_ns);
-                bucket.cond.timedWait(&bucket.mutex, left) catch {
+            bucket.release();
+            const start_ts = Io.Timestamp.now(self.io, .awake);
+            const deadline_ns = start_ts.nanoseconds + timeout_ns;
+            while (true) {
+                if (bucket.notify_seq.load(.acquire) != initial_seq) {
+                    bucket.acquire();
+                    return .ok;
+                }
+                const now_ts = Io.Timestamp.now(self.io, .awake);
+                if (now_ts.nanoseconds >= deadline_ns) {
+                    bucket.acquire();
                     return .timed_out;
-                };
+                }
+                std.atomic.spinLoopHint();
             }
-            return .ok;
         }
     }
 
@@ -336,8 +283,8 @@ const SharedMemoryInner = struct {
         const idx = bucketIndex(ea);
         const bucket = &self.futex[idx];
 
-        bucket.mutex.lock();
-        defer bucket.mutex.unlock();
+        bucket.acquire();
+        defer bucket.release();
 
         const AtomicUint = arch.AtomicUint;
         const cur = @atomicLoad(AtomicUint, @as(*AtomicUint, @ptrCast(@alignCast(self.bytes.ptr + ea))), .seq_cst);
@@ -346,25 +293,31 @@ const SharedMemoryInner = struct {
         bucket.waiters += 1;
         defer bucket.waiters -= 1;
 
-        const initial_seq = bucket.notify_seq;
+        const initial_seq = bucket.notify_seq.load(.acquire);
 
         if (timeout_ns < 0) {
-            while (bucket.notify_seq == initial_seq) {
-                bucket.cond.wait(&bucket.mutex);
+            bucket.release();
+            while (bucket.notify_seq.load(.acquire) == initial_seq) {
+                std.atomic.spinLoopHint();
             }
+            bucket.acquire();
             return .ok;
         } else {
-            const start_ns: i128 = monotonicNanos();
-            const deadline_ns = start_ns + timeout_ns;
-            while (bucket.notify_seq == initial_seq) {
-                const now_ns: i128 = monotonicNanos();
-                if (now_ns >= deadline_ns) return .timed_out;
-                const left: u64 = @intCast(deadline_ns - now_ns);
-                bucket.cond.timedWait(&bucket.mutex, left) catch {
+            bucket.release();
+            const start_ts = Io.Timestamp.now(self.io, .awake);
+            const deadline_ns = start_ts.nanoseconds + timeout_ns;
+            while (true) {
+                if (bucket.notify_seq.load(.acquire) != initial_seq) {
+                    bucket.acquire();
+                    return .ok;
+                }
+                const now_ts = Io.Timestamp.now(self.io, .awake);
+                if (now_ts.nanoseconds >= deadline_ns) {
+                    bucket.acquire();
                     return .timed_out;
-                };
+                }
+                std.atomic.spinLoopHint();
             }
-            return .ok;
         }
     }
 };
@@ -378,13 +331,14 @@ pub const SharedMemory = struct {
 
     /// Create a new shared memory region with `min_pages` initially committed and `max_pages`
     /// reserved.  The max must be provided for shared memories (Wasm spec requirement).
-    pub fn init(allocator: Allocator, min_pages: u32, max_pages: u32) Allocator.Error!SharedMemory {
+    pub fn init(allocator: Allocator, io: Io, min_pages: u32, max_pages: u32) Allocator.Error!SharedMemory {
         const refcount = try allocator.create(std.atomic.Value(usize));
         errdefer allocator.destroy(refcount);
         refcount.* = std.atomic.Value(usize).init(1);
 
         const inner = try SharedMemoryInner.init(
             allocator,
+            io,
             @as(usize, min_pages) * WASM_PAGE_SIZE,
             @as(usize, max_pages) * WASM_PAGE_SIZE,
         );

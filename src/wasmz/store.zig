@@ -16,6 +16,7 @@ pub const MemoryBudget = core.MemoryBudget;
 
 pub const Store = struct {
     allocator: Allocator,
+    io: std.Io,
     /// Arc reference, ensures the engine is not released during the store's lifetime.
     engine: Engine,
     /// GC heap for WASM GC objects (structs, arrays, i31).
@@ -31,10 +32,11 @@ pub const Store = struct {
     /// Total number of allocations performed by this store's runtime.
     alloc_count: usize = 0,
 
-    pub fn init(allocator: Allocator, engine: Engine) std.mem.Allocator.Error!Store {
+    pub fn init(allocator: Allocator, engine: Engine, io: std.Io) std.mem.Allocator.Error!Store {
         const limit: ?u64 = engine.config().*.mem_limit_bytes;
         return .{
             .allocator = allocator,
+            .io = io,
             .engine = engine.clone(),
             .gc_heap = null,
             .memory_budget = .{

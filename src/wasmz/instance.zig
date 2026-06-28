@@ -191,7 +191,7 @@ pub const Instance = struct {
         var mem: Memory = if (module.memory) |mem_def| blk: {
             if (mem_def.shared) {
                 const max = mem_def.max_pages orelse return error.SharedMemoryMissingMax;
-                const shared = try SharedMemory.init(allocator, mem_def.min_pages, max);
+                const shared = try SharedMemory.init(allocator, store.io, mem_def.min_pages, max);
                 instance_alloc_count += 1;
                 break :blk Memory.initShared(shared);
             } else {

@@ -26,6 +26,11 @@ const instance_mod = @import("../wasmz/instance.zig");
 
 pub const enabled = build_options.profiling;
 
+pub fn nanoNow() i128 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    return std.Io.Timestamp.now(io, .awake).nanoseconds;
+}
+
 // RSS
 // Always available (not gated).  In release builds the call sites have
 // runtime guards that evaluate to false, so the function is never invoked.
@@ -63,9 +68,12 @@ fn currentRssMacOS() usize {
 
 fn currentRssLinux() usize {
     var buf: [256]u8 = undefined;
-    const fd = std.posix.open("/proc/self/statm", .{}, 0) catch return 0;
-    defer std.posix.close(fd);
-    const n = std.posix.read(fd, &buf) catch return 0;
+    const rc = std.os.linux.open("/proc/self/statm", std.os.linux.O{}, 0);
+    const fd: std.os.linux.fd_t = @intCast(rc);
+    if (@as(isize, @bitCast(rc)) == -1) return 0;
+    defer _ = std.os.linux.close(fd);
+    const n = std.os.linux.read(fd, &buf, buf.len);
+    if (@as(isize, @bitCast(n)) == -1) return 0;
     if (n == 0) return 0;
     var it = std.mem.tokenizeScalar(u8, buf[0..n], ' ');
     _ = it.next();
@@ -109,18 +117,19 @@ fn currentRssWindows() usize {
 // Scoped timer
 
 pub const ScopedTimer = if (enabled) struct {
-    timer: std.time.Timer,
+    start_ts: i128,
 
     pub fn start() @This() {
-        return .{ .timer = std.time.Timer.start() catch unreachable };
+        return .{ .start_ts = nanoNow() };
     }
 
     pub inline fn lap(self: *@This(), dest: *u64) void {
-        dest.* += self.timer.lap();
+        const now = nanoNow();
+        dest.* = @intCast(now - self.start_ts);
     }
 
     pub inline fn read(self: *@This()) u64 {
-        return self.timer.read();
+        return @intCast(nanoNow() - self.start_ts);
     }
 } else struct {
     pub inline fn start() @This() {
@@ -485,11 +494,11 @@ pub const PhaseDiag = if (enabled) struct {
     after_start_ns: i128 = 0,
 
     pub fn now(self: *PhaseDiag, comptime field: []const u8) void {
-        @field(self, field) = std.time.nanoTimestamp();
+        @field(self, field) = nanoNow();
     }
 
     pub fn print(self: *const PhaseDiag, reason: []const u8) void {
-        const now_ns = std.time.nanoTimestamp();
+        const now_ns = nanoNow();
         const mmap_done = if (self.after_mmap_ns != 0) self.after_mmap_ns else now_ns;
         const compile_done = if (self.after_compile_ns != 0) self.after_compile_ns else now_ns;
         const store_done = if (self.after_store_ns != 0) self.after_store_ns else now_ns;
@@ -578,11 +587,10 @@ pub fn printMemStats(store: *store_mod.Store, instance: *instance_mod.Instance) 
 
     const shared_annotation: []const u8 = if (shared_bytes == 0) "(none)" else "";
 
-    var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const w = fbs.writer();
-
-    w.print(
+    var stderr_buf: [2048]u8 = undefined;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var bw = std.Io.File.stderr().writer(io, &stderr_buf);
+    bw.interface.print(
         \\Memory usage:
         \\
         \\  Runtime
@@ -632,7 +640,6 @@ pub fn printMemStats(store: *store_mod.Store, instance: *instance_mod.Instance) 
             gc_alloc_count,            total_alloc_count,
         },
     ) catch {};
-    std.fs.File.stderr().writeAll(fbs.getWritten()) catch {};
 }
 
 // On-exit (proc_exit callback)

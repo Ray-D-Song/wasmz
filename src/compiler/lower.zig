@@ -46,6 +46,12 @@ const Allocator = std.mem.Allocator;
 const LocalInitSet = std.DynamicBitSetUnmanaged;
 const Slot = ir.Slot;
 const Op = ir.Op;
+
+fn unionPayloadType(comptime UnionType: type, comptime field_name: []const u8) type {
+    const tag = @field(UnionType, field_name);
+    const idx = @intFromEnum(tag);
+    return @typeInfo(UnionType).@"union".fields[idx].type;
+}
 const CompiledFunction = ir.CompiledFunction;
 const ValType = core.ValType;
 const simd = core.simd;
@@ -2699,7 +2705,7 @@ pub const Lower = struct {
         const imm_tag = op_tag ++ "_imm";
         if (comptime @hasField(Op, imm_tag)) {
             // Determine imm type from the fused op's struct field at compile time.
-            const ImmType = @FieldType(@FieldType(Op, imm_tag), "imm");
+            const ImmType = @TypeOf(@field(@as(unionPayloadType(Op, imm_tag), undefined), "imm"));
             const ops = self.compiled.ops.items;
             if (ops.len > 0) {
                 switch (ops[ops.len - 1]) {
@@ -2855,7 +2861,7 @@ pub const Lower = struct {
         // Peephole C (compare variant): const_i32/i64 + xxx_cmp → xxx_cmp_imm
         const imm_tag = op_tag ++ "_imm";
         if (comptime @hasField(Op, imm_tag)) {
-            const ImmType = @FieldType(@FieldType(Op, imm_tag), "imm");
+            const ImmType = @TypeOf(@field(@as(unionPayloadType(Op, imm_tag), undefined), "imm"));
             const ops = self.compiled.ops.items;
             if (ops.len > 0) {
                 switch (ops[ops.len - 1]) {

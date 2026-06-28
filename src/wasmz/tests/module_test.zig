@@ -49,7 +49,7 @@ test "module.compile builds exported function bodies" {
 
     var vm = VM.init(testing.allocator);
     defer vm.deinit();
-    var store = try Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
     var globals = [_]Global{};
     var raw_memory: [0]u8 = .{};
@@ -112,8 +112,7 @@ test "module.compileReader streams input without retaining full wasm bytes" {
     var engine = try Engine.init(testing.allocator, Config{});
     defer engine.deinit();
 
-    var stream = std.io.fixedBufferStream(&exported_const_wasm);
-    var reader = stream.reader();
+    var reader: std.Io.Reader = .fixed(&exported_const_wasm);
     var module = try Module.compileReader(engine, &reader);
     defer module.deinit();
 

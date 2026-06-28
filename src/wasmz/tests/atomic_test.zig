@@ -45,7 +45,7 @@ test "Memory.wait64 on owned memory returns not_equal" {
 // 3. notify with no waiters
 
 test "SharedMemory.notify with no waiters returns 0" {
-    var sm = try SharedMemory.init(testing.allocator, 1, 2);
+    var sm = try SharedMemory.init(testing.allocator, std.Io.Threaded.global_single_threaded.io(), 1, 2);
     defer sm.deinit();
     const woken = sm.notify(0, 10);
     try testing.expectEqual(@as(u32, 0), woken);
@@ -54,7 +54,7 @@ test "SharedMemory.notify with no waiters returns 0" {
 // 4. wait32 – mismatched value
 
 test "SharedMemory.wait32 returns not_equal when value differs" {
-    var sm = try SharedMemory.init(testing.allocator, 1, 2);
+    var sm = try SharedMemory.init(testing.allocator, std.Io.Threaded.global_single_threaded.io(), 1, 2);
     defer sm.deinit();
 
     // mem[0] is 0; we wait for value 99 → mismatch detected under the lock.
@@ -65,7 +65,7 @@ test "SharedMemory.wait32 returns not_equal when value differs" {
 // 5. wait64 – mismatched value
 
 test "SharedMemory.wait64 returns not_equal when value differs" {
-    var sm = try SharedMemory.init(testing.allocator, 1, 2);
+    var sm = try SharedMemory.init(testing.allocator, std.Io.Threaded.global_single_threaded.io(), 1, 2);
     defer sm.deinit();
 
     const result = sm.wait64(0, 0xDEADBEEF_CAFEBABE, -1);
@@ -75,7 +75,7 @@ test "SharedMemory.wait64 returns not_equal when value differs" {
 // 6. wait32 – zero timeout → timed_out
 
 test "SharedMemory.wait32 with zero timeout and matching value returns timed_out" {
-    var sm = try SharedMemory.init(testing.allocator, 1, 2);
+    var sm = try SharedMemory.init(testing.allocator, std.Io.Threaded.global_single_threaded.io(), 1, 2);
     defer sm.deinit();
 
     // Value matches (both 0); use a 0-nanosecond timeout so we never truly block.
@@ -101,7 +101,7 @@ const WaitCtx = struct {
 };
 
 test "SharedMemory wait32/notify cross-thread round-trip" {
-    var sm = try SharedMemory.init(testing.allocator, 1, 2);
+    var sm = try SharedMemory.init(testing.allocator, std.Io.Threaded.global_single_threaded.io(), 1, 2);
     defer sm.deinit();
 
     var ctx = WaitCtx{
@@ -112,7 +112,7 @@ test "SharedMemory wait32/notify cross-thread round-trip" {
     const thread = try std.Thread.spawn(.{}, WaitCtx.run, .{&ctx});
 
     // Give the waiter thread time to park inside wait32.
-    std.Thread.sleep(10 * std.time.ns_per_ms);
+    const ti_io = std.Io.Threaded.global_single_threaded.io(); std.Io.sleep(ti_io, std.Io.Duration.fromNanoseconds(10 * std.time.ns_per_ms), .awake) catch {};
 
     // Write a non-zero value so wait32 re-checks and sees a change, then notify.
     const mem_bytes = sm.bytes();

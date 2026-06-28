@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 
 pub const FlagType = enum {
     boolean,
@@ -57,97 +58,63 @@ pub const Command = struct {
     flags: []const Flag = &.{},
     args: []const Arg = &.{},
 
-    pub const UsageWriter = struct {
-        context: *const Command,
-        writer: std.fs.File,
-
-        pub fn write(self: *UsageWriter) !void {
-            const w = self.writer;
-            try w.writeAll("Usage:\n");
-            try self.writeCommandUsage(w);
-            try self.writeFlags(w);
-            try self.writeArgs(w);
-        }
-
-        fn writeCommandUsage(self: *UsageWriter, w: std.fs.File) !void {
-            var buf: [256]u8 = undefined;
-            var fbs = std.io.fixedBufferStream(&buf);
-            const writer = fbs.writer();
-
-            try writer.print("  {s}", .{self.context.name});
-            if (self.context.flags.len > 0) {
-                try writer.writeAll(" [options]");
-            }
-            for (self.context.args) |arg| {
-                if (arg.required) {
-                    try writer.print(" <{s}>", .{arg.name});
-                } else {
-                    try writer.print(" [{s}]", .{arg.name});
-                }
-            }
-            try writer.writeAll("\n\n");
-            try w.writeAll(fbs.getWritten());
-        }
-
-        fn writeFlags(self: *UsageWriter, w: std.fs.File) !void {
-            if (self.context.flags.len == 0) return;
-
-            try w.writeAll("Options:\n");
-            var buf: [256]u8 = undefined;
-            for (self.context.flags) |flag| {
-                var fbs = std.io.fixedBufferStream(&buf);
-                const writer = fbs.writer();
-
-                if (flag.short) |short| {
-                    try writer.print("  -{s}, --{s}", .{ short, flag.name });
-                } else {
-                    try writer.print("  --{s}", .{flag.name});
-                }
-                switch (flag.type) {
-                    .string => try writer.writeAll(" <string>"),
-                    .int => try writer.writeAll(" <int>"),
-                    .boolean => {},
-                }
-                if (flag.help.len > 0) {
-                    try writer.print("  {s}", .{flag.help});
-                }
-                try writer.writeAll("\n");
-                try w.writeAll(fbs.getWritten());
-            }
-            try w.writeAll("\n");
-        }
-
-        fn writeArgs(self: *UsageWriter, w: std.fs.File) !void {
-            if (self.context.args.len == 0) return;
-
-            try w.writeAll("Arguments:\n");
-            var buf: [128]u8 = undefined;
-            for (self.context.args) |arg| {
-                var fbs = std.io.fixedBufferStream(&buf);
-                const writer = fbs.writer();
-                try writer.print("  {s}", .{arg.name});
-                if (arg.help.len > 0) {
-                    try writer.print("  {s}", .{arg.help});
-                }
-                try writer.writeAll("\n");
-                try w.writeAll(fbs.getWritten());
-            }
-        }
-    };
-
     pub fn printUsage(self: *const Command) void {
-        var writer = UsageWriter{
-            .context = self,
-            .writer = std.fs.File.stderr(),
-        };
-        writer.write() catch {};
+        const io = Io.Threaded.global_single_threaded.io();
+        var buf: [1024]u8 = undefined;
+        var bw = std.Io.File.stderr().writer(io, &buf);
+        bw.interface.writeAll("Usage:\n") catch {};
+        writeCommandUsage(self, &bw.interface) catch {};
+        writeFlags(self, &bw.interface) catch {};
+        writeArgs(self, &bw.interface) catch {};
     }
 };
+
+fn writeCommandUsage(cmd: *const Command, w: *Io.Writer) !void {
+    try w.print("  {s}", .{cmd.name});
+    if (cmd.flags.len > 0) try w.writeAll(" [options]");
+    for (cmd.args) |arg| {
+        if (arg.required) {
+            try w.print(" <{s}>", .{arg.name});
+        } else {
+            try w.print(" [{s}]", .{arg.name});
+        }
+    }
+    try w.writeAll("\n\n");
+}
+
+fn writeFlags(cmd: *const Command, w: *Io.Writer) !void {
+    if (cmd.flags.len == 0) return;
+    try w.writeAll("Options:\n");
+    for (cmd.flags) |flag| {
+        if (flag.short) |short| {
+            try w.print("  -{s}, --{s}", .{ short, flag.name });
+        } else {
+            try w.print("  --{s}", .{flag.name});
+        }
+        switch (flag.type) {
+            .string => try w.writeAll(" <string>"),
+            .int => try w.writeAll(" <int>"),
+            .boolean => {},
+        }
+        if (flag.help.len > 0) try w.print("  {s}", .{flag.help});
+        try w.writeAll("\n");
+    }
+    try w.writeAll("\n");
+}
+
+fn writeArgs(cmd: *const Command, w: *Io.Writer) !void {
+    if (cmd.args.len == 0) return;
+    try w.writeAll("Arguments:\n");
+    for (cmd.args) |arg| {
+        try w.print("  {s}", .{arg.name});
+        if (arg.help.len > 0) try w.print("  {s}", .{arg.help});
+        try w.writeAll("\n");
+    }
+}
 
 pub const Parsed = struct {
     flags: std.StringHashMap(FlagValue),
     positional: []const []const u8,
-    _args_alloc: [][:0]u8,
     _allocator: std.mem.Allocator,
     _string_values: std.ArrayList([]const u8),
 
@@ -193,7 +160,9 @@ pub const Parsed = struct {
             self._allocator.free(s);
         }
         self._string_values.deinit(self._allocator);
-        std.process.argsFree(self._allocator, self._args_alloc);
+        if (self.positional.len > 0) {
+            self._allocator.free(self.positional);
+        }
     }
 };
 
@@ -215,11 +184,7 @@ pub const Parser = struct {
         };
     }
 
-    pub fn parse(self: *Parser) ParseError!Parsed {
-        const args = std.process.argsAlloc(self.allocator) catch
-            return error.OutOfMemory;
-        errdefer std.process.argsFree(self.allocator, args);
-
+    pub fn parse(self: *Parser, raw_args: []const []const u8) ParseError!Parsed {
         var flags = std.StringHashMap(Parsed.FlagValue).init(self.allocator);
         errdefer flags.deinit();
 
@@ -240,14 +205,14 @@ pub const Parser = struct {
         }
 
         var positional: std.ArrayList([]const u8) = .empty;
-        defer positional.deinit(self.allocator);
+        errdefer positional.deinit(self.allocator);
 
         var idx: usize = 1;
-        while (idx < args.len) : (idx += 1) {
-            const arg = args[idx];
+        while (idx < raw_args.len) : (idx += 1) {
+            const arg = raw_args[idx];
 
             if (std.mem.startsWith(u8, arg, "--")) {
-                if (std.mem.indexOf(u8, arg, "=")) |eq_pos| {
+                if (std.mem.find(u8, arg, "=")) |eq_pos| {
                     const flag_name = arg[2..eq_pos];
                     const flag_value = arg[eq_pos + 1 ..];
                     try self.setFlag(&flags, &string_values, flag_name, flag_value);
@@ -261,12 +226,12 @@ pub const Parser = struct {
                             },
                             .string, .int => {
                                 idx += 1;
-                                if (idx >= args.len) {
+                                if (idx >= raw_args.len) {
                                     std.debug.print("error: --{s} requires a value\n", .{flag_name});
                                     self.command.printUsage();
                                     return error.InvalidFlagValue;
                                 }
-                                try self.setFlag(&flags, &string_values, flag_name, args[idx]);
+                                try self.setFlag(&flags, &string_values, flag_name, raw_args[idx]);
                             },
                         }
                     } else {
@@ -285,12 +250,12 @@ pub const Parser = struct {
                         },
                         .string, .int => {
                             idx += 1;
-                            if (idx >= args.len) {
+                            if (idx >= raw_args.len) {
                                 std.debug.print("error: -{s} requires a value\n", .{short_name});
                                 self.command.printUsage();
                                 return error.InvalidFlagValue;
                             }
-                            try self.setFlag(&flags, &string_values, flag.name, args[idx]);
+                            try self.setFlag(&flags, &string_values, flag.name, raw_args[idx]);
                         },
                     }
                 } else {
@@ -312,7 +277,6 @@ pub const Parser = struct {
                             .flags = flags,
                             .positional = positional.toOwnedSlice(self.allocator) catch
                                 return error.OutOfMemory,
-                            ._args_alloc = args,
                             ._allocator = self.allocator,
                             ._string_values = string_values,
                         };
@@ -328,7 +292,6 @@ pub const Parser = struct {
             .flags = flags,
             .positional = positional.toOwnedSlice(self.allocator) catch
                 return error.OutOfMemory,
-            ._args_alloc = args,
             ._allocator = self.allocator,
             ._string_values = string_values,
         };

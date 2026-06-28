@@ -113,17 +113,17 @@ test "multi-thread: shared memory wait/notify round-trip via Wasm instance" {
 
     // Create a single SharedMemory to be shared by both instances.
     // The module declares min=1 max=2 shared, so capacity must be >= 2 pages.
-    var shared = try SharedMemory.init(allocator, 1, 2);
+    var shared = try SharedMemory.init(allocator, std.Io.Threaded.global_single_threaded.io(), 1, 2);
     defer shared.deinit();
 
     // Store A (waiter thread)
-    var store_a = try Store.init(allocator, engine);
+    var store_a = try Store.init(allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store_a.deinit();
     var instance_a = try Instance.initWithSharedMemory(&store_a, arc.retain(), Linker.empty, shared);
     defer instance_a.deinit();
 
     // Store B (main thread notifier)
-    var store_b = try Store.init(allocator, engine);
+    var store_b = try Store.init(allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store_b.deinit();
     var instance_b = try Instance.initWithSharedMemory(&store_b, arc.retain(), Linker.empty, shared);
     defer instance_b.deinit();
@@ -136,7 +136,7 @@ test "multi-thread: shared memory wait/notify round-trip via Wasm instance" {
     const waiter = try std.Thread.spawn(.{}, WaiterCtx.run, .{&ctx});
 
     // Give the waiter time to park inside wait32.
-    std.Thread.sleep(20 * std.time.ns_per_ms);
+    const ti_io = std.Io.Threaded.global_single_threaded.io(); std.Io.sleep(ti_io, std.Io.Duration.fromNanoseconds(20 * std.time.ns_per_ms), .awake) catch {};
 
     // Main thread: set value then notify
     const set_args = [_]RawVal{RawVal.from(@as(i32, 42))};
@@ -183,10 +183,10 @@ test "memory.size returns current page count" {
         mm.deinit();
     };
 
-    var shared = try SharedMemory.init(allocator, 1, 2);
+    var shared = try SharedMemory.init(allocator, std.Io.Threaded.global_single_threaded.io(), 1, 2);
     defer shared.deinit();
 
-    var store = try Store.init(allocator, engine);
+    var store = try Store.init(allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
 
     var instance = try Instance.initWithSharedMemory(&store, arc.retain(), Linker.empty, shared);
@@ -197,7 +197,7 @@ test "memory.size returns current page count" {
 }
 
 test "SharedMemory.grow atomically advances current_size" {
-    var sm = try SharedMemory.init(testing.allocator, 1, 4);
+    var sm = try SharedMemory.init(testing.allocator, std.Io.Threaded.global_single_threaded.io(), 1, 4);
     defer sm.deinit();
 
     try testing.expectEqual(@as(usize, WASM_PAGE_SIZE), sm.bytes().len);

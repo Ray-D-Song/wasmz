@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 const core = @import("core");
 const wasmz = @import("wasmz");
 const types = @import("./types.zig");
@@ -23,14 +24,18 @@ pub const ClockSource = struct {
         return self.now_fn(self.ctx);
     }
 
+    fn getIo() Io {
+        return Io.Threaded.global_single_threaded.io();
+    }
+
     fn default_realtime_now(_: ?*anyopaque) u64 {
-        const ts = std.time.nanoTimestamp();
-        return @intCast(@max(ts, 0));
+        const ts = Io.Timestamp.now(getIo(), .real);
+        return @intCast(@max(ts.nanoseconds, 0));
     }
 
     fn default_monotonic_now(_: ?*anyopaque) u64 {
-        const ts = std.time.nanoTimestamp();
-        return @intCast(@max(ts, 0));
+        const ts = Io.Timestamp.now(getIo(), .awake);
+        return @intCast(@max(ts.nanoseconds, 0));
     }
 };
 
@@ -83,5 +88,5 @@ pub const Clock = struct {
 };
 
 fn clockId(raw: RawVal) types.ClockId {
-    return std.meta.intToEnum(types.ClockId, raw.readAs(u32)) catch .thread_cputime_id;
+    return std.enums.fromInt(types.ClockId, raw.readAs(u32)) orelse .thread_cputime_id;
 }

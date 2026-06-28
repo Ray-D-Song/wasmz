@@ -70,15 +70,16 @@ fn failParseAll(parser: *Parser, err: parser_mod.ParseAllError) parser_mod.Parse
         },
         else => {
             const parser_err: ParserError = @errorCast(err);
-            var detail_buf: [256]u8 = undefined;
-            var detail_stream = std.io.fixedBufferStream(&detail_buf);
+            var detail_buf: [256]u8 = [_]u8{0} ** 256;
+            var detail_writer: std.Io.Writer = .fixed(&detail_buf);
 
-            parser_mod.formatParserError(parser, parser_err, detail_stream.writer()) catch {};
+            parser_mod.formatParserError(parser, parser_err, &detail_writer) catch {};
+            const detail_end = std.mem.indexOfScalar(u8, &detail_buf, 0) orelse detail_buf.len;
             std.debug.print(
                 "parseAll failed: err={s}, detail={s}, state={any}, arg={}, last_state={}\n",
                 .{
                     @errorName(parser_err),
-                    detail_stream.getWritten(),
+                    detail_buf[0..detail_end],
                     parser.cur_state,
                     parser.last_err_arg,
                     parser.last_err_state,

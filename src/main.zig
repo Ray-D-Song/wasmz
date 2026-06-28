@@ -31,27 +31,26 @@ const RawVal = wasmz.RawVal;
 const Linker = wasmz.Linker;
 
 const SMART_SIZE_THRESHOLD: u64 = 3 * 1024 * 1024;
-pub fn main() void {
+
+pub fn main(init: std.process.Init) !void {
     if (builtin.os.tag == .wasi) {
-        const ally: std.mem.Allocator = .{ .ptr = undefined, .vtable = &std.heap.WasmAllocator.vtable };
-        run(ally);
-    } else if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        run(gpa.allocator());
+        try run(init, init.io, std.heap.wasm_allocator);
     } else {
-        run(std.heap.smp_allocator);
+        try run(init, init.io, init.gpa);
     }
 }
 
-fn run(allocator: std.mem.Allocator) void {
+fn run(init: std.process.Init, io: std.Io, allocator: std.mem.Allocator) !void {
     defer profiling.printReport();
     var out_buf: [8192]u8 = undefined;
-    var bw = std.fs.File.stdout().writer(&out_buf);
+    var bw = std.Io.File.stdout().writer(io, &out_buf);
     const stdout = &bw.interface;
     defer bw.interface.flush() catch {};
 
-    var cli_args = CliArgs.parse(allocator) catch |err| switch (err) {
+    const raw_args = try init.minimal.args.toSlice(init.arena.allocator());
+    defer init.arena.allocator().free(raw_args);
+
+    var cli_args = CliArgs.parse(allocator, raw_args) catch |err| switch (err) {
         error.MissingFilePath => {
             CliArgs.command.printUsage();
             std.process.exit(1);
@@ -60,11 +59,7 @@ fn run(allocator: std.mem.Allocator) void {
     };
     defer cli_args.deinit(allocator);
 
-    const phase_diag_enabled = if (profiling.enabled) blk: {
-        const value = std.process.getEnvVarOwned(allocator, "WASMZ_PHASE_DIAG") catch break :blk false;
-        allocator.free(value);
-        break :blk true;
-    } else false;
+    const phase_diag_enabled = init.environ_map.*.contains("WASMZ_PHASE_DIAG");
     var phase_diag = profiling.PhaseDiag{};
     if (phase_diag_enabled) phase_diag.now("t0_ns");
 
@@ -72,10 +67,10 @@ fn run(allocator: std.mem.Allocator) void {
 
     const file_path = cli_args.file_path;
 
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err|
+    const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err|
         fatal("Unable to open {s}: {s}", .{ file_path, @errorName(err) });
-    defer file.close();
-    const mapped = mmap.mapFile(file) catch |err| switch (err) {
+    defer file.close(io);
+    const mapped = mmap.mapFile(file, io) catch |err| switch (err) {
         error.EmptyFile => fatal("{s}: file is empty", .{file_path}),
         error.MapFailed => fatal("Failed to mmap {s}", .{file_path}),
     };
@@ -107,7 +102,7 @@ fn run(allocator: std.mem.Allocator) void {
 
     if (cli_args.mem_trace) profiling.tracePhase(&trace_prev, "after compile");
 
-    var store = Store.init(allocator, engine) catch |err|
+    var store = Store.init(allocator, engine, io) catch |err|
         fatal("Failed to init store: {s}", .{@errorName(err)});
     if (cli_args.mem_limit_mb != null) store.linkBudget();
     defer store.deinit();
@@ -119,7 +114,7 @@ fn run(allocator: std.mem.Allocator) void {
     defer linker.deinit(allocator);
 
     if (moduleNeedsWasi(arc_module.value)) {
-        wasi_host = wasi_preview1.Host.init(allocator);
+        wasi_host = wasi_preview1.Host.init(allocator, io);
         wasi_host.?.setArgs(cli_args.wasi_args) catch |err|
             fatal("Failed to set WASI args: {s}", .{@errorName(err)});
         wasi_host.?.addToLinker(&linker, allocator) catch |err|
@@ -198,7 +193,7 @@ fn run(allocator: std.mem.Allocator) void {
 
     const func_name = cli_args.func_name.?;
 
-    var call_args = std.ArrayList(RawVal){};
+    var call_args: std.ArrayList(RawVal) = .empty;
     defer call_args.deinit(allocator);
 
     for (cli_args.i32_args) |arg| {
@@ -232,7 +227,6 @@ const CliArgs = struct {
     eager_compile: bool,
     _parsed: arg_parse.Parsed,
     _wasm_args_parsed: [][]const u8,
-    _positional: []const []const u8,
 
     const flags = [_]arg_parse.Flag{
         arg_parse.Flag.boolFlag("help", "Show this help message"),
@@ -260,9 +254,9 @@ const CliArgs = struct {
         .args = &args,
     };
 
-    fn parse(allocator: std.mem.Allocator) !CliArgs {
+    fn parse(allocator: std.mem.Allocator, raw_args: []const []const u8) !CliArgs {
         var parser = arg_parse.Parser.init(&command, allocator);
-        var parsed = parser.parse() catch {
+        var parsed = parser.parse(raw_args) catch {
             std.process.exit(1);
         };
 
@@ -328,7 +322,6 @@ const CliArgs = struct {
             .passthrough = passthrough,
             ._parsed = parsed,
             ._wasm_args_parsed = wasm_args_parsed,
-            ._positional = positional,
         };
     }
 
@@ -336,7 +329,6 @@ const CliArgs = struct {
         allocator.free(self.wasi_args);
         for (self._wasm_args_parsed) |tok| allocator.free(tok);
         allocator.free(self._wasm_args_parsed);
-        allocator.free(self._positional);
         self._parsed.deinit();
     }
 };
@@ -344,10 +336,10 @@ const CliArgs = struct {
 /// Release builds use a minimal panic handler to avoid pulling in DWARF stack-unwinding
 /// code (~127 KB).  Debug/ReleaseSafe builds use the default handler for readable backtraces.
 fn simplePanic(msg: []const u8, _: ?usize) noreturn {
-    const stderr = std.fs.File.stderr();
-    stderr.writeAll("panic: ") catch {};
-    stderr.writeAll(msg) catch {};
-    stderr.writeAll("\n") catch {};
+    const io = std.Io.Threaded.global_single_threaded.io();
+    std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, "panic: ") catch {};
+    std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, msg) catch {};
+    std.Io.File.writeStreamingAll(std.Io.File.stderr(), io, "\n") catch {};
     std.process.abort();
 }
 

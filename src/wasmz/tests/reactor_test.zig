@@ -51,7 +51,7 @@ test "reactor: isReactor() true, isCommand() false for no-_start module" {
     var engine = try makeEngine();
     defer engine.deinit();
 
-    var store = try Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
 
     var arc = try compileArc(reactor_add_wasm, engine);
@@ -80,7 +80,7 @@ test "reactor: isCommand() true for module with _start export" {
     var engine = try makeEngine();
     defer engine.deinit();
 
-    var store = try Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
 
     var arc = try compileArc(&command_wasm, engine);
@@ -99,7 +99,7 @@ test "reactor: initializeReactor() invokes _initialize and sets global" {
     var engine = try makeEngine();
     defer engine.deinit();
 
-    var store = try Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
 
     var arc = try compileArc(reactor_add_wasm, engine);
@@ -148,7 +148,7 @@ test "reactor: initializeReactor() returns null when no _initialize export" {
     var engine = try makeEngine();
     defer engine.deinit();
 
-    var store = try Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
 
     var arc = try compileArc(&add_wasm, engine);
@@ -168,7 +168,7 @@ test "reactor: add() returns correct value after initializeReactor" {
     var engine = try makeEngine();
     defer engine.deinit();
 
-    var store = try Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
 
     var arc = try compileArc(reactor_add_wasm, engine);
@@ -191,7 +191,7 @@ test "reactor: fib() correctness: fib(10) == 55" {
     var engine = try makeEngine();
     defer engine.deinit();
 
-    var store = try Store.init(testing.allocator, engine);
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
 
     var arc = try compileArc(reactor_add_wasm, engine);
