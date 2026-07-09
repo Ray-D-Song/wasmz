@@ -91,6 +91,11 @@ pub const SmallSlotList = struct {
         return self.inline_buf[0..self.len];
     }
 
+    pub fn itemsMut(self: *SmallSlotList) []Slot {
+        if (self.overflow) |ov| return ov[0..self.len];
+        return self.inline_buf[0..self.len];
+    }
+
     pub fn append(self: *SmallSlotList, allocator: Allocator, slot: Slot) !void {
         if (self.len < INLINE_CAP) {
             self.inline_buf[self.len] = slot;
@@ -223,6 +228,10 @@ pub const ControlFrame = struct {
     /// Intersection of all branch states that can reach this frame's end.
     branch_local_init: LocalInitSet = .{},
     has_branch_local_init: bool = false,
+    /// Bitmask: bit i set once `result_slots[i]` has been bound by any path.
+    result_bound: u8 = 0,
+    /// True when try_table catch handlers snapshot this frame's result slot indices.
+    result_slots_pinned: bool = false,
 };
 
 // Input op enum
@@ -1261,20 +1270,16 @@ pub const Lower = struct {
     fn emit_branch_to(self: *Lower, frame: *ControlFrame) !u32 {
         // For a loop: br passes params (phi semantics, back to header).
         // For block/if: br passes results.
-        const target_slots = if (frame.kind == .loop)
-            frame.param_slots.items()
-        else
-            frame.result_slots.items();
+        const slots = if (frame.kind == .loop) &frame.param_slots else &frame.result_slots;
+        const rename_results = frame.kind != .loop;
 
-        // Copy values from stack top into the target slots (reverse order:
-        // TOS = last slot, bottom = first slot).
-        if (target_slots.len > 0) {
-            var ri: usize = target_slots.len;
+        // Bind stack values into label slots (reverse order: TOS = last slot).
+        if (slots.items().len > 0) {
+            var ri: usize = slots.items().len;
             while (ri > 0) {
                 ri -= 1;
                 const src = self.stack.peek() orelse return error.StackUnderflow;
-                try self.emit_copy(target_slots[ri], src);
-                _ = self.stack.pop();
+                try self.bind_label_slot(frame, slots, ri, src, true, rename_results);
             }
         }
 
@@ -1295,12 +1300,9 @@ pub const Lower = struct {
     /// Matches br/br_if: the jump target is block `end`, which skips the fall-through
     /// copy at `end`, so the ref must be written to label slots before branching.
     fn emit_forward_ref_to_label(self: *Lower, frame: *ControlFrame, ref: Slot) !void {
-        const target_slots = if (frame.kind == .loop)
-            frame.param_slots.items()
-        else
-            frame.result_slots.items();
-        if (target_slots.len == 0) return;
-        try self.emit_copy(target_slots[0], ref);
+        const slots = if (frame.kind == .loop) &frame.param_slots else &frame.result_slots;
+        if (slots.items().len == 0) return;
+        try self.bind_label_slot(frame, slots, 0, ref, false, frame.kind != .loop);
     }
 
     // Generic operation helpers
@@ -2164,6 +2166,64 @@ pub const Lower = struct {
         }
         try self.emit_copy(dst_slot, src_slot);
         return dst_slot;
+    }
+
+    fn pop_slot_no_recycle(self: *Lower) LowerError!Slot {
+        return self.stack.pop() orelse error.StackUnderflow;
+    }
+
+    fn pop_slot_pinned(self: *Lower) LowerError!void {
+        _ = try self.pop_slot_no_recycle();
+    }
+
+    fn is_result_bound(frame: *const ControlFrame, ri: usize) bool {
+        if (ri >= 8) return true;
+        return (frame.result_bound & (@as(u8, 1) << @intCast(ri))) != 0;
+    }
+
+    fn set_result_bound(frame: *ControlFrame, ri: usize) void {
+        if (ri < 8) frame.result_bound |= (@as(u8, 1) << @intCast(ri));
+    }
+
+    /// Block entry: rename the allocated param placeholder to the incoming stack slot.
+    fn bind_param_at_entry(self: *Lower, slots: *SmallSlotList, ri: usize, src: Slot) void {
+        const dst = slots.items()[ri];
+        if (dst == src) return;
+        slots.itemsMut()[ri] = src;
+        self.recycle_slot(dst);
+    }
+
+    /// Bind a stack value into a label slot (block result or loop param).
+    /// First result write renames; later paths copy (phi merge). Loop params
+    /// are already renamed at entry, so only copy when the slot differs.
+    /// Pinned pops skip free-list recycling — the slot stays live in the label list.
+    fn bind_label_slot(
+        self: *Lower,
+        frame: *ControlFrame,
+        slots: *SmallSlotList,
+        ri: usize,
+        src: Slot,
+        pop: bool,
+        rename_results: bool,
+    ) !void {
+        const dst = slots.items()[ri];
+        if (dst == src) {
+            if (pop) try self.pop_slot_pinned();
+            return;
+        }
+
+        const can_rename = rename_results and ri < 8 and !is_result_bound(frame, ri) and
+            !frame.result_slots_pinned;
+        if (can_rename) {
+            slots.itemsMut()[ri] = src;
+            self.recycle_slot(dst);
+            set_result_bound(frame, ri);
+            if (pop) try self.pop_slot_pinned();
+            return;
+        }
+
+        try self.emit_copy(dst, src);
+        if (pop) _ = try self.pop_slot();
     }
 
     /// Try to fold a binary op where both operands are compile-time constants.
@@ -3095,7 +3155,7 @@ pub const Lower = struct {
             // Structured control flow
 
             .block => |block_type| {
-                const slots = try self.resolve_block_slots(block_type);
+                var slots = try self.resolve_block_slots(block_type);
                 // For multi-value blocks: pop params from stack, re-push so body can access them.
                 // Copy param values from stack into param_slots (in order, lowest first).
                 for (slots.params.items()) |ps| {
@@ -3107,13 +3167,11 @@ pub const Lower = struct {
                 // We need to copy them into param_slots[0..N], then restore the stack.
                 const n_params = slots.params.items().len;
                 if (n_params > 0) {
-                    // Pop params off the value stack (TOS = last param).
-                    // We re-push them back after so the block body sees them.
                     var pi: usize = n_params;
                     while (pi > 0) {
                         pi -= 1;
-                        const src = try self.pop_slot();
-                        try self.emit_copy(slots.params.items()[pi], src);
+                        const src = try self.pop_slot_no_recycle();
+                        self.bind_param_at_entry(&slots.params, pi, src);
                     }
                 }
                 // Record the stack height AFTER consuming params (before block body).
@@ -3141,15 +3199,15 @@ pub const Lower = struct {
             },
 
             .loop => |block_type| {
-                const slots = try self.resolve_block_slots(block_type);
+                var slots = try self.resolve_block_slots(block_type);
                 // Pop params from stack (TOS = last param), copy to param_slots, re-push.
                 const n_params = slots.params.items().len;
                 if (n_params > 0) {
                     var pi: usize = n_params;
                     while (pi > 0) {
                         pi -= 1;
-                        const src = try self.pop_slot();
-                        try self.emit_copy(slots.params.items()[pi], src);
+                        const src = try self.pop_slot_no_recycle();
+                        self.bind_param_at_entry(&slots.params, pi, src);
                     }
                 }
                 const height_after_params = self.stack.len();
@@ -3178,15 +3236,15 @@ pub const Lower = struct {
 
             .if_ => |block_type| {
                 const cond = try self.pop_slot();
-                const slots = try self.resolve_block_slots(block_type);
+                var slots = try self.resolve_block_slots(block_type);
                 // Pop params from stack (TOS = last param), copy to param_slots, re-push.
                 const n_params = slots.params.items().len;
                 if (n_params > 0) {
                     var pi: usize = n_params;
                     while (pi > 0) {
                         pi -= 1;
-                        const src = try self.pop_slot();
-                        try self.emit_copy(slots.params.items()[pi], src);
+                        const src = try self.pop_slot_no_recycle();
+                        self.bind_param_at_entry(&slots.params, pi, src);
                     }
                 }
                 const height_after_params = self.stack.len();
@@ -3232,16 +3290,14 @@ pub const Lower = struct {
                 const frame = &self.control_stack.items[len - 1];
                 frame.has_else = true;
 
-                // Copy the then-branch results into the result slots before leaving the then-body.
-                // The stack top holds the last result; result_slots[N-1] is the last result slot.
+                // Bind then-branch results into result slots before leaving the then-body.
                 {
                     const n = frame.result_slots.items().len;
                     var ri: usize = n;
                     while (ri > 0) {
                         ri -= 1;
                         const src = self.stack.peek() orelse break;
-                        try self.emit_copy(frame.result_slots.items()[ri], src);
-                        _ = self.stack.pop();
+                        try self.bind_label_slot(frame, &frame.result_slots, ri, src, true, true);
                     }
                 }
                 if (!was_unreachable) {
@@ -3289,25 +3345,18 @@ pub const Lower = struct {
                 const frame = try self.frame_at_depth(depth);
                 try self.mergeCurrentLocalInitIntoFrame(frame);
 
-                // For a loop: br_if passes params; for block/if: passes results.
-                const target_slots = if (frame.kind == .loop)
-                    frame.param_slots.items()
-                else
-                    frame.result_slots.items();
+                const slots = if (frame.kind == .loop) &frame.param_slots else &frame.result_slots;
+                const rename_results = frame.kind != .loop;
 
-                // Copy values from stack into target slots (peek, don't pop — fall-through
-                // needs the values still on stack).
-                // Stack top = last result slot; we peek from TOS downward.
-                if (target_slots.len > 0) {
+                // Bind stack values into label slots (peek — fall-through keeps them on stack).
+                if (slots.items().len > 0) {
                     const stack_len = self.stack.len();
-                    if (stack_len < target_slots.len) return error.StackUnderflow;
-                    var ri: usize = target_slots.len;
+                    if (stack_len < slots.items().len) return error.StackUnderflow;
+                    var ri: usize = slots.items().len;
                     while (ri > 0) {
                         ri -= 1;
-                        // stack[stack_len - 1 - (target_slots.len - 1 - ri)]
-                        // = stack[stack_len - target_slots.len + ri]
-                        const src = self.stack.slots.items[stack_len - target_slots.len + ri];
-                        try self.emit_copy(target_slots[ri], src);
+                        const src = self.stack.slots.items[stack_len - slots.items().len + ri];
+                        try self.bind_label_slot(frame, slots, ri, src, false, rename_results);
                     }
                 }
 
@@ -3547,19 +3596,16 @@ pub const Lower = struct {
                         depth: u32,
                     ) !void {
                         const f = try l.frame_at_depth(depth);
-                        // Copy results/params into the frame's slots.
-                        const target_slots = if (f.kind == .loop)
-                            f.param_slots.items()
-                        else
-                            f.result_slots.items();
-                        if (target_slots.len > 0) {
+                        const slots = if (f.kind == .loop) &f.param_slots else &f.result_slots;
+                        const rename_results = f.kind != .loop;
+                        if (slots.items().len > 0) {
                             const stack_len = l.stack.len();
-                            if (stack_len < target_slots.len) return error.StackUnderflow;
-                            var ri: usize = target_slots.len;
+                            if (stack_len < slots.items().len) return error.StackUnderflow;
+                            var ri: usize = slots.items().len;
                             while (ri > 0) {
                                 ri -= 1;
-                                const src = l.stack.slots.items[stack_len - target_slots.len + ri];
-                                try l.emit(.{ .copy = .{ .dst = target_slots[ri], .src = src } });
+                                const src = l.stack.slots.items[stack_len - slots.items().len + ri];
+                                try l.bind_label_slot(f, slots, ri, src, false, rename_results);
                             }
                         }
                         if (f.kind == .loop) {
@@ -5182,6 +5228,7 @@ pub const Lower = struct {
                         try self.frame_at_depth(h.depth)
                     else
                         null;
+                    if (target_frame_opt) |tf| tf.result_slots_pinned = true;
 
                     const dst_slots_start: u32 = @intCast(self.compiled.call_args.items.len);
                     var dst_slots_len: u32 = 0;
@@ -6036,8 +6083,7 @@ pub const Lower = struct {
             while (ri > 0) {
                 ri -= 1;
                 if (self.stack.peek()) |src| {
-                    try self.emit_copy(frame.result_slots.items()[ri], src);
-                    _ = self.stack.pop();
+                    try self.bind_label_slot(&frame, &frame.result_slots, ri, src, true, true);
                 }
             }
         }

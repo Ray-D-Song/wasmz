@@ -607,33 +607,32 @@ test "lower if-else selects correct branch" {
     };
     for (ops) |o| try lower.lowerOp(o);
 
-    // Expected IR (result_slot = 1, allocated when if_ opens):
-    //   [0] jump_if_z cond=0, target=4   ; skip then-body if cond==0
+    // Expected IR (result_slot = 1 allocated at if_ open, then-branch renames to 2):
+    //   [0] jump_if_z cond=0, target=3   ; skip then-body if cond==0
     //   [1] const_i32 10, dst=2
-    //   [2] copy dst=1, src=2            ; write then result into result_slot
-    //   [3] jump target=6                ; skip else-body
-    //   [4] const_i32 20, dst=3
-    //   [5] copy dst=1, src=3            ; write else result into result_slot
-    //   [6] ret { value=1 }
-    try testing.expectEqual(@as(usize, 7), lower.compiled.ops.items.len);
+    //   [2] jump target=5                ; skip else-body
+    //   [3] const_i32 20, dst=1          ; recycles the freed result placeholder
+    //   [4] copy dst=2, src=1            ; phi merge else result into then slot
+    //   [5] ret { value=2 }
+    try testing.expectEqual(@as(usize, 6), lower.compiled.ops.items.len);
 
     switch (lower.compiled.ops.items[0]) {
-        .jump_if_z => |j| try testing.expectEqual(@as(u32, 4), j.target),
+        .jump_if_z => |j| try testing.expectEqual(@as(u32, 3), j.target),
         else => return error.UnexpectedOpTag,
     }
     switch (lower.compiled.ops.items[2]) {
+        .jump => |j| try testing.expectEqual(@as(u32, 5), j.target),
+        else => return error.UnexpectedOpTag,
+    }
+    switch (lower.compiled.ops.items[4]) {
         .copy => |c| {
-            try testing.expectEqual(@as(u32, 1), c.dst); // result_slot
-            try testing.expectEqual(@as(u32, 2), c.src); // then value
+            try testing.expectEqual(@as(u32, 2), c.dst);
+            try testing.expectEqual(@as(u32, 1), c.src);
         },
         else => return error.UnexpectedOpTag,
     }
-    switch (lower.compiled.ops.items[3]) {
-        .jump => |j| try testing.expectEqual(@as(u32, 6), j.target),
-        else => return error.UnexpectedOpTag,
-    }
-    switch (lower.compiled.ops.items[6]) {
-        .ret => |r| try testing.expectEqual(@as(?u16, 1), r.value),
+    switch (lower.compiled.ops.items[5]) {
+        .ret => |r| try testing.expectEqual(@as(?u16, 2), r.value),
         else => return error.UnexpectedOpTag,
     }
 }
