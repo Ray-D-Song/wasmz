@@ -3,6 +3,7 @@
 /// M3 bytecode stream.
 const encode = @import("../compiler/encode/encode.zig");
 const handlers = @import("handlers/root.zig");
+const handlers_acc = @import("handlers/accumulator.zig");
 const handlers_call = @import("handlers/call.zig");
 const handlers_table = @import("handlers/table.zig");
 const handlers_atomic = @import("handlers/atomic.zig");
@@ -376,6 +377,39 @@ pub const handler_table: encode.HandlerTable = .{
     .i64_shl_imm_r = &handlers.handle_i64_shl_imm_r,
     .i64_shr_s_imm_r = &handlers.handle_i64_shr_s_imm_r,
     .i64_shr_u_imm_r = &handlers.handle_i64_shr_u_imm_r,
+    // r0/fp0 binop-r variants
+    .i32_add_r = &handlers_acc.handle_i32_add_r,
+    .i32_sub_r = &handlers_acc.handle_i32_sub_r,
+    .i32_mul_r = &handlers_acc.handle_i32_mul_r,
+    .i32_and_r = &handlers_acc.handle_i32_and_r,
+    .i32_or_r = &handlers_acc.handle_i32_or_r,
+    .i32_xor_r = &handlers_acc.handle_i32_xor_r,
+    .i32_shl_r = &handlers_acc.handle_i32_shl_r,
+    .i32_shr_s_r = &handlers_acc.handle_i32_shr_s_r,
+    .i32_shr_u_r = &handlers_acc.handle_i32_shr_u_r,
+    .i64_add_r = &handlers_acc.handle_i64_add_r,
+    .i64_sub_r = &handlers_acc.handle_i64_sub_r,
+    .i64_mul_r = &handlers_acc.handle_i64_mul_r,
+    .i64_and_r = &handlers_acc.handle_i64_and_r,
+    .i64_or_r = &handlers_acc.handle_i64_or_r,
+    .i64_xor_r = &handlers_acc.handle_i64_xor_r,
+    .i64_shl_r = &handlers_acc.handle_i64_shl_r,
+    .i64_shr_s_r = &handlers_acc.handle_i64_shr_s_r,
+    .i64_shr_u_r = &handlers_acc.handle_i64_shr_u_r,
+    .f32_add_r = &handlers_acc.handle_f32_add_r,
+    .f32_sub_r = &handlers_acc.handle_f32_sub_r,
+    .f32_mul_r = &handlers_acc.handle_f32_mul_r,
+    .f32_div_r = &handlers_acc.handle_f32_div_r,
+    .f64_add_r = &handlers_acc.handle_f64_add_r,
+    .f64_sub_r = &handlers_acc.handle_f64_sub_r,
+    .f64_mul_r = &handlers_acc.handle_f64_mul_r,
+    .f64_div_r = &handlers_acc.handle_f64_div_r,
+    .r0_load = &handlers_acc.handle_r0_load,
+    .fp0_load = &handlers_acc.handle_fp0_load,
+    .i32_add_r_ret = &handlers_acc.handle_i32_add_r_ret,
+    .i32_sub_r_ret = &handlers_acc.handle_i32_sub_r_ret,
+    .i64_add_r_ret = &handlers_acc.handle_i64_add_r_ret,
+    .i64_sub_r_ret = &handlers_acc.handle_i64_sub_r_ret,
     // Fused: compare-jump (Candidate F)
     .i32_eq_jump_if_false = &handlers.handle_i32_eq_jump_if_false,
     .i32_ne_jump_if_false = &handlers.handle_i32_ne_jump_if_false,

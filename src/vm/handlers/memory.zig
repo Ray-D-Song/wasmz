@@ -18,42 +18,66 @@ const trapReturn = common.trapReturn;
 const effectiveAddr = common.effectiveAddr;
 const currentRssBytes = profiling.currentRssBytes;
 
+
+inline fn nextAfterI32Load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, fp0: f64, val: i32) void {
+    dispatch.next(ip, stride(encode.ops.OpsLoad), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(val)))), fp0);
+}
+
+inline fn nextAfterI64Load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, fp0: f64, val: i64) void {
+    dispatch.next(ip, stride(encode.ops.OpsLoad), slots, frame, env, @as(u64, @bitCast(val)), fp0);
+}
+
+inline fn nextAfterF32Load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, val: f32) void {
+    dispatch.next(ip, stride(encode.ops.OpsLoad), slots, frame, env, r0, @as(f64, @floatCast(val)));
+}
+
+inline fn nextAfterF64Load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, val: f64) void {
+    dispatch.next(ip, stride(encode.ops.OpsLoad), slots, frame, env, r0, val);
+}
+
 // Memory Loads
 
 pub fn handle_i32_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+        _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 4, memory, frame.memory64) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
     };
-    slots[ops.dst] = RawVal.from(std.mem.readInt(i32, memory[ea..][0..4], .little));
-    dispatch.next(ip, stride(encode.ops.OpsLoad), slots, frame, env, r0, fp0);
+    const val = std.mem.readInt(i32, memory[ea..][0..4], .little);
+    slots[ops.dst] = RawVal.from(val);
+    nextAfterI32Load(ip, slots, frame, env, fp0, val);
 }
 
 pub fn handle_i32_load8_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+        _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 1, memory, frame.memory64) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
     };
-    slots[ops.dst] = RawVal.from(@as(i32, @as(i8, @bitCast(memory[ea]))));
-    dispatch.next(ip, stride(encode.ops.OpsLoad), slots, frame, env, r0, fp0);
+    const val = @as(i32, @as(i8, @bitCast(memory[ea])));
+    slots[ops.dst] = RawVal.from(val);
+    nextAfterI32Load(ip, slots, frame, env, fp0, val);
 }
 
 pub fn handle_i32_load8_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+        _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 1, memory, frame.memory64) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
     };
-    slots[ops.dst] = RawVal.from(@as(i32, memory[ea]));
-    dispatch.next(ip, stride(encode.ops.OpsLoad), slots, frame, env, r0, fp0);
+    const val = @as(i32, memory[ea]);
+    slots[ops.dst] = RawVal.from(val);
+    nextAfterI32Load(ip, slots, frame, env, fp0, val);
 }
 
 pub fn handle_i32_load16_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+        _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 2, memory, frame.memory64) orelse {
@@ -61,55 +85,65 @@ pub fn handle_i32_load16_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
         return;
     };
     const half: i16 = @bitCast(std.mem.readInt(u16, memory[ea..][0..2], .little));
-    slots[ops.dst] = RawVal.from(@as(i32, half));
-    dispatch.next(ip, stride(encode.ops.OpsLoad), slots, frame, env, r0, fp0);
+    const val = @as(i32, half);
+    slots[ops.dst] = RawVal.from(val);
+    nextAfterI32Load(ip, slots, frame, env, fp0, val);
 }
 
 pub fn handle_i32_load16_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+        _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 2, memory, frame.memory64) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
     };
-    slots[ops.dst] = RawVal.from(@as(i32, std.mem.readInt(u16, memory[ea..][0..2], .little)));
-    dispatch.next(ip, stride(encode.ops.OpsLoad), slots, frame, env, r0, fp0);
+    const val = @as(i32, std.mem.readInt(u16, memory[ea..][0..2], .little));
+    slots[ops.dst] = RawVal.from(val);
+    nextAfterI32Load(ip, slots, frame, env, fp0, val);
 }
 
 pub fn handle_i64_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+        _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 8, memory, frame.memory64) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
     };
-    slots[ops.dst] = RawVal.from(std.mem.readInt(i64, memory[ea..][0..8], .little));
-    dispatch.next(ip, stride(encode.ops.OpsLoad), slots, frame, env, r0, fp0);
+    const val = std.mem.readInt(i64, memory[ea..][0..8], .little);
+    slots[ops.dst] = RawVal.from(val);
+    nextAfterI64Load(ip, slots, frame, env, fp0, val);
 }
 
 pub fn handle_i64_load8_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+        _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 1, memory, frame.memory64) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
     };
-    slots[ops.dst] = RawVal.from(@as(i64, @as(i8, @bitCast(memory[ea]))));
-    dispatch.next(ip, stride(encode.ops.OpsLoad), slots, frame, env, r0, fp0);
+    const val = @as(i64, @as(i8, @bitCast(memory[ea])));
+    slots[ops.dst] = RawVal.from(val);
+    nextAfterI64Load(ip, slots, frame, env, fp0, val);
 }
 
 pub fn handle_i64_load8_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+        _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 1, memory, frame.memory64) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
     };
-    slots[ops.dst] = RawVal.from(@as(i64, memory[ea]));
-    dispatch.next(ip, stride(encode.ops.OpsLoad), slots, frame, env, r0, fp0);
+    const val = @as(i64, memory[ea]);
+    slots[ops.dst] = RawVal.from(val);
+    nextAfterI64Load(ip, slots, frame, env, fp0, val);
 }
 
 pub fn handle_i64_load16_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+        _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 2, memory, frame.memory64) orelse {
@@ -117,22 +151,26 @@ pub fn handle_i64_load16_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
         return;
     };
     const half: i16 = @bitCast(std.mem.readInt(u16, memory[ea..][0..2], .little));
-    slots[ops.dst] = RawVal.from(@as(i64, half));
-    dispatch.next(ip, stride(encode.ops.OpsLoad), slots, frame, env, r0, fp0);
+    const val = @as(i64, half);
+    slots[ops.dst] = RawVal.from(val);
+    nextAfterI64Load(ip, slots, frame, env, fp0, val);
 }
 
 pub fn handle_i64_load16_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+        _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 2, memory, frame.memory64) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
     };
-    slots[ops.dst] = RawVal.from(@as(i64, std.mem.readInt(u16, memory[ea..][0..2], .little)));
-    dispatch.next(ip, stride(encode.ops.OpsLoad), slots, frame, env, r0, fp0);
+    const val = @as(i64, std.mem.readInt(u16, memory[ea..][0..2], .little));
+    slots[ops.dst] = RawVal.from(val);
+    nextAfterI64Load(ip, slots, frame, env, fp0, val);
 }
 
 pub fn handle_i64_load32_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+        _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 4, memory, frame.memory64) orelse {
@@ -140,22 +178,26 @@ pub fn handle_i64_load32_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
         return;
     };
     const word: i32 = @bitCast(std.mem.readInt(u32, memory[ea..][0..4], .little));
-    slots[ops.dst] = RawVal.from(@as(i64, word));
-    dispatch.next(ip, stride(encode.ops.OpsLoad), slots, frame, env, r0, fp0);
+    const val = @as(i64, word);
+    slots[ops.dst] = RawVal.from(val);
+    nextAfterI64Load(ip, slots, frame, env, fp0, val);
 }
 
 pub fn handle_i64_load32_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+        _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 4, memory, frame.memory64) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
         return;
     };
-    slots[ops.dst] = RawVal.from(@as(i64, std.mem.readInt(u32, memory[ea..][0..4], .little)));
-    dispatch.next(ip, stride(encode.ops.OpsLoad), slots, frame, env, r0, fp0);
+    const val = @as(i64, std.mem.readInt(u32, memory[ea..][0..4], .little));
+    slots[ops.dst] = RawVal.from(val);
+    nextAfterI64Load(ip, slots, frame, env, fp0, val);
 }
 
 pub fn handle_f32_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+        _ = fp0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 4, memory, frame.memory64) orelse {
@@ -163,11 +205,13 @@ pub fn handle_f32_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
         return;
     };
     const bits = std.mem.readInt(u32, memory[ea..][0..4], .little);
-    slots[ops.dst] = RawVal.from(@as(f32, @bitCast(bits)));
-    dispatch.next(ip, stride(encode.ops.OpsLoad), slots, frame, env, r0, fp0);
+    const val: f32 = @bitCast(bits);
+    slots[ops.dst] = RawVal.from(val);
+    nextAfterF32Load(ip, slots, frame, env, r0, val);
 }
 
 pub fn handle_f64_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+        _ = fp0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 8, memory, frame.memory64) orelse {
@@ -175,8 +219,9 @@ pub fn handle_f64_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
         return;
     };
     const bits = std.mem.readInt(u64, memory[ea..][0..8], .little);
-    slots[ops.dst] = RawVal.from(@as(f64, @bitCast(bits)));
-    dispatch.next(ip, stride(encode.ops.OpsLoad), slots, frame, env, r0, fp0);
+    const val: f64 = @bitCast(bits);
+    slots[ops.dst] = RawVal.from(val);
+    nextAfterF64Load(ip, slots, frame, env, r0, val);
 }
 
 // Memory Stores

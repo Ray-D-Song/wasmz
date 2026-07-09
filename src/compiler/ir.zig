@@ -82,6 +82,32 @@ pub fn BinaryOpImmR0(comptime T: type) type {
     };
 }
 
+/// r0/fp0 variant of BinaryOp: lhs is read from the accumulator register.
+pub fn BinaryOpR0(comptime T: type) type {
+    return struct {
+        dst: Slot,
+        rhs: Slot,
+
+        pub const ValueType = T;
+    };
+}
+
+/// Load a slot value into the r0 or fp0 accumulator (no dst slot write).
+pub fn AccLoadOp() type {
+    return struct {
+        src: Slot,
+    };
+}
+
+/// Fused binop_r + ret: lhs from r0, rhs from slot, return immediately.
+pub fn BinaryOpR0Ret(comptime T: type) type {
+    return struct {
+        rhs: Slot,
+
+        pub const ValueType = T;
+    };
+}
+
 /// Fused: compare + jump_if_z — replaces `i32_xxx_cmp { dst=C, lhs=A, rhs=B }` + `jump_if_z { cond=C, rel=R }`.
 /// Jumps to `target` (op-index, converted to relative byte offset at encode time)
 /// when the comparison is FALSE (i.e. jump when compare result == 0).
@@ -556,6 +582,44 @@ pub const Op = union(enum) {
     i64_shl_imm_r: BinaryOpImmR0(i64),
     i64_shr_s_imm_r: BinaryOpImmR0(i64),
     i64_shr_u_imm_r: BinaryOpImmR0(i64),
+
+    // r0/fp0 binop variants: lhs from accumulator, rhs from slot
+    i32_add_r: BinaryOpR0(i32),
+    i32_sub_r: BinaryOpR0(i32),
+    i32_mul_r: BinaryOpR0(i32),
+    i32_and_r: BinaryOpR0(i32),
+    i32_or_r: BinaryOpR0(i32),
+    i32_xor_r: BinaryOpR0(i32),
+    i32_shl_r: BinaryOpR0(i32),
+    i32_shr_s_r: BinaryOpR0(i32),
+    i32_shr_u_r: BinaryOpR0(i32),
+    i64_add_r: BinaryOpR0(i64),
+    i64_sub_r: BinaryOpR0(i64),
+    i64_mul_r: BinaryOpR0(i64),
+    i64_and_r: BinaryOpR0(i64),
+    i64_or_r: BinaryOpR0(i64),
+    i64_xor_r: BinaryOpR0(i64),
+    i64_shl_r: BinaryOpR0(i64),
+    i64_shr_s_r: BinaryOpR0(i64),
+    i64_shr_u_r: BinaryOpR0(i64),
+    f32_add_r: BinaryOpR0(f32),
+    f32_sub_r: BinaryOpR0(f32),
+    f32_mul_r: BinaryOpR0(f32),
+    f32_div_r: BinaryOpR0(f32),
+    f64_add_r: BinaryOpR0(f64),
+    f64_sub_r: BinaryOpR0(f64),
+    f64_mul_r: BinaryOpR0(f64),
+    f64_div_r: BinaryOpR0(f64),
+
+    // Accumulator preload from slot (local.get path)
+    r0_load: AccLoadOp(),
+    fp0_load: AccLoadOp(),
+
+    // Fused binop_r + ret
+    i32_add_r_ret: BinaryOpR0Ret(i32),
+    i32_sub_r_ret: BinaryOpR0Ret(i32),
+    i64_add_r_ret: BinaryOpR0Ret(i64),
+    i64_sub_r_ret: BinaryOpR0Ret(i64),
 
     // Fused: compare + jump_if_z (F: cmp + branch → cmp_jump)
     // Jumps to rel_target (from instruction start) when the comparison is FALSE.
@@ -1643,12 +1707,15 @@ pub const LocalSlotLayout = struct {
     bases: []Slot,
     /// Base slots of v128 locals (each occupies two consecutive slots).
     v128_bases: []Slot,
+    /// ValType for each Wasm local (parallel to bases).
+    val_types: []const core.ValType = &.{},
     /// Total register slots required for params + locals.
     reserved_slots: Slot,
 
     pub fn deinit(self: LocalSlotLayout, allocator: std.mem.Allocator) void {
         allocator.free(self.bases);
         allocator.free(self.v128_bases);
+        if (self.val_types.len > 0) allocator.free(self.val_types);
     }
 };
 

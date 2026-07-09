@@ -382,6 +382,61 @@ pub const DispatchState = struct {
     }
 };
 
+// Accumulator helpers
+
+const ValType = core.ValType;
+
+pub const Accumulators = struct {
+    r0: u64,
+    fp0: f64,
+};
+
+/// Map a single-value return to r0/fp0 for caller resume.
+pub inline fn accumulatorsFromReturn(
+    ret_val: ?RawVal,
+    func_idx: u32,
+    env: *const ExecEnv,
+) Accumulators {
+    const zero: Accumulators = .{ .r0 = 0, .fp0 = 0.0 };
+    const rv = ret_val orelse return zero;
+    if (func_idx >= env.func_type_indices.len) return zero;
+    const results = env.composite_types[env.func_type_indices[func_idx]].func_type.results();
+    if (results.len != 1) return zero;
+    return switch (results[0]) {
+        .I32 => .{
+            .r0 = @as(u64, @intCast(@as(u32, @bitCast(rv.readAs(i32))))),
+            .fp0 = 0.0,
+        },
+        .I64 => .{ .r0 = @as(u64, @bitCast(rv.readAs(i64))), .fp0 = 0.0 },
+        .F32 => .{ .r0 = 0, .fp0 = @as(f64, @floatCast(rv.readAs(f32))) },
+        .F64 => .{ .r0 = 0, .fp0 = rv.readAs(f64) },
+        else => zero,
+    };
+}
+
+/// Pop the current frame and resume the caller, writing the return value into
+/// the caller slot and r0/fp0 accumulators.
+pub inline fn retWithVal(
+    frame: *DispatchState,
+    env: *const ExecEnv,
+    ret_val: RawVal,
+    callee_func_idx: u32,
+) void {
+    const acc = accumulatorsFromReturn(ret_val, callee_func_idx, env);
+    const popped = frame.callStackPop();
+    frame.valStackFree(popped.slots_sp_base);
+    if (frame.call_depth == 0) {
+        frame.result = .{ .ok = ret_val };
+        return;
+    }
+    const caller_idx = frame.call_depth - 1;
+    if (popped.dst) |dst_slot| {
+        frame.callStackAt(caller_idx).slots[dst_slot] = ret_val;
+    }
+    const caller = frame.callStackAt(caller_idx);
+    dispatch(caller.ip, caller.slots.ptr, frame, env, acc.r0, acc.fp0);
+}
+
 // Dispatch helper
 
 /// Advance `ip` by `stride` bytes and tail-call the handler embedded at the

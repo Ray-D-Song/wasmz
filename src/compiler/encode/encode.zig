@@ -893,6 +893,71 @@ pub fn encode(
                     .imm = inst.imm,
                 });
             },
+            .i32_add_r,
+            .i32_sub_r,
+            .i32_mul_r,
+            .i32_and_r,
+            .i32_or_r,
+            .i32_xor_r,
+            .i32_shl_r,
+            .i32_shr_s_r,
+            .i32_shr_u_r,
+            => |inst| {
+                writeOps(ops.OpsDstRhs, ops_ptr, .{
+                    .dst = inst.dst,
+                    .rhs = inst.rhs,
+                });
+            },
+            .i64_add_r,
+            .i64_sub_r,
+            .i64_mul_r,
+            .i64_and_r,
+            .i64_or_r,
+            .i64_xor_r,
+            .i64_shl_r,
+            .i64_shr_s_r,
+            .i64_shr_u_r,
+            => |inst| {
+                writeOps(ops.OpsDstRhs, ops_ptr, .{
+                    .dst = inst.dst,
+                    .rhs = inst.rhs,
+                });
+            },
+            .f32_add_r,
+            .f32_sub_r,
+            .f32_mul_r,
+            .f32_div_r,
+            => |inst| {
+                writeOps(ops.OpsDstRhs, ops_ptr, .{
+                    .dst = inst.dst,
+                    .rhs = inst.rhs,
+                });
+            },
+            .f64_add_r,
+            .f64_sub_r,
+            .f64_mul_r,
+            .f64_div_r,
+            => |inst| {
+                writeOps(ops.OpsDstRhs, ops_ptr, .{
+                    .dst = inst.dst,
+                    .rhs = inst.rhs,
+                });
+            },
+            .r0_load,
+            .fp0_load,
+            => |inst| {
+                writeOps(ops.OpsAccLoad, ops_ptr, .{ .src = inst.src });
+            },
+            .i32_add_r_ret,
+            .i32_sub_r_ret,
+            => |inst| {
+                writeOps(ops.OpsRhs, ops_ptr, .{ .rhs = inst.rhs });
+            },
+            .i64_add_r_ret,
+            .i64_sub_r_ret,
+            => |inst| {
+                writeOps(ops.OpsRhs, ops_ptr, .{ .rhs = inst.rhs });
+            },
             .i32_eq_jump_if_false,
             .i32_ne_jump_if_false,
             .i32_lt_s_jump_if_false,

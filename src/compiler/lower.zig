@@ -455,6 +455,7 @@ pub const WasmOp = union(enum) {
         func_idx: u32,
         n_params: u32,
         has_result: bool,
+        result_val_type: ?ValType = null,
     },
     /// indirect fn call via table.
     /// n_params / has_result are filled in by the caller (module.zig) after querying the type section entry.
@@ -463,6 +464,7 @@ pub const WasmOp = union(enum) {
         table_index: u32,
         n_params: u32,
         has_result: bool,
+        result_val_type: ?ValType = null,
     },
     /// Tail call: direct function call that reuses the current stack frame.
     return_call: struct {
@@ -661,6 +663,7 @@ pub const WasmOp = union(enum) {
         type_idx: u32,
         n_params: u32,
         has_result: bool,
+        result_val_type: ?ValType = null,
     },
     /// return_call_ref: tail call via funcref.
     return_call_ref: struct {
@@ -734,6 +737,10 @@ pub const Lower = struct {
     /// `_r` variant which reads lhs from r0 instead of slots[lhs].
     /// Set to null whenever r0 may have been clobbered (branches, calls, copies, etc.).
     r0_slot: ?Slot = null,
+    /// fp0 accumulator tracking (f32/f64), symmetric to r0_slot.
+    fp0_slot: ?Slot = null,
+    /// ValType per Wasm local index (parallel to local_bases).
+    local_val_types: []const ValType = &.{},
     /// Slot of the most recent call's destination (if any has result).
     /// Used to detect when call + local_set can fuse to call_to_local.
     pending_call_dst: ?Slot = null,
@@ -938,6 +945,7 @@ pub const Lower = struct {
         self.compiled.v128_local_slots = &.{};
         self.local_bases = layout.bases;
         self.v128_local_bases = layout.v128_bases;
+        self.local_val_types = layout.val_types;
 
         // Clear and deinit each ControlFrame's inner lists.
         // We free the per-frame inner lists (they are typically tiny) and clear
@@ -958,6 +966,8 @@ pub const Lower = struct {
         self.is_unreachable = false;
         self.unreachable_depth = 0;
         self.r0_slot = null;
+        self.fp0_slot = null;
+        self.local_val_types = &.{};
         self.pending_call_dst = null;
         self.local_init_analysis_active = false;
         // Recycle the free-list capacity but discard stale slot numbers.
@@ -2705,16 +2715,52 @@ pub const Lower = struct {
 
     /// Handle binary operations: pop two operands, allocate result slot, emit, push result.
     /// The op_tag parameter is a string literal representing the Op field name.
+    fn trackNumericResult(self: *Lower, val_type: ValType, dst: Slot) void {
+        switch (val_type) {
+            .I32, .I64 => {
+                self.r0_slot = dst;
+                self.fp0_slot = null;
+            },
+            .F32, .F64 => {
+                self.fp0_slot = dst;
+                self.r0_slot = null;
+            },
+            else => {},
+        }
+    }
+
+    fn emitAccLoadForLocal(self: *Lower, local: u32, slot: Slot) !void {
+        if (self.is_v128_wasm_local(local)) return;
+        if (self.local_val_types.len == 0) return;
+        if (self.local_val_types.len > local) {
+            switch (self.local_val_types[local]) {
+                .I32, .I64 => {
+                    try self.emit(.{ .r0_load = .{ .src = slot } });
+                    self.r0_slot = slot;
+                    self.fp0_slot = null;
+                },
+                .F32, .F64 => {
+                    try self.emit(.{ .fp0_load = .{ .src = slot } });
+                    self.fp0_slot = slot;
+                    self.r0_slot = null;
+                },
+                else => {},
+            }
+        }
+    }
+
     pub fn lower_binary_op(
         self: *Lower,
         comptime op_tag: []const u8,
         prev_r0: ?Slot,
+        prev_fp0: ?Slot,
     ) !void {
         // Clear now so all exit paths (const folding, simplification, fallthrough)
         // leave r0_slot in the correct state unless we explicitly set it below.
         // (lowerOp already cleared self.r0_slot before calling us; this is a no-op
         // but kept for clarity.)
         self.r0_slot = null;
+        self.fp0_slot = null;
         const rhs = try self.pop_slot();
         const lhs = try self.pop_slot();
         const dst = self.alloc_slot();
@@ -2805,11 +2851,39 @@ pub const Lower = struct {
             }
         }
 
-        self.r0_slot = null;
-        // Integer-producing binops write their result to the r0 register at runtime.
-        // Track which slot holds r0 so downstream copy/imm_r can eliminate redundant reads.
+        // Peephole: lhs already in r0/fp0 → emit *_r variant.
+        const r_tag = op_tag ++ "_r";
+        if (comptime @hasField(Op, r_tag)) {
+            if (comptime std.mem.startsWith(u8, op_tag, "f32_") or std.mem.startsWith(u8, op_tag, "f64_")) {
+                if (prev_fp0) |fp0| {
+                    if (fp0 == lhs) {
+                        try self.emit(@unionInit(Op, r_tag, .{
+                            .dst = dst,
+                            .rhs = rhs,
+                        }));
+                        self.fp0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    }
+                }
+            } else if (prev_r0) |r0| {
+                if (r0 == lhs) {
+                    try self.emit(@unionInit(Op, r_tag, .{
+                        .dst = dst,
+                        .rhs = rhs,
+                    }));
+                    self.r0_slot = dst;
+                    try self.stack.push(self.allocator, dst);
+                    return;
+                }
+            }
+        }
+
+        // Producers write slot + accumulator at runtime.
         if (comptime std.mem.startsWith(u8, op_tag, "i32_") or std.mem.startsWith(u8, op_tag, "i64_")) {
             self.r0_slot = dst;
+        } else if (comptime std.mem.startsWith(u8, op_tag, "f32_") or std.mem.startsWith(u8, op_tag, "f64_")) {
+            self.fp0_slot = dst;
         }
         try self.emit(@unionInit(Op, op_tag, .{
             .dst = dst,
@@ -3006,11 +3080,9 @@ pub const Lower = struct {
             }
         }
 
-        // Capture and clear r0 accumulator state.
-        // lower_binary_op will receive it as prev_r0 and may set self.r0_slot again
-        // if it emits an _imm or _r instruction.  All other op arms leave r0_slot=null.
+        // Capture accumulator state for binop lowering; non-producing ops preserve it.
         const saved_r0 = self.r0_slot;
-        self.r0_slot = null;
+        const saved_fp0 = self.fp0_slot;
 
         switch (op) {
             .unreachable_ => {
@@ -3025,6 +3097,7 @@ pub const Lower = struct {
             .drop => {
                 _ = try self.pop_slot();
                 self.r0_slot = null;
+                self.fp0_slot = null;
             },
 
             // Structured control flow
@@ -3542,7 +3615,9 @@ pub const Lower = struct {
 
             .local_get => |local| {
                 self.recordLocalRead(local);
-                try self.stack.push(self.allocator, self.local_to_slot(local));
+                const slot = self.local_to_slot(local);
+                try self.emitAccLoadForLocal(local, slot);
+                try self.stack.push(self.allocator, slot);
             },
             .local_set => |local| {
                 const src = try self.pop_slot();
@@ -3601,11 +3676,15 @@ pub const Lower = struct {
             .f32_const => |value| {
                 const dst = self.alloc_slot();
                 try self.emit(.{ .const_f32 = .{ .dst = dst, .value = value } });
+                self.fp0_slot = dst;
+                self.r0_slot = null;
                 try self.stack.push(self.allocator, dst);
             },
             .f64_const => |value| {
                 const dst = self.alloc_slot();
                 try self.emit(.{ .const_f64 = .{ .dst = dst, .value = value } });
+                self.fp0_slot = dst;
+                self.r0_slot = null;
                 try self.stack.push(self.allocator, dst);
             },
             .v128_const => |value| {
@@ -3617,59 +3696,59 @@ pub const Lower = struct {
             // i32 arithmetic operations (binary)
             // Using helper function to reduce boilerplate
 
-            .i32_add => try self.lower_binary_op("i32_add", saved_r0),
-            .i32_sub => try self.lower_binary_op("i32_sub", saved_r0),
-            .i32_mul => try self.lower_binary_op("i32_mul", saved_r0),
-            .i32_div_s => try self.lower_binary_op("i32_div_s", saved_r0),
-            .i32_div_u => try self.lower_binary_op("i32_div_u", saved_r0),
-            .i32_rem_s => try self.lower_binary_op("i32_rem_s", saved_r0),
-            .i32_rem_u => try self.lower_binary_op("i32_rem_u", saved_r0),
-            .i32_and => try self.lower_binary_op("i32_and", saved_r0),
-            .i32_or => try self.lower_binary_op("i32_or", saved_r0),
-            .i32_xor => try self.lower_binary_op("i32_xor", saved_r0),
-            .i32_shl => try self.lower_binary_op("i32_shl", saved_r0),
-            .i32_shr_s => try self.lower_binary_op("i32_shr_s", saved_r0),
-            .i32_shr_u => try self.lower_binary_op("i32_shr_u", saved_r0),
-            .i32_rotl => try self.lower_binary_op("i32_rotl", saved_r0),
-            .i32_rotr => try self.lower_binary_op("i32_rotr", saved_r0),
+            .i32_add => try self.lower_binary_op("i32_add", saved_r0, saved_fp0),
+            .i32_sub => try self.lower_binary_op("i32_sub", saved_r0, saved_fp0),
+            .i32_mul => try self.lower_binary_op("i32_mul", saved_r0, saved_fp0),
+            .i32_div_s => try self.lower_binary_op("i32_div_s", saved_r0, saved_fp0),
+            .i32_div_u => try self.lower_binary_op("i32_div_u", saved_r0, saved_fp0),
+            .i32_rem_s => try self.lower_binary_op("i32_rem_s", saved_r0, saved_fp0),
+            .i32_rem_u => try self.lower_binary_op("i32_rem_u", saved_r0, saved_fp0),
+            .i32_and => try self.lower_binary_op("i32_and", saved_r0, saved_fp0),
+            .i32_or => try self.lower_binary_op("i32_or", saved_r0, saved_fp0),
+            .i32_xor => try self.lower_binary_op("i32_xor", saved_r0, saved_fp0),
+            .i32_shl => try self.lower_binary_op("i32_shl", saved_r0, saved_fp0),
+            .i32_shr_s => try self.lower_binary_op("i32_shr_s", saved_r0, saved_fp0),
+            .i32_shr_u => try self.lower_binary_op("i32_shr_u", saved_r0, saved_fp0),
+            .i32_rotl => try self.lower_binary_op("i32_rotl", saved_r0, saved_fp0),
+            .i32_rotr => try self.lower_binary_op("i32_rotr", saved_r0, saved_fp0),
 
             // i64 arithmetic operations (binary)
 
-            .i64_add => try self.lower_binary_op("i64_add", saved_r0),
-            .i64_sub => try self.lower_binary_op("i64_sub", saved_r0),
-            .i64_mul => try self.lower_binary_op("i64_mul", saved_r0),
-            .i64_div_s => try self.lower_binary_op("i64_div_s", saved_r0),
-            .i64_div_u => try self.lower_binary_op("i64_div_u", saved_r0),
-            .i64_rem_s => try self.lower_binary_op("i64_rem_s", saved_r0),
-            .i64_rem_u => try self.lower_binary_op("i64_rem_u", saved_r0),
-            .i64_and => try self.lower_binary_op("i64_and", saved_r0),
-            .i64_or => try self.lower_binary_op("i64_or", saved_r0),
-            .i64_xor => try self.lower_binary_op("i64_xor", saved_r0),
-            .i64_shl => try self.lower_binary_op("i64_shl", saved_r0),
-            .i64_shr_s => try self.lower_binary_op("i64_shr_s", saved_r0),
-            .i64_shr_u => try self.lower_binary_op("i64_shr_u", saved_r0),
-            .i64_rotl => try self.lower_binary_op("i64_rotl", saved_r0),
-            .i64_rotr => try self.lower_binary_op("i64_rotr", saved_r0),
+            .i64_add => try self.lower_binary_op("i64_add", saved_r0, saved_fp0),
+            .i64_sub => try self.lower_binary_op("i64_sub", saved_r0, saved_fp0),
+            .i64_mul => try self.lower_binary_op("i64_mul", saved_r0, saved_fp0),
+            .i64_div_s => try self.lower_binary_op("i64_div_s", saved_r0, saved_fp0),
+            .i64_div_u => try self.lower_binary_op("i64_div_u", saved_r0, saved_fp0),
+            .i64_rem_s => try self.lower_binary_op("i64_rem_s", saved_r0, saved_fp0),
+            .i64_rem_u => try self.lower_binary_op("i64_rem_u", saved_r0, saved_fp0),
+            .i64_and => try self.lower_binary_op("i64_and", saved_r0, saved_fp0),
+            .i64_or => try self.lower_binary_op("i64_or", saved_r0, saved_fp0),
+            .i64_xor => try self.lower_binary_op("i64_xor", saved_r0, saved_fp0),
+            .i64_shl => try self.lower_binary_op("i64_shl", saved_r0, saved_fp0),
+            .i64_shr_s => try self.lower_binary_op("i64_shr_s", saved_r0, saved_fp0),
+            .i64_shr_u => try self.lower_binary_op("i64_shr_u", saved_r0, saved_fp0),
+            .i64_rotl => try self.lower_binary_op("i64_rotl", saved_r0, saved_fp0),
+            .i64_rotr => try self.lower_binary_op("i64_rotr", saved_r0, saved_fp0),
 
             // f32 arithmetic operations (binary)
 
-            .f32_add => try self.lower_binary_op("f32_add", saved_r0),
-            .f32_sub => try self.lower_binary_op("f32_sub", saved_r0),
-            .f32_mul => try self.lower_binary_op("f32_mul", saved_r0),
-            .f32_div => try self.lower_binary_op("f32_div", saved_r0),
-            .f32_min => try self.lower_binary_op("f32_min", saved_r0),
-            .f32_max => try self.lower_binary_op("f32_max", saved_r0),
-            .f32_copysign => try self.lower_binary_op("f32_copysign", saved_r0),
+            .f32_add => try self.lower_binary_op("f32_add", saved_r0, saved_fp0),
+            .f32_sub => try self.lower_binary_op("f32_sub", saved_r0, saved_fp0),
+            .f32_mul => try self.lower_binary_op("f32_mul", saved_r0, saved_fp0),
+            .f32_div => try self.lower_binary_op("f32_div", saved_r0, saved_fp0),
+            .f32_min => try self.lower_binary_op("f32_min", saved_r0, saved_fp0),
+            .f32_max => try self.lower_binary_op("f32_max", saved_r0, saved_fp0),
+            .f32_copysign => try self.lower_binary_op("f32_copysign", saved_r0, saved_fp0),
 
             // f64 arithmetic operations (binary)
 
-            .f64_add => try self.lower_binary_op("f64_add", saved_r0),
-            .f64_sub => try self.lower_binary_op("f64_sub", saved_r0),
-            .f64_mul => try self.lower_binary_op("f64_mul", saved_r0),
-            .f64_div => try self.lower_binary_op("f64_div", saved_r0),
-            .f64_min => try self.lower_binary_op("f64_min", saved_r0),
-            .f64_max => try self.lower_binary_op("f64_max", saved_r0),
-            .f64_copysign => try self.lower_binary_op("f64_copysign", saved_r0),
+            .f64_add => try self.lower_binary_op("f64_add", saved_r0, saved_fp0),
+            .f64_sub => try self.lower_binary_op("f64_sub", saved_r0, saved_fp0),
+            .f64_mul => try self.lower_binary_op("f64_mul", saved_r0, saved_fp0),
+            .f64_div => try self.lower_binary_op("f64_div", saved_r0, saved_fp0),
+            .f64_min => try self.lower_binary_op("f64_min", saved_r0, saved_fp0),
+            .f64_max => try self.lower_binary_op("f64_max", saved_r0, saved_fp0),
+            .f64_copysign => try self.lower_binary_op("f64_copysign", saved_r0, saved_fp0),
 
             // i32 unary operations
 
@@ -3926,6 +4005,30 @@ pub const Lower = struct {
                             self.is_unreachable = true;
                             return;
                         },
+                        .i32_add_r => |c| if (c.dst == v) {
+                            _ = self.compiled.ops.pop();
+                            try self.emit(.{ .i32_add_r_ret = .{ .rhs = c.rhs } });
+                            self.is_unreachable = true;
+                            return;
+                        },
+                        .i32_sub_r => |c| if (c.dst == v) {
+                            _ = self.compiled.ops.pop();
+                            try self.emit(.{ .i32_sub_r_ret = .{ .rhs = c.rhs } });
+                            self.is_unreachable = true;
+                            return;
+                        },
+                        .i64_add_r => |c| if (c.dst == v) {
+                            _ = self.compiled.ops.pop();
+                            try self.emit(.{ .i64_add_r_ret = .{ .rhs = c.rhs } });
+                            self.is_unreachable = true;
+                            return;
+                        },
+                        .i64_sub_r => |c| if (c.dst == v) {
+                            _ = self.compiled.ops.pop();
+                            try self.emit(.{ .i64_sub_r_ret = .{ .rhs = c.rhs } });
+                            self.is_unreachable = true;
+                            return;
+                        },
                         else => {},
                     }
                 }
@@ -3959,7 +4062,10 @@ pub const Lower = struct {
                 self.pending_call_dst = dst;
 
                 // If the call produces a result, push the result slot.
-                if (dst) |s| try self.stack.push(self.allocator, s);
+                if (dst) |s| {
+                    if (inst.result_val_type) |vt| self.trackNumericResult(vt, s);
+                    try self.stack.push(self.allocator, s);
+                }
             },
 
             // indirect function call
@@ -3991,7 +4097,10 @@ pub const Lower = struct {
                 } });
 
                 // If the call produces a result, push the result slot.
-                if (dst) |s| try self.stack.push(self.allocator, s);
+                if (dst) |s| {
+                    if (inst.result_val_type) |vt| self.trackNumericResult(vt, s);
+                    try self.stack.push(self.allocator, s);
+                }
             },
 
             // tail call
@@ -4057,6 +4166,7 @@ pub const Lower = struct {
                 try self.emit(.{ .i32_load = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
                 self.r0_slot = dst;
                 try self.stack.push(self.allocator, dst);
+                self.fp0_slot = null;
             },
             .i32_load8_s => |inst| {
                 const addr = try self.pop_slot();
@@ -4064,6 +4174,7 @@ pub const Lower = struct {
                 try self.emit(.{ .i32_load8_s = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
                 self.r0_slot = dst;
                 try self.stack.push(self.allocator, dst);
+                self.fp0_slot = null;
             },
             .i32_load8_u => |inst| {
                 const addr = try self.pop_slot();
@@ -4071,6 +4182,7 @@ pub const Lower = struct {
                 try self.emit(.{ .i32_load8_u = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
                 self.r0_slot = dst;
                 try self.stack.push(self.allocator, dst);
+                self.fp0_slot = null;
             },
             .i32_load16_s => |inst| {
                 const addr = try self.pop_slot();
@@ -4078,6 +4190,7 @@ pub const Lower = struct {
                 try self.emit(.{ .i32_load16_s = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
                 self.r0_slot = dst;
                 try self.stack.push(self.allocator, dst);
+                self.fp0_slot = null;
             },
             .i32_load16_u => |inst| {
                 const addr = try self.pop_slot();
@@ -4085,6 +4198,7 @@ pub const Lower = struct {
                 try self.emit(.{ .i32_load16_u = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
                 self.r0_slot = dst;
                 try self.stack.push(self.allocator, dst);
+                self.fp0_slot = null;
             },
 
             // i64 load instructions
@@ -4094,42 +4208,56 @@ pub const Lower = struct {
                 const dst = self.alloc_slot();
                 try self.emit(.{ .i64_load = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
                 try self.stack.push(self.allocator, dst);
+                self.r0_slot = dst;
+                self.fp0_slot = null;
             },
             .i64_load8_s => |inst| {
                 const addr = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .i64_load8_s = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
                 try self.stack.push(self.allocator, dst);
+                self.r0_slot = dst;
+                self.fp0_slot = null;
             },
             .i64_load8_u => |inst| {
                 const addr = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .i64_load8_u = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
                 try self.stack.push(self.allocator, dst);
+                self.r0_slot = dst;
+                self.fp0_slot = null;
             },
             .i64_load16_s => |inst| {
                 const addr = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .i64_load16_s = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
                 try self.stack.push(self.allocator, dst);
+                self.r0_slot = dst;
+                self.fp0_slot = null;
             },
             .i64_load16_u => |inst| {
                 const addr = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .i64_load16_u = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
                 try self.stack.push(self.allocator, dst);
+                self.r0_slot = dst;
+                self.fp0_slot = null;
             },
             .i64_load32_s => |inst| {
                 const addr = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .i64_load32_s = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
                 try self.stack.push(self.allocator, dst);
+                self.r0_slot = dst;
+                self.fp0_slot = null;
             },
             .i64_load32_u => |inst| {
                 const addr = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .i64_load32_u = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
                 try self.stack.push(self.allocator, dst);
+                self.r0_slot = dst;
+                self.fp0_slot = null;
             },
 
             // f32/f64 load instructions
@@ -4139,12 +4267,16 @@ pub const Lower = struct {
                 const dst = self.alloc_slot();
                 try self.emit(.{ .f32_load = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
                 try self.stack.push(self.allocator, dst);
+                self.fp0_slot = dst;
+                self.r0_slot = null;
             },
             .f64_load => |inst| {
                 const addr = try self.pop_slot();
                 const dst = self.alloc_slot();
                 try self.emit(.{ .f64_load = .{ .dst = dst, .addr = addr, .offset = inst.offset } });
                 try self.stack.push(self.allocator, dst);
+                self.fp0_slot = dst;
+                self.r0_slot = null;
             },
 
             // i32 store instructions
@@ -4930,7 +5062,10 @@ pub const Lower = struct {
                     .args_len = inst.n_params,
                 } });
 
-                if (dst) |s| try self.stack.push(self.allocator, s);
+                if (dst) |s| {
+                    if (inst.result_val_type) |vt| self.trackNumericResult(vt, s);
+                    try self.stack.push(self.allocator, s);
+                }
             },
             .return_call_ref => |inst| {
                 const ref = try self.pop_slot();
@@ -5257,9 +5392,9 @@ pub const Lower = struct {
             else => {},
         }
 
-        // Capture and clear r0 accumulator state (mirrors lowerOp).
+        // Capture accumulator state for binop lowering (mirrors lowerOp).
         const saved_r0 = self.r0_slot;
-        self.r0_slot = null;
+        const saved_fp0 = self.fp0_slot;
 
         // Dispatch directly from OperatorCode
         switch (info.code) {
@@ -5270,6 +5405,8 @@ pub const Lower = struct {
             .nop => {},
             .drop => {
                 _ = try self.pop_slot();
+                self.r0_slot = null;
+                self.fp0_slot = null;
             },
 
             // Structured control flow
@@ -5308,7 +5445,9 @@ pub const Lower = struct {
             .local_get => {
                 const local = info.local_index orelse return error.UnsupportedOperator;
                 self.recordLocalRead(local);
-                try self.stack.push(self.allocator, self.local_to_slot(local));
+                const slot = self.local_to_slot(local);
+                try self.emitAccLoadForLocal(local, slot);
+                try self.stack.push(self.allocator, slot);
             },
             .local_set => {
                 const local = info.local_index orelse return error.UnsupportedOperator;
@@ -5357,78 +5496,86 @@ pub const Lower = struct {
                 const value = try translate_mod.literalAsI32(info);
                 const dst = self.alloc_slot();
                 try self.emit(.{ .const_i32 = .{ .dst = dst, .value = value } });
+                self.r0_slot = dst;
+                self.fp0_slot = null;
                 try self.stack.push(self.allocator, dst);
             },
             .i64_const => {
                 const value = try translate_mod.literalAsI64(info);
                 const dst = self.alloc_slot();
                 try self.emit(.{ .const_i64 = .{ .dst = dst, .value = value } });
+                self.r0_slot = dst;
+                self.fp0_slot = null;
                 try self.stack.push(self.allocator, dst);
             },
             .f32_const => {
                 const value = try translate_mod.literalAsF32(info);
                 const dst = self.alloc_slot();
                 try self.emit(.{ .const_f32 = .{ .dst = dst, .value = value } });
+                self.fp0_slot = dst;
+                self.r0_slot = null;
                 try self.stack.push(self.allocator, dst);
             },
             .f64_const => {
                 const value = try translate_mod.literalAsF64(info);
                 const dst = self.alloc_slot();
                 try self.emit(.{ .const_f64 = .{ .dst = dst, .value = value } });
+                self.fp0_slot = dst;
+                self.r0_slot = null;
                 try self.stack.push(self.allocator, dst);
             },
 
             // i32 binary
-            .i32_add => try self.lower_binary_op("i32_add", saved_r0),
-            .i32_sub => try self.lower_binary_op("i32_sub", saved_r0),
-            .i32_mul => try self.lower_binary_op("i32_mul", saved_r0),
-            .i32_div_s => try self.lower_binary_op("i32_div_s", saved_r0),
-            .i32_div_u => try self.lower_binary_op("i32_div_u", saved_r0),
-            .i32_rem_s => try self.lower_binary_op("i32_rem_s", saved_r0),
-            .i32_rem_u => try self.lower_binary_op("i32_rem_u", saved_r0),
-            .i32_and => try self.lower_binary_op("i32_and", saved_r0),
-            .i32_or => try self.lower_binary_op("i32_or", saved_r0),
-            .i32_xor => try self.lower_binary_op("i32_xor", saved_r0),
-            .i32_shl => try self.lower_binary_op("i32_shl", saved_r0),
-            .i32_shr_s => try self.lower_binary_op("i32_shr_s", saved_r0),
-            .i32_shr_u => try self.lower_binary_op("i32_shr_u", saved_r0),
-            .i32_rotl => try self.lower_binary_op("i32_rotl", saved_r0),
-            .i32_rotr => try self.lower_binary_op("i32_rotr", saved_r0),
+            .i32_add => try self.lower_binary_op("i32_add", saved_r0, saved_fp0),
+            .i32_sub => try self.lower_binary_op("i32_sub", saved_r0, saved_fp0),
+            .i32_mul => try self.lower_binary_op("i32_mul", saved_r0, saved_fp0),
+            .i32_div_s => try self.lower_binary_op("i32_div_s", saved_r0, saved_fp0),
+            .i32_div_u => try self.lower_binary_op("i32_div_u", saved_r0, saved_fp0),
+            .i32_rem_s => try self.lower_binary_op("i32_rem_s", saved_r0, saved_fp0),
+            .i32_rem_u => try self.lower_binary_op("i32_rem_u", saved_r0, saved_fp0),
+            .i32_and => try self.lower_binary_op("i32_and", saved_r0, saved_fp0),
+            .i32_or => try self.lower_binary_op("i32_or", saved_r0, saved_fp0),
+            .i32_xor => try self.lower_binary_op("i32_xor", saved_r0, saved_fp0),
+            .i32_shl => try self.lower_binary_op("i32_shl", saved_r0, saved_fp0),
+            .i32_shr_s => try self.lower_binary_op("i32_shr_s", saved_r0, saved_fp0),
+            .i32_shr_u => try self.lower_binary_op("i32_shr_u", saved_r0, saved_fp0),
+            .i32_rotl => try self.lower_binary_op("i32_rotl", saved_r0, saved_fp0),
+            .i32_rotr => try self.lower_binary_op("i32_rotr", saved_r0, saved_fp0),
 
             // i64 binary
-            .i64_add => try self.lower_binary_op("i64_add", saved_r0),
-            .i64_sub => try self.lower_binary_op("i64_sub", saved_r0),
-            .i64_mul => try self.lower_binary_op("i64_mul", saved_r0),
-            .i64_div_s => try self.lower_binary_op("i64_div_s", saved_r0),
-            .i64_div_u => try self.lower_binary_op("i64_div_u", saved_r0),
-            .i64_rem_s => try self.lower_binary_op("i64_rem_s", saved_r0),
-            .i64_rem_u => try self.lower_binary_op("i64_rem_u", saved_r0),
-            .i64_and => try self.lower_binary_op("i64_and", saved_r0),
-            .i64_or => try self.lower_binary_op("i64_or", saved_r0),
-            .i64_xor => try self.lower_binary_op("i64_xor", saved_r0),
-            .i64_shl => try self.lower_binary_op("i64_shl", saved_r0),
-            .i64_shr_s => try self.lower_binary_op("i64_shr_s", saved_r0),
-            .i64_shr_u => try self.lower_binary_op("i64_shr_u", saved_r0),
-            .i64_rotl => try self.lower_binary_op("i64_rotl", saved_r0),
-            .i64_rotr => try self.lower_binary_op("i64_rotr", saved_r0),
+            .i64_add => try self.lower_binary_op("i64_add", saved_r0, saved_fp0),
+            .i64_sub => try self.lower_binary_op("i64_sub", saved_r0, saved_fp0),
+            .i64_mul => try self.lower_binary_op("i64_mul", saved_r0, saved_fp0),
+            .i64_div_s => try self.lower_binary_op("i64_div_s", saved_r0, saved_fp0),
+            .i64_div_u => try self.lower_binary_op("i64_div_u", saved_r0, saved_fp0),
+            .i64_rem_s => try self.lower_binary_op("i64_rem_s", saved_r0, saved_fp0),
+            .i64_rem_u => try self.lower_binary_op("i64_rem_u", saved_r0, saved_fp0),
+            .i64_and => try self.lower_binary_op("i64_and", saved_r0, saved_fp0),
+            .i64_or => try self.lower_binary_op("i64_or", saved_r0, saved_fp0),
+            .i64_xor => try self.lower_binary_op("i64_xor", saved_r0, saved_fp0),
+            .i64_shl => try self.lower_binary_op("i64_shl", saved_r0, saved_fp0),
+            .i64_shr_s => try self.lower_binary_op("i64_shr_s", saved_r0, saved_fp0),
+            .i64_shr_u => try self.lower_binary_op("i64_shr_u", saved_r0, saved_fp0),
+            .i64_rotl => try self.lower_binary_op("i64_rotl", saved_r0, saved_fp0),
+            .i64_rotr => try self.lower_binary_op("i64_rotr", saved_r0, saved_fp0),
 
             // f32 binary
-            .f32_add => try self.lower_binary_op("f32_add", saved_r0),
-            .f32_sub => try self.lower_binary_op("f32_sub", saved_r0),
-            .f32_mul => try self.lower_binary_op("f32_mul", saved_r0),
-            .f32_div => try self.lower_binary_op("f32_div", saved_r0),
-            .f32_min => try self.lower_binary_op("f32_min", saved_r0),
-            .f32_max => try self.lower_binary_op("f32_max", saved_r0),
-            .f32_copysign => try self.lower_binary_op("f32_copysign", saved_r0),
+            .f32_add => try self.lower_binary_op("f32_add", saved_r0, saved_fp0),
+            .f32_sub => try self.lower_binary_op("f32_sub", saved_r0, saved_fp0),
+            .f32_mul => try self.lower_binary_op("f32_mul", saved_r0, saved_fp0),
+            .f32_div => try self.lower_binary_op("f32_div", saved_r0, saved_fp0),
+            .f32_min => try self.lower_binary_op("f32_min", saved_r0, saved_fp0),
+            .f32_max => try self.lower_binary_op("f32_max", saved_r0, saved_fp0),
+            .f32_copysign => try self.lower_binary_op("f32_copysign", saved_r0, saved_fp0),
 
             // f64 binary
-            .f64_add => try self.lower_binary_op("f64_add", saved_r0),
-            .f64_sub => try self.lower_binary_op("f64_sub", saved_r0),
-            .f64_mul => try self.lower_binary_op("f64_mul", saved_r0),
-            .f64_div => try self.lower_binary_op("f64_div", saved_r0),
-            .f64_min => try self.lower_binary_op("f64_min", saved_r0),
-            .f64_max => try self.lower_binary_op("f64_max", saved_r0),
-            .f64_copysign => try self.lower_binary_op("f64_copysign", saved_r0),
+            .f64_add => try self.lower_binary_op("f64_add", saved_r0, saved_fp0),
+            .f64_sub => try self.lower_binary_op("f64_sub", saved_r0, saved_fp0),
+            .f64_mul => try self.lower_binary_op("f64_mul", saved_r0, saved_fp0),
+            .f64_div => try self.lower_binary_op("f64_div", saved_r0, saved_fp0),
+            .f64_min => try self.lower_binary_op("f64_min", saved_r0, saved_fp0),
+            .f64_max => try self.lower_binary_op("f64_max", saved_r0, saved_fp0),
+            .f64_copysign => try self.lower_binary_op("f64_copysign", saved_r0, saved_fp0),
 
             // i32 unary
             .i32_clz => try self.lower_unary_op("i32_clz"),

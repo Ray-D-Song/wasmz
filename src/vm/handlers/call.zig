@@ -48,6 +48,17 @@ const OpsCallLeafResolved = extern struct {
 
 // Helpers
 
+inline fn accumulatorsAfterHostCall(
+    ret_val: ?RawVal,
+    func_idx: u32,
+    env: *const ExecEnv,
+    r0: u64,
+    fp0: f64,
+) dispatch.Accumulators {
+    if (ret_val) |rv| return dispatch.accumulatorsFromReturn(rv, func_idx, env);
+    return .{ .r0 = r0, .fp0 = fp0 };
+}
+
 inline fn pushCallFrame(frame: *DispatchState, env: *const ExecEnv, call_frame: CallFrame) error{ StackOverflow, OutOfMemory }!void {
     frame.memory64 = env.memory64;
     try frame.callStackPush(call_frame);
@@ -444,7 +455,8 @@ inline fn handle_call_impl(comptime known_arity: ?u32, ip: [*]u8, slots: [*]RawV
                 slots[ops.dst] = rv;
             }
         }
-        dispatch.next(ip, instr_stride, slots, frame, env, r0, fp0);
+        const acc = accumulatorsAfterHostCall(ret_val, ops.func_idx, env, r0, fp0);
+        dispatch.next(ip, instr_stride, slots, frame, env, acc.r0, acc.fp0);
     } else {
         // readOps + inline args already done above
         var t = profiling.ScopedTimer.start();
@@ -621,7 +633,8 @@ inline fn handle_call_to_local_impl(comptime known_arity: ?u32, ip: [*]u8, slots
         if (ret_val) |rv| {
             slots[ops.local] = rv;
         }
-        dispatch.next(ip, instr_stride, slots, frame, env, r0, fp0);
+        const acc_tl = accumulatorsAfterHostCall(ret_val, ops.func_idx, env, r0, fp0);
+        dispatch.next(ip, instr_stride, slots, frame, env, acc_tl.r0, acc_tl.fp0);
     } else {
         var t = profiling.ScopedTimer.start();
         t.lap(&profiling.call_prof.ns_read_ops);
@@ -955,7 +968,8 @@ pub fn handle_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
                 slots[ops.dst] = rv;
             }
         }
-        dispatch.next(ip, instr_stride, slots, frame, env, r0, fp0);
+        const acc_ci = accumulatorsAfterHostCall(ret_val, callee_func_idx, env, r0, fp0);
+        dispatch.next(ip, instr_stride, slots, frame, env, acc_ci.r0, acc_ci.fp0);
     } else {
         const callee = ensureLocalCompiled(callee_func_idx, env, frame) orelse return;
         const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
@@ -1043,9 +1057,10 @@ pub fn handle_return_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
             }
         }
 
-        // Resume caller
+        // Resume caller with return value in r0/fp0
         const caller = frame.callStackAt(caller_idx);
-        dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env, 0, 0.0);
+        const acc_rc = dispatch.accumulatorsFromReturn(ret_val, ops.func_idx, env);
+        dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env, acc_rc.r0, acc_rc.fp0);
     } else {
         // Tail call to local function: replace current frame
         const callee = ensureLocalCompiled(ops.func_idx, env, frame) orelse return;
@@ -1152,7 +1167,8 @@ pub fn handle_return_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
         }
 
         const caller = frame.callStackAt(caller_idx);
-        dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env, 0, 0.0);
+        const acc_rci = dispatch.accumulatorsFromReturn(ret_val, callee_func_idx, env);
+        dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env, acc_rci.r0, acc_rci.fp0);
     } else {
         const callee = ensureLocalCompiled(callee_func_idx, env, frame) orelse return;
         const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
@@ -1226,7 +1242,8 @@ pub fn handle_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
                 slots[ops.dst] = rv;
             }
         }
-        dispatch.next(ip, instr_stride, slots, frame, env, r0, fp0);
+        const acc_ci = accumulatorsAfterHostCall(ret_val, callee_func_idx, env, r0, fp0);
+        dispatch.next(ip, instr_stride, slots, frame, env, acc_ci.r0, acc_ci.fp0);
     } else {
         const callee = ensureLocalCompiled(callee_func_idx, env, frame) orelse return;
         const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
@@ -1330,7 +1347,8 @@ pub fn handle_return_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
         }
 
         const caller = frame.callStackAt(caller_idx);
-        dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env, 0, 0.0);
+        const acc_rci = dispatch.accumulatorsFromReturn(ret_val, callee_func_idx, env);
+        dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env, acc_rci.r0, acc_rci.fp0);
     } else {
         const callee = ensureLocalCompiled(callee_func_idx, env, frame) orelse return;
         const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);

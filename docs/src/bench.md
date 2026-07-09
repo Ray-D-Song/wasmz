@@ -112,7 +112,19 @@ Inspired by the [Wasm3 M3](https://github.com/wasm3/wasm3) architecture, wasmz m
 - **r0** — holds the most recent i32/i64 result
 - **fp0** — holds the most recent f32/f64 result (f32 values are bit-cast to f64)
 
-Handlers that produce a numeric result write it to both the accumulator *and* the destination slot. This allows the CPU to keep the top-of-stack value in a real hardware register across instruction boundaries, avoiding a slot load on every back-to-back arithmetic instruction. The `*_imm_r` variants and other fusions leverage this by reading from r0 implicitly.
+Handlers that produce a numeric result write it to both the accumulator *and* the destination slot. This allows the CPU to keep the top-of-stack value in a real hardware register across instruction boundaries, avoiding a slot load on every back-to-back arithmetic instruction.
+
+**Producer ops** (loads, constants, binops, unary integer ops) write the destination slot and update r0/fp0 at runtime. **Consumer ops** read the accumulator implicitly:
+
+| Pattern | Fused / variant op | Benefit |
+|---------|-------------------|---------|
+| `local.get` (typed local) | `r0_load` / `fp0_load` | value goes straight into the accumulator, no separate `local_get` dispatch |
+| `binop` with lhs already in r0/fp0 | `*_r` (e.g. `i32_add_r`) | skips lhs slot load; only rhs is read from slots |
+| `const + binop` with lhs in r0 | `*_imm_r` | skips lhs slot load on immediate binops |
+| `binop + ret` with lhs in r0 | `*_r_ret` | return path reads lhs from accumulator |
+| single-value `return` / host call / `return_call` resume | accumulator forwarded on `dispatch.next` / `resume` | caller's r0/fp0 is primed with the returned value |
+
+The compiler tracks which slot currently lives in r0/fp0 during lowering. Non-producing ops (`global.get`, control flow, etc.) preserve the tracked accumulator so a later `*_r` can still fire. Callee entry still starts with `r0 = 0` / `fp0 = 0.0`; only resume paths that return a single numeric value refill the caller's accumulator.
 
 ### Superinstructions (Instruction Fusion)
 
@@ -142,9 +154,15 @@ Additional local-slot specialized fusions:
 - **`global_get_to_local`** — global read result written directly to a local
 - **`call_to_local`** — direct call result written directly to a local slot (saves one dispatch vs `call` + `local_set`)
 
-### r0 Accumulator Variants
+### r0 Accumulator Variants (`*_r`, `*_imm_r`, `r0_load`)
 
-For long chains of `const + binop_imm` sequences (common in tight loops), the compiler tracks an *accumulator register* `r0`. When the previous instruction's destination matches the next instruction's source, the `lhs` slot field is elided from the encoding, producing `*_imm_r` variants. This shrinks the instruction and saves one memory load per dispatch.
+For long chains of arithmetic (common in tight loops and interpreter-style code), the compiler tracks which slot is currently mirrored in r0/fp0. When the lhs of a binop matches that slot, the `lhs` operand is elided from the encoding:
+
+- **`*_r`** — ordinary binop with lhs read from r0/fp0 (e.g. `i32_add_r`)
+- **`*_imm_r`** — immediate binop with lhs read from r0/fp0
+- **`r0_load` / `fp0_load`** — `local.get` for typed i32/i64/f32/f64 locals writes directly into the accumulator
+
+Each variant saves one slot load per dispatch. Runtime profiling (`-Dprofiling=true`) reports `acc_load` and `binop_r` counts alongside existing `imm_r` / `binop` counters.
 
 ### `call_leaf` Superinstruction
 

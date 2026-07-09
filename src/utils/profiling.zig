@@ -290,6 +290,8 @@ pub const OpCounts = if (enabled) struct {
     constant: u64 = 0,
     imm: u64 = 0,
     imm_r: u64 = 0,
+    acc_load: u64 = 0,
+    binop_r: u64 = 0,
     unary: u64 = 0,
     conv: u64 = 0,
     cmp: u64 = 0,
@@ -838,6 +840,8 @@ fn printOpCountsReport() void {
         \\  constant          : {d:>12}  ({d:.1}%)
         \\  imm               : {d:>12}  ({d:.1}%)
         \\  imm_r             : {d:>12}  ({d:.1}%)
+        \\  acc_load          : {d:>12}  ({d:.1}%)
+        \\  binop_r           : {d:>12}  ({d:.1}%)
         \\
     , .{
         oc.copy,            pct(oc.copy, oc.total),
@@ -850,6 +854,8 @@ fn printOpCountsReport() void {
         oc.constant,        pct(oc.constant, oc.total),
         oc.imm,             pct(oc.imm, oc.total),
         oc.imm_r,           pct(oc.imm_r, oc.total),
+        oc.acc_load,        pct(oc.acc_load, oc.total),
+        oc.binop_r,         pct(oc.binop_r, oc.total),
     });
     std.debug.print(
         \\  unary             : {d:>12}  ({d:.1}%)

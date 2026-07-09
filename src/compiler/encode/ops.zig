@@ -5,6 +5,9 @@ pub const OpsNone = extern struct {};
 pub const OpsDst = extern struct { dst: Slot };
 pub const OpsDstSrc = extern struct { dst: Slot, src: Slot };
 pub const OpsDstLhsRhs = extern struct { dst: Slot, lhs: Slot, rhs: Slot };
+pub const OpsDstRhs = extern struct { dst: Slot, rhs: Slot };
+pub const OpsRhs = extern struct { rhs: Slot, _pad: u16 = 0 };
+pub const OpsAccLoad = extern struct { src: Slot, _pad: u16 = 0 };
 
 pub const OpsConstI32 = extern struct { dst: Slot, _pad: u16 = 0, value: i32 };
 pub const OpsConstI64 = extern struct { dst: Slot, _pad: [6]u8 = [_]u8{0} ** 6, value: i64 };
