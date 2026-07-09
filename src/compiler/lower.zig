@@ -750,8 +750,7 @@ pub const Lower = struct {
     local_init_analysis_active: bool = false,
     /// Base slot for each Wasm local index (borrowed for the duration of lowering).
     local_bases: []const Slot = &.{},
-    /// Base slots of v128 locals (borrowed for the duration of lowering).
-    v128_local_bases: []const Slot = &.{},
+
 
     pub fn init(allocator: Allocator) Lower {
         return .{ .allocator = allocator, .pending_call_dst = null };
@@ -942,9 +941,7 @@ pub const Lower = struct {
         self.compiled.slots_len = reserved_slots;
         self.compiled.locals_count = locals_count;
         self.compiled.needs_zero = locals_count > 0;
-        self.compiled.v128_local_slots = &.{};
         self.local_bases = layout.bases;
-        self.v128_local_bases = layout.v128_bases;
         self.local_val_types = layout.val_types;
 
         // Clear and deinit each ControlFrame's inner lists.
@@ -967,7 +964,6 @@ pub const Lower = struct {
         self.unreachable_depth = 0;
         self.r0_slot = null;
         self.fp0_slot = null;
-        self.local_val_types = &.{};
         self.pending_call_dst = null;
         self.local_init_analysis_active = false;
         // Recycle the free-list capacity but discard stale slot numbers.
@@ -1090,11 +1086,7 @@ pub const Lower = struct {
     }
 
     pub fn is_v128_wasm_local(self: *const Lower, local: u32) bool {
-        const base = self.local_to_slot(local);
-        for (self.v128_local_bases) |s| {
-            if (s == base) return true;
-        }
-        return false;
+        return local < self.local_val_types.len and self.local_val_types[local] == .V128;
     }
 
     // Control stack helpers
@@ -3623,7 +3615,7 @@ pub const Lower = struct {
                 const src = try self.pop_slot();
                 const local_slot = self.local_to_slot(local);
                 if (self.is_v128_wasm_local(local)) {
-                    try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
+                    try self.emit(.{ .local_set_v128 = .{ .local = local_slot, .src = src } });
                 } else if (self.try_fuse_local_set(local_slot, src) or
                     self.try_fuse_const_to_local(local_slot, src) or
                     self.try_fuse_global_get_to_local(local_slot, src) or
@@ -3642,7 +3634,7 @@ pub const Lower = struct {
                 const src = self.stack.peek() orelse return error.StackUnderflow;
                 const local_slot = self.local_to_slot(local);
                 if (self.is_v128_wasm_local(local)) {
-                    try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
+                    try self.emit(.{ .local_set_v128 = .{ .local = local_slot, .src = src } });
                 } else if (!self.try_fuse_local_tee(local_slot, src)) {
                     try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
                 }
@@ -5454,7 +5446,7 @@ pub const Lower = struct {
                 const src = try self.pop_slot();
                 const local_slot = self.local_to_slot(local);
                 if (self.is_v128_wasm_local(local)) {
-                    try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
+                    try self.emit(.{ .local_set_v128 = .{ .local = local_slot, .src = src } });
                 } else if (self.try_fuse_local_set(local_slot, src) or
                     self.try_fuse_const_to_local(local_slot, src) or
                     self.try_fuse_global_get_to_local(local_slot, src) or
@@ -5473,7 +5465,7 @@ pub const Lower = struct {
                 const src = self.stack.peek() orelse return error.StackUnderflow;
                 const local_slot = self.local_to_slot(local);
                 if (self.is_v128_wasm_local(local)) {
-                    try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
+                    try self.emit(.{ .local_set_v128 = .{ .local = local_slot, .src = src } });
                 } else if (!self.try_fuse_local_tee(local_slot, src)) {
                     try self.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
                 }

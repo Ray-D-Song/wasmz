@@ -15,6 +15,8 @@ pub const HandlerTable = struct {
     ref_eq: Handler,
     local_get: Handler,
     local_set: Handler,
+    local_get_v128: Handler,
+    local_set_v128: Handler,
     global_get: Handler,
     global_set: Handler,
     copy: Handler,

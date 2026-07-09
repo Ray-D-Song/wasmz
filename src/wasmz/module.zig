@@ -1215,10 +1215,7 @@ pub const Module = struct {
             compiled.call_args.deinit(self.allocator);
             compiled.br_table_targets.deinit(self.allocator);
             compiled.catch_handler_tables.deinit(self.allocator);
-            if (compiled.v128_local_slots.len > 0) self.allocator.free(compiled.v128_local_slots);
         }
-
-        compiled.v128_local_slots = try self.allocator.dupe(ir.Slot, pending.local_layout.v128_bases);
 
         var encode_timer = profiling.ScopedTimer.start();
         const encoded = try encode_mod.encode(
@@ -2829,7 +2826,7 @@ fn decodeAndLower(
             const src = try lower.pop_slot();
             const local_slot = lower.local_to_slot(local);
             if (lower.is_v128_wasm_local(local)) {
-                try lower.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
+                try lower.emit(.{ .local_set_v128 = .{ .local = local_slot, .src = src } });
             } else if (lower.try_fuse_local_set(local_slot, src) or
                 lower.try_fuse_const_to_local(local_slot, src) or
                 lower.try_fuse_global_get_to_local(local_slot, src) or
@@ -2847,7 +2844,7 @@ fn decodeAndLower(
             const src = lower.stack.peek() orelse return error.StackUnderflow;
             const local_slot = lower.local_to_slot(local);
             if (lower.is_v128_wasm_local(local)) {
-                try lower.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
+                try lower.emit(.{ .local_set_v128 = .{ .local = local_slot, .src = src } });
             } else if (!lower.try_fuse_local_tee(local_slot, src)) {
                 try lower.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
             }

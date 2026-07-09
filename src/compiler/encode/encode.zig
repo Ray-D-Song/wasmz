@@ -125,7 +125,13 @@ pub fn encode(
             .local_get => |inst| {
                 writeOps(ops.OpsLocalGet, ops_ptr, .{ .dst = inst.dst, .local = inst.local });
             },
+            .local_get_v128 => |inst| {
+                writeOps(ops.OpsLocalGet, ops_ptr, .{ .dst = inst.dst, .local = inst.local });
+            },
             .local_set => |inst| {
+                writeOps(ops.OpsLocalSet, ops_ptr, .{ .local = inst.local, .src = inst.src });
+            },
+            .local_set_v128 => |inst| {
                 writeOps(ops.OpsLocalSet, ops_ptr, .{ .local = inst.local, .src = inst.src });
             },
             .global_get => |inst| {
@@ -1681,6 +1687,5 @@ pub fn encode(
         .catch_handler_tables = catch_handler_tables,
         .is_leaf = cf.is_leaf,
         .needs_zero = cf.needs_zero,
-        .v128_local_slots = try allocator.dupe(Slot, cf.v128_local_slots),
     };
 }

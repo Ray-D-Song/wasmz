@@ -20,6 +20,8 @@ pub fn instrSize(op: Op) usize {
         .ref_eq => @sizeOf(ops.OpsDstLhsRhs),
         .local_get => @sizeOf(ops.OpsLocalGet),
         .local_set => @sizeOf(ops.OpsLocalSet),
+        .local_get_v128 => @sizeOf(ops.OpsLocalGet),
+        .local_set_v128 => @sizeOf(ops.OpsLocalSet),
         .global_get => @sizeOf(ops.OpsGlobalGet),
         .global_set => @sizeOf(ops.OpsGlobalSet),
         .copy => @sizeOf(ops.OpsCopy),

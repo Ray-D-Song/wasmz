@@ -407,12 +407,7 @@ pub fn handle_local_get(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
     dispatch.countOp("local_get");
 
     const ops = readOps(encode.ops.OpsLocalGet, ip);
-    const func = frame.callStackTop().func;
-    if (common.localSlotIsV128(func, ops.local)) {
-        common.writeSimdToSlots(slots, ops.dst, common.readSimdFromSlots(slots, ops.local));
-    } else {
-        slots[ops.dst] = slots[ops.local];
-    }
+    slots[ops.dst] = slots[ops.local];
     dispatch.next(ip, stride(encode.ops.OpsLocalGet), slots, frame, env, r0, fp0);
 }
 
@@ -420,12 +415,23 @@ pub fn handle_local_set(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
     dispatch.countOp("local_set");
 
     const ops = readOps(encode.ops.OpsLocalSet, ip);
-    const func = frame.callStackTop().func;
-    if (common.localSlotIsV128(func, ops.local)) {
-        common.writeSimdToSlots(slots, ops.local, common.readSimdFromSlots(slots, ops.src));
-    } else {
-        slots[ops.local] = slots[ops.src];
-    }
+    slots[ops.local] = slots[ops.src];
+    dispatch.next(ip, stride(encode.ops.OpsLocalSet), slots, frame, env, r0, fp0);
+}
+
+pub fn handle_local_get_v128(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("local_get");
+
+    const ops = readOps(encode.ops.OpsLocalGet, ip);
+    common.writeSimdToSlots(slots, ops.dst, common.readSimdFromSlots(slots, ops.local));
+    dispatch.next(ip, stride(encode.ops.OpsLocalGet), slots, frame, env, r0, fp0);
+}
+
+pub fn handle_local_set_v128(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+    dispatch.countOp("local_set");
+
+    const ops = readOps(encode.ops.OpsLocalSet, ip);
+    common.writeSimdToSlots(slots, ops.local, common.readSimdFromSlots(slots, ops.src));
     dispatch.next(ip, stride(encode.ops.OpsLocalSet), slots, frame, env, r0, fp0);
 }
 

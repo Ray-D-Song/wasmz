@@ -18,6 +18,8 @@ pub fn handlerFor(op: Op, t: *const table.HandlerTable) Handler {
         .ref_eq => t.ref_eq,
         .local_get => t.local_get,
         .local_set => t.local_set,
+        .local_get_v128 => t.local_get_v128,
+        .local_set_v128 => t.local_set_v128,
         .global_get => t.global_get,
         .global_set => t.global_set,
         .copy => t.copy,

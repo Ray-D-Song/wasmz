@@ -338,6 +338,16 @@ pub const Op = union(enum) {
         local: Slot,
         src: Slot,
     },
+    /// v128 local.get — compiled separately so scalar handlers skip runtime checks.
+    local_get_v128: struct {
+        dst: Slot,
+        local: Slot,
+    },
+    /// v128 local.set
+    local_set_v128: struct {
+        local: Slot,
+        src: Slot,
+    },
 
     // i32 arithmetic operations (using generic BinaryOp)
     i32_add: BinaryOp(i32),
@@ -1724,8 +1734,6 @@ pub const CompiledFunction = struct {
     /// Number of local variable slots (excluding parameters).
     /// Used to limit @memset in allocCalleeSlots to only the locals range.
     locals_count: u16,
-    /// Base slots of v128 locals; copied into EncodedFunction at encode time.
-    v128_local_slots: []Slot = &.{},
     /// True if any non-parameter local may be read before a definite write.
     /// Lowering computes this conservatively; when false, call entry can skip
     /// zero-initializing the Wasm locals range.
@@ -1845,15 +1853,11 @@ pub const EncodedFunction = struct {
     /// False when locals are SSA-style (all locals are written before first read).
     /// Skipping the zeroing eliminates a @memset per call.
     needs_zero: bool = true,
-    /// Base register slots for v128 locals (each uses two consecutive slots).
-    v128_local_slots: []Slot = &.{},
-
     pub fn deinit(self: *EncodedFunction, allocator: std.mem.Allocator) void {
         allocator.free(self.code);
         allocator.free(self.eh_dst_slots);
         allocator.free(self.br_table_targets);
         allocator.free(self.catch_handler_tables);
-        allocator.free(self.v128_local_slots);
         self.* = undefined;
     }
 };
