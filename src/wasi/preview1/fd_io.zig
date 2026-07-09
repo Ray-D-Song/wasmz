@@ -413,7 +413,7 @@ pub const FdIO = struct {
                 };
                 entry.offset += written;
 
-                try ctx.writeValue(nwritten_ptr, @intCast(written));
+                try ctx.writeValue(nwritten_ptr, @as(u32, @intCast(written)));
                 types.writeErrno(results, .success);
             },
         }
@@ -685,7 +685,7 @@ pub const FdIO = struct {
                     return;
                 };
 
-                try ctx.writeValue(nwritten_ptr, @intCast(written));
+                try ctx.writeValue(nwritten_ptr, @as(u32, @intCast(written)));
                 types.writeErrno(results, .success);
             },
         }
