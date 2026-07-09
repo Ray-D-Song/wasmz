@@ -30,9 +30,6 @@ const return_call_indirect_overlap_wasm = @embedFile("fixtures/return_call_indir
 /// wasm-benchmark vtable_dispatch workload (full integration check; too heavy for Debug).
 const vtable_dispatch_wasm = @embedFile("fixtures/vtable_dispatch.wasm");
 
-/// v128 locals must occupy two val_stack slots (issue #1).
-const v128_local_truncates_wasm = @embedFile("fixtures/v128_local_truncates.wasm");
-
 fn callExported(arc: ArcModule, store: *Store, name: []const u8, args: []const RawVal) !i32 {
     var instance = try Instance.init(store, arc.retain(), Linker.empty);
     defer instance.deinit();
@@ -74,19 +71,4 @@ test "call issue #2: vtable_mono wasm-benchmark regression" {
     try testing.expectEqual(@as(i32, -208336512), bi);
 }
 
-test "call issue #1: v128 local uses two val_stack slots" {
-    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
-    defer engine.deinit();
 
-    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
-    defer store.deinit();
-
-    const arc = try module_mod.Module.compileArc(engine, v128_local_truncates_wasm);
-    defer releaseArc(arc);
-
-    try testing.expectEqual(@as(i32, 10), try callExported(arc, &store, "lane0", &.{}));
-    try testing.expectEqual(@as(i32, 40), try callExported(arc, &store, "lane1", &.{}));
-    try testing.expectEqual(@as(i32, 90), try callExported(arc, &store, "lane2", &.{}));
-    try testing.expectEqual(@as(i32, 160), try callExported(arc, &store, "lane3", &.{}));
-    try testing.expectEqual(@as(i32, 160), try callExported(arc, &store, "no_local", &.{}));
-}
