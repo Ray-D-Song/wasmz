@@ -391,6 +391,25 @@ pub const Accumulators = struct {
     fp0: f64,
 };
 
+/// Resume accumulators for a value return: prefer incoming r0/fp0 for single numeric results.
+pub inline fn resumeAccumulators(
+    r0: u64,
+    fp0: f64,
+    ret_val: RawVal,
+    func_idx: u32,
+    env: *const ExecEnv,
+) Accumulators {
+    if (func_idx >= env.func_type_indices.len) return accumulatorsFromReturn(ret_val, func_idx, env);
+    const results = env.composite_types[env.func_type_indices[func_idx]].func_type.results();
+    if (results.len == 1) {
+        return switch (results[0]) {
+            .I32, .I64, .F32, .F64 => .{ .r0 = r0, .fp0 = fp0 },
+            else => accumulatorsFromReturn(ret_val, func_idx, env),
+        };
+    }
+    return accumulatorsFromReturn(ret_val, func_idx, env);
+}
+
 /// Map a single-value return to r0/fp0 for caller resume.
 pub inline fn accumulatorsFromReturn(
     ret_val: ?RawVal,

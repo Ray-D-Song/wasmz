@@ -46,6 +46,16 @@ const OpsCallLeafResolved = extern struct {
     callee_bits: u64,
 };
 
+const IndirectSiteCache = struct {
+    ip: usize = 0,
+    table_index: u32 = 0,
+    type_index: u32 = 0,
+    raw_index: u32 = 0,
+    callee_func_idx: u32 = 0,
+};
+
+threadlocal var indirect_site_cache: IndirectSiteCache = .{};
+
 // Helpers
 
 inline fn accumulatorsAfterHostCall(
@@ -909,49 +919,119 @@ pub fn handle_call_leaf_resolved_7(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
     handle_call_leaf_resolved_impl(7, ip, frame, env, r0, fp0);
 }
 
+inline fn indirectTypeMatches(env: *const ExecEnv, callee_func_idx: u32, type_index: u32) bool {
+    const actual = env.func_type_indices[callee_func_idx];
+    if (actual == type_index) return true;
+    return type_equiv_mod.funcTypeMatches(actual, type_index, env.type_canonical);
+}
+
+inline fn resolveIndirectCallee(
+    ip: [*]u8,
+    table_index: u32,
+    type_index: u32,
+    raw_index: u32,
+    env: *const ExecEnv,
+    frame: *DispatchState,
+) ?u32 {
+    const site_key = @intFromPtr(ip);
+    const cache = &indirect_site_cache;
+    if (cache.ip == site_key and
+        cache.table_index == table_index and
+        cache.type_index == type_index and
+        cache.raw_index == raw_index)
+    {
+        if (profiling.enabled) profiling.call_prof.resolved_hits += 1;
+        return cache.callee_func_idx;
+    }
+
+    if (table_index >= env.tables.len) {
+        trapReturn(frame, .TableOutOfBounds);
+        return null;
+    }
+    const table = env.tables[table_index];
+    if (raw_index >= table.len) {
+        trapReturn(frame, .TableOutOfBounds);
+        return null;
+    }
+    const callee_func_idx = table[raw_index];
+    if (callee_func_idx == std.math.maxInt(u32)) {
+        trapReturn(frame, .IndirectCallToNull);
+        return null;
+    }
+    if (callee_func_idx >= env.func_type_indices.len) {
+        trapReturn(frame, .BadSignature);
+        return null;
+    }
+    if (!indirectTypeMatches(env, callee_func_idx, type_index)) {
+        trapReturn(frame, .BadSignature);
+        return null;
+    }
+
+    cache.* = .{
+        .ip = site_key,
+        .table_index = table_index,
+        .type_index = type_index,
+        .raw_index = raw_index,
+        .callee_func_idx = callee_func_idx,
+    };
+    return callee_func_idx;
+}
+
+inline fn dispatchCallIndirectLocal(
+    ip: [*]u8,
+    _: [*]RawVal,
+    frame: *DispatchState,
+    env: *const ExecEnv,
+    _: u64,
+    _: f64,
+    ops: encode.ops.OpsCallIndirect,
+    arg_slots: []align(1) const ir.Slot,
+    instr_stride: usize,
+    callee_func_idx: u32,
+) void {
+    const callee = ensureLocalCompiled(callee_func_idx, env, frame) orelse return;
+    const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
+
+    const sp_base = frame.val_sp;
+    const callee_slots = allocCalleeSlots(frame, callee_slots_len, arg_slots.len, callee.locals_count, callee.needs_zero) orelse return;
+    const caller_slots = frame.callStackTop().slots.ptr;
+
+    copyArgsKnown(null, callee_slots, caller_slots, arg_slots);
+
+    const cur = frame.callStackTop();
+    cur.ip = ip + instr_stride;
+
+    const callee_dst: ?ir.Slot = if (ops.dst_valid != 0) @intCast(ops.dst) else null;
+
+    pushCallFrame(frame, env, .{
+        .ip = callee.code.ptr,
+        .slots = callee_slots,
+        .slots_sp_base = sp_base,
+        .dst = callee_dst,
+        .func = callee,
+    }) catch |err| {
+        frame.valStackFree(sp_base);
+        trapReturn(frame, switch (err) {
+            error.OutOfMemory => .OutOfMemory,
+            error.StackOverflow => .StackOverflow,
+        });
+        return;
+    };
+
+    dispatch.dispatch(callee.code.ptr, callee_slots.ptr, frame, env, 0, 0.0);
+}
+
 // call_indirect
 
 pub fn handle_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     const ops = readOps(encode.ops.OpsCallIndirect, ip);
 
-    // Read inline arg slots directly from the bytecode stream
     const arg_slots = encode.readInlineArgs(encode.ops.OpsCallIndirect, ip, ops.args_len);
     const instr_stride = encode.varStride(encode.ops.OpsCallIndirect, ops.args_len);
 
-    // 1. Read runtime table index from slot
     const raw_index = slots[ops.index].readAs(u32);
+    const callee_func_idx = resolveIndirectCallee(ip, ops.table_index, ops.type_index, raw_index, env, frame) orelse return;
 
-    // 2. Bounds check against the table
-    if (ops.table_index >= env.tables.len) {
-        trapReturn(frame, .TableOutOfBounds);
-        return;
-    }
-    const table = env.tables[ops.table_index];
-    if (raw_index >= table.len) {
-        trapReturn(frame, .TableOutOfBounds);
-        return;
-    }
-
-    // 3. Resolve callee func_idx from the table
-    const callee_func_idx = table[raw_index];
-
-    // 4. Null-element check
-    if (callee_func_idx == std.math.maxInt(u32)) {
-        trapReturn(frame, .IndirectCallToNull);
-        return;
-    }
-
-    // 5. Signature check
-    if (callee_func_idx >= env.func_type_indices.len) {
-        trapReturn(frame, .BadSignature);
-        return;
-    }
-    if (!type_equiv_mod.funcTypeMatches(env.func_type_indices[callee_func_idx], ops.type_index, env.type_canonical)) {
-        trapReturn(frame, .BadSignature);
-        return;
-    }
-
-    // 6. Dispatch
     if (callee_func_idx < env.host_funcs.len) {
         const host_func = env.host_funcs[callee_func_idx];
         const result_len = env.composite_types[env.func_type_indices[callee_func_idx]].func_type.results().len;
@@ -971,49 +1051,7 @@ pub fn handle_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
         const acc_ci = accumulatorsAfterHostCall(ret_val, callee_func_idx, env, r0, fp0);
         dispatch.next(ip, instr_stride, slots, frame, env, acc_ci.r0, acc_ci.fp0);
     } else {
-        const callee = ensureLocalCompiled(callee_func_idx, env, frame) orelse return;
-        const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
-
-        const sp_base = frame.val_sp;
-        const callee_slots = allocCalleeSlots(frame, callee_slots_len, arg_slots.len, callee.locals_count, callee.needs_zero) orelse return;
-        // Re-derive caller slots: valStackAlloc may have grown the buffer,
-        // invalidating the handler's original `slots` parameter.
-        const caller_slots = frame.callStackTop().slots.ptr;
-
-        inline for (0..4) |i| {
-            if (arg_slots.len == i) {
-                inline for (0..i) |j| {
-                    callee_slots[j] = caller_slots[arg_slots[j]];
-                }
-                break;
-            }
-        } else {
-            for (arg_slots, 0..) |arg_slot, idx| {
-                callee_slots[idx] = caller_slots[arg_slot];
-            }
-        }
-
-        const cur = frame.callStackTop();
-        cur.ip = ip + instr_stride;
-
-        const callee_dst: ?ir.Slot = if (ops.dst_valid != 0) @intCast(ops.dst) else null;
-
-        pushCallFrame(frame, env, .{
-            .ip = callee.code.ptr,
-            .slots = callee_slots,
-            .slots_sp_base = sp_base,
-            .dst = callee_dst,
-            .func = callee,
-        }) catch |err| {
-            frame.valStackFree(sp_base);
-            trapReturn(frame, switch (err) {
-                error.OutOfMemory => .OutOfMemory,
-                error.StackOverflow => .StackOverflow,
-            });
-            return;
-        };
-
-        dispatch.dispatch(callee.code.ptr, callee_slots.ptr, frame, env, 0, 0.0);
+        dispatchCallIndirectLocal(ip, slots, frame, env, r0, fp0, ops, arg_slots, instr_stride, callee_func_idx);
     }
 }
 
@@ -1106,40 +1144,9 @@ pub fn handle_return_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
 
     const frame_idx = frame.call_depth - 1;
 
-    // 1. Read runtime table index
     const raw_index = slots[ops.index].readAs(u32);
+    const callee_func_idx = resolveIndirectCallee(ip, ops.table_index, ops.type_index, raw_index, env, frame) orelse return;
 
-    // 2. Bounds check
-    if (ops.table_index >= env.tables.len) {
-        trapReturn(frame, .TableOutOfBounds);
-        return;
-    }
-    const table = env.tables[ops.table_index];
-    if (raw_index >= table.len) {
-        trapReturn(frame, .TableOutOfBounds);
-        return;
-    }
-
-    // 3. Resolve callee
-    const callee_func_idx = table[raw_index];
-
-    // 4. Null check
-    if (callee_func_idx == std.math.maxInt(u32)) {
-        trapReturn(frame, .IndirectCallToNull);
-        return;
-    }
-
-    // 5. Signature check
-    if (callee_func_idx >= env.func_type_indices.len) {
-        trapReturn(frame, .BadSignature);
-        return;
-    }
-    if (!type_equiv_mod.funcTypeMatches(env.func_type_indices[callee_func_idx], ops.type_index, env.type_canonical)) {
-        trapReturn(frame, .BadSignature);
-        return;
-    }
-
-    // 6. Dispatch
     if (callee_func_idx < env.host_funcs.len) {
         const host_func = env.host_funcs[callee_func_idx];
         const result_len = env.composite_types[env.func_type_indices[callee_func_idx]].func_type.results().len;

@@ -27,6 +27,8 @@ pub const HandlerTable = struct {
     jump_table: Handler,
     select: Handler,
     ret: Handler,
+    ret_void: Handler,
+    ret_value: Handler,
     i32_add_ret: Handler,
     i32_sub_ret: Handler,
     i64_add_ret: Handler,

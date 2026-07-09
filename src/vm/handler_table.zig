@@ -37,6 +37,8 @@ pub const handler_table: encode.HandlerTable = .{
     .jump_table = &handlers.handle_jump_table,
     .select = &handlers.handle_select,
     .ret = &handlers.handle_ret,
+    .ret_void = &handlers.handle_ret_void,
+    .ret_value = &handlers.handle_ret_value,
     // fused binop+ret (Peephole I)
     .i32_add_ret = &handlers.handle_i32_add_ret,
     .i32_sub_ret = &handlers.handle_i32_sub_ret,

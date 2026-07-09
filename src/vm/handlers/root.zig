@@ -184,7 +184,33 @@ pub fn handle_unreachable(
     trapReturn(frame, .UnreachableCodeReached);
 }
 
-pub fn handle_ret(
+pub fn handle_ret_void(
+    ip: [*]u8,
+    slots: [*]RawVal,
+    frame: *DispatchState,
+    env: *const ExecEnv,
+    r0: u64,
+    fp0: f64,
+) callconv(.c) void {
+    _ = ip;
+    _ = slots;
+    _ = r0;
+    _ = fp0;
+    dispatch.countOp("call_ret");
+
+    const popped = frame.callStackPop();
+    frame.valStackFree(popped.slots_sp_base);
+
+    if (frame.call_depth == 0) {
+        frame.result = .{ .ok = null };
+        return;
+    }
+
+    const caller = frame.callStackAt(frame.call_depth - 1);
+    dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env, 0, 0.0);
+}
+
+pub fn handle_ret_value(
     ip: [*]u8,
     slots: [*]RawVal,
     frame: *DispatchState,
@@ -194,34 +220,43 @@ pub fn handle_ret(
 ) callconv(.c) void {
     dispatch.countOp("call_ret");
 
-    _ = r0;
-    _ = fp0;
     const ops = readOps(encode.ops.OpsRet, ip);
-    const ret_val: ?RawVal = if (ops.has_value != 0) slots[ops.value] else null;
+    const ret_val = slots[ops.value];
     const callee_func_idx = frame.callStackTop().func.func_idx;
-    const acc = dispatch.accumulatorsFromReturn(ret_val, callee_func_idx, env);
+    const acc = dispatch.resumeAccumulators(r0, fp0, ret_val, callee_func_idx, env);
 
-    // Pop current frame and release its slots back to the value stack.
     const popped = frame.callStackPop();
     frame.valStackFree(popped.slots_sp_base);
 
     if (frame.call_depth == 0) {
-        // Top-level return: write result and return (terminates dispatch chain).
         frame.result = .{ .ok = ret_val };
         return;
     }
 
-    // Return to caller: write return value into caller's dst slot.
     const caller_idx = frame.call_depth - 1;
     if (popped.dst) |dst_slot| {
-        if (ret_val) |rv| {
-            frame.callStackAt(caller_idx).slots[dst_slot] = rv;
-        }
+        frame.callStackAt(caller_idx).slots[dst_slot] = ret_val;
     }
 
-    // Resume caller with return value in r0/fp0.
     const caller = frame.callStackAt(caller_idx);
     dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env, acc.r0, acc.fp0);
+}
+
+/// Legacy entry kept for handler table compatibility.
+pub fn handle_ret(
+    ip: [*]u8,
+    slots: [*]RawVal,
+    frame: *DispatchState,
+    env: *const ExecEnv,
+    r0: u64,
+    fp0: f64,
+) callconv(.c) void {
+    const ops = readOps(encode.ops.OpsRet, ip);
+    if (ops.has_value != 0) {
+        handle_ret_value(ip, slots, frame, env, r0, fp0);
+    } else {
+        handle_ret_void(ip, slots, frame, env, r0, fp0);
+    }
 }
 
 // Fused binop+ret handlers (Peephole I)

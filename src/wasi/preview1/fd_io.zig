@@ -17,6 +17,17 @@ const GuestIov = struct {
     buf_len: u32,
 };
 
+const max_stack_iovs = 8;
+
+const GuestIovBuf = struct {
+    iovs: []GuestIov,
+    owned: ?[]GuestIov,
+
+    pub fn deinit(self: GuestIovBuf, allocator: Allocator) void {
+        if (self.owned) |slice| allocator.free(slice);
+    }
+};
+
 pub fn guestIndex(addr: u64) usize {
     return std.math.cast(usize, addr) orelse @panic("guest address overflow");
 }
@@ -25,25 +36,67 @@ fn guestPtr(ctx: *HostContext, val: RawVal) u64 {
     return ctx.guestAddr(val);
 }
 
-fn readGuestIovs(ctx: *HostContext, ptr: u64, len: u32) wasmz.HostError![]GuestIov {
+fn readGuestIovs(
+    ctx: *HostContext,
+    ptr: u64,
+    len: u32,
+    stack_buf: *[max_stack_iovs]GuestIov,
+) wasmz.HostError!GuestIovBuf {
     const count: usize = len;
+    if (count <= max_stack_iovs) {
+        if (ctx.memory64()) {
+            const stride: u64 = 16;
+            for (0..count) |i| {
+                const base = ptr + @as(u64, @intCast(i)) * stride;
+                stack_buf[i].buf = try ctx.readValue(base, u64);
+                stack_buf[i].buf_len = try ctx.readValue(base + 8, u32);
+            }
+        } else {
+            const iovs = try ctx.readSlice(@intCast(ptr), len, types.Ciovec);
+            for (iovs, stack_buf[0..count]) |src, *dst| {
+                dst.* = .{ .buf = src.buf, .buf_len = src.buf_len };
+            }
+        }
+        return .{ .iovs = stack_buf[0..count], .owned = null };
+    }
+
+    const iovs = try ctx.allocator().alloc(GuestIov, count);
+    errdefer ctx.allocator().free(iovs);
     if (ctx.memory64()) {
-        const iovs = try ctx.allocator().alloc(GuestIov, count);
-        errdefer ctx.allocator().free(iovs);
         const stride: u64 = 16;
         for (0..count) |i| {
             const base = ptr + @as(u64, @intCast(i)) * stride;
             iovs[i].buf = try ctx.readValue(base, u64);
             iovs[i].buf_len = try ctx.readValue(base + 8, u32);
         }
-        return iovs;
+    } else {
+        const src = try ctx.readSlice(@intCast(ptr), len, types.Ciovec);
+        for (src, iovs) |s, *dst| {
+            dst.* = .{ .buf = s.buf, .buf_len = s.buf_len };
+        }
     }
-    const iovs = try ctx.readSlice(@intCast(ptr), len, types.Ciovec);
-    const out = try ctx.allocator().alloc(GuestIov, iovs.len);
-    errdefer ctx.allocator().free(out);
-    for (iovs, out) |src, *dst| {
-        dst.* = .{ .buf = src.buf, .buf_len = src.buf_len };
-    }
+    return .{ .iovs = iovs, .owned = iovs };
+}
+
+fn guestIovBytes(
+    ctx: *HostContext,
+    iovs: []const GuestIov,
+    stack_bufs: *[max_stack_iovs][]const u8,
+    heap_bufs: *?[][]const u8,
+) wasmz.HostError![]const []const u8 {
+    const out: []const []const u8 = if (iovs.len <= max_stack_iovs) blk: {
+        for (iovs, stack_bufs[0..iovs.len]) |iov, *slot| {
+            slot.* = try ctx.readBytes(iov.buf, iov.buf_len);
+        }
+        break :blk stack_bufs[0..iovs.len];
+    } else blk: {
+        const slice = try ctx.allocator().alloc([]const u8, iovs.len);
+        heap_bufs.* = slice;
+        for (iovs, slice) |iov, *slot| {
+            slot.* = try ctx.readBytes(iov.buf, iov.buf_len);
+        }
+        break :blk slice;
+    };
     return out;
 }
 
@@ -82,17 +135,22 @@ pub const WriteError = error{Io};
 pub const Output = struct {
     ctx: ?*anyopaque,
     write_fn: *const fn (?*anyopaque, bytes: []const u8) WriteError!void,
+    writev_fn: *const fn (?*anyopaque, slices: []const []const u8) WriteError!void,
 
     pub fn stdout() Output {
-        return .{ .ctx = null, .write_fn = write_stdout };
+        return .{ .ctx = null, .write_fn = write_stdout, .writev_fn = writev_stdout };
     }
 
     pub fn stderr() Output {
-        return .{ .ctx = null, .write_fn = write_stderr };
+        return .{ .ctx = null, .write_fn = write_stderr, .writev_fn = writev_stderr };
     }
 
     pub fn writeAll(self: Output, bytes: []const u8) WriteError!void {
         return self.write_fn(self.ctx, bytes);
+    }
+
+    pub fn writevAll(self: Output, slices: []const []const u8) WriteError!void {
+        return self.writev_fn(self.ctx, slices);
     }
 
     fn write_stdout(_: ?*anyopaque, bytes: []const u8) WriteError!void {
@@ -103,6 +161,18 @@ pub const Output = struct {
     fn write_stderr(_: ?*anyopaque, bytes: []const u8) WriteError!void {
         const local_io = Io.Threaded.global_single_threaded.io();
         std.Io.File.writeStreamingAll(std.Io.File.stderr(), local_io, bytes) catch return error.Io;
+    }
+
+    fn writev_stdout(_: ?*anyopaque, slices: []const []const u8) WriteError!void {
+        if (slices.len == 0) return;
+        const local_io = Io.Threaded.global_single_threaded.io();
+        _ = std.Io.File.writeStreaming(std.Io.File.stdout(), local_io, &.{}, slices, slices.len) catch return error.Io;
+    }
+
+    fn writev_stderr(_: ?*anyopaque, slices: []const []const u8) WriteError!void {
+        if (slices.len == 0) return;
+        const local_io = Io.Threaded.global_single_threaded.io();
+        _ = std.Io.File.writeStreaming(std.Io.File.stderr(), local_io, &.{}, slices, slices.len) catch return error.Io;
     }
 
 };
@@ -301,34 +371,33 @@ pub const FdIO = struct {
         const iovs_len = params[2].readAs(u32);
         const nwritten_ptr = guestPtr(ctx, params[3]);
 
+        var stack_iovs: [max_stack_iovs]GuestIov = undefined;
+        const iov_buf = try readGuestIovs(ctx, iovs_ptr, iovs_len, &stack_iovs);
+        defer iov_buf.deinit(ctx.allocator());
+
+        var stack_slices: [max_stack_iovs][]const u8 = undefined;
+        var heap_slices: ?[][]const u8 = null;
+        defer if (heap_slices) |s| ctx.allocator().free(s);
+        const slices = try guestIovBytes(ctx, iov_buf.iovs, &stack_slices, &heap_slices);
+
         switch (fd) {
             1 => {
-                const iovs = try readGuestIovs(ctx, iovs_ptr, iovs_len);
-                defer ctx.allocator().free(iovs);
+                self.stdout.writevAll(slices) catch {
+                    types.writeErrno(results, .io);
+                    return;
+                };
                 var total_written: u32 = 0;
-                for (iovs) |iov| {
-                    const bytes = try ctx.readBytes(iov.buf, iov.buf_len);
-                    self.stdout.writeAll(bytes) catch {
-                        types.writeErrno(results, .io);
-                        return;
-                    };
-                    total_written +%= iov.buf_len;
-                }
+                for (iov_buf.iovs) |iov| total_written +%= iov.buf_len;
                 try ctx.writeValue(nwritten_ptr, total_written);
                 types.writeErrno(results, .success);
             },
             2 => {
-                const iovs = try readGuestIovs(ctx, iovs_ptr, iovs_len);
-                defer ctx.allocator().free(iovs);
+                self.stderr.writevAll(slices) catch {
+                    types.writeErrno(results, .io);
+                    return;
+                };
                 var total_written: u32 = 0;
-                for (iovs) |iov| {
-                    const bytes = try ctx.readBytes(iov.buf, iov.buf_len);
-                    self.stderr.writeAll(bytes) catch {
-                        types.writeErrno(results, .io);
-                        return;
-                    };
-                    total_written +%= iov.buf_len;
-                }
+                for (iov_buf.iovs) |iov| total_written +%= iov.buf_len;
                 try ctx.writeValue(nwritten_ptr, total_written);
                 types.writeErrno(results, .success);
             },
@@ -338,27 +407,13 @@ pub const FdIO = struct {
                     return;
                 };
 
-                const iovs = try readGuestIovs(ctx, iovs_ptr, iovs_len);
-                defer ctx.allocator().free(iovs);
-                var total_written: u32 = 0;
-
-                var reader = entry.handle.file.reader(self.io, &[_]u8{});
-                reader.seekTo(entry.offset) catch {
+                const written = entry.handle.file.writePositional(self.io, slices, entry.offset) catch {
                     types.writeErrno(results, .io);
                     return;
                 };
+                entry.offset += written;
 
-                for (iovs) |iov| {
-                    const bytes = try ctx.readBytes(iov.buf, iov.buf_len);
-                    const written = entry.handle.file.writeStreaming(self.io, &.{}, &.{bytes}, 1) catch {
-                        types.writeErrno(results, .io);
-                        return;
-                    };
-                    total_written +%= @intCast(written);
-                    entry.offset += written;
-                }
-
-                try ctx.writeValue(nwritten_ptr, total_written);
+                try ctx.writeValue(nwritten_ptr, @intCast(written));
                 types.writeErrno(results, .success);
             },
         }
@@ -370,13 +425,15 @@ pub const FdIO = struct {
         const iovs_len = params[2].readAs(u32);
         const nread_ptr = guestPtr(ctx, params[3]);
 
+        var stack_iovs: [max_stack_iovs]GuestIov = undefined;
+        const iov_buf = try readGuestIovs(ctx, iovs_ptr, iovs_len, &stack_iovs);
+        defer iov_buf.deinit(ctx.allocator());
+
         switch (fd) {
             0 => {
-                const iovs = try readGuestIovs(ctx, iovs_ptr, iovs_len);
-                defer ctx.allocator().free(iovs);
                 var total_read: u32 = 0;
 
-                for (iovs) |iov| {
+                for (iov_buf.iovs) |iov| {
                     const buf_len = iov.buf_len;
                     const guest_mem = ctx.memory() orelse {
                         types.writeErrno(results, .fault);
@@ -413,17 +470,10 @@ pub const FdIO = struct {
                     return;
                 };
 
-                const iovs = try readGuestIovs(ctx, iovs_ptr, iovs_len);
-                defer ctx.allocator().free(iovs);
                 var total_read: u32 = 0;
+                var file_offset = entry.offset;
 
-                var reader = entry.handle.file.reader(self.io, &[_]u8{});
-                reader.seekTo(entry.offset) catch {
-                    types.writeErrno(results, .io);
-                    return;
-                };
-
-                for (iovs) |iov| {
+                for (iov_buf.iovs) |iov| {
                     const buf_len = iov.buf_len;
                     const guest_mem = ctx.memory() orelse {
                         types.writeErrno(results, .fault);
@@ -442,15 +492,16 @@ pub const FdIO = struct {
                     const bytes_to_read = @min(buf_len, @as(u32, @intCast(guest_mem.len - buf_start)));
                     const read_buf = guest_mem[buf_start .. buf_start + bytes_to_read];
 
-                    const bytes_read = entry.handle.file.readStreaming(self.io, &.{read_buf}) catch {
+                    const bytes_read = entry.handle.file.readPositional(self.io, &.{read_buf}, file_offset) catch {
                         types.writeErrno(results, .io);
                         return;
                     };
 
                     total_read +%= @intCast(bytes_read);
-                    entry.offset += bytes_read;
+                    file_offset += bytes_read;
                     if (bytes_read < buf_len) break;
                 }
+                entry.offset = file_offset;
 
                 try ctx.writeValue(nread_ptr, total_read);
                 types.writeErrno(results, .success);
@@ -620,26 +671,21 @@ pub const FdIO = struct {
                     return;
                 };
 
-                const iovs = try readGuestIovs(ctx, iovs_ptr, iovs_len);
-                defer ctx.allocator().free(iovs);
-                var total_written: u32 = 0;
+                var stack_iovs: [max_stack_iovs]GuestIov = undefined;
+                const iov_buf = try readGuestIovs(ctx, iovs_ptr, iovs_len, &stack_iovs);
+                defer iov_buf.deinit(ctx.allocator());
 
-                var reader = entry.handle.file.reader(self.io, &[_]u8{});
-                reader.seekTo(@intCast(offset)) catch {
+                var stack_slices: [max_stack_iovs][]const u8 = undefined;
+                var heap_slices: ?[][]const u8 = null;
+                defer if (heap_slices) |s| ctx.allocator().free(s);
+                const slices = try guestIovBytes(ctx, iov_buf.iovs, &stack_slices, &heap_slices);
+
+                const written = entry.handle.file.writePositional(self.io, slices, @intCast(offset)) catch {
                     types.writeErrno(results, .io);
                     return;
                 };
 
-                for (iovs) |iov| {
-                    const bytes = try ctx.readBytes(iov.buf, iov.buf_len);
-                    const written = entry.handle.file.writeStreaming(self.io, &.{}, &.{bytes}, 1) catch {
-                        types.writeErrno(results, .io);
-                        return;
-                    };
-                    total_written +%= @intCast(written);
-                }
-
-                try ctx.writeValue(nwritten_ptr, total_written);
+                try ctx.writeValue(nwritten_ptr, @intCast(written));
                 types.writeErrno(results, .success);
             },
         }
@@ -667,17 +713,13 @@ pub const FdIO = struct {
                     return;
                 };
 
-                const iovs = try readGuestIovs(ctx, iovs_ptr, iovs_len);
-                defer ctx.allocator().free(iovs);
+                var stack_iovs: [max_stack_iovs]GuestIov = undefined;
+                const iov_buf = try readGuestIovs(ctx, iovs_ptr, iovs_len, &stack_iovs);
+                defer iov_buf.deinit(ctx.allocator());
                 var total_read: u32 = 0;
+                var file_offset: u64 = @intCast(offset);
 
-                var reader = entry.handle.file.reader(self.io, &[_]u8{});
-                reader.seekTo(@intCast(offset)) catch {
-                    types.writeErrno(results, .io);
-                    return;
-                };
-
-                for (iovs) |iov| {
+                for (iov_buf.iovs) |iov| {
                     const buf_len = iov.buf_len;
                     const guest_mem = ctx.memory() orelse {
                         types.writeErrno(results, .fault);
@@ -696,12 +738,13 @@ pub const FdIO = struct {
                     const bytes_to_read = @min(buf_len, @as(u32, @intCast(guest_mem.len - buf_start)));
                     const read_buf = guest_mem[buf_start .. buf_start + bytes_to_read];
 
-                    const bytes_read = entry.handle.file.readStreaming(self.io, &.{read_buf}) catch {
+                    const bytes_read = entry.handle.file.readPositional(self.io, &.{read_buf}, file_offset) catch {
                         types.writeErrno(results, .io);
                         return;
                     };
 
                     total_read +%= @intCast(bytes_read);
+                    file_offset += bytes_read;
                     if (bytes_read < buf_len) break;
                 }
 
