@@ -1,5 +1,17 @@
 const std = @import("std");
 
+fn linuxFullLtoEnabled(resolved: std.Build.ResolvedTarget) bool {
+    const info = resolved.result;
+    if (info.os.tag != .linux) return false;
+    return info.cpu.arch == .x86_64 or info.cpu.arch == .aarch64;
+}
+
+fn applyLinuxFullLto(compile: *std.Build.Step.Compile, resolved: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    if (optimize == .Debug) return;
+    if (!linuxFullLtoEnabled(resolved)) return;
+    compile.lto = .full;
+}
+
 // Although this function looks imperative, it does not perform the build
 // directly and instead it mutates the build graph (`b`) that will be then
 // executed by an external runner. The functions in `std.Build` implement a DSL
@@ -131,6 +143,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    applyLinuxFullLto(exe, target, optimize);
 
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default
