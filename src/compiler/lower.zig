@@ -2226,548 +2226,4573 @@ pub const Lower = struct {
         if (pop) _ = try self.pop_slot();
     }
 
-    /// Try to fold a binary op where both operands are compile-time constants.
-    /// Returns true if folding succeeded (and emits the replacement const + pushes dst).
-    fn try_fold_binary_const(
-        self: *Lower,
-        comptime op_tag: []const u8,
-        lhs: Slot,
-        rhs: Slot,
-        dst: Slot,
-    ) !bool {
+    // --- Static numeric lowering (generated) ---
+    fn try_fold_i32_add_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
         const ops = self.compiled.ops.items;
         if (ops.len < 2) return false;
-
-        // We need: ops[len-2] = const producing lhs, ops[len-1] = const producing rhs.
-        // Note: after pop_slot, lhs/rhs slots have been recycled, but the const ops
-        // are still in the buffer.  The order is: lhs_const was emitted first (lower index),
-        // rhs_const was emitted second (higher index).
         const rhs_op = ops[ops.len - 1];
         const lhs_op = ops[ops.len - 2];
-
-        // i32 constant folding
-        if (comptime std.mem.startsWith(u8, op_tag, "i32_")) {
-            const rhs_val: i32 = switch (rhs_op) {
-                .const_i32 => |c| if (c.dst == rhs) c.value else return false,
-                else => return false,
-            };
-            const lhs_val: i32 = switch (lhs_op) {
-                .const_i32 => |c| if (c.dst == lhs) c.value else return false,
-                else => return false,
-            };
-            const result: ?i32 = comptime_eval_i32(op_tag, lhs_val, rhs_val);
-            if (result) |val| {
-                // Remove both const ops and emit the folded result.
-                _ = self.compiled.ops.pop();
-                _ = self.compiled.ops.pop();
-                try self.emit(.{ .const_i32 = .{ .dst = dst, .value = val } });
-                return true;
-            }
-        }
-
-        // i64 constant folding
-        if (comptime std.mem.startsWith(u8, op_tag, "i64_")) {
-            const rhs_val: i64 = switch (rhs_op) {
-                .const_i64 => |c| if (c.dst == rhs) c.value else return false,
-                else => return false,
-            };
-            const lhs_val: i64 = switch (lhs_op) {
-                .const_i64 => |c| if (c.dst == lhs) c.value else return false,
-                else => return false,
-            };
-            const result: ?i64 = comptime_eval_i64(op_tag, lhs_val, rhs_val);
-            if (result) |val| {
-                _ = self.compiled.ops.pop();
-                _ = self.compiled.ops.pop();
-                try self.emit(.{ .const_i64 = .{ .dst = dst, .value = val } });
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /// Evaluate i32 binary op at compile time.  Returns null for ops that can trap
-    /// (div/rem by zero, signed overflow) or that we don't handle.
-    fn comptime_eval_i32(comptime op_tag: []const u8, lhs: i32, rhs: i32) ?i32 {
-        const l: u32 = @bitCast(lhs);
-        const r: u32 = @bitCast(rhs);
-        if (comptime std.mem.eql(u8, op_tag, "i32_add")) return lhs +% rhs;
-        if (comptime std.mem.eql(u8, op_tag, "i32_sub")) return lhs -% rhs;
-        if (comptime std.mem.eql(u8, op_tag, "i32_mul")) return lhs *% rhs;
-        if (comptime std.mem.eql(u8, op_tag, "i32_and")) return @bitCast(l & r);
-        if (comptime std.mem.eql(u8, op_tag, "i32_or")) return @bitCast(l | r);
-        if (comptime std.mem.eql(u8, op_tag, "i32_xor")) return @bitCast(l ^ r);
-        if (comptime std.mem.eql(u8, op_tag, "i32_shl")) return @bitCast(l << @intCast(r & 31));
-        if (comptime std.mem.eql(u8, op_tag, "i32_shr_u")) return @bitCast(l >> @intCast(r & 31));
-        if (comptime std.mem.eql(u8, op_tag, "i32_shr_s")) return lhs >> @intCast(r & 31);
-        if (comptime std.mem.eql(u8, op_tag, "i32_rotl")) return @bitCast(std.math.rotl(u32, l, r & 31));
-        if (comptime std.mem.eql(u8, op_tag, "i32_rotr")) return @bitCast(std.math.rotr(u32, l, r & 31));
-        // div/rem: do NOT fold if divisor is zero or signed overflow (INT_MIN / -1).
-        if (comptime std.mem.eql(u8, op_tag, "i32_div_s")) {
-            if (rhs == 0 or (lhs == std.math.minInt(i32) and rhs == -1)) return null;
-            return @intCast(@divTrunc(lhs, rhs));
-        }
-        if (comptime std.mem.eql(u8, op_tag, "i32_div_u")) {
-            if (r == 0) return null;
-            return @bitCast(l / r);
-        }
-        if (comptime std.mem.eql(u8, op_tag, "i32_rem_s")) {
-            if (rhs == 0) return null;
-            if (lhs == std.math.minInt(i32) and rhs == -1) return 0;
-            return @intCast(@rem(lhs, rhs));
-        }
-        if (comptime std.mem.eql(u8, op_tag, "i32_rem_u")) {
-            if (r == 0) return null;
-            return @bitCast(l % r);
-        }
-        return null;
-    }
-
-    /// Evaluate i64 binary op at compile time.
-    fn comptime_eval_i64(comptime op_tag: []const u8, lhs: i64, rhs: i64) ?i64 {
-        const l: u64 = @bitCast(lhs);
-        const r: u64 = @bitCast(rhs);
-        if (comptime std.mem.eql(u8, op_tag, "i64_add")) return lhs +% rhs;
-        if (comptime std.mem.eql(u8, op_tag, "i64_sub")) return lhs -% rhs;
-        if (comptime std.mem.eql(u8, op_tag, "i64_mul")) return lhs *% rhs;
-        if (comptime std.mem.eql(u8, op_tag, "i64_and")) return @bitCast(l & r);
-        if (comptime std.mem.eql(u8, op_tag, "i64_or")) return @bitCast(l | r);
-        if (comptime std.mem.eql(u8, op_tag, "i64_xor")) return @bitCast(l ^ r);
-        if (comptime std.mem.eql(u8, op_tag, "i64_shl")) return @bitCast(l << @intCast(r & 63));
-        if (comptime std.mem.eql(u8, op_tag, "i64_shr_u")) return @bitCast(l >> @intCast(r & 63));
-        if (comptime std.mem.eql(u8, op_tag, "i64_shr_s")) return lhs >> @intCast(r & 63);
-        if (comptime std.mem.eql(u8, op_tag, "i64_rotl")) return @bitCast(std.math.rotl(u64, l, r & 63));
-        if (comptime std.mem.eql(u8, op_tag, "i64_rotr")) return @bitCast(std.math.rotr(u64, l, r & 63));
-        if (comptime std.mem.eql(u8, op_tag, "i64_div_s")) {
-            if (rhs == 0 or (lhs == std.math.minInt(i64) and rhs == -1)) return null;
-            return @intCast(@divTrunc(lhs, rhs));
-        }
-        if (comptime std.mem.eql(u8, op_tag, "i64_div_u")) {
-            if (r == 0) return null;
-            return @bitCast(l / r);
-        }
-        if (comptime std.mem.eql(u8, op_tag, "i64_rem_s")) {
-            if (rhs == 0) return null;
-            if (lhs == std.math.minInt(i64) and rhs == -1) return 0;
-            return @intCast(@rem(lhs, rhs));
-        }
-        if (comptime std.mem.eql(u8, op_tag, "i64_rem_u")) {
-            if (r == 0) return null;
-            return @bitCast(l % r);
-        }
-        return null;
-    }
-
-    /// Try algebraic simplification / strength reduction for i32 binop with immediate rhs.
-    /// Returns true if simplification succeeded (emits replacement, pushes dst to stack).
-    fn try_simplify_imm_i32(
-        self: *Lower,
-        comptime op_tag: []const u8,
-        lhs: Slot,
-        imm: i32,
-        dst: Slot,
-    ) !bool {
-        const imm_u: u32 = @bitCast(imm);
-
-        // Identity: result == lhs
-        const is_identity = comptime_is_identity_i32(op_tag, imm);
-        if (is_identity) {
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i32 = blk: {
+            break :blk lhs_val +% rhs_val;
+        };
+        if (result) |val| {
             _ = self.compiled.ops.pop();
-            self.recycle_slot(dst);
-            try self.stack.push(self.allocator, lhs);
-            return true;
-        }
-
-        // Annihilator: result is a known constant
-        const annihilator = comptime_annihilator_i32(op_tag, imm);
-        if (annihilator) |val| {
             _ = self.compiled.ops.pop();
             try self.emit(.{ .const_i32 = .{ .dst = dst, .value = val } });
-            try self.stack.push(self.allocator, dst);
             return true;
         }
-
-        // Strength reduction: mul by power-of-2 → shl
-        if (comptime std.mem.eql(u8, op_tag, "i32_mul")) {
-            if (imm_u != 0 and (imm_u & (imm_u - 1)) == 0) {
-                const shift: i32 = @intCast(@ctz(imm_u));
-                _ = self.compiled.ops.pop();
-                try self.emit(.{ .i32_shl_imm = .{ .dst = dst, .lhs = lhs, .imm = shift } });
-                try self.stack.push(self.allocator, dst);
-                return true;
-            }
-        }
-
-        // Strength reduction: unsigned div by power-of-2 → shr_u
-        if (comptime std.mem.eql(u8, op_tag, "i32_div_u")) {
-            if (imm_u != 0 and (imm_u & (imm_u - 1)) == 0) {
-                const shift: i32 = @intCast(@ctz(imm_u));
-                _ = self.compiled.ops.pop();
-                try self.emit(.{ .i32_shr_u_imm = .{ .dst = dst, .lhs = lhs, .imm = shift } });
-                try self.stack.push(self.allocator, dst);
-                return true;
-            }
-        }
-
         return false;
     }
 
-    /// Try algebraic simplification / strength reduction for i64 binop with immediate rhs.
-    fn try_simplify_imm_i64(
-        self: *Lower,
-        comptime op_tag: []const u8,
-        lhs: Slot,
-        imm: i64,
-        dst: Slot,
-    ) !bool {
-        const imm_u: u64 = @bitCast(imm);
-
-        // Identity: result == lhs
-        const is_identity = comptime_is_identity_i64(op_tag, imm);
-        if (is_identity) {
-            _ = self.compiled.ops.pop();
+    fn try_simplify_i32_add_imm(self: *Lower, lhs: Slot, imm: i32, dst: Slot) !bool {
+        if (imm == 0) {
             self.recycle_slot(dst);
             try self.stack.push(self.allocator, lhs);
             return true;
         }
+        
+        return false;
+    }
 
-        // Annihilator: result is a known constant
-        const annihilator = comptime_annihilator_i64(op_tag, imm);
-        if (annihilator) |val| {
+    pub fn lowerI32Add(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_add_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i32 => |c| if (c.dst == rhs) {
+                        if (try self.try_simplify_i32_add_imm(lhs, c.value, dst)) {
+                            self.r0_slot = null;
+                            return;
+                        }
+                        _ = self.compiled.ops.pop();
+                        if (prev_r0) |acc| {
+                            if (acc == lhs) {
+                                try self.emit(.{ .i32_add_imm_r = .{ .dst = dst, .imm = c.value } });
+                                self.r0_slot = dst;
+                                try self.stack.push(self.allocator, dst);
+                                return;
+                            }
+                        }
+                        try self.emit(.{ .i32_add_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.r0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_r0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .i32_add_r = .{ .dst = dst, .rhs = rhs } });
+                self.r0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.r0_slot = dst;
+        try self.emit(.{ .i32_add = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_sub_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i32 = blk: {
+            break :blk lhs_val -% rhs_val;
+        };
+        if (result) |val| {
             _ = self.compiled.ops.pop();
-            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = val } });
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i32_sub_imm(self: *Lower, lhs: Slot, imm: i32, dst: Slot) !bool {
+        if (imm == 0) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        
+        return false;
+    }
+
+    pub fn lowerI32Sub(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_sub_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i32 => |c| if (c.dst == rhs) {
+                        if (try self.try_simplify_i32_sub_imm(lhs, c.value, dst)) {
+                            self.r0_slot = null;
+                            return;
+                        }
+                        _ = self.compiled.ops.pop();
+                        if (prev_r0) |acc| {
+                            if (acc == lhs) {
+                                try self.emit(.{ .i32_sub_imm_r = .{ .dst = dst, .imm = c.value } });
+                                self.r0_slot = dst;
+                                try self.stack.push(self.allocator, dst);
+                                return;
+                            }
+                        }
+                        try self.emit(.{ .i32_sub_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.r0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_r0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .i32_sub_r = .{ .dst = dst, .rhs = rhs } });
+                self.r0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.r0_slot = dst;
+        try self.emit(.{ .i32_sub = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_mul_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i32 = blk: {
+            break :blk lhs_val *% rhs_val;
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i32_mul_imm(self: *Lower, lhs: Slot, imm: i32, dst: Slot) !bool {
+        const imm_u: u32 = @bitCast(imm);
+        if (imm == 1) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        if (imm == 0) {
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = 0 } });
             try self.stack.push(self.allocator, dst);
             return true;
         }
-
-        // Strength reduction: mul by power-of-2 → shl
-
-        // Strength reduction: mul by power-of-2 → shl
-        if (comptime std.mem.eql(u8, op_tag, "i64_mul")) {
-            if (imm_u != 0 and (imm_u & (imm_u -% 1)) == 0) {
-                const shift: i64 = @intCast(@ctz(imm_u));
-                _ = self.compiled.ops.pop();
-                try self.emit(.{ .i64_shl_imm = .{ .dst = dst, .lhs = lhs, .imm = shift } });
-                try self.stack.push(self.allocator, dst);
-                return true;
-            }
-        }
-
-        // Strength reduction: unsigned div by power-of-2 → shr_u
-        if (comptime std.mem.eql(u8, op_tag, "i64_div_u")) {
-            if (imm_u != 0 and (imm_u & (imm_u -% 1)) == 0) {
-                const shift: i64 = @intCast(@ctz(imm_u));
-                _ = self.compiled.ops.pop();
-                try self.emit(.{ .i64_shr_u_imm = .{ .dst = dst, .lhs = lhs, .imm = shift } });
-                try self.stack.push(self.allocator, dst);
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /// Check if `rhs_imm` is the identity element for the given i32 binary op.
-    fn comptime_is_identity_i32(comptime op_tag: []const u8, imm: i32) bool {
-        // x + 0, x - 0, x | 0, x ^ 0, x << 0, x >> 0, x rotl 0, x rotr 0
-        if (imm == 0) {
-            return comptime (std.mem.eql(u8, op_tag, "i32_add") or
-                std.mem.eql(u8, op_tag, "i32_sub") or
-                std.mem.eql(u8, op_tag, "i32_or") or
-                std.mem.eql(u8, op_tag, "i32_xor") or
-                std.mem.eql(u8, op_tag, "i32_shl") or
-                std.mem.eql(u8, op_tag, "i32_shr_s") or
-                std.mem.eql(u8, op_tag, "i32_shr_u") or
-                std.mem.eql(u8, op_tag, "i32_rotl") or
-                std.mem.eql(u8, op_tag, "i32_rotr"));
-        }
-        // x * 1, x div_s 1, x div_u 1
-        if (imm == 1) {
-            return comptime (std.mem.eql(u8, op_tag, "i32_mul") or
-                std.mem.eql(u8, op_tag, "i32_div_s") or
-                std.mem.eql(u8, op_tag, "i32_div_u"));
-        }
-        // x & 0xFFFFFFFF (all-ones)
-        if (imm == -1) {
-            return comptime std.mem.eql(u8, op_tag, "i32_and");
-        }
-        return false;
-    }
-
-    /// Check if `rhs_imm` is an annihilator for the given i32 binary op.
-    /// Returns the result constant, or null if not an annihilator.
-    fn comptime_annihilator_i32(comptime op_tag: []const u8, imm: i32) ?i32 {
-        // x * 0 = 0,  x & 0 = 0
-        if (imm == 0) {
-            if (comptime std.mem.eql(u8, op_tag, "i32_mul") or
-                std.mem.eql(u8, op_tag, "i32_and"))
-                return 0;
-        }
-        // x | 0xFFFFFFFF = 0xFFFFFFFF
-        if (imm == -1) {
-            if (comptime std.mem.eql(u8, op_tag, "i32_or"))
-                return -1;
-        }
-        return null;
-    }
-
-    /// Check if `rhs_imm` is the identity element for the given i64 binary op.
-    fn comptime_is_identity_i64(comptime op_tag: []const u8, imm: i64) bool {
-        if (imm == 0) {
-            return comptime (std.mem.eql(u8, op_tag, "i64_add") or
-                std.mem.eql(u8, op_tag, "i64_sub") or
-                std.mem.eql(u8, op_tag, "i64_or") or
-                std.mem.eql(u8, op_tag, "i64_xor") or
-                std.mem.eql(u8, op_tag, "i64_shl") or
-                std.mem.eql(u8, op_tag, "i64_shr_s") or
-                std.mem.eql(u8, op_tag, "i64_shr_u") or
-                std.mem.eql(u8, op_tag, "i64_rotl") or
-                std.mem.eql(u8, op_tag, "i64_rotr"));
-        }
-        if (imm == 1) {
-            return comptime (std.mem.eql(u8, op_tag, "i64_mul") or
-                std.mem.eql(u8, op_tag, "i64_div_s") or
-                std.mem.eql(u8, op_tag, "i64_div_u"));
-        }
-        if (imm == -1) {
-            return comptime std.mem.eql(u8, op_tag, "i64_and");
-        }
-        return false;
-    }
-
-    /// Check if `rhs_imm` is an annihilator for the given i64 binary op.
-    fn comptime_annihilator_i64(comptime op_tag: []const u8, imm: i64) ?i64 {
-        if (imm == 0) {
-            if (comptime std.mem.eql(u8, op_tag, "i64_mul") or
-                std.mem.eql(u8, op_tag, "i64_and"))
-                return 0;
-        }
-        if (imm == -1) {
-            if (comptime std.mem.eql(u8, op_tag, "i64_or"))
-                return -1;
-        }
-        return null;
-    }
-
-    /// Try to fold a comparison op where both operands are compile-time constants.
-    /// Comparison results are always i32 (0 or 1).
-    fn try_fold_compare_const(
-        self: *Lower,
-        comptime op_tag: []const u8,
-        lhs: Slot,
-        rhs: Slot,
-        dst: Slot,
-    ) !bool {
-        const ops = self.compiled.ops.items;
-        if (ops.len < 2) return false;
-
-        const rhs_op = ops[ops.len - 1];
-        const lhs_op = ops[ops.len - 2];
-
-        // i32 comparisons
-        if (comptime std.mem.startsWith(u8, op_tag, "i32_")) {
-            const rhs_val: i32 = switch (rhs_op) {
-                .const_i32 => |c| if (c.dst == rhs) c.value else return false,
-                else => return false,
-            };
-            const lhs_val: i32 = switch (lhs_op) {
-                .const_i32 => |c| if (c.dst == lhs) c.value else return false,
-                else => return false,
-            };
-            const result: ?bool = comptime_eval_cmp_i32(op_tag, lhs_val, rhs_val);
-            if (result) |val| {
-                _ = self.compiled.ops.pop();
-                _ = self.compiled.ops.pop();
-                try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (val) 1 else 0 } });
-                return true;
-            }
-        }
-
-        // i64 comparisons
-        if (comptime std.mem.startsWith(u8, op_tag, "i64_")) {
-            const rhs_val: i64 = switch (rhs_op) {
-                .const_i64 => |c| if (c.dst == rhs) c.value else return false,
-                else => return false,
-            };
-            const lhs_val: i64 = switch (lhs_op) {
-                .const_i64 => |c| if (c.dst == lhs) c.value else return false,
-                else => return false,
-            };
-            const result: ?bool = comptime_eval_cmp_i64(op_tag, lhs_val, rhs_val);
-            if (result) |val| {
-                _ = self.compiled.ops.pop();
-                _ = self.compiled.ops.pop();
-                try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (val) 1 else 0 } });
-                return true;
-            }
-        }
-
-        // f32 comparisons
-        if (comptime std.mem.startsWith(u8, op_tag, "f32_")) {
-            const rhs_val: f32 = switch (rhs_op) {
-                .const_f32 => |c| if (c.dst == rhs) c.value else return false,
-                else => return false,
-            };
-            const lhs_val: f32 = switch (lhs_op) {
-                .const_f32 => |c| if (c.dst == lhs) c.value else return false,
-                else => return false,
-            };
-            const result: ?bool = comptime_eval_cmp_f32(op_tag, lhs_val, rhs_val);
-            if (result) |val| {
-                _ = self.compiled.ops.pop();
-                _ = self.compiled.ops.pop();
-                try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (val) 1 else 0 } });
-                return true;
-            }
-        }
-
-        // f64 comparisons
-        if (comptime std.mem.startsWith(u8, op_tag, "f64_")) {
-            const rhs_val: f64 = switch (rhs_op) {
-                .const_f64 => |c| if (c.dst == rhs) c.value else return false,
-                else => return false,
-            };
-            const lhs_val: f64 = switch (lhs_op) {
-                .const_f64 => |c| if (c.dst == lhs) c.value else return false,
-                else => return false,
-            };
-            const result: ?bool = comptime_eval_cmp_f64(op_tag, lhs_val, rhs_val);
-            if (result) |val| {
-                _ = self.compiled.ops.pop();
-                _ = self.compiled.ops.pop();
-                try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (val) 1 else 0 } });
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    fn comptime_eval_cmp_i32(comptime op_tag: []const u8, lhs: i32, rhs: i32) ?bool {
-        const l: u32 = @bitCast(lhs);
-        const r: u32 = @bitCast(rhs);
-        if (comptime std.mem.eql(u8, op_tag, "i32_eq")) return lhs == rhs;
-        if (comptime std.mem.eql(u8, op_tag, "i32_ne")) return lhs != rhs;
-        if (comptime std.mem.eql(u8, op_tag, "i32_lt_s")) return lhs < rhs;
-        if (comptime std.mem.eql(u8, op_tag, "i32_lt_u")) return l < r;
-        if (comptime std.mem.eql(u8, op_tag, "i32_gt_s")) return lhs > rhs;
-        if (comptime std.mem.eql(u8, op_tag, "i32_gt_u")) return l > r;
-        if (comptime std.mem.eql(u8, op_tag, "i32_le_s")) return lhs <= rhs;
-        if (comptime std.mem.eql(u8, op_tag, "i32_le_u")) return l <= r;
-        if (comptime std.mem.eql(u8, op_tag, "i32_ge_s")) return lhs >= rhs;
-        if (comptime std.mem.eql(u8, op_tag, "i32_ge_u")) return l >= r;
-        return null;
-    }
-
-    fn comptime_eval_cmp_i64(comptime op_tag: []const u8, lhs: i64, rhs: i64) ?bool {
-        const l: u64 = @bitCast(lhs);
-        const r: u64 = @bitCast(rhs);
-        if (comptime std.mem.eql(u8, op_tag, "i64_eq")) return lhs == rhs;
-        if (comptime std.mem.eql(u8, op_tag, "i64_ne")) return lhs != rhs;
-        if (comptime std.mem.eql(u8, op_tag, "i64_lt_s")) return lhs < rhs;
-        if (comptime std.mem.eql(u8, op_tag, "i64_lt_u")) return l < r;
-        if (comptime std.mem.eql(u8, op_tag, "i64_gt_s")) return lhs > rhs;
-        if (comptime std.mem.eql(u8, op_tag, "i64_gt_u")) return l > r;
-        if (comptime std.mem.eql(u8, op_tag, "i64_le_s")) return lhs <= rhs;
-        if (comptime std.mem.eql(u8, op_tag, "i64_le_u")) return l <= r;
-        if (comptime std.mem.eql(u8, op_tag, "i64_ge_s")) return lhs >= rhs;
-        if (comptime std.mem.eql(u8, op_tag, "i64_ge_u")) return l >= r;
-        return null;
-    }
-
-    fn comptime_eval_cmp_f32(comptime op_tag: []const u8, lhs: f32, rhs: f32) ?bool {
-        // IEEE 754 comparison rules: NaN comparisons return false for ordered ops.
-        // This is exactly what Zig's comparison operators do, so we can use them directly.
-        if (comptime std.mem.eql(u8, op_tag, "f32_eq")) return lhs == rhs;
-        if (comptime std.mem.eql(u8, op_tag, "f32_ne")) return lhs != rhs;
-        if (comptime std.mem.eql(u8, op_tag, "f32_lt")) return lhs < rhs;
-        if (comptime std.mem.eql(u8, op_tag, "f32_gt")) return lhs > rhs;
-        if (comptime std.mem.eql(u8, op_tag, "f32_le")) return lhs <= rhs;
-        if (comptime std.mem.eql(u8, op_tag, "f32_ge")) return lhs >= rhs;
-        return null;
-    }
-
-    fn comptime_eval_cmp_f64(comptime op_tag: []const u8, lhs: f64, rhs: f64) ?bool {
-        if (comptime std.mem.eql(u8, op_tag, "f64_eq")) return lhs == rhs;
-        if (comptime std.mem.eql(u8, op_tag, "f64_ne")) return lhs != rhs;
-        if (comptime std.mem.eql(u8, op_tag, "f64_lt")) return lhs < rhs;
-        if (comptime std.mem.eql(u8, op_tag, "f64_gt")) return lhs > rhs;
-        if (comptime std.mem.eql(u8, op_tag, "f64_le")) return lhs <= rhs;
-        if (comptime std.mem.eql(u8, op_tag, "f64_ge")) return lhs >= rhs;
-        return null;
-    }
-
-    /// Try to fold a unary op where the operand is a compile-time constant.
-    /// Returns true if folding succeeded.
-    fn try_fold_unary_const(
-        self: *Lower,
-        comptime op_tag: []const u8,
-        src: Slot,
-        dst: Slot,
-    ) !bool {
-        const ops = self.compiled.ops.items;
-        if (ops.len == 0) return false;
-
-        const src_op = ops[ops.len - 1];
-
-        // i32 unary: eqz, clz, ctz, popcnt
-        if (comptime std.mem.startsWith(u8, op_tag, "i32_")) {
-            const val: i32 = switch (src_op) {
-                .const_i32 => |c| if (c.dst == src) c.value else return false,
-                else => return false,
-            };
-            const v: u32 = @bitCast(val);
-            const result: ?i32 = blk: {
-                if (comptime std.mem.eql(u8, op_tag, "i32_eqz")) break :blk @as(i32, if (val == 0) 1 else 0);
-                if (comptime std.mem.eql(u8, op_tag, "i32_clz")) break :blk @intCast(@clz(v));
-                if (comptime std.mem.eql(u8, op_tag, "i32_ctz")) break :blk @intCast(@ctz(v));
-                if (comptime std.mem.eql(u8, op_tag, "i32_popcnt")) break :blk @intCast(@popCount(v));
-                break :blk null;
-            };
-            if (result) |r| {
-                _ = self.compiled.ops.pop();
-                try self.emit(.{ .const_i32 = .{ .dst = dst, .value = r } });
-                return true;
-            }
-        }
-
-        // i64 unary: eqz, clz, ctz, popcnt
-        if (comptime std.mem.eql(u8, op_tag, "i64_eqz")) {
-            const val: i64 = switch (src_op) {
-                .const_i64 => |c| if (c.dst == src) c.value else return false,
-                else => return false,
-            };
+        
+        if (imm_u != 0 and (imm_u & (imm_u -% 1)) == 0) {
+            const shift: i32 = @intCast(@ctz(imm_u));
             _ = self.compiled.ops.pop();
-            // i64.eqz produces i32 result
-            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (val == 0) 1 else 0 } });
+            try self.emit(.{ .i32_mul_imm = .{ .dst = dst, .lhs = lhs, .imm = shift } });
+            try self.stack.push(self.allocator, dst);
             return true;
         }
-        if (comptime std.mem.startsWith(u8, op_tag, "i64_")) {
-            const val: i64 = switch (src_op) {
-                .const_i64 => |c| if (c.dst == src) c.value else return false,
-                else => return false,
-            };
-            const v: u64 = @bitCast(val);
-            const result: ?i64 = blk: {
-                if (comptime std.mem.eql(u8, op_tag, "i64_clz")) break :blk @intCast(@clz(v));
-                if (comptime std.mem.eql(u8, op_tag, "i64_ctz")) break :blk @intCast(@ctz(v));
-                if (comptime std.mem.eql(u8, op_tag, "i64_popcnt")) break :blk @intCast(@popCount(v));
-                break :blk null;
-            };
-            if (result) |r| {
-                _ = self.compiled.ops.pop();
-                try self.emit(.{ .const_i64 = .{ .dst = dst, .value = r } });
-                return true;
-            }
-        }
-
         return false;
     }
 
-    /// Handle binary operations: pop two operands, allocate result slot, emit, push result.
-    /// The op_tag parameter is a string literal representing the Op field name.
-    fn trackNumericResult(self: *Lower, val_type: ValType, dst: Slot) void {
+    pub fn lowerI32Mul(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_mul_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i32 => |c| if (c.dst == rhs) {
+                        if (try self.try_simplify_i32_mul_imm(lhs, c.value, dst)) {
+                            self.r0_slot = null;
+                            return;
+                        }
+                        _ = self.compiled.ops.pop();
+                        if (prev_r0) |acc| {
+                            if (acc == lhs) {
+                                try self.emit(.{ .i32_mul_imm_r = .{ .dst = dst, .imm = c.value } });
+                                self.r0_slot = dst;
+                                try self.stack.push(self.allocator, dst);
+                                return;
+                            }
+                        }
+                        try self.emit(.{ .i32_mul_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.r0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_r0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .i32_mul_r = .{ .dst = dst, .rhs = rhs } });
+                self.r0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.r0_slot = dst;
+        try self.emit(.{ .i32_mul = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_div_s_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i32 = blk: {
+            if (rhs_val == 0 or (lhs_val == std.math.minInt(i32) and rhs_val == -1)) break :blk null;
+        break :blk @intCast(@divTrunc(lhs_val, rhs_val));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i32_div_s_imm(self: *Lower, lhs: Slot, imm: i32, dst: Slot) !bool {
+        if (imm == 1) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        
+        return false;
+    }
+
+    pub fn lowerI32DivS(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_div_s_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        self.r0_slot = dst;
+        try self.emit(.{ .i32_div_s = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_div_u_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i32 = blk: {
+            if (@as(u32, @bitCast(rhs_val)) == 0) break :blk null;
+        break :blk @bitCast(@as(u32, @bitCast(lhs_val)) / @as(u32, @bitCast(rhs_val)));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i32_div_u_imm(self: *Lower, lhs: Slot, imm: i32, dst: Slot) !bool {
+        const imm_u: u32 = @bitCast(imm);
+        if (imm == 1) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        
+        if (imm_u != 0 and (imm_u & (imm_u -% 1)) == 0) {
+            const shift: i32 = @intCast(@ctz(imm_u));
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .i32_shr_u_imm = .{ .dst = dst, .lhs = lhs, .imm = shift } });
+            try self.stack.push(self.allocator, dst);
+            return true;
+        }
+        return false;
+    }
+
+    pub fn lowerI32DivU(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_div_u_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        self.r0_slot = dst;
+        try self.emit(.{ .i32_div_u = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_rem_s_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i32 = blk: {
+            if (rhs_val == 0) break :blk null;
+        if (lhs_val == std.math.minInt(i32) and rhs_val == -1) break :blk 0;
+        break :blk @intCast(@rem(lhs_val, rhs_val));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    pub fn lowerI32RemS(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_rem_s_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        self.r0_slot = dst;
+        try self.emit(.{ .i32_rem_s = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_rem_u_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i32 = blk: {
+            if (@as(u32, @bitCast(rhs_val)) == 0) break :blk null;
+        break :blk @bitCast(@as(u32, @bitCast(lhs_val)) % @as(u32, @bitCast(rhs_val)));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    pub fn lowerI32RemU(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_rem_u_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        self.r0_slot = dst;
+        try self.emit(.{ .i32_rem_u = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_and_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i32 = blk: {
+            break :blk @bitCast(@as(u32, @bitCast(lhs_val)) & @as(u32, @bitCast(rhs_val)));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i32_and_imm(self: *Lower, lhs: Slot, imm: i32, dst: Slot) !bool {
+        if (imm == -1) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        if (imm == 0) {
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = 0 } });
+            try self.stack.push(self.allocator, dst);
+            return true;
+        }
+        
+        return false;
+    }
+
+    pub fn lowerI32And(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_and_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i32 => |c| if (c.dst == rhs) {
+                        if (try self.try_simplify_i32_and_imm(lhs, c.value, dst)) {
+                            self.r0_slot = null;
+                            return;
+                        }
+                        _ = self.compiled.ops.pop();
+                        if (prev_r0) |acc| {
+                            if (acc == lhs) {
+                                try self.emit(.{ .i32_and_imm_r = .{ .dst = dst, .imm = c.value } });
+                                self.r0_slot = dst;
+                                try self.stack.push(self.allocator, dst);
+                                return;
+                            }
+                        }
+                        try self.emit(.{ .i32_and_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.r0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_r0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .i32_and_r = .{ .dst = dst, .rhs = rhs } });
+                self.r0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.r0_slot = dst;
+        try self.emit(.{ .i32_and = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_or_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i32 = blk: {
+            break :blk @bitCast(@as(u32, @bitCast(lhs_val)) | @as(u32, @bitCast(rhs_val)));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i32_or_imm(self: *Lower, lhs: Slot, imm: i32, dst: Slot) !bool {
+        if (imm == 0) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        
+        return false;
+    }
+
+    pub fn lowerI32Or(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_or_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i32 => |c| if (c.dst == rhs) {
+                        if (try self.try_simplify_i32_or_imm(lhs, c.value, dst)) {
+                            self.r0_slot = null;
+                            return;
+                        }
+                        _ = self.compiled.ops.pop();
+                        if (prev_r0) |acc| {
+                            if (acc == lhs) {
+                                try self.emit(.{ .i32_or_imm_r = .{ .dst = dst, .imm = c.value } });
+                                self.r0_slot = dst;
+                                try self.stack.push(self.allocator, dst);
+                                return;
+                            }
+                        }
+                        try self.emit(.{ .i32_or_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.r0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_r0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .i32_or_r = .{ .dst = dst, .rhs = rhs } });
+                self.r0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.r0_slot = dst;
+        try self.emit(.{ .i32_or = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_xor_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i32 = blk: {
+            break :blk @bitCast(@as(u32, @bitCast(lhs_val)) ^ @as(u32, @bitCast(rhs_val)));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i32_xor_imm(self: *Lower, lhs: Slot, imm: i32, dst: Slot) !bool {
+        if (imm == 0) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        
+        return false;
+    }
+
+    pub fn lowerI32Xor(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_xor_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i32 => |c| if (c.dst == rhs) {
+                        if (try self.try_simplify_i32_xor_imm(lhs, c.value, dst)) {
+                            self.r0_slot = null;
+                            return;
+                        }
+                        _ = self.compiled.ops.pop();
+                        if (prev_r0) |acc| {
+                            if (acc == lhs) {
+                                try self.emit(.{ .i32_xor_imm_r = .{ .dst = dst, .imm = c.value } });
+                                self.r0_slot = dst;
+                                try self.stack.push(self.allocator, dst);
+                                return;
+                            }
+                        }
+                        try self.emit(.{ .i32_xor_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.r0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_r0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .i32_xor_r = .{ .dst = dst, .rhs = rhs } });
+                self.r0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.r0_slot = dst;
+        try self.emit(.{ .i32_xor = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_shl_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i32 = blk: {
+            break :blk @bitCast(@as(u32, @bitCast(lhs_val)) << @intCast(@as(u32, @bitCast(rhs_val)) & 31));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i32_shl_imm(self: *Lower, lhs: Slot, imm: i32, dst: Slot) !bool {
+        if (imm == 0) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        
+        return false;
+    }
+
+    pub fn lowerI32Shl(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_shl_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i32 => |c| if (c.dst == rhs) {
+                        if (try self.try_simplify_i32_shl_imm(lhs, c.value, dst)) {
+                            self.r0_slot = null;
+                            return;
+                        }
+                        _ = self.compiled.ops.pop();
+                        if (prev_r0) |acc| {
+                            if (acc == lhs) {
+                                try self.emit(.{ .i32_shl_imm_r = .{ .dst = dst, .imm = c.value } });
+                                self.r0_slot = dst;
+                                try self.stack.push(self.allocator, dst);
+                                return;
+                            }
+                        }
+                        try self.emit(.{ .i32_shl_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.r0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_r0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .i32_shl_r = .{ .dst = dst, .rhs = rhs } });
+                self.r0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.r0_slot = dst;
+        try self.emit(.{ .i32_shl = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_shr_s_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i32 = blk: {
+            break :blk lhs_val >> @intCast(@as(u32, @bitCast(rhs_val)) & 31);
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i32_shr_s_imm(self: *Lower, lhs: Slot, imm: i32, dst: Slot) !bool {
+        if (imm == 0) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        
+        return false;
+    }
+
+    pub fn lowerI32ShrS(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_shr_s_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i32 => |c| if (c.dst == rhs) {
+                        if (try self.try_simplify_i32_shr_s_imm(lhs, c.value, dst)) {
+                            self.r0_slot = null;
+                            return;
+                        }
+                        _ = self.compiled.ops.pop();
+                        if (prev_r0) |acc| {
+                            if (acc == lhs) {
+                                try self.emit(.{ .i32_shr_s_imm_r = .{ .dst = dst, .imm = c.value } });
+                                self.r0_slot = dst;
+                                try self.stack.push(self.allocator, dst);
+                                return;
+                            }
+                        }
+                        try self.emit(.{ .i32_shr_s_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.r0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_r0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .i32_shr_s_r = .{ .dst = dst, .rhs = rhs } });
+                self.r0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.r0_slot = dst;
+        try self.emit(.{ .i32_shr_s = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_shr_u_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i32 = blk: {
+            break :blk @bitCast(@as(u32, @bitCast(lhs_val)) >> @intCast(@as(u32, @bitCast(rhs_val)) & 31));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i32_shr_u_imm(self: *Lower, lhs: Slot, imm: i32, dst: Slot) !bool {
+        if (imm == 0) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        
+        return false;
+    }
+
+    pub fn lowerI32ShrU(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_shr_u_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i32 => |c| if (c.dst == rhs) {
+                        if (try self.try_simplify_i32_shr_u_imm(lhs, c.value, dst)) {
+                            self.r0_slot = null;
+                            return;
+                        }
+                        _ = self.compiled.ops.pop();
+                        if (prev_r0) |acc| {
+                            if (acc == lhs) {
+                                try self.emit(.{ .i32_shr_u_imm_r = .{ .dst = dst, .imm = c.value } });
+                                self.r0_slot = dst;
+                                try self.stack.push(self.allocator, dst);
+                                return;
+                            }
+                        }
+                        try self.emit(.{ .i32_shr_u_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.r0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_r0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .i32_shr_u_r = .{ .dst = dst, .rhs = rhs } });
+                self.r0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.r0_slot = dst;
+        try self.emit(.{ .i32_shr_u = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_rotl_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i32 = blk: {
+            break :blk @bitCast(std.math.rotl(u32, @as(u32, @bitCast(lhs_val)), @as(u32, @bitCast(rhs_val)) & 31));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i32_rotl_imm(self: *Lower, lhs: Slot, imm: i32, dst: Slot) !bool {
+        if (imm == 0) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        
+        return false;
+    }
+
+    pub fn lowerI32Rotl(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_rotl_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        self.r0_slot = dst;
+        try self.emit(.{ .i32_rotl = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_rotr_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i32 = blk: {
+            break :blk @bitCast(std.math.rotr(u32, @as(u32, @bitCast(lhs_val)), @as(u32, @bitCast(rhs_val)) & 31));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i32_rotr_imm(self: *Lower, lhs: Slot, imm: i32, dst: Slot) !bool {
+        if (imm == 0) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        
+        return false;
+    }
+
+    pub fn lowerI32Rotr(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_rotr_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        self.r0_slot = dst;
+        try self.emit(.{ .i32_rotr = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_add_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i64 = blk: {
+            break :blk lhs_val +% rhs_val;
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i64_add_imm(self: *Lower, lhs: Slot, imm: i64, dst: Slot) !bool {
+        if (imm == 0) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        
+        return false;
+    }
+
+    pub fn lowerI64Add(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_add_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i64 => |c| if (c.dst == rhs) {
+                        if (try self.try_simplify_i64_add_imm(lhs, c.value, dst)) {
+                            self.r0_slot = null;
+                            return;
+                        }
+                        _ = self.compiled.ops.pop();
+                        if (prev_r0) |acc| {
+                            if (acc == lhs) {
+                                try self.emit(.{ .i64_add_imm_r = .{ .dst = dst, .imm = c.value } });
+                                self.r0_slot = dst;
+                                try self.stack.push(self.allocator, dst);
+                                return;
+                            }
+                        }
+                        try self.emit(.{ .i64_add_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.r0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_r0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .i64_add_r = .{ .dst = dst, .rhs = rhs } });
+                self.r0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.r0_slot = dst;
+        try self.emit(.{ .i64_add = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_sub_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i64 = blk: {
+            break :blk lhs_val -% rhs_val;
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i64_sub_imm(self: *Lower, lhs: Slot, imm: i64, dst: Slot) !bool {
+        if (imm == 0) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        
+        return false;
+    }
+
+    pub fn lowerI64Sub(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_sub_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i64 => |c| if (c.dst == rhs) {
+                        if (try self.try_simplify_i64_sub_imm(lhs, c.value, dst)) {
+                            self.r0_slot = null;
+                            return;
+                        }
+                        _ = self.compiled.ops.pop();
+                        if (prev_r0) |acc| {
+                            if (acc == lhs) {
+                                try self.emit(.{ .i64_sub_imm_r = .{ .dst = dst, .imm = c.value } });
+                                self.r0_slot = dst;
+                                try self.stack.push(self.allocator, dst);
+                                return;
+                            }
+                        }
+                        try self.emit(.{ .i64_sub_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.r0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_r0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .i64_sub_r = .{ .dst = dst, .rhs = rhs } });
+                self.r0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.r0_slot = dst;
+        try self.emit(.{ .i64_sub = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_mul_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i64 = blk: {
+            break :blk lhs_val *% rhs_val;
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i64_mul_imm(self: *Lower, lhs: Slot, imm: i64, dst: Slot) !bool {
+        const imm_u: u64 = @bitCast(imm);
+        if (imm == 1) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        if (imm == 0) {
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = 0 } });
+            try self.stack.push(self.allocator, dst);
+            return true;
+        }
+        
+        if (imm_u != 0 and (imm_u & (imm_u -% 1)) == 0) {
+            const shift: i64 = @intCast(@ctz(imm_u));
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .i64_mul_imm = .{ .dst = dst, .lhs = lhs, .imm = shift } });
+            try self.stack.push(self.allocator, dst);
+            return true;
+        }
+        return false;
+    }
+
+    pub fn lowerI64Mul(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_mul_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i64 => |c| if (c.dst == rhs) {
+                        if (try self.try_simplify_i64_mul_imm(lhs, c.value, dst)) {
+                            self.r0_slot = null;
+                            return;
+                        }
+                        _ = self.compiled.ops.pop();
+                        if (prev_r0) |acc| {
+                            if (acc == lhs) {
+                                try self.emit(.{ .i64_mul_imm_r = .{ .dst = dst, .imm = c.value } });
+                                self.r0_slot = dst;
+                                try self.stack.push(self.allocator, dst);
+                                return;
+                            }
+                        }
+                        try self.emit(.{ .i64_mul_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.r0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_r0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .i64_mul_r = .{ .dst = dst, .rhs = rhs } });
+                self.r0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.r0_slot = dst;
+        try self.emit(.{ .i64_mul = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_div_s_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i64 = blk: {
+            if (rhs_val == 0 or (lhs_val == std.math.minInt(i64) and rhs_val == -1)) break :blk null;
+        break :blk @intCast(@divTrunc(lhs_val, rhs_val));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i64_div_s_imm(self: *Lower, lhs: Slot, imm: i64, dst: Slot) !bool {
+        if (imm == 1) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        
+        return false;
+    }
+
+    pub fn lowerI64DivS(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_div_s_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        self.r0_slot = dst;
+        try self.emit(.{ .i64_div_s = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_div_u_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i64 = blk: {
+            if (@as(u64, @bitCast(rhs_val)) == 0) break :blk null;
+        break :blk @bitCast(@as(u64, @bitCast(lhs_val)) / @as(u64, @bitCast(rhs_val)));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i64_div_u_imm(self: *Lower, lhs: Slot, imm: i64, dst: Slot) !bool {
+        const imm_u: u64 = @bitCast(imm);
+        if (imm == 1) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        
+        if (imm_u != 0 and (imm_u & (imm_u -% 1)) == 0) {
+            const shift: i64 = @intCast(@ctz(imm_u));
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .i64_shr_u_imm = .{ .dst = dst, .lhs = lhs, .imm = shift } });
+            try self.stack.push(self.allocator, dst);
+            return true;
+        }
+        return false;
+    }
+
+    pub fn lowerI64DivU(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_div_u_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        self.r0_slot = dst;
+        try self.emit(.{ .i64_div_u = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_rem_s_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i64 = blk: {
+            if (rhs_val == 0) break :blk null;
+        if (lhs_val == std.math.minInt(i64) and rhs_val == -1) break :blk 0;
+        break :blk @intCast(@rem(lhs_val, rhs_val));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    pub fn lowerI64RemS(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_rem_s_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        self.r0_slot = dst;
+        try self.emit(.{ .i64_rem_s = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_rem_u_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i64 = blk: {
+            if (@as(u64, @bitCast(rhs_val)) == 0) break :blk null;
+        break :blk @bitCast(@as(u64, @bitCast(lhs_val)) % @as(u64, @bitCast(rhs_val)));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    pub fn lowerI64RemU(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_rem_u_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        self.r0_slot = dst;
+        try self.emit(.{ .i64_rem_u = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_and_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i64 = blk: {
+            break :blk @bitCast(@as(u64, @bitCast(lhs_val)) & @as(u64, @bitCast(rhs_val)));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i64_and_imm(self: *Lower, lhs: Slot, imm: i64, dst: Slot) !bool {
+        if (imm == -1) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        if (imm == 0) {
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = 0 } });
+            try self.stack.push(self.allocator, dst);
+            return true;
+        }
+        
+        return false;
+    }
+
+    pub fn lowerI64And(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_and_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i64 => |c| if (c.dst == rhs) {
+                        if (try self.try_simplify_i64_and_imm(lhs, c.value, dst)) {
+                            self.r0_slot = null;
+                            return;
+                        }
+                        _ = self.compiled.ops.pop();
+                        if (prev_r0) |acc| {
+                            if (acc == lhs) {
+                                try self.emit(.{ .i64_and_imm_r = .{ .dst = dst, .imm = c.value } });
+                                self.r0_slot = dst;
+                                try self.stack.push(self.allocator, dst);
+                                return;
+                            }
+                        }
+                        try self.emit(.{ .i64_and_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.r0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_r0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .i64_and_r = .{ .dst = dst, .rhs = rhs } });
+                self.r0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.r0_slot = dst;
+        try self.emit(.{ .i64_and = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_or_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i64 = blk: {
+            break :blk @bitCast(@as(u64, @bitCast(lhs_val)) | @as(u64, @bitCast(rhs_val)));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i64_or_imm(self: *Lower, lhs: Slot, imm: i64, dst: Slot) !bool {
+        if (imm == 0) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        
+        return false;
+    }
+
+    pub fn lowerI64Or(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_or_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i64 => |c| if (c.dst == rhs) {
+                        if (try self.try_simplify_i64_or_imm(lhs, c.value, dst)) {
+                            self.r0_slot = null;
+                            return;
+                        }
+                        _ = self.compiled.ops.pop();
+                        if (prev_r0) |acc| {
+                            if (acc == lhs) {
+                                try self.emit(.{ .i64_or_imm_r = .{ .dst = dst, .imm = c.value } });
+                                self.r0_slot = dst;
+                                try self.stack.push(self.allocator, dst);
+                                return;
+                            }
+                        }
+                        try self.emit(.{ .i64_or_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.r0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_r0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .i64_or_r = .{ .dst = dst, .rhs = rhs } });
+                self.r0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.r0_slot = dst;
+        try self.emit(.{ .i64_or = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_xor_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i64 = blk: {
+            break :blk @bitCast(@as(u64, @bitCast(lhs_val)) ^ @as(u64, @bitCast(rhs_val)));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i64_xor_imm(self: *Lower, lhs: Slot, imm: i64, dst: Slot) !bool {
+        if (imm == 0) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        
+        return false;
+    }
+
+    pub fn lowerI64Xor(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_xor_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i64 => |c| if (c.dst == rhs) {
+                        if (try self.try_simplify_i64_xor_imm(lhs, c.value, dst)) {
+                            self.r0_slot = null;
+                            return;
+                        }
+                        _ = self.compiled.ops.pop();
+                        if (prev_r0) |acc| {
+                            if (acc == lhs) {
+                                try self.emit(.{ .i64_xor_imm_r = .{ .dst = dst, .imm = c.value } });
+                                self.r0_slot = dst;
+                                try self.stack.push(self.allocator, dst);
+                                return;
+                            }
+                        }
+                        try self.emit(.{ .i64_xor_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.r0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_r0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .i64_xor_r = .{ .dst = dst, .rhs = rhs } });
+                self.r0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.r0_slot = dst;
+        try self.emit(.{ .i64_xor = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_shl_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i64 = blk: {
+            break :blk @bitCast(@as(u64, @bitCast(lhs_val)) << @intCast(@as(u64, @bitCast(rhs_val)) & 63));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i64_shl_imm(self: *Lower, lhs: Slot, imm: i64, dst: Slot) !bool {
+        if (imm == 0) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        
+        return false;
+    }
+
+    pub fn lowerI64Shl(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_shl_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i64 => |c| if (c.dst == rhs) {
+                        if (try self.try_simplify_i64_shl_imm(lhs, c.value, dst)) {
+                            self.r0_slot = null;
+                            return;
+                        }
+                        _ = self.compiled.ops.pop();
+                        if (prev_r0) |acc| {
+                            if (acc == lhs) {
+                                try self.emit(.{ .i64_shl_imm_r = .{ .dst = dst, .imm = c.value } });
+                                self.r0_slot = dst;
+                                try self.stack.push(self.allocator, dst);
+                                return;
+                            }
+                        }
+                        try self.emit(.{ .i64_shl_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.r0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_r0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .i64_shl_r = .{ .dst = dst, .rhs = rhs } });
+                self.r0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.r0_slot = dst;
+        try self.emit(.{ .i64_shl = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_shr_s_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i64 = blk: {
+            break :blk lhs_val >> @intCast(@as(u64, @bitCast(rhs_val)) & 63);
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i64_shr_s_imm(self: *Lower, lhs: Slot, imm: i64, dst: Slot) !bool {
+        if (imm == 0) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        
+        return false;
+    }
+
+    pub fn lowerI64ShrS(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_shr_s_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i64 => |c| if (c.dst == rhs) {
+                        if (try self.try_simplify_i64_shr_s_imm(lhs, c.value, dst)) {
+                            self.r0_slot = null;
+                            return;
+                        }
+                        _ = self.compiled.ops.pop();
+                        if (prev_r0) |acc| {
+                            if (acc == lhs) {
+                                try self.emit(.{ .i64_shr_s_imm_r = .{ .dst = dst, .imm = c.value } });
+                                self.r0_slot = dst;
+                                try self.stack.push(self.allocator, dst);
+                                return;
+                            }
+                        }
+                        try self.emit(.{ .i64_shr_s_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.r0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_r0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .i64_shr_s_r = .{ .dst = dst, .rhs = rhs } });
+                self.r0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.r0_slot = dst;
+        try self.emit(.{ .i64_shr_s = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_shr_u_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i64 = blk: {
+            break :blk @bitCast(@as(u64, @bitCast(lhs_val)) >> @intCast(@as(u64, @bitCast(rhs_val)) & 63));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i64_shr_u_imm(self: *Lower, lhs: Slot, imm: i64, dst: Slot) !bool {
+        if (imm == 0) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        
+        return false;
+    }
+
+    pub fn lowerI64ShrU(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_shr_u_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i64 => |c| if (c.dst == rhs) {
+                        if (try self.try_simplify_i64_shr_u_imm(lhs, c.value, dst)) {
+                            self.r0_slot = null;
+                            return;
+                        }
+                        _ = self.compiled.ops.pop();
+                        if (prev_r0) |acc| {
+                            if (acc == lhs) {
+                                try self.emit(.{ .i64_shr_u_imm_r = .{ .dst = dst, .imm = c.value } });
+                                self.r0_slot = dst;
+                                try self.stack.push(self.allocator, dst);
+                                return;
+                            }
+                        }
+                        try self.emit(.{ .i64_shr_u_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.r0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_r0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .i64_shr_u_r = .{ .dst = dst, .rhs = rhs } });
+                self.r0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.r0_slot = dst;
+        try self.emit(.{ .i64_shr_u = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_rotl_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i64 = blk: {
+            break :blk @bitCast(std.math.rotl(u64, @as(u64, @bitCast(lhs_val)), @as(u64, @bitCast(rhs_val)) & 63));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i64_rotl_imm(self: *Lower, lhs: Slot, imm: i64, dst: Slot) !bool {
+        if (imm == 0) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        
+        return false;
+    }
+
+    pub fn lowerI64Rotl(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_rotl_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        self.r0_slot = dst;
+        try self.emit(.{ .i64_rotl = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_rotr_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result: ?i64 = blk: {
+            break :blk @bitCast(std.math.rotr(u64, @as(u64, @bitCast(lhs_val)), @as(u64, @bitCast(rhs_val)) & 63));
+        };
+        if (result) |val| {
+            _ = self.compiled.ops.pop();
+            _ = self.compiled.ops.pop();
+            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = val } });
+            return true;
+        }
+        return false;
+    }
+
+    fn try_simplify_i64_rotr_imm(self: *Lower, lhs: Slot, imm: i64, dst: Slot) !bool {
+        if (imm == 0) {
+            self.recycle_slot(dst);
+            try self.stack.push(self.allocator, lhs);
+            return true;
+        }
+        
+        return false;
+    }
+
+    pub fn lowerI64Rotr(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_rotr_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+        
+        self.r0_slot = dst;
+        try self.emit(.{ .i64_rotr = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF32Add(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_f32 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .f32_add_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.fp0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_fp0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .f32_add_r = .{ .dst = dst, .rhs = rhs } });
+                self.fp0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.fp0_slot = dst;
+        try self.emit(.{ .f32_add = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF32Sub(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_f32 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .f32_sub_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.fp0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_fp0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .f32_sub_r = .{ .dst = dst, .rhs = rhs } });
+                self.fp0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.fp0_slot = dst;
+        try self.emit(.{ .f32_sub = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF32Mul(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_f32 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .f32_mul_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.fp0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_fp0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .f32_mul_r = .{ .dst = dst, .rhs = rhs } });
+                self.fp0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.fp0_slot = dst;
+        try self.emit(.{ .f32_mul = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF32Div(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_f32 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .f32_div_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.fp0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_fp0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .f32_div_r = .{ .dst = dst, .rhs = rhs } });
+                self.fp0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.fp0_slot = dst;
+        try self.emit(.{ .f32_div = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF32Min(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        
+        self.fp0_slot = dst;
+        try self.emit(.{ .f32_min = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF32Max(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        
+        self.fp0_slot = dst;
+        try self.emit(.{ .f32_max = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF32Copysign(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        
+        self.fp0_slot = dst;
+        try self.emit(.{ .f32_copysign = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF64Add(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_f64 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .f64_add_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.fp0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_fp0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .f64_add_r = .{ .dst = dst, .rhs = rhs } });
+                self.fp0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.fp0_slot = dst;
+        try self.emit(.{ .f64_add = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF64Sub(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_f64 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .f64_sub_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.fp0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_fp0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .f64_sub_r = .{ .dst = dst, .rhs = rhs } });
+                self.fp0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.fp0_slot = dst;
+        try self.emit(.{ .f64_sub = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF64Mul(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_f64 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .f64_mul_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.fp0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_fp0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .f64_mul_r = .{ .dst = dst, .rhs = rhs } });
+                self.fp0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.fp0_slot = dst;
+        try self.emit(.{ .f64_mul = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF64Div(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_f64 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .f64_div_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        self.fp0_slot = dst;
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        if (prev_fp0) |acc| {
+            if (acc == lhs) {
+                try self.emit(.{ .f64_div_r = .{ .dst = dst, .rhs = rhs } });
+                self.fp0_slot = dst;
+                try self.stack.push(self.allocator, dst);
+                return;
+            }
+        }
+        self.fp0_slot = dst;
+        try self.emit(.{ .f64_div = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF64Min(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        
+        self.fp0_slot = dst;
+        try self.emit(.{ .f64_min = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF64Max(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        
+        self.fp0_slot = dst;
+        try self.emit(.{ .f64_max = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF64Copysign(self: *Lower, prev_r0: ?Slot, prev_fp0: ?Slot) !void {
+        _ = prev_r0;
+        _ = prev_fp0;
+        self.r0_slot = null;
+        self.fp0_slot = null;
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        
+        self.fp0_slot = dst;
+        try self.emit(.{ .f64_copysign = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_eq_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val == rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerI32Eq(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_eq_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i32 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .i32_eq_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i32_eq = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_ne_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val != rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerI32Ne(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_ne_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i32 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .i32_ne_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i32_ne = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_lt_s_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val < rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerI32LtS(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_lt_s_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i32 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .i32_lt_s_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i32_lt_s = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_lt_u_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk @as(u32, @bitCast(lhs_val)) < @as(u32, @bitCast(rhs_val));
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerI32LtU(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_lt_u_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i32 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .i32_lt_u_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i32_lt_u = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_gt_s_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val > rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerI32GtS(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_gt_s_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i32 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .i32_gt_s_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i32_gt_s = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_gt_u_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk @as(u32, @bitCast(lhs_val)) > @as(u32, @bitCast(rhs_val));
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerI32GtU(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_gt_u_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i32 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .i32_gt_u_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i32_gt_u = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_le_s_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val <= rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerI32LeS(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_le_s_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i32 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .i32_le_s_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i32_le_s = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_le_u_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk @as(u32, @bitCast(lhs_val)) <= @as(u32, @bitCast(rhs_val));
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerI32LeU(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_le_u_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i32 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .i32_le_u_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i32_le_u = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_ge_s_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val >= rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerI32GeS(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_ge_s_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i32 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .i32_ge_s_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i32_ge_s = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i32_ge_u_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i32 = switch (rhs_op) {
+            .const_i32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i32 = switch (lhs_op) {
+            .const_i32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk @as(u32, @bitCast(lhs_val)) >= @as(u32, @bitCast(rhs_val));
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerI32GeU(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i32_ge_u_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i32 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .i32_ge_u_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i32_ge_u = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_eq_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val == rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerI64Eq(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_eq_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i64 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .i64_eq_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i64_eq = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_ne_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val != rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerI64Ne(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_ne_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i64 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .i64_ne_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i64_ne = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_lt_s_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val < rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerI64LtS(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_lt_s_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i64 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .i64_lt_s_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i64_lt_s = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_lt_u_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk @as(u64, @bitCast(lhs_val)) < @as(u64, @bitCast(rhs_val));
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerI64LtU(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_lt_u_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i64 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .i64_lt_u_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i64_lt_u = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_gt_s_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val > rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerI64GtS(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_gt_s_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i64 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .i64_gt_s_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i64_gt_s = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_gt_u_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk @as(u64, @bitCast(lhs_val)) > @as(u64, @bitCast(rhs_val));
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerI64GtU(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_gt_u_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i64 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .i64_gt_u_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i64_gt_u = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_le_s_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val <= rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerI64LeS(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_le_s_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i64 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .i64_le_s_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i64_le_s = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_le_u_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk @as(u64, @bitCast(lhs_val)) <= @as(u64, @bitCast(rhs_val));
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerI64LeU(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_le_u_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i64 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .i64_le_u_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i64_le_u = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_ge_s_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val >= rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerI64GeS(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_ge_s_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i64 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .i64_ge_s_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i64_ge_s = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_i64_ge_u_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: i64 = switch (rhs_op) {
+            .const_i64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: i64 = switch (lhs_op) {
+            .const_i64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk @as(u64, @bitCast(lhs_val)) >= @as(u64, @bitCast(rhs_val));
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerI64GeU(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_i64_ge_u_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        const ops_buf = self.compiled.ops.items;
+        if (ops_buf.len > 0) {
+            switch (ops_buf[ops_buf.len - 1]) {
+                .const_i64 => |c| if (c.dst == rhs) {
+                        _ = self.compiled.ops.pop();
+                        try self.emit(.{ .i64_ge_u_imm = .{ .dst = dst, .lhs = lhs, .imm = c.value } });
+                        try self.stack.push(self.allocator, dst);
+                        return;
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i64_ge_u = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_f32_eq_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: f32 = switch (rhs_op) {
+            .const_f32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: f32 = switch (lhs_op) {
+            .const_f32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val == rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerF32Eq(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_f32_eq_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        try self.emit(.{ .f32_eq = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_f32_ne_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: f32 = switch (rhs_op) {
+            .const_f32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: f32 = switch (lhs_op) {
+            .const_f32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val != rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerF32Ne(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_f32_ne_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        try self.emit(.{ .f32_ne = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_f32_lt_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: f32 = switch (rhs_op) {
+            .const_f32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: f32 = switch (lhs_op) {
+            .const_f32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val < rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerF32Lt(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_f32_lt_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        try self.emit(.{ .f32_lt = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_f32_gt_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: f32 = switch (rhs_op) {
+            .const_f32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: f32 = switch (lhs_op) {
+            .const_f32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val > rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerF32Gt(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_f32_gt_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        try self.emit(.{ .f32_gt = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_f32_le_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: f32 = switch (rhs_op) {
+            .const_f32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: f32 = switch (lhs_op) {
+            .const_f32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val <= rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerF32Le(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_f32_le_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        try self.emit(.{ .f32_le = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_f32_ge_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: f32 = switch (rhs_op) {
+            .const_f32 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: f32 = switch (lhs_op) {
+            .const_f32 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val >= rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerF32Ge(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_f32_ge_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        try self.emit(.{ .f32_ge = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_f64_eq_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: f64 = switch (rhs_op) {
+            .const_f64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: f64 = switch (lhs_op) {
+            .const_f64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val == rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerF64Eq(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_f64_eq_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        try self.emit(.{ .f64_eq = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_f64_ne_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: f64 = switch (rhs_op) {
+            .const_f64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: f64 = switch (lhs_op) {
+            .const_f64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val != rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerF64Ne(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_f64_ne_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        try self.emit(.{ .f64_ne = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_f64_lt_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: f64 = switch (rhs_op) {
+            .const_f64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: f64 = switch (lhs_op) {
+            .const_f64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val < rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerF64Lt(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_f64_lt_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        try self.emit(.{ .f64_lt = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_f64_gt_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: f64 = switch (rhs_op) {
+            .const_f64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: f64 = switch (lhs_op) {
+            .const_f64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val > rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerF64Gt(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_f64_gt_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        try self.emit(.{ .f64_gt = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_f64_le_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: f64 = switch (rhs_op) {
+            .const_f64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: f64 = switch (lhs_op) {
+            .const_f64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val <= rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerF64Le(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_f64_le_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        try self.emit(.{ .f64_le = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    fn try_fold_f64_ge_const(self: *Lower, lhs: Slot, rhs: Slot, dst: Slot) !bool {
+        const ops = self.compiled.ops.items;
+        if (ops.len < 2) return false;
+        const rhs_op = ops[ops.len - 1];
+        const lhs_op = ops[ops.len - 2];
+        const rhs_val: f64 = switch (rhs_op) {
+            .const_f64 => |c| if (c.dst == rhs) c.value else return false,
+            else => return false,
+        };
+        const lhs_val: f64 = switch (lhs_op) {
+            .const_f64 => |c| if (c.dst == lhs) c.value else return false,
+            else => return false,
+        };
+        const result = blk: {
+            break :blk lhs_val >= rhs_val;
+        };
+        _ = self.compiled.ops.pop();
+        _ = self.compiled.ops.pop();
+        try self.emit(.{ .const_i32 = .{ .dst = dst, .value = if (result) 1 else 0 } });
+        return true;
+    }
+
+    pub fn lowerF64Ge(self: *Lower) !void {
+        const rhs = try self.pop_slot();
+        const lhs = try self.pop_slot();
+        const dst = self.alloc_slot();
+        if (try self.try_fold_f64_ge_const(lhs, rhs, dst)) {
+            try self.stack.push(self.allocator, dst);
+            return;
+        }
+
+        try self.emit(.{ .f64_ge = .{ .dst = dst, .lhs = lhs, .rhs = rhs } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI32Clz(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        const ops = self.compiled.ops.items;
+        if (ops.len > 0) {
+            switch (ops[ops.len - 1]) {
+                .const_i32 => |c| if (c.dst == src) {
+                        const val = c.value;
+                        const result: ?i32 = blk: {
+                            break :blk @intCast(@clz(@as(u32, @bitCast(val))));
+                        };
+                        if (result) |r| {
+                            _ = self.compiled.ops.pop();
+                            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = r } });
+                            try self.stack.push(self.allocator, dst);
+                            return;
+                        }
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i32_clz = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI32Ctz(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        const ops = self.compiled.ops.items;
+        if (ops.len > 0) {
+            switch (ops[ops.len - 1]) {
+                .const_i32 => |c| if (c.dst == src) {
+                        const val = c.value;
+                        const result: ?i32 = blk: {
+                            break :blk @intCast(@ctz(@as(u32, @bitCast(val))));
+                        };
+                        if (result) |r| {
+                            _ = self.compiled.ops.pop();
+                            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = r } });
+                            try self.stack.push(self.allocator, dst);
+                            return;
+                        }
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i32_ctz = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI32Popcnt(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        const ops = self.compiled.ops.items;
+        if (ops.len > 0) {
+            switch (ops[ops.len - 1]) {
+                .const_i32 => |c| if (c.dst == src) {
+                        const val = c.value;
+                        const result: ?i32 = blk: {
+                            break :blk @intCast(@popCount(@as(u32, @bitCast(val))));
+                        };
+                        if (result) |r| {
+                            _ = self.compiled.ops.pop();
+                            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = r } });
+                            try self.stack.push(self.allocator, dst);
+                            return;
+                        }
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i32_popcnt = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI32Eqz(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        const ops = self.compiled.ops.items;
+        if (ops.len > 0) {
+            switch (ops[ops.len - 1]) {
+                .const_i32 => |c| if (c.dst == src) {
+                        const val = c.value;
+                        const result: ?i32 = blk: {
+                            break :blk @as(i32, if (val == 0) 1 else 0);
+                        };
+                        if (result) |r| {
+                            _ = self.compiled.ops.pop();
+                            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = r } });
+                            try self.stack.push(self.allocator, dst);
+                            return;
+                        }
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i32_eqz = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI64Clz(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        const ops = self.compiled.ops.items;
+        if (ops.len > 0) {
+            switch (ops[ops.len - 1]) {
+                .const_i64 => |c| if (c.dst == src) {
+                        const val = c.value;
+                        const result: ?i64 = blk: {
+                            break :blk @intCast(@clz(@as(u64, @bitCast(val))));
+                        };
+                        if (result) |r| {
+                            _ = self.compiled.ops.pop();
+                            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = r } });
+                            try self.stack.push(self.allocator, dst);
+                            return;
+                        }
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i64_clz = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI64Ctz(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        const ops = self.compiled.ops.items;
+        if (ops.len > 0) {
+            switch (ops[ops.len - 1]) {
+                .const_i64 => |c| if (c.dst == src) {
+                        const val = c.value;
+                        const result: ?i64 = blk: {
+                            break :blk @intCast(@ctz(@as(u64, @bitCast(val))));
+                        };
+                        if (result) |r| {
+                            _ = self.compiled.ops.pop();
+                            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = r } });
+                            try self.stack.push(self.allocator, dst);
+                            return;
+                        }
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i64_ctz = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI64Popcnt(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        const ops = self.compiled.ops.items;
+        if (ops.len > 0) {
+            switch (ops[ops.len - 1]) {
+                .const_i64 => |c| if (c.dst == src) {
+                        const val = c.value;
+                        const result: ?i64 = blk: {
+                            break :blk @intCast(@popCount(@as(u64, @bitCast(val))));
+                        };
+                        if (result) |r| {
+                            _ = self.compiled.ops.pop();
+                            try self.emit(.{ .const_i64 = .{ .dst = dst, .value = r } });
+                            try self.stack.push(self.allocator, dst);
+                            return;
+                        }
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i64_popcnt = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI64Eqz(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        const ops = self.compiled.ops.items;
+        if (ops.len > 0) {
+            switch (ops[ops.len - 1]) {
+                .const_i64 => |c| if (c.dst == src) {
+                        const val = c.value;
+                        const result: ?i32 = blk: {
+                            break :blk @as(i32, if (val == 0) 1 else 0);
+                        };
+                        if (result) |r| {
+                            _ = self.compiled.ops.pop();
+                            try self.emit(.{ .const_i32 = .{ .dst = dst, .value = r } });
+                            try self.stack.push(self.allocator, dst);
+                            return;
+                        }
+                    },
+                else => {},
+            }
+        }
+        try self.emit(.{ .i64_eqz = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF32Abs(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f32_abs = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF32Neg(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f32_neg = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF32Ceil(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f32_ceil = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF32Floor(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f32_floor = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF32Trunc(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f32_trunc = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF32Nearest(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f32_nearest = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF32Sqrt(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f32_sqrt = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF64Abs(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f64_abs = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF64Neg(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f64_neg = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF64Ceil(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f64_ceil = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF64Floor(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f64_floor = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF64Trunc(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f64_trunc = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF64Nearest(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f64_nearest = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF64Sqrt(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f64_sqrt = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI32WrapI64(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i32_wrap_i64 = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI64ExtendI32S(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i64_extend_i32_s = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI64ExtendI32U(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i64_extend_i32_u = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI32Extend8S(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i32_extend8_s = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI32Extend16S(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i32_extend16_s = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI64Extend8S(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i64_extend8_s = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI64Extend16S(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i64_extend16_s = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI64Extend32S(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i64_extend32_s = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI32TruncF32S(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i32_trunc_f32_s = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI32TruncF32U(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i32_trunc_f32_u = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI32TruncF64S(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i32_trunc_f64_s = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI32TruncF64U(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i32_trunc_f64_u = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI64TruncF32S(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i64_trunc_f32_s = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI64TruncF32U(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i64_trunc_f32_u = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI64TruncF64S(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i64_trunc_f64_s = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI64TruncF64U(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i64_trunc_f64_u = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI32TruncSatF32S(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i32_trunc_sat_f32_s = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI32TruncSatF32U(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i32_trunc_sat_f32_u = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI32TruncSatF64S(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i32_trunc_sat_f64_s = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI32TruncSatF64U(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i32_trunc_sat_f64_u = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI64TruncSatF32S(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i64_trunc_sat_f32_s = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI64TruncSatF32U(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i64_trunc_sat_f32_u = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI64TruncSatF64S(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i64_trunc_sat_f64_s = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI64TruncSatF64U(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i64_trunc_sat_f64_u = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF32ConvertI32S(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f32_convert_i32_s = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF32ConvertI32U(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f32_convert_i32_u = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF32ConvertI64S(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f32_convert_i64_s = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF32ConvertI64U(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f32_convert_i64_u = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF32DemoteF64(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f32_demote_f64 = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF64ConvertI32S(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f64_convert_i32_s = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF64ConvertI32U(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f64_convert_i32_u = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF64ConvertI64S(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f64_convert_i64_s = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF64ConvertI64U(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f64_convert_i64_u = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF64PromoteF32(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f64_promote_f32 = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI32ReinterpretF32(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i32_reinterpret_f32 = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerI64ReinterpretF64(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .i64_reinterpret_f64 = .{ .dst = dst, .src = src } });
+        self.r0_slot = dst;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF32ReinterpretI32(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f32_reinterpret_i32 = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+    pub fn lowerF64ReinterpretI64(self: *Lower) !void {
+        const src = try self.pop_slot();
+        const dst = self.alloc_slot();
+        try self.emit(.{ .f64_reinterpret_i64 = .{ .dst = dst, .src = src } });
+        self.r0_slot = null;
+        try self.stack.push(self.allocator, dst);
+    }
+
+
+        fn trackNumericResult(self: *Lower, val_type: ValType, dst: Slot) void {
         switch (val_type) {
             .I32, .I64 => {
                 self.r0_slot = dst;
@@ -2799,261 +6824,6 @@ pub const Lower = struct {
                 else => {},
             }
         }
-    }
-
-    pub fn lower_binary_op(
-        self: *Lower,
-        comptime op_tag: []const u8,
-        prev_r0: ?Slot,
-        prev_fp0: ?Slot,
-    ) !void {
-        // Clear now so all exit paths (const folding, simplification, fallthrough)
-        // leave r0_slot in the correct state unless we explicitly set it below.
-        // (lowerOp already cleared self.r0_slot before calling us; this is a no-op
-        // but kept for clarity.)
-        self.r0_slot = null;
-        self.fp0_slot = null;
-        const rhs = try self.pop_slot();
-        const lhs = try self.pop_slot();
-        const dst = self.alloc_slot();
-
-        // Constant folding: const + const + binop → const
-        // If both operands are constants, evaluate at compile time and emit a
-        // single const instruction.  We must NOT fold division/remainder when the
-        // divisor is zero or when signed INT_MIN / -1 (these are wasm traps).
-        if (try self.try_fold_binary_const(op_tag, lhs, rhs, dst)) {
-            try self.stack.push(self.allocator, dst);
-            return;
-        }
-
-        // Peephole C: const_i32/i64 + xxx → xxx_imm
-        // If there is a fused _imm variant for this op AND the previous emitted
-        // op is `const_i32`/`const_i64` whose dst matches rhs, fold it into an immediate.
-        const imm_tag = op_tag ++ "_imm";
-        if (comptime @hasField(Op, imm_tag)) {
-            // Determine imm type from the fused op's struct field at compile time.
-            const ImmType = @TypeOf(@field(@as(unionPayloadType(Op, imm_tag), undefined), "imm"));
-            const ops = self.compiled.ops.items;
-            if (ops.len > 0) {
-                switch (ops[ops.len - 1]) {
-                    .const_i32 => |c| if (ImmType == i32 and c.dst == rhs) {
-                        // Algebraic simplification & strength reduction
-                        if (try self.try_simplify_imm_i32(op_tag, lhs, c.value, dst)) {
-                            self.r0_slot = null;
-                            return;
-                        }
-                        // Remove the const_i32 and emit the fused imm op instead.
-                        _ = self.compiled.ops.pop();
-                        // r0 variant: if lhs is already in r0, skip the lhs slot
-                        const r_tag = imm_tag ++ "_r";
-                        if (comptime @hasField(Op, r_tag)) {
-                            if (prev_r0) |r0| {
-                                if (r0 == lhs) {
-                                    try self.emit(@unionInit(Op, r_tag, .{
-                                        .dst = dst,
-                                        .imm = c.value,
-                                    }));
-                                    self.r0_slot = dst;
-                                    try self.stack.push(self.allocator, dst);
-                                    return;
-                                }
-                            }
-                        }
-                        try self.emit(@unionInit(Op, imm_tag, .{
-                            .dst = dst,
-                            .lhs = lhs,
-                            .imm = c.value,
-                        }));
-                        self.r0_slot = dst;
-                        try self.stack.push(self.allocator, dst);
-                        return;
-                    },
-                    .const_i64 => |c| if (ImmType == i64 and c.dst == rhs) {
-                        if (try self.try_simplify_imm_i64(op_tag, lhs, c.value, dst)) {
-                            self.r0_slot = null;
-                            return;
-                        }
-                        _ = self.compiled.ops.pop();
-                        // r0 variant: if lhs is already in r0, skip the lhs slot
-                        const r_tag = imm_tag ++ "_r";
-                        if (comptime @hasField(Op, r_tag)) {
-                            if (prev_r0) |r0| {
-                                if (r0 == lhs) {
-                                    try self.emit(@unionInit(Op, r_tag, .{
-                                        .dst = dst,
-                                        .imm = c.value,
-                                    }));
-                                    self.r0_slot = dst;
-                                    try self.stack.push(self.allocator, dst);
-                                    return;
-                                }
-                            }
-                        }
-                        try self.emit(@unionInit(Op, imm_tag, .{
-                            .dst = dst,
-                            .lhs = lhs,
-                            .imm = c.value,
-                        }));
-                        self.r0_slot = dst;
-                        try self.stack.push(self.allocator, dst);
-                        return;
-                    },
-                    else => {},
-                }
-            }
-        }
-
-        // Peephole: lhs already in r0/fp0 → emit *_r variant.
-        const r_tag = op_tag ++ "_r";
-        if (comptime @hasField(Op, r_tag)) {
-            if (comptime std.mem.startsWith(u8, op_tag, "f32_") or std.mem.startsWith(u8, op_tag, "f64_")) {
-                if (prev_fp0) |fp0| {
-                    if (fp0 == lhs) {
-                        try self.emit(@unionInit(Op, r_tag, .{
-                            .dst = dst,
-                            .rhs = rhs,
-                        }));
-                        self.fp0_slot = dst;
-                        try self.stack.push(self.allocator, dst);
-                        return;
-                    }
-                }
-            } else if (prev_r0) |r0| {
-                if (r0 == lhs) {
-                    try self.emit(@unionInit(Op, r_tag, .{
-                        .dst = dst,
-                        .rhs = rhs,
-                    }));
-                    self.r0_slot = dst;
-                    try self.stack.push(self.allocator, dst);
-                    return;
-                }
-            }
-        }
-
-        // Producers write slot + accumulator at runtime.
-        if (comptime std.mem.startsWith(u8, op_tag, "i32_") or std.mem.startsWith(u8, op_tag, "i64_")) {
-            self.r0_slot = dst;
-        } else if (comptime std.mem.startsWith(u8, op_tag, "f32_") or std.mem.startsWith(u8, op_tag, "f64_")) {
-            self.fp0_slot = dst;
-        }
-        try self.emit(@unionInit(Op, op_tag, .{
-            .dst = dst,
-            .lhs = lhs,
-            .rhs = rhs,
-        }));
-
-        try self.stack.push(self.allocator, dst);
-    }
-
-    /// Handle unary operations: pop one operand, allocate result slot, emit, push result.
-    pub fn lower_unary_op(
-        self: *Lower,
-        comptime op_tag: []const u8,
-    ) !void {
-        const src = try self.pop_slot();
-        const dst = self.alloc_slot();
-
-        // Constant folding: const + unary → const
-        if (try self.try_fold_unary_const(op_tag, src, dst)) {
-            try self.stack.push(self.allocator, dst);
-            return;
-        }
-
-        try self.emit(@unionInit(Op, op_tag, .{
-            .dst = dst,
-            .src = src,
-        }));
-
-        // Integer-producing unary ops write r0 at runtime.
-        if (comptime std.mem.startsWith(u8, op_tag, "i32_") or std.mem.startsWith(u8, op_tag, "i64_")) {
-            self.r0_slot = dst;
-        } else {
-            self.r0_slot = null;
-        }
-
-        try self.stack.push(self.allocator, dst);
-    }
-
-    /// Handle conversion operations: pop one operand, allocate result slot, emit, push result.
-    pub fn lower_convert_op(
-        self: *Lower,
-        comptime op_tag: []const u8,
-    ) !void {
-        const src = try self.pop_slot();
-        const dst = self.alloc_slot();
-
-        try self.emit(@unionInit(Op, op_tag, .{
-            .dst = dst,
-            .src = src,
-        }));
-
-        // Integer-producing conversions write r0 at runtime.
-        if (comptime std.mem.startsWith(u8, op_tag, "i32_") or std.mem.startsWith(u8, op_tag, "i64_")) {
-            self.r0_slot = dst;
-        } else {
-            self.r0_slot = null;
-        }
-
-        try self.stack.push(self.allocator, dst);
-    }
-
-    /// Handle comparison operations: pop two operands, allocate result slot (i32), emit, push result.
-    pub fn lower_compare_op(
-        self: *Lower,
-        comptime op_tag: []const u8,
-    ) !void {
-        const rhs = try self.pop_slot();
-        const lhs = try self.pop_slot();
-        const dst = self.alloc_slot();
-
-        // Constant folding: const + const + compare → const_i32 (0 or 1)
-        if (try self.try_fold_compare_const(op_tag, lhs, rhs, dst)) {
-            try self.stack.push(self.allocator, dst);
-            return;
-        }
-
-        // Peephole C (compare variant): const_i32/i64 + xxx_cmp → xxx_cmp_imm
-        const imm_tag = op_tag ++ "_imm";
-        if (comptime @hasField(Op, imm_tag)) {
-            const ImmType = @TypeOf(@field(@as(unionPayloadType(Op, imm_tag), undefined), "imm"));
-            const ops = self.compiled.ops.items;
-            if (ops.len > 0) {
-                switch (ops[ops.len - 1]) {
-                    .const_i32 => |c| if (ImmType == i32 and c.dst == rhs) {
-                        _ = self.compiled.ops.pop();
-                        try self.emit(@unionInit(Op, imm_tag, .{
-                            .dst = dst,
-                            .lhs = lhs,
-                            .imm = c.value,
-                        }));
-                        try self.stack.push(self.allocator, dst);
-                        return;
-                    },
-                    .const_i64 => |c| if (ImmType == i64 and c.dst == rhs) {
-                        _ = self.compiled.ops.pop();
-                        try self.emit(@unionInit(Op, imm_tag, .{
-                            .dst = dst,
-                            .lhs = lhs,
-                            .imm = c.value,
-                        }));
-                        try self.stack.push(self.allocator, dst);
-                        return;
-                    },
-                    else => {},
-                }
-            }
-        }
-
-        try self.emit(@unionInit(Op, op_tag, .{
-            .dst = dst,
-            .lhs = lhs,
-            .rhs = rhs,
-        }));
-        // All comparison ops produce i32, which is written to r0 at runtime.
-        self.r0_slot = dst;
-
-        try self.stack.push(self.allocator, dst);
     }
 
     fn lower_simd_unary(self: *Lower, opcode: SimdOpcode) !void {
@@ -3734,179 +7504,179 @@ pub const Lower = struct {
             // i32 arithmetic operations (binary)
             // Using helper function to reduce boilerplate
 
-            .i32_add => try self.lower_binary_op("i32_add", saved_r0, saved_fp0),
-            .i32_sub => try self.lower_binary_op("i32_sub", saved_r0, saved_fp0),
-            .i32_mul => try self.lower_binary_op("i32_mul", saved_r0, saved_fp0),
-            .i32_div_s => try self.lower_binary_op("i32_div_s", saved_r0, saved_fp0),
-            .i32_div_u => try self.lower_binary_op("i32_div_u", saved_r0, saved_fp0),
-            .i32_rem_s => try self.lower_binary_op("i32_rem_s", saved_r0, saved_fp0),
-            .i32_rem_u => try self.lower_binary_op("i32_rem_u", saved_r0, saved_fp0),
-            .i32_and => try self.lower_binary_op("i32_and", saved_r0, saved_fp0),
-            .i32_or => try self.lower_binary_op("i32_or", saved_r0, saved_fp0),
-            .i32_xor => try self.lower_binary_op("i32_xor", saved_r0, saved_fp0),
-            .i32_shl => try self.lower_binary_op("i32_shl", saved_r0, saved_fp0),
-            .i32_shr_s => try self.lower_binary_op("i32_shr_s", saved_r0, saved_fp0),
-            .i32_shr_u => try self.lower_binary_op("i32_shr_u", saved_r0, saved_fp0),
-            .i32_rotl => try self.lower_binary_op("i32_rotl", saved_r0, saved_fp0),
-            .i32_rotr => try self.lower_binary_op("i32_rotr", saved_r0, saved_fp0),
+            .i32_add => try self.lowerI32Add(saved_r0, saved_fp0),
+            .i32_sub => try self.lowerI32Sub(saved_r0, saved_fp0),
+            .i32_mul => try self.lowerI32Mul(saved_r0, saved_fp0),
+            .i32_div_s => try self.lowerI32DivS(saved_r0, saved_fp0),
+            .i32_div_u => try self.lowerI32DivU(saved_r0, saved_fp0),
+            .i32_rem_s => try self.lowerI32RemS(saved_r0, saved_fp0),
+            .i32_rem_u => try self.lowerI32RemU(saved_r0, saved_fp0),
+            .i32_and => try self.lowerI32And(saved_r0, saved_fp0),
+            .i32_or => try self.lowerI32Or(saved_r0, saved_fp0),
+            .i32_xor => try self.lowerI32Xor(saved_r0, saved_fp0),
+            .i32_shl => try self.lowerI32Shl(saved_r0, saved_fp0),
+            .i32_shr_s => try self.lowerI32ShrS(saved_r0, saved_fp0),
+            .i32_shr_u => try self.lowerI32ShrU(saved_r0, saved_fp0),
+            .i32_rotl => try self.lowerI32Rotl(saved_r0, saved_fp0),
+            .i32_rotr => try self.lowerI32Rotr(saved_r0, saved_fp0),
 
             // i64 arithmetic operations (binary)
 
-            .i64_add => try self.lower_binary_op("i64_add", saved_r0, saved_fp0),
-            .i64_sub => try self.lower_binary_op("i64_sub", saved_r0, saved_fp0),
-            .i64_mul => try self.lower_binary_op("i64_mul", saved_r0, saved_fp0),
-            .i64_div_s => try self.lower_binary_op("i64_div_s", saved_r0, saved_fp0),
-            .i64_div_u => try self.lower_binary_op("i64_div_u", saved_r0, saved_fp0),
-            .i64_rem_s => try self.lower_binary_op("i64_rem_s", saved_r0, saved_fp0),
-            .i64_rem_u => try self.lower_binary_op("i64_rem_u", saved_r0, saved_fp0),
-            .i64_and => try self.lower_binary_op("i64_and", saved_r0, saved_fp0),
-            .i64_or => try self.lower_binary_op("i64_or", saved_r0, saved_fp0),
-            .i64_xor => try self.lower_binary_op("i64_xor", saved_r0, saved_fp0),
-            .i64_shl => try self.lower_binary_op("i64_shl", saved_r0, saved_fp0),
-            .i64_shr_s => try self.lower_binary_op("i64_shr_s", saved_r0, saved_fp0),
-            .i64_shr_u => try self.lower_binary_op("i64_shr_u", saved_r0, saved_fp0),
-            .i64_rotl => try self.lower_binary_op("i64_rotl", saved_r0, saved_fp0),
-            .i64_rotr => try self.lower_binary_op("i64_rotr", saved_r0, saved_fp0),
+            .i64_add => try self.lowerI64Add(saved_r0, saved_fp0),
+            .i64_sub => try self.lowerI64Sub(saved_r0, saved_fp0),
+            .i64_mul => try self.lowerI64Mul(saved_r0, saved_fp0),
+            .i64_div_s => try self.lowerI64DivS(saved_r0, saved_fp0),
+            .i64_div_u => try self.lowerI64DivU(saved_r0, saved_fp0),
+            .i64_rem_s => try self.lowerI64RemS(saved_r0, saved_fp0),
+            .i64_rem_u => try self.lowerI64RemU(saved_r0, saved_fp0),
+            .i64_and => try self.lowerI64And(saved_r0, saved_fp0),
+            .i64_or => try self.lowerI64Or(saved_r0, saved_fp0),
+            .i64_xor => try self.lowerI64Xor(saved_r0, saved_fp0),
+            .i64_shl => try self.lowerI64Shl(saved_r0, saved_fp0),
+            .i64_shr_s => try self.lowerI64ShrS(saved_r0, saved_fp0),
+            .i64_shr_u => try self.lowerI64ShrU(saved_r0, saved_fp0),
+            .i64_rotl => try self.lowerI64Rotl(saved_r0, saved_fp0),
+            .i64_rotr => try self.lowerI64Rotr(saved_r0, saved_fp0),
 
             // f32 arithmetic operations (binary)
 
-            .f32_add => try self.lower_binary_op("f32_add", saved_r0, saved_fp0),
-            .f32_sub => try self.lower_binary_op("f32_sub", saved_r0, saved_fp0),
-            .f32_mul => try self.lower_binary_op("f32_mul", saved_r0, saved_fp0),
-            .f32_div => try self.lower_binary_op("f32_div", saved_r0, saved_fp0),
-            .f32_min => try self.lower_binary_op("f32_min", saved_r0, saved_fp0),
-            .f32_max => try self.lower_binary_op("f32_max", saved_r0, saved_fp0),
-            .f32_copysign => try self.lower_binary_op("f32_copysign", saved_r0, saved_fp0),
+            .f32_add => try self.lowerF32Add(saved_r0, saved_fp0),
+            .f32_sub => try self.lowerF32Sub(saved_r0, saved_fp0),
+            .f32_mul => try self.lowerF32Mul(saved_r0, saved_fp0),
+            .f32_div => try self.lowerF32Div(saved_r0, saved_fp0),
+            .f32_min => try self.lowerF32Min(saved_r0, saved_fp0),
+            .f32_max => try self.lowerF32Max(saved_r0, saved_fp0),
+            .f32_copysign => try self.lowerF32Copysign(saved_r0, saved_fp0),
 
             // f64 arithmetic operations (binary)
 
-            .f64_add => try self.lower_binary_op("f64_add", saved_r0, saved_fp0),
-            .f64_sub => try self.lower_binary_op("f64_sub", saved_r0, saved_fp0),
-            .f64_mul => try self.lower_binary_op("f64_mul", saved_r0, saved_fp0),
-            .f64_div => try self.lower_binary_op("f64_div", saved_r0, saved_fp0),
-            .f64_min => try self.lower_binary_op("f64_min", saved_r0, saved_fp0),
-            .f64_max => try self.lower_binary_op("f64_max", saved_r0, saved_fp0),
-            .f64_copysign => try self.lower_binary_op("f64_copysign", saved_r0, saved_fp0),
+            .f64_add => try self.lowerF64Add(saved_r0, saved_fp0),
+            .f64_sub => try self.lowerF64Sub(saved_r0, saved_fp0),
+            .f64_mul => try self.lowerF64Mul(saved_r0, saved_fp0),
+            .f64_div => try self.lowerF64Div(saved_r0, saved_fp0),
+            .f64_min => try self.lowerF64Min(saved_r0, saved_fp0),
+            .f64_max => try self.lowerF64Max(saved_r0, saved_fp0),
+            .f64_copysign => try self.lowerF64Copysign(saved_r0, saved_fp0),
 
             // i32 unary operations
 
-            .i32_clz => try self.lower_unary_op("i32_clz"),
-            .i32_ctz => try self.lower_unary_op("i32_ctz"),
-            .i32_popcnt => try self.lower_unary_op("i32_popcnt"),
+            .i32_clz => try self.lowerI32Clz(),
+            .i32_ctz => try self.lowerI32Ctz(),
+            .i32_popcnt => try self.lowerI32Popcnt(),
 
             // i64 unary operations
 
-            .i64_clz => try self.lower_unary_op("i64_clz"),
-            .i64_ctz => try self.lower_unary_op("i64_ctz"),
-            .i64_popcnt => try self.lower_unary_op("i64_popcnt"),
+            .i64_clz => try self.lowerI64Clz(),
+            .i64_ctz => try self.lowerI64Ctz(),
+            .i64_popcnt => try self.lowerI64Popcnt(),
 
             // f32 unary operations
 
-            .f32_abs => try self.lower_unary_op("f32_abs"),
-            .f32_neg => try self.lower_unary_op("f32_neg"),
-            .f32_ceil => try self.lower_unary_op("f32_ceil"),
-            .f32_floor => try self.lower_unary_op("f32_floor"),
-            .f32_trunc => try self.lower_unary_op("f32_trunc"),
-            .f32_nearest => try self.lower_unary_op("f32_nearest"),
-            .f32_sqrt => try self.lower_unary_op("f32_sqrt"),
+            .f32_abs => try self.lowerF32Abs(),
+            .f32_neg => try self.lowerF32Neg(),
+            .f32_ceil => try self.lowerF32Ceil(),
+            .f32_floor => try self.lowerF32Floor(),
+            .f32_trunc => try self.lowerF32Trunc(),
+            .f32_nearest => try self.lowerF32Nearest(),
+            .f32_sqrt => try self.lowerF32Sqrt(),
 
             // f64 unary operations
 
-            .f64_abs => try self.lower_unary_op("f64_abs"),
-            .f64_neg => try self.lower_unary_op("f64_neg"),
-            .f64_ceil => try self.lower_unary_op("f64_ceil"),
-            .f64_floor => try self.lower_unary_op("f64_floor"),
-            .f64_trunc => try self.lower_unary_op("f64_trunc"),
-            .f64_nearest => try self.lower_unary_op("f64_nearest"),
-            .f64_sqrt => try self.lower_unary_op("f64_sqrt"),
+            .f64_abs => try self.lowerF64Abs(),
+            .f64_neg => try self.lowerF64Neg(),
+            .f64_ceil => try self.lowerF64Ceil(),
+            .f64_floor => try self.lowerF64Floor(),
+            .f64_trunc => try self.lowerF64Trunc(),
+            .f64_nearest => try self.lowerF64Nearest(),
+            .f64_sqrt => try self.lowerF64Sqrt(),
 
             // i32 comparison operations
 
-            .i32_eqz => try self.lower_unary_op("i32_eqz"), // special: unary, result is i32
-            .i32_eq => try self.lower_compare_op("i32_eq"),
-            .i32_ne => try self.lower_compare_op("i32_ne"),
-            .i32_lt_s => try self.lower_compare_op("i32_lt_s"),
-            .i32_lt_u => try self.lower_compare_op("i32_lt_u"),
-            .i32_gt_s => try self.lower_compare_op("i32_gt_s"),
-            .i32_gt_u => try self.lower_compare_op("i32_gt_u"),
-            .i32_le_s => try self.lower_compare_op("i32_le_s"),
-            .i32_le_u => try self.lower_compare_op("i32_le_u"),
-            .i32_ge_s => try self.lower_compare_op("i32_ge_s"),
-            .i32_ge_u => try self.lower_compare_op("i32_ge_u"),
+            .i32_eqz => try self.lowerI32Eqz(), // special: unary, result is i32
+            .i32_eq => try self.lowerI32Eq(),
+            .i32_ne => try self.lowerI32Ne(),
+            .i32_lt_s => try self.lowerI32LtS(),
+            .i32_lt_u => try self.lowerI32LtU(),
+            .i32_gt_s => try self.lowerI32GtS(),
+            .i32_gt_u => try self.lowerI32GtU(),
+            .i32_le_s => try self.lowerI32LeS(),
+            .i32_le_u => try self.lowerI32LeU(),
+            .i32_ge_s => try self.lowerI32GeS(),
+            .i32_ge_u => try self.lowerI32GeU(),
 
             // i64 comparison operations
 
-            .i64_eqz => try self.lower_unary_op("i64_eqz"),
-            .i64_eq => try self.lower_compare_op("i64_eq"),
-            .i64_ne => try self.lower_compare_op("i64_ne"),
-            .i64_lt_s => try self.lower_compare_op("i64_lt_s"),
-            .i64_lt_u => try self.lower_compare_op("i64_lt_u"),
-            .i64_gt_s => try self.lower_compare_op("i64_gt_s"),
-            .i64_gt_u => try self.lower_compare_op("i64_gt_u"),
-            .i64_le_s => try self.lower_compare_op("i64_le_s"),
-            .i64_le_u => try self.lower_compare_op("i64_le_u"),
-            .i64_ge_s => try self.lower_compare_op("i64_ge_s"),
-            .i64_ge_u => try self.lower_compare_op("i64_ge_u"),
+            .i64_eqz => try self.lowerI64Eqz(),
+            .i64_eq => try self.lowerI64Eq(),
+            .i64_ne => try self.lowerI64Ne(),
+            .i64_lt_s => try self.lowerI64LtS(),
+            .i64_lt_u => try self.lowerI64LtU(),
+            .i64_gt_s => try self.lowerI64GtS(),
+            .i64_gt_u => try self.lowerI64GtU(),
+            .i64_le_s => try self.lowerI64LeS(),
+            .i64_le_u => try self.lowerI64LeU(),
+            .i64_ge_s => try self.lowerI64GeS(),
+            .i64_ge_u => try self.lowerI64GeU(),
 
             // f32 comparison operations
 
-            .f32_eq => try self.lower_compare_op("f32_eq"),
-            .f32_ne => try self.lower_compare_op("f32_ne"),
-            .f32_lt => try self.lower_compare_op("f32_lt"),
-            .f32_gt => try self.lower_compare_op("f32_gt"),
-            .f32_le => try self.lower_compare_op("f32_le"),
-            .f32_ge => try self.lower_compare_op("f32_ge"),
+            .f32_eq => try self.lowerF32Eq(),
+            .f32_ne => try self.lowerF32Ne(),
+            .f32_lt => try self.lowerF32Lt(),
+            .f32_gt => try self.lowerF32Gt(),
+            .f32_le => try self.lowerF32Le(),
+            .f32_ge => try self.lowerF32Ge(),
 
             // f64 comparison operations
 
-            .f64_eq => try self.lower_compare_op("f64_eq"),
-            .f64_ne => try self.lower_compare_op("f64_ne"),
-            .f64_lt => try self.lower_compare_op("f64_lt"),
-            .f64_gt => try self.lower_compare_op("f64_gt"),
-            .f64_le => try self.lower_compare_op("f64_le"),
-            .f64_ge => try self.lower_compare_op("f64_ge"),
+            .f64_eq => try self.lowerF64Eq(),
+            .f64_ne => try self.lowerF64Ne(),
+            .f64_lt => try self.lowerF64Lt(),
+            .f64_gt => try self.lowerF64Gt(),
+            .f64_le => try self.lowerF64Le(),
+            .f64_ge => try self.lowerF64Ge(),
 
             // Numeric conversion and reinterpret operations
-            .i32_wrap_i64 => try self.lower_convert_op("i32_wrap_i64"),
-            .i32_trunc_f32_s => try self.lower_convert_op("i32_trunc_f32_s"),
-            .i32_trunc_f32_u => try self.lower_convert_op("i32_trunc_f32_u"),
-            .i32_trunc_f64_s => try self.lower_convert_op("i32_trunc_f64_s"),
-            .i32_trunc_f64_u => try self.lower_convert_op("i32_trunc_f64_u"),
-            .i64_extend_i32_s => try self.lower_convert_op("i64_extend_i32_s"),
-            .i64_extend_i32_u => try self.lower_convert_op("i64_extend_i32_u"),
-            .i64_trunc_f32_s => try self.lower_convert_op("i64_trunc_f32_s"),
-            .i64_trunc_f32_u => try self.lower_convert_op("i64_trunc_f32_u"),
-            .i64_trunc_f64_s => try self.lower_convert_op("i64_trunc_f64_s"),
-            .i64_trunc_f64_u => try self.lower_convert_op("i64_trunc_f64_u"),
-            .i32_trunc_sat_f32_s => try self.lower_convert_op("i32_trunc_sat_f32_s"),
-            .i32_trunc_sat_f32_u => try self.lower_convert_op("i32_trunc_sat_f32_u"),
-            .i32_trunc_sat_f64_s => try self.lower_convert_op("i32_trunc_sat_f64_s"),
-            .i32_trunc_sat_f64_u => try self.lower_convert_op("i32_trunc_sat_f64_u"),
-            .i64_trunc_sat_f32_s => try self.lower_convert_op("i64_trunc_sat_f32_s"),
-            .i64_trunc_sat_f32_u => try self.lower_convert_op("i64_trunc_sat_f32_u"),
-            .i64_trunc_sat_f64_s => try self.lower_convert_op("i64_trunc_sat_f64_s"),
-            .i64_trunc_sat_f64_u => try self.lower_convert_op("i64_trunc_sat_f64_u"),
-            .f32_convert_i32_s => try self.lower_convert_op("f32_convert_i32_s"),
-            .f32_convert_i32_u => try self.lower_convert_op("f32_convert_i32_u"),
-            .f32_convert_i64_s => try self.lower_convert_op("f32_convert_i64_s"),
-            .f32_convert_i64_u => try self.lower_convert_op("f32_convert_i64_u"),
-            .f32_demote_f64 => try self.lower_convert_op("f32_demote_f64"),
-            .f64_convert_i32_s => try self.lower_convert_op("f64_convert_i32_s"),
-            .f64_convert_i32_u => try self.lower_convert_op("f64_convert_i32_u"),
-            .f64_convert_i64_s => try self.lower_convert_op("f64_convert_i64_s"),
-            .f64_convert_i64_u => try self.lower_convert_op("f64_convert_i64_u"),
-            .f64_promote_f32 => try self.lower_convert_op("f64_promote_f32"),
-            .i32_reinterpret_f32 => try self.lower_convert_op("i32_reinterpret_f32"),
-            .i64_reinterpret_f64 => try self.lower_convert_op("i64_reinterpret_f64"),
-            .f32_reinterpret_i32 => try self.lower_convert_op("f32_reinterpret_i32"),
-            .f64_reinterpret_i64 => try self.lower_convert_op("f64_reinterpret_i64"),
+            .i32_wrap_i64 => try self.lowerI32WrapI64(),
+            .i32_trunc_f32_s => try self.lowerI32TruncF32S(),
+            .i32_trunc_f32_u => try self.lowerI32TruncF32U(),
+            .i32_trunc_f64_s => try self.lowerI32TruncF64S(),
+            .i32_trunc_f64_u => try self.lowerI32TruncF64U(),
+            .i64_extend_i32_s => try self.lowerI64ExtendI32S(),
+            .i64_extend_i32_u => try self.lowerI64ExtendI32U(),
+            .i64_trunc_f32_s => try self.lowerI64TruncF32S(),
+            .i64_trunc_f32_u => try self.lowerI64TruncF32U(),
+            .i64_trunc_f64_s => try self.lowerI64TruncF64S(),
+            .i64_trunc_f64_u => try self.lowerI64TruncF64U(),
+            .i32_trunc_sat_f32_s => try self.lowerI32TruncSatF32S(),
+            .i32_trunc_sat_f32_u => try self.lowerI32TruncSatF32U(),
+            .i32_trunc_sat_f64_s => try self.lowerI32TruncSatF64S(),
+            .i32_trunc_sat_f64_u => try self.lowerI32TruncSatF64U(),
+            .i64_trunc_sat_f32_s => try self.lowerI64TruncSatF32S(),
+            .i64_trunc_sat_f32_u => try self.lowerI64TruncSatF32U(),
+            .i64_trunc_sat_f64_s => try self.lowerI64TruncSatF64S(),
+            .i64_trunc_sat_f64_u => try self.lowerI64TruncSatF64U(),
+            .f32_convert_i32_s => try self.lowerF32ConvertI32S(),
+            .f32_convert_i32_u => try self.lowerF32ConvertI32U(),
+            .f32_convert_i64_s => try self.lowerF32ConvertI64S(),
+            .f32_convert_i64_u => try self.lowerF32ConvertI64U(),
+            .f32_demote_f64 => try self.lowerF32DemoteF64(),
+            .f64_convert_i32_s => try self.lowerF64ConvertI32S(),
+            .f64_convert_i32_u => try self.lowerF64ConvertI32U(),
+            .f64_convert_i64_s => try self.lowerF64ConvertI64S(),
+            .f64_convert_i64_u => try self.lowerF64ConvertI64U(),
+            .f64_promote_f32 => try self.lowerF64PromoteF32(),
+            .i32_reinterpret_f32 => try self.lowerI32ReinterpretF32(),
+            .i64_reinterpret_f64 => try self.lowerI64ReinterpretF64(),
+            .f32_reinterpret_i32 => try self.lowerF32ReinterpretI32(),
+            .f64_reinterpret_i64 => try self.lowerF64ReinterpretI64(),
 
             // Sign-extension operations
-            .i32_extend8_s => try self.lower_convert_op("i32_extend8_s"),
-            .i32_extend16_s => try self.lower_convert_op("i32_extend16_s"),
-            .i64_extend8_s => try self.lower_convert_op("i64_extend8_s"),
-            .i64_extend16_s => try self.lower_convert_op("i64_extend16_s"),
-            .i64_extend32_s => try self.lower_convert_op("i64_extend32_s"),
+            .i32_extend8_s => try self.lowerI32Extend8S(),
+            .i32_extend16_s => try self.lowerI32Extend16S(),
+            .i64_extend8_s => try self.lowerI64Extend8S(),
+            .i64_extend16_s => try self.lowerI64Extend16S(),
+            .i64_extend32_s => try self.lowerI64Extend32S(),
 
             .simd_unary => |opcode| try self.lower_simd_unary(opcode),
             .simd_binary => |opcode| try self.lower_simd_binary(opcode),
@@ -5565,166 +9335,166 @@ pub const Lower = struct {
             },
 
             // i32 binary
-            .i32_add => try self.lower_binary_op("i32_add", saved_r0, saved_fp0),
-            .i32_sub => try self.lower_binary_op("i32_sub", saved_r0, saved_fp0),
-            .i32_mul => try self.lower_binary_op("i32_mul", saved_r0, saved_fp0),
-            .i32_div_s => try self.lower_binary_op("i32_div_s", saved_r0, saved_fp0),
-            .i32_div_u => try self.lower_binary_op("i32_div_u", saved_r0, saved_fp0),
-            .i32_rem_s => try self.lower_binary_op("i32_rem_s", saved_r0, saved_fp0),
-            .i32_rem_u => try self.lower_binary_op("i32_rem_u", saved_r0, saved_fp0),
-            .i32_and => try self.lower_binary_op("i32_and", saved_r0, saved_fp0),
-            .i32_or => try self.lower_binary_op("i32_or", saved_r0, saved_fp0),
-            .i32_xor => try self.lower_binary_op("i32_xor", saved_r0, saved_fp0),
-            .i32_shl => try self.lower_binary_op("i32_shl", saved_r0, saved_fp0),
-            .i32_shr_s => try self.lower_binary_op("i32_shr_s", saved_r0, saved_fp0),
-            .i32_shr_u => try self.lower_binary_op("i32_shr_u", saved_r0, saved_fp0),
-            .i32_rotl => try self.lower_binary_op("i32_rotl", saved_r0, saved_fp0),
-            .i32_rotr => try self.lower_binary_op("i32_rotr", saved_r0, saved_fp0),
+            .i32_add => try self.lowerI32Add(saved_r0, saved_fp0),
+            .i32_sub => try self.lowerI32Sub(saved_r0, saved_fp0),
+            .i32_mul => try self.lowerI32Mul(saved_r0, saved_fp0),
+            .i32_div_s => try self.lowerI32DivS(saved_r0, saved_fp0),
+            .i32_div_u => try self.lowerI32DivU(saved_r0, saved_fp0),
+            .i32_rem_s => try self.lowerI32RemS(saved_r0, saved_fp0),
+            .i32_rem_u => try self.lowerI32RemU(saved_r0, saved_fp0),
+            .i32_and => try self.lowerI32And(saved_r0, saved_fp0),
+            .i32_or => try self.lowerI32Or(saved_r0, saved_fp0),
+            .i32_xor => try self.lowerI32Xor(saved_r0, saved_fp0),
+            .i32_shl => try self.lowerI32Shl(saved_r0, saved_fp0),
+            .i32_shr_s => try self.lowerI32ShrS(saved_r0, saved_fp0),
+            .i32_shr_u => try self.lowerI32ShrU(saved_r0, saved_fp0),
+            .i32_rotl => try self.lowerI32Rotl(saved_r0, saved_fp0),
+            .i32_rotr => try self.lowerI32Rotr(saved_r0, saved_fp0),
 
             // i64 binary
-            .i64_add => try self.lower_binary_op("i64_add", saved_r0, saved_fp0),
-            .i64_sub => try self.lower_binary_op("i64_sub", saved_r0, saved_fp0),
-            .i64_mul => try self.lower_binary_op("i64_mul", saved_r0, saved_fp0),
-            .i64_div_s => try self.lower_binary_op("i64_div_s", saved_r0, saved_fp0),
-            .i64_div_u => try self.lower_binary_op("i64_div_u", saved_r0, saved_fp0),
-            .i64_rem_s => try self.lower_binary_op("i64_rem_s", saved_r0, saved_fp0),
-            .i64_rem_u => try self.lower_binary_op("i64_rem_u", saved_r0, saved_fp0),
-            .i64_and => try self.lower_binary_op("i64_and", saved_r0, saved_fp0),
-            .i64_or => try self.lower_binary_op("i64_or", saved_r0, saved_fp0),
-            .i64_xor => try self.lower_binary_op("i64_xor", saved_r0, saved_fp0),
-            .i64_shl => try self.lower_binary_op("i64_shl", saved_r0, saved_fp0),
-            .i64_shr_s => try self.lower_binary_op("i64_shr_s", saved_r0, saved_fp0),
-            .i64_shr_u => try self.lower_binary_op("i64_shr_u", saved_r0, saved_fp0),
-            .i64_rotl => try self.lower_binary_op("i64_rotl", saved_r0, saved_fp0),
-            .i64_rotr => try self.lower_binary_op("i64_rotr", saved_r0, saved_fp0),
+            .i64_add => try self.lowerI64Add(saved_r0, saved_fp0),
+            .i64_sub => try self.lowerI64Sub(saved_r0, saved_fp0),
+            .i64_mul => try self.lowerI64Mul(saved_r0, saved_fp0),
+            .i64_div_s => try self.lowerI64DivS(saved_r0, saved_fp0),
+            .i64_div_u => try self.lowerI64DivU(saved_r0, saved_fp0),
+            .i64_rem_s => try self.lowerI64RemS(saved_r0, saved_fp0),
+            .i64_rem_u => try self.lowerI64RemU(saved_r0, saved_fp0),
+            .i64_and => try self.lowerI64And(saved_r0, saved_fp0),
+            .i64_or => try self.lowerI64Or(saved_r0, saved_fp0),
+            .i64_xor => try self.lowerI64Xor(saved_r0, saved_fp0),
+            .i64_shl => try self.lowerI64Shl(saved_r0, saved_fp0),
+            .i64_shr_s => try self.lowerI64ShrS(saved_r0, saved_fp0),
+            .i64_shr_u => try self.lowerI64ShrU(saved_r0, saved_fp0),
+            .i64_rotl => try self.lowerI64Rotl(saved_r0, saved_fp0),
+            .i64_rotr => try self.lowerI64Rotr(saved_r0, saved_fp0),
 
             // f32 binary
-            .f32_add => try self.lower_binary_op("f32_add", saved_r0, saved_fp0),
-            .f32_sub => try self.lower_binary_op("f32_sub", saved_r0, saved_fp0),
-            .f32_mul => try self.lower_binary_op("f32_mul", saved_r0, saved_fp0),
-            .f32_div => try self.lower_binary_op("f32_div", saved_r0, saved_fp0),
-            .f32_min => try self.lower_binary_op("f32_min", saved_r0, saved_fp0),
-            .f32_max => try self.lower_binary_op("f32_max", saved_r0, saved_fp0),
-            .f32_copysign => try self.lower_binary_op("f32_copysign", saved_r0, saved_fp0),
+            .f32_add => try self.lowerF32Add(saved_r0, saved_fp0),
+            .f32_sub => try self.lowerF32Sub(saved_r0, saved_fp0),
+            .f32_mul => try self.lowerF32Mul(saved_r0, saved_fp0),
+            .f32_div => try self.lowerF32Div(saved_r0, saved_fp0),
+            .f32_min => try self.lowerF32Min(saved_r0, saved_fp0),
+            .f32_max => try self.lowerF32Max(saved_r0, saved_fp0),
+            .f32_copysign => try self.lowerF32Copysign(saved_r0, saved_fp0),
 
             // f64 binary
-            .f64_add => try self.lower_binary_op("f64_add", saved_r0, saved_fp0),
-            .f64_sub => try self.lower_binary_op("f64_sub", saved_r0, saved_fp0),
-            .f64_mul => try self.lower_binary_op("f64_mul", saved_r0, saved_fp0),
-            .f64_div => try self.lower_binary_op("f64_div", saved_r0, saved_fp0),
-            .f64_min => try self.lower_binary_op("f64_min", saved_r0, saved_fp0),
-            .f64_max => try self.lower_binary_op("f64_max", saved_r0, saved_fp0),
-            .f64_copysign => try self.lower_binary_op("f64_copysign", saved_r0, saved_fp0),
+            .f64_add => try self.lowerF64Add(saved_r0, saved_fp0),
+            .f64_sub => try self.lowerF64Sub(saved_r0, saved_fp0),
+            .f64_mul => try self.lowerF64Mul(saved_r0, saved_fp0),
+            .f64_div => try self.lowerF64Div(saved_r0, saved_fp0),
+            .f64_min => try self.lowerF64Min(saved_r0, saved_fp0),
+            .f64_max => try self.lowerF64Max(saved_r0, saved_fp0),
+            .f64_copysign => try self.lowerF64Copysign(saved_r0, saved_fp0),
 
             // i32 unary
-            .i32_clz => try self.lower_unary_op("i32_clz"),
-            .i32_ctz => try self.lower_unary_op("i32_ctz"),
-            .i32_popcnt => try self.lower_unary_op("i32_popcnt"),
+            .i32_clz => try self.lowerI32Clz(),
+            .i32_ctz => try self.lowerI32Ctz(),
+            .i32_popcnt => try self.lowerI32Popcnt(),
 
             // i64 unary
-            .i64_clz => try self.lower_unary_op("i64_clz"),
-            .i64_ctz => try self.lower_unary_op("i64_ctz"),
-            .i64_popcnt => try self.lower_unary_op("i64_popcnt"),
+            .i64_clz => try self.lowerI64Clz(),
+            .i64_ctz => try self.lowerI64Ctz(),
+            .i64_popcnt => try self.lowerI64Popcnt(),
 
             // f32 unary
-            .f32_abs => try self.lower_unary_op("f32_abs"),
-            .f32_neg => try self.lower_unary_op("f32_neg"),
-            .f32_ceil => try self.lower_unary_op("f32_ceil"),
-            .f32_floor => try self.lower_unary_op("f32_floor"),
-            .f32_trunc => try self.lower_unary_op("f32_trunc"),
-            .f32_nearest => try self.lower_unary_op("f32_nearest"),
-            .f32_sqrt => try self.lower_unary_op("f32_sqrt"),
+            .f32_abs => try self.lowerF32Abs(),
+            .f32_neg => try self.lowerF32Neg(),
+            .f32_ceil => try self.lowerF32Ceil(),
+            .f32_floor => try self.lowerF32Floor(),
+            .f32_trunc => try self.lowerF32Trunc(),
+            .f32_nearest => try self.lowerF32Nearest(),
+            .f32_sqrt => try self.lowerF32Sqrt(),
 
             // f64 unary
-            .f64_abs => try self.lower_unary_op("f64_abs"),
-            .f64_neg => try self.lower_unary_op("f64_neg"),
-            .f64_ceil => try self.lower_unary_op("f64_ceil"),
-            .f64_floor => try self.lower_unary_op("f64_floor"),
-            .f64_trunc => try self.lower_unary_op("f64_trunc"),
-            .f64_nearest => try self.lower_unary_op("f64_nearest"),
-            .f64_sqrt => try self.lower_unary_op("f64_sqrt"),
+            .f64_abs => try self.lowerF64Abs(),
+            .f64_neg => try self.lowerF64Neg(),
+            .f64_ceil => try self.lowerF64Ceil(),
+            .f64_floor => try self.lowerF64Floor(),
+            .f64_trunc => try self.lowerF64Trunc(),
+            .f64_nearest => try self.lowerF64Nearest(),
+            .f64_sqrt => try self.lowerF64Sqrt(),
 
             // i32 comparisons
-            .i32_eqz => try self.lower_unary_op("i32_eqz"),
-            .i32_eq => try self.lower_compare_op("i32_eq"),
-            .i32_ne => try self.lower_compare_op("i32_ne"),
-            .i32_lt_s => try self.lower_compare_op("i32_lt_s"),
-            .i32_lt_u => try self.lower_compare_op("i32_lt_u"),
-            .i32_gt_s => try self.lower_compare_op("i32_gt_s"),
-            .i32_gt_u => try self.lower_compare_op("i32_gt_u"),
-            .i32_le_s => try self.lower_compare_op("i32_le_s"),
-            .i32_le_u => try self.lower_compare_op("i32_le_u"),
-            .i32_ge_s => try self.lower_compare_op("i32_ge_s"),
-            .i32_ge_u => try self.lower_compare_op("i32_ge_u"),
+            .i32_eqz => try self.lowerI32Eqz(),
+            .i32_eq => try self.lowerI32Eq(),
+            .i32_ne => try self.lowerI32Ne(),
+            .i32_lt_s => try self.lowerI32LtS(),
+            .i32_lt_u => try self.lowerI32LtU(),
+            .i32_gt_s => try self.lowerI32GtS(),
+            .i32_gt_u => try self.lowerI32GtU(),
+            .i32_le_s => try self.lowerI32LeS(),
+            .i32_le_u => try self.lowerI32LeU(),
+            .i32_ge_s => try self.lowerI32GeS(),
+            .i32_ge_u => try self.lowerI32GeU(),
 
             // i64 comparisons
-            .i64_eqz => try self.lower_unary_op("i64_eqz"),
-            .i64_eq => try self.lower_compare_op("i64_eq"),
-            .i64_ne => try self.lower_compare_op("i64_ne"),
-            .i64_lt_s => try self.lower_compare_op("i64_lt_s"),
-            .i64_lt_u => try self.lower_compare_op("i64_lt_u"),
-            .i64_gt_s => try self.lower_compare_op("i64_gt_s"),
-            .i64_gt_u => try self.lower_compare_op("i64_gt_u"),
-            .i64_le_s => try self.lower_compare_op("i64_le_s"),
-            .i64_le_u => try self.lower_compare_op("i64_le_u"),
-            .i64_ge_s => try self.lower_compare_op("i64_ge_s"),
-            .i64_ge_u => try self.lower_compare_op("i64_ge_u"),
+            .i64_eqz => try self.lowerI64Eqz(),
+            .i64_eq => try self.lowerI64Eq(),
+            .i64_ne => try self.lowerI64Ne(),
+            .i64_lt_s => try self.lowerI64LtS(),
+            .i64_lt_u => try self.lowerI64LtU(),
+            .i64_gt_s => try self.lowerI64GtS(),
+            .i64_gt_u => try self.lowerI64GtU(),
+            .i64_le_s => try self.lowerI64LeS(),
+            .i64_le_u => try self.lowerI64LeU(),
+            .i64_ge_s => try self.lowerI64GeS(),
+            .i64_ge_u => try self.lowerI64GeU(),
 
             // f32 comparisons
-            .f32_eq => try self.lower_compare_op("f32_eq"),
-            .f32_ne => try self.lower_compare_op("f32_ne"),
-            .f32_lt => try self.lower_compare_op("f32_lt"),
-            .f32_gt => try self.lower_compare_op("f32_gt"),
-            .f32_le => try self.lower_compare_op("f32_le"),
-            .f32_ge => try self.lower_compare_op("f32_ge"),
+            .f32_eq => try self.lowerF32Eq(),
+            .f32_ne => try self.lowerF32Ne(),
+            .f32_lt => try self.lowerF32Lt(),
+            .f32_gt => try self.lowerF32Gt(),
+            .f32_le => try self.lowerF32Le(),
+            .f32_ge => try self.lowerF32Ge(),
 
             // f64 comparisons
-            .f64_eq => try self.lower_compare_op("f64_eq"),
-            .f64_ne => try self.lower_compare_op("f64_ne"),
-            .f64_lt => try self.lower_compare_op("f64_lt"),
-            .f64_gt => try self.lower_compare_op("f64_gt"),
-            .f64_le => try self.lower_compare_op("f64_le"),
-            .f64_ge => try self.lower_compare_op("f64_ge"),
+            .f64_eq => try self.lowerF64Eq(),
+            .f64_ne => try self.lowerF64Ne(),
+            .f64_lt => try self.lowerF64Lt(),
+            .f64_gt => try self.lowerF64Gt(),
+            .f64_le => try self.lowerF64Le(),
+            .f64_ge => try self.lowerF64Ge(),
 
             // Conversions & sign-extension
-            .i32_wrap_i64 => try self.lower_convert_op("i32_wrap_i64"),
-            .i32_trunc_f32_s => try self.lower_convert_op("i32_trunc_f32_s"),
-            .i32_trunc_f32_u => try self.lower_convert_op("i32_trunc_f32_u"),
-            .i32_trunc_f64_s => try self.lower_convert_op("i32_trunc_f64_s"),
-            .i32_trunc_f64_u => try self.lower_convert_op("i32_trunc_f64_u"),
-            .i64_extend_i32_s => try self.lower_convert_op("i64_extend_i32_s"),
-            .i64_extend_i32_u => try self.lower_convert_op("i64_extend_i32_u"),
-            .i64_trunc_f32_s => try self.lower_convert_op("i64_trunc_f32_s"),
-            .i64_trunc_f32_u => try self.lower_convert_op("i64_trunc_f32_u"),
-            .i64_trunc_f64_s => try self.lower_convert_op("i64_trunc_f64_s"),
-            .i64_trunc_f64_u => try self.lower_convert_op("i64_trunc_f64_u"),
-            .i32_trunc_sat_f32_s => try self.lower_convert_op("i32_trunc_sat_f32_s"),
-            .i32_trunc_sat_f32_u => try self.lower_convert_op("i32_trunc_sat_f32_u"),
-            .i32_trunc_sat_f64_s => try self.lower_convert_op("i32_trunc_sat_f64_s"),
-            .i32_trunc_sat_f64_u => try self.lower_convert_op("i32_trunc_sat_f64_u"),
-            .i64_trunc_sat_f32_s => try self.lower_convert_op("i64_trunc_sat_f32_s"),
-            .i64_trunc_sat_f32_u => try self.lower_convert_op("i64_trunc_sat_f32_u"),
-            .i64_trunc_sat_f64_s => try self.lower_convert_op("i64_trunc_sat_f64_s"),
-            .i64_trunc_sat_f64_u => try self.lower_convert_op("i64_trunc_sat_f64_u"),
-            .f32_convert_i32_s => try self.lower_convert_op("f32_convert_i32_s"),
-            .f32_convert_i32_u => try self.lower_convert_op("f32_convert_i32_u"),
-            .f32_convert_i64_s => try self.lower_convert_op("f32_convert_i64_s"),
-            .f32_convert_i64_u => try self.lower_convert_op("f32_convert_i64_u"),
-            .f32_demote_f64 => try self.lower_convert_op("f32_demote_f64"),
-            .f64_convert_i32_s => try self.lower_convert_op("f64_convert_i32_s"),
-            .f64_convert_i32_u => try self.lower_convert_op("f64_convert_i32_u"),
-            .f64_convert_i64_s => try self.lower_convert_op("f64_convert_i64_s"),
-            .f64_convert_i64_u => try self.lower_convert_op("f64_convert_i64_u"),
-            .f64_promote_f32 => try self.lower_convert_op("f64_promote_f32"),
-            .i32_reinterpret_f32 => try self.lower_convert_op("i32_reinterpret_f32"),
-            .i64_reinterpret_f64 => try self.lower_convert_op("i64_reinterpret_f64"),
-            .f32_reinterpret_i32 => try self.lower_convert_op("f32_reinterpret_i32"),
-            .f64_reinterpret_i64 => try self.lower_convert_op("f64_reinterpret_i64"),
-            .i32_extend8_s => try self.lower_convert_op("i32_extend8_s"),
-            .i32_extend16_s => try self.lower_convert_op("i32_extend16_s"),
-            .i64_extend8_s => try self.lower_convert_op("i64_extend8_s"),
-            .i64_extend16_s => try self.lower_convert_op("i64_extend16_s"),
-            .i64_extend32_s => try self.lower_convert_op("i64_extend32_s"),
+            .i32_wrap_i64 => try self.lowerI32WrapI64(),
+            .i32_trunc_f32_s => try self.lowerI32TruncF32S(),
+            .i32_trunc_f32_u => try self.lowerI32TruncF32U(),
+            .i32_trunc_f64_s => try self.lowerI32TruncF64S(),
+            .i32_trunc_f64_u => try self.lowerI32TruncF64U(),
+            .i64_extend_i32_s => try self.lowerI64ExtendI32S(),
+            .i64_extend_i32_u => try self.lowerI64ExtendI32U(),
+            .i64_trunc_f32_s => try self.lowerI64TruncF32S(),
+            .i64_trunc_f32_u => try self.lowerI64TruncF32U(),
+            .i64_trunc_f64_s => try self.lowerI64TruncF64S(),
+            .i64_trunc_f64_u => try self.lowerI64TruncF64U(),
+            .i32_trunc_sat_f32_s => try self.lowerI32TruncSatF32S(),
+            .i32_trunc_sat_f32_u => try self.lowerI32TruncSatF32U(),
+            .i32_trunc_sat_f64_s => try self.lowerI32TruncSatF64S(),
+            .i32_trunc_sat_f64_u => try self.lowerI32TruncSatF64U(),
+            .i64_trunc_sat_f32_s => try self.lowerI64TruncSatF32S(),
+            .i64_trunc_sat_f32_u => try self.lowerI64TruncSatF32U(),
+            .i64_trunc_sat_f64_s => try self.lowerI64TruncSatF64S(),
+            .i64_trunc_sat_f64_u => try self.lowerI64TruncSatF64U(),
+            .f32_convert_i32_s => try self.lowerF32ConvertI32S(),
+            .f32_convert_i32_u => try self.lowerF32ConvertI32U(),
+            .f32_convert_i64_s => try self.lowerF32ConvertI64S(),
+            .f32_convert_i64_u => try self.lowerF32ConvertI64U(),
+            .f32_demote_f64 => try self.lowerF32DemoteF64(),
+            .f64_convert_i32_s => try self.lowerF64ConvertI32S(),
+            .f64_convert_i32_u => try self.lowerF64ConvertI32U(),
+            .f64_convert_i64_s => try self.lowerF64ConvertI64S(),
+            .f64_convert_i64_u => try self.lowerF64ConvertI64U(),
+            .f64_promote_f32 => try self.lowerF64PromoteF32(),
+            .i32_reinterpret_f32 => try self.lowerI32ReinterpretF32(),
+            .i64_reinterpret_f64 => try self.lowerI64ReinterpretF64(),
+            .f32_reinterpret_i32 => try self.lowerF32ReinterpretI32(),
+            .f64_reinterpret_i64 => try self.lowerF64ReinterpretI64(),
+            .i32_extend8_s => try self.lowerI32Extend8S(),
+            .i32_extend16_s => try self.lowerI32Extend16S(),
+            .i64_extend8_s => try self.lowerI64Extend8S(),
+            .i64_extend16_s => try self.lowerI64Extend16S(),
+            .i64_extend32_s => try self.lowerI64Extend32S(),
 
             // Memory loads
             .i32_load => {

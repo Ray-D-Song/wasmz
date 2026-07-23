@@ -4,9 +4,12 @@ set -euo pipefail
 # ─── paths ────────────────────────────────────────────────────────────────────
 BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$BENCH_DIR")"
+# shellcheck source=compare_cli.sh
+source "$BENCH_DIR/compare_cli.sh"
 
 PROJECTS_DIR="$BENCH_DIR/projects"
-WASMZ="$REPO_DIR/zig-out/bin/wasmz"
+WASMZ="$(resolve_baseline_cli "$REPO_DIR/zig-out/bin/wasmz")"
+WASMZ_CANDIDATE="$(resolve_candidate_cli "$REPO_DIR/zig-out/bin/wasmz")"
 WASM3="$PROJECTS_DIR/wasm3/build/wasm3"
 WASMI="$PROJECTS_DIR/wasmi/target/release/wasmi"
 get_wamr_platform() {

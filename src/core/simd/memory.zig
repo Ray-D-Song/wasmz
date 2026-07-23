@@ -32,10 +32,10 @@ pub fn load(opcode: SimdOpcode, memory: []const u8, addr: u64, offset: u32, lane
         .i32x4_load16x4_u => wideningLoad(u16, i32, 4, memory[memOffset(addr, offset) ..][0..8], false),
         .i64x2_load32x2_s => wideningLoad(i32, i64, 2, memory[memOffset(addr, offset) ..][0..8], true),
         .i64x2_load32x2_u => wideningLoad(u32, i64, 2, memory[memOffset(addr, offset) ..][0..8], false),
-        .v8x16_load_splat => loadSplat(u8, i8, 16, memory[memOffset(addr, offset) ..][0..1]),
-        .v16x8_load_splat => loadSplat(u16, i16, 8, memory[memOffset(addr, offset) ..][0..2]),
-        .v32x4_load_splat => loadSplat(u32, i32, 4, memory[memOffset(addr, offset) ..][0..4]),
-        .v64x2_load_splat => loadSplat(u64, i64, 2, memory[memOffset(addr, offset) ..][0..8]),
+        .v8x16_load_splat => loadSplatI8x16(memory[memOffset(addr, offset) ..][0..1]),
+        .v16x8_load_splat => loadSplatI16x8(memory[memOffset(addr, offset) ..][0..2]),
+        .v32x4_load_splat => loadSplatI32x4(memory[memOffset(addr, offset) ..][0..4]),
+        .v64x2_load_splat => loadSplatI64x2(memory[memOffset(addr, offset) ..][0..8]),
         // Fix 8: removed unused T and width parameters from loadZeroExtended
         .v128_load32_zero => loadZeroExtended(memory[memOffset(addr, offset) ..][0..4]),
         .v128_load64_zero => loadZeroExtended(memory[memOffset(addr, offset) ..][0..8]),
@@ -76,11 +76,32 @@ fn wideningLoad(comptime SrcT: type, comptime DstT: type, comptime N: usize, sli
 }
 
 /// Splat load: loads a single scalar from memory and broadcasts it to all lanes.
-fn loadSplat(comptime SrcT: type, comptime DstT: type, comptime N: usize, slice: []const u8) V128 {
+fn loadSplatI8x16(slice: []const u8) V128 {
     var tmp = std.mem.zeroes([16]u8);
     @memcpy(tmp[0..slice.len], slice);
-    const lane = ops.readLane(SrcT, tmp, 0);
-    return ops.splatGeneric(DstT, N, @as(DstT, @bitCast(lane)));
+    const lane = ops.readLane(u8, tmp, 0);
+    return ops.i8x16Splat(@as(i8, @bitCast(lane)));
+}
+
+fn loadSplatI16x8(slice: []const u8) V128 {
+    var tmp = std.mem.zeroes([16]u8);
+    @memcpy(tmp[0..slice.len], slice);
+    const lane = ops.readLane(u16, tmp, 0);
+    return ops.i16x8Splat(@as(i16, @bitCast(lane)));
+}
+
+fn loadSplatI32x4(slice: []const u8) V128 {
+    var tmp = std.mem.zeroes([16]u8);
+    @memcpy(tmp[0..slice.len], slice);
+    const lane = ops.readLane(u32, tmp, 0);
+    return ops.i32x4Splat(@as(i32, @bitCast(lane)));
+}
+
+fn loadSplatI64x2(slice: []const u8) V128 {
+    var tmp = std.mem.zeroes([16]u8);
+    @memcpy(tmp[0..slice.len], slice);
+    const lane = ops.readLane(u64, tmp, 0);
+    return ops.i64x2Splat(@as(i64, @bitCast(lane)));
 }
 
 /// Zero-extending load: loads bytes into the low portion of V128,

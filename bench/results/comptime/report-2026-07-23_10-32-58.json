@@ -1,0 +1,44 @@
+{
+  "timestamp": "2026-07-23T02:32:58.210331+00:00",
+  "git_commit": "09e18c132271505ac57e9fef770bf6bce236e004",
+  "git_commit_short": "09e18c1",
+  "environment": {
+    "os": "macOS-27.0-arm64-arm-64bit",
+    "machine": "arm64",
+    "python": "3.9.6"
+  },
+  "config": {
+    "runs": 3,
+    "warmup": 1,
+    "workload": "/Users/ray-d-song/codebase/wasmz/bench/workloads/simd_ops.wasm"
+  },
+  "binaries": {
+    "baseline": {
+      "path": "/Users/ray-d-song/codebase/wasmz/zig-out/bin/wasmz",
+      "size_bytes": 5392392
+    },
+    "candidate": {
+      "path": "/Users/ray-d-song/codebase/wasmz/zig-out/bin/wasmz",
+      "size_bytes": 5392392
+    }
+  },
+  "results": {
+    "baseline": {
+      "median_ms": 11.527708,
+      "stddev_ms": 0.2165087613061724,
+      "min_ms": 11.153666000000001,
+      "max_ms": 11.529625
+    },
+    "candidate": {
+      "median_ms": 12.026,
+      "stddev_ms": 0.5530298217212157,
+      "min_ms": 11.974417,
+      "max_ms": 12.957042
+    }
+  },
+  "summary": {
+    "baseline_median_ms": 11.527708,
+    "candidate_median_ms": 12.026,
+    "candidate_vs_baseline_speedup": 0.9585654415433229
+  }
+}

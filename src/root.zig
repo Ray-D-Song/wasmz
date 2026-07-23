@@ -70,4 +70,5 @@ test {
     _ = @import("wasmz/tests/threads_test.zig");
     _ = @import("wasmz/tests/memory64_test.zig");
     _ = @import("core/tests/memory_test.zig");
+    _ = @import("vm/tests/handler_static_test.zig");
 }
