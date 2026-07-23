@@ -6,7 +6,7 @@ Thank you for your interest in contributing to wasmz!
 
 ### Prerequisites
 
-- Zig 0.15.2
+- Zig 0.16.0
 - Git
 
 ### Clone and Build
