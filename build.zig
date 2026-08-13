@@ -321,6 +321,34 @@ pub fn build(b: *std.Build) void {
     static_lib_step.dependOn(&b.addInstallArtifact(clib_static, .{}).step);
     static_lib_step.dependOn(&install_header.step);
 
+    // ── C API regression tests ──────────────────────────────────────────────
+    //
+    // Run with: zig build test-capi
+    //
+    // Driven from C rather than Zig so that the tests see the same ABI an
+    // embedder does: the `wasmz_val_t` layout, the C host-function calling
+    // convention, and handle teardown in arbitrary order.
+    const capi_test_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    capi_test_mod.addCSourceFile(.{
+        .file = b.path("tests/capi/main.c"),
+        .flags = &.{ "-std=c11", "-Wall", "-Wextra" },
+    });
+    capi_test_mod.addIncludePath(b.path("include"));
+    capi_test_mod.linkLibrary(clib_static);
+
+    const capi_test = b.addExecutable(.{
+        .name = "capi-test",
+        .root_module = capi_test_mod,
+    });
+
+    const capi_test_step = b.step("test-capi", "Run the C API regression tests");
+    capi_test_step.dependOn(&b.addRunArtifact(capi_test).step);
+    test_step.dependOn(capi_test_step);
+
     // ── wasmz-as-WASI (self-hosted CLI) ─────────────────────────────────────
     //
     // Build with: zig build wasi

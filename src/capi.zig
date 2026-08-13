@@ -26,6 +26,7 @@ const HostFunc = wasmz.HostFunc;
 const HostError = wasmz.HostError;
 const ValType = wasmz.ValType;
 const Trap = wasmz.Trap;
+const Allocator = std.mem.Allocator;
 
 const alloc = std.heap.c_allocator;
 
@@ -85,38 +86,81 @@ const ValKind = enum(c_int) {
     I64 = 1,
     F32 = 2,
     F64 = 3,
+    V128 = 4,
+    REF_NULL = 5,
+    REF_FUNC = 6,
+    EXTERN_REF = 7,
+    _,
+
+    /// The core `ValType` a C value kind maps onto, or null when the kind is
+    /// not (yet) transferable across the C boundary.
+    fn toValType(self: ValKind) ?ValType {
+        return switch (self) {
+            .I32 => ValType.I32,
+            .I64 => ValType.I64,
+            .F32 => ValType.F32,
+            .F64 => ValType.F64,
+            else => null,
+        };
+    }
 };
 
 /// Must stay in sync with wasmz_val_t in include/wasmz.h
 pub const wasmz_val_t = extern struct {
     kind: ValKind,
     _pad: [4]u8 = .{ 0, 0, 0, 0 },
-    value: extern union {
+    of: extern union {
         i32: i32,
         i64: i64,
         f32: f32,
         f64: f64,
+        v128: [16]u8,
+        func_ref: u32,
+        extern_ref: ?*anyopaque,
     },
+
+    comptime {
+        // The C header is the published ABI contract; a mismatch here silently
+        // corrupts every multi-value host call.
+        std.debug.assert(@sizeOf(wasmz_val_t) == 24);
+        std.debug.assert(@alignOf(wasmz_val_t) == 8);
+        std.debug.assert(@offsetOf(wasmz_val_t, "kind") == 0);
+        std.debug.assert(@offsetOf(wasmz_val_t, "of") == 8);
+    }
 };
 
-fn cvalToRaw(v: wasmz_val_t) RawVal {
+fn cvalToRaw(v: wasmz_val_t) ?RawVal {
     return switch (v.kind) {
-        .I32 => RawVal.from(v.value.i32),
-        .I64 => RawVal.from(v.value.i64),
-        .F32 => RawVal.from(v.value.f32),
-        .F64 => RawVal.from(v.value.f64),
+        .I32 => RawVal.from(v.of.i32),
+        .I64 => RawVal.from(v.of.i64),
+        .F32 => RawVal.from(v.of.f32),
+        .F64 => RawVal.from(v.of.f64),
+        else => null,
     };
 }
 
-fn rawToCval(raw: RawVal, kind: ValKind) wasmz_val_t {
-    var v = wasmz_val_t{ .kind = kind, .value = undefined };
-    switch (kind) {
-        .I32 => v.value = .{ .i32 = raw.readAs(i32) },
-        .I64 => v.value = .{ .i64 = raw.readAs(i64) },
-        .F32 => v.value = .{ .f32 = raw.readAs(f32) },
-        .F64 => v.value = .{ .f64 = raw.readAs(f64) },
-    }
-    return v;
+fn rawToCval(raw: RawVal, kind: ValKind) ?wasmz_val_t {
+    return switch (kind) {
+        .I32 => .{ .kind = kind, .of = .{ .i32 = raw.readAs(i32) } },
+        .I64 => .{ .kind = kind, .of = .{ .i64 = raw.readAs(i64) } },
+        .F32 => .{ .kind = kind, .of = .{ .f32 = raw.readAs(f32) } },
+        .F64 => .{ .kind = kind, .of = .{ .f64 = raw.readAs(f64) } },
+        else => null,
+    };
+}
+
+fn kindName(kind: ValKind) []const u8 {
+    return switch (kind) {
+        .I32 => "i32",
+        .I64 => "i64",
+        .F32 => "f32",
+        .F64 => "f64",
+        .V128 => "v128",
+        .REF_NULL => "ref.null",
+        .REF_FUNC => "funcref",
+        .EXTERN_REF => "externref",
+        else => "<unknown>",
+    };
 }
 
 // Engine
@@ -162,31 +206,57 @@ pub const wasmz_store_t = extern struct {
     ptr: *anyopaque,
 };
 
+/// Backing object for a `wasmz_store_t` handle.
+///
+/// An `Instance` holds a `*Store` and still dereferences it from `deinit`, so
+/// destroying the store first would corrupt the heap.  Rather than making the
+/// embedder responsible for the teardown order, the store is reference counted:
+/// the handle owns one reference and every live instance owns another.
+const CStore = struct {
+    store: Store,
+    refs: usize,
+
+    fn retain(self: *CStore) void {
+        self.refs += 1;
+    }
+
+    fn release(self: *CStore) void {
+        std.debug.assert(self.refs > 0);
+        self.refs -= 1;
+        if (self.refs == 0) {
+            self.store.deinit();
+            alloc.destroy(self);
+        }
+    }
+};
+
 export fn wasmz_store_new(engine_handle: ?*wasmz_engine_t) ?*wasmz_store_t {
     const eh = engine_handle orelse return null;
     const eng: *Engine = @ptrCast(@alignCast(eh.ptr));
 
-    const store_ptr = alloc.create(Store) catch return null;
-    store_ptr.* = Store.init(alloc, eng.*, std.Io.Threaded.global_single_threaded.io()) catch {
-        alloc.destroy(store_ptr);
-        return null;
+    const cstore = alloc.create(CStore) catch return null;
+    cstore.* = .{
+        .store = Store.init(alloc, eng.*, std.Io.Threaded.global_single_threaded.io()) catch {
+            alloc.destroy(cstore);
+            return null;
+        },
+        .refs = 1,
     };
-    store_ptr.linkBudget();
+    cstore.store.linkBudget();
 
     const handle = alloc.create(wasmz_store_t) catch {
-        store_ptr.deinit();
-        alloc.destroy(store_ptr);
+        cstore.store.deinit();
+        alloc.destroy(cstore);
         return null;
     };
-    handle.* = .{ .ptr = store_ptr };
+    handle.* = .{ .ptr = cstore };
     return handle;
 }
 
 export fn wasmz_store_delete(handle: ?*wasmz_store_t) void {
     const h = handle orelse return;
-    const s: *Store = @ptrCast(@alignCast(h.ptr));
-    s.deinit();
-    alloc.destroy(s);
+    const cstore: *CStore = @ptrCast(@alignCast(h.ptr));
+    cstore.release();
     alloc.destroy(h);
 }
 
@@ -245,6 +315,50 @@ pub const wasmz_instance_t = extern struct {
     ptr: *anyopaque,
 };
 
+/// Backing object for a `wasmz_instance_t` handle.
+///
+/// `handle.ptr` points at the `instance` field so every accessor can keep
+/// casting it to a plain `*Instance`; `wasmz_instance_delete` recovers the
+/// owning `CInstance` with `@fieldParentPtr`.
+const CInstance = struct {
+    instance: Instance,
+    /// Reference held on the store so it outlives this instance.
+    store: *CStore,
+};
+
+/// Shared tail of `wasmz_instance_new` and `wasmz_instance_new_with_linker`.
+fn instantiate(
+    sh: *wasmz_store_t,
+    mh: *wasmz_module_t,
+    out: *?*wasmz_instance_t,
+    imports: Linker,
+) ?*wasmz_error_t {
+    const cstore: *CStore = @ptrCast(@alignCast(sh.ptr));
+    const arc: *ArcModule = @ptrCast(@alignCast(mh.ptr));
+
+    const cinst = alloc.create(CInstance) catch
+        return makeError("out of memory", .{});
+
+    cinst.* = .{
+        .instance = Instance.init(&cstore.store, arc.retain(), imports) catch |err| {
+            alloc.destroy(cinst);
+            return makeError("instantiation failed: {s}", .{@errorName(err)});
+        },
+        .store = cstore,
+    };
+
+    const handle = alloc.create(wasmz_instance_t) catch {
+        cinst.instance.deinit();
+        alloc.destroy(cinst);
+        return makeError("out of memory", .{});
+    };
+    // The instance keeps the store alive regardless of deletion order.
+    cstore.retain();
+    handle.* = .{ .ptr = &cinst.instance };
+    out.* = handle;
+    return null;
+}
+
 export fn wasmz_instance_new(
     store_handle: ?*wasmz_store_t,
     module_handle: ?*wasmz_module_t,
@@ -253,33 +367,17 @@ export fn wasmz_instance_new(
     const sh = store_handle orelse return makeError("store is null", .{});
     const mh = module_handle orelse return makeError("module is null", .{});
     const out = out_instance orelse return makeError("out_instance is null", .{});
-
-    const store: *Store = @ptrCast(@alignCast(sh.ptr));
-    const arc: *ArcModule = @ptrCast(@alignCast(mh.ptr));
-
-    const inst_ptr = alloc.create(Instance) catch
-        return makeError("out of memory", .{});
-
-    inst_ptr.* = Instance.init(store, arc.retain(), Linker.empty) catch |err| {
-        alloc.destroy(inst_ptr);
-        return makeError("instantiation failed: {s}", .{@errorName(err)});
-    };
-
-    const handle = alloc.create(wasmz_instance_t) catch {
-        inst_ptr.deinit();
-        alloc.destroy(inst_ptr);
-        return makeError("out of memory", .{});
-    };
-    handle.* = .{ .ptr = inst_ptr };
-    out.* = handle;
-    return null;
+    return instantiate(sh, mh, out, Linker.empty);
 }
 
 export fn wasmz_instance_delete(handle: ?*wasmz_instance_t) void {
     const h = handle orelse return;
     const inst: *Instance = @ptrCast(@alignCast(h.ptr));
+    const cinst: *CInstance = @fieldParentPtr("instance", inst);
+    const cstore = cinst.store;
     inst.deinit();
-    alloc.destroy(inst);
+    alloc.destroy(cinst);
+    cstore.release();
     alloc.destroy(h);
 }
 
@@ -351,6 +449,15 @@ export fn wasmz_instance_call(
     const inst: *Instance = @ptrCast(@alignCast(h.ptr));
     const func_name = std.mem.span(name);
 
+    // The core `Instance.call` returns at most one value, so multi-value
+    // results would leave results[1..] uninitialized.  Reject them instead.
+    if (results_len > 1) {
+        return makeError(
+            "multi-value results are not supported by the C API (results_len = {d})",
+            .{results_len},
+        );
+    }
+
     // Convert C vals → RawVal
     const raw_args = alloc.alloc(RawVal, args_len) catch
         return makeError("out of memory", .{});
@@ -359,7 +466,10 @@ export fn wasmz_instance_call(
     if (args_len > 0) {
         const args = args_ptr orelse return makeError("args is null but args_len > 0", .{});
         for (0..args_len) |i| {
-            raw_args[i] = cvalToRaw(args[i]);
+            raw_args[i] = cvalToRaw(args[i]) orelse return makeError(
+                "unsupported value kind for argument {d}: {s}",
+                .{ i, kindName(args[i].kind) },
+            );
         }
     }
 
@@ -372,9 +482,10 @@ export fn wasmz_instance_call(
                 const results = results_ptr orelse
                     return makeError("results is null but results_len > 0", .{});
                 if (maybe_val) |val| {
-                    if (results_len >= 1) {
-                        results[0] = rawToCval(val, results[0].kind);
-                    }
+                    results[0] = rawToCval(val, results[0].kind) orelse return makeError(
+                        "unsupported value kind for result 0: {s}",
+                        .{kindName(results[0].kind)},
+                    );
                 }
             }
             return null;
@@ -441,11 +552,63 @@ pub const wasmz_func_t = *const fn (
     param_count: usize,
     results: [*]wasmz_val_t,
     result_count: usize,
-) c_int;
+) callconv(.c) c_int;
+
+/// Trampoline state for one C host function, kept alive by its `CLinker`.
+const HostFuncWrapper = struct {
+    func: wasmz_func_t,
+    host_data: ?*anyopaque,
+    /// Owned copies of the declared signature; the trampoline needs the kinds
+    /// to tag the `wasmz_val_t`s it hands to the C callback.
+    param_kinds: []ValKind,
+    result_kinds: []ValKind,
+};
+
+/// Backing object for a `wasmz_linker_t` handle.
+///
+/// `Linker` borrows every string and signature slice it is given (see
+/// `Linker.define` in src/wasmz/host.zig), and an `Instance` keeps the resolved
+/// `HostFunc` values, so the C API must own that memory until the linker is
+/// deleted.
+const CLinker = struct {
+    linker: Linker,
+    owned: std.ArrayListUnmanaged(Owned) = .empty,
+
+    const Owned = union(enum) {
+        bytes: []u8,
+        val_types: []ValType,
+        kinds: []ValKind,
+        wrapper: *HostFuncWrapper,
+    };
+
+    fn track(self: *CLinker, item: Owned) Allocator.Error!void {
+        try self.owned.append(alloc, item);
+    }
+
+    fn dupeString(self: *CLinker, text: []const u8) Allocator.Error![]u8 {
+        const copy = try alloc.dupe(u8, text);
+        errdefer alloc.free(copy);
+        try self.track(.{ .bytes = copy });
+        return copy;
+    }
+
+    fn deinit(self: *CLinker) void {
+        self.linker.deinit(alloc);
+        for (self.owned.items) |item| {
+            switch (item) {
+                .bytes => |b| alloc.free(b),
+                .val_types => |v| alloc.free(v),
+                .kinds => |k| alloc.free(k),
+                .wrapper => |w| alloc.destroy(w),
+            }
+        }
+        self.owned.deinit(alloc);
+    }
+};
 
 export fn wasmz_linker_new() ?*wasmz_linker_t {
-    const linker_ptr = alloc.create(Linker) catch return null;
-    linker_ptr.* = Linker.empty;
+    const linker_ptr = alloc.create(CLinker) catch return null;
+    linker_ptr.* = .{ .linker = Linker.empty };
     const handle = alloc.create(wasmz_linker_t) catch {
         alloc.destroy(linker_ptr);
         return null;
@@ -456,8 +619,8 @@ export fn wasmz_linker_new() ?*wasmz_linker_t {
 
 export fn wasmz_linker_delete(handle: ?*wasmz_linker_t) void {
     const h = handle orelse return;
-    const linker: *Linker = @ptrCast(@alignCast(h.ptr));
-    linker.deinit(alloc);
+    const linker: *CLinker = @ptrCast(@alignCast(h.ptr));
+    linker.deinit();
     alloc.destroy(linker);
     alloc.destroy(h);
 }
@@ -470,53 +633,150 @@ export fn wasmz_linker_define_func(
     param_count: usize,
     result_kinds: ?[*]const ValKind,
     result_count: usize,
-    func: ?*anyopaque,
+    func: ?wasmz_func_t,
     host_data: ?*anyopaque,
 ) ?*wasmz_error_t {
-    _ = handle;
-    _ = module_name_ptr;
-    _ = func_name_ptr;
-    _ = param_kinds;
-    _ = param_count;
-    _ = result_kinds;
-    _ = result_count;
-    _ = func;
-    _ = host_data;
-    return makeError("host functions stub", .{});
+    const h = handle orelse return makeError("linker is null", .{});
+    const mod_name_input = module_name_ptr orelse return makeError("module_name is null", .{});
+    const func_name_input = func_name_ptr orelse return makeError("func_name is null", .{});
+    const callback = func orelse return makeError("func is null", .{});
+    if (param_count > 0 and param_kinds == null)
+        return makeError("param_kinds is null but param_count > 0", .{});
+    if (result_count > 0 and result_kinds == null)
+        return makeError("result_kinds is null but result_count > 0", .{});
+
+    const clinker: *CLinker = @ptrCast(@alignCast(h.ptr));
+
+    const mod_name = clinker.dupeString(std.mem.span(mod_name_input)) catch
+        return makeError("out of memory", .{});
+    const func_name = clinker.dupeString(std.mem.span(func_name_input)) catch
+        return makeError("out of memory", .{});
+
+    const owned_param_kinds = copyKinds(clinker, param_kinds, param_count) catch
+        return makeError("out of memory", .{});
+    const owned_result_kinds = copyKinds(clinker, result_kinds, result_count) catch
+        return makeError("out of memory", .{});
+
+    const param_types = toValTypes(clinker, owned_param_kinds) catch |err| switch (err) {
+        error.OutOfMemory => return makeError("out of memory", .{}),
+        error.UnsupportedValKind => return makeError(
+            "unsupported parameter kind in '{s}::{s}'",
+            .{ mod_name, func_name },
+        ),
+    };
+    const result_types = toValTypes(clinker, owned_result_kinds) catch |err| switch (err) {
+        error.OutOfMemory => return makeError("out of memory", .{}),
+        error.UnsupportedValKind => return makeError(
+            "unsupported result kind in '{s}::{s}'",
+            .{ mod_name, func_name },
+        ),
+    };
+
+    const wrapper = alloc.create(HostFuncWrapper) catch
+        return makeError("out of memory", .{});
+    wrapper.* = .{
+        .func = callback,
+        .host_data = host_data,
+        .param_kinds = owned_param_kinds,
+        .result_kinds = owned_result_kinds,
+    };
+    clinker.track(.{ .wrapper = wrapper }) catch {
+        alloc.destroy(wrapper);
+        return makeError("out of memory", .{});
+    };
+
+    const host_func = HostFunc.init(wrapper, callHostTrampoline, param_types, result_types);
+    clinker.linker.define(alloc, mod_name, func_name, host_func) catch |err|
+        return makeError("linker define func failed: {s}", .{@errorName(err)});
+
+    return null;
 }
 
-const HostFuncWrapper = struct {
-    func: wasmz_func_t,
-    host_data: ?*anyopaque,
-    param_count: usize,
-    result_count: usize,
-};
+fn copyKinds(
+    clinker: *CLinker,
+    kinds: ?[*]const ValKind,
+    count: usize,
+) Allocator.Error![]ValKind {
+    const copy = try alloc.alloc(ValKind, count);
+    errdefer alloc.free(copy);
+    if (count > 0) @memcpy(copy, kinds.?[0..count]);
+    try clinker.track(.{ .kinds = copy });
+    return copy;
+}
 
-fn wrapperWrapper(
+fn toValTypes(
+    clinker: *CLinker,
+    kinds: []const ValKind,
+) (Allocator.Error || error{UnsupportedValKind})![]ValType {
+    const types = try alloc.alloc(ValType, kinds.len);
+    errdefer alloc.free(types);
+    for (kinds, 0..) |kind, i| {
+        types[i] = kind.toValType() orelse return error.UnsupportedValKind;
+    }
+    try clinker.track(.{ .val_types = types });
+    return types;
+}
+
+/// Host-call arity below which the trampoline uses stack buffers.
+///
+/// Host functions run on the hot path of the startup and CoreMark benchmarks,
+/// so the common case must not allocate.  The largest signature in practice is
+/// WASI's `path_open` with 9 parameters.
+const max_stack_arity = 16;
+
+fn callHostTrampoline(
     host_data: ?*anyopaque,
     ctx: *HostContext,
     params: []const RawVal,
     results: []RawVal,
 ) HostError!void {
-    const w: *HostContext = @ptrCast(@alignCast(ctx));
     const wrapper: *HostFuncWrapper = @ptrCast(@alignCast(host_data));
-    const c_params = alloc.alloc(wasmz_val_t, wrapper.param_count) catch
-        return error.OutOfMemory;
-    defer alloc.free(c_params);
-    for (params, 0..) |p, i| {
-        c_params[i] = rawToCval(p, @as(ValKind, @intCast(c_params[i].kind)));
+    const param_count = wrapper.param_kinds.len;
+    const result_count = wrapper.result_kinds.len;
+
+    var param_buf: [max_stack_arity]wasmz_val_t = undefined;
+    var result_buf: [max_stack_arity]wasmz_val_t = undefined;
+
+    const c_params: []wasmz_val_t = if (param_count <= max_stack_arity)
+        param_buf[0..param_count]
+    else
+        try alloc.alloc(wasmz_val_t, param_count);
+    defer if (param_count > max_stack_arity) alloc.free(c_params);
+
+    const c_results: []wasmz_val_t = if (result_count <= max_stack_arity)
+        result_buf[0..result_count]
+    else
+        try alloc.alloc(wasmz_val_t, result_count);
+    defer if (result_count > max_stack_arity) alloc.free(c_results);
+
+    for (c_params, wrapper.param_kinds, params[0..param_count]) |*dst, kind, raw| {
+        dst.* = rawToCval(raw, kind) orelse
+            return ctx.raiseTrap(Trap.hostMessage("unsupported host function parameter kind"));
+    }
+    for (c_results, wrapper.result_kinds) |*dst, kind| {
+        dst.* = rawToCval(RawVal.fromBits64(0), kind) orelse
+            return ctx.raiseTrap(Trap.hostMessage("unsupported host function result kind"));
     }
 
-    const c_results = alloc.alloc(wasmz_val_t, wrapper.result_count) catch
-        return error.OutOfMemory;
-    defer alloc.free(c_results);
-
-    const ret = wrapper.func(wrapper.host_data, w, c_params, wrapper.param_count, c_results, wrapper.result_count);
+    const ret = wrapper.func(
+        wrapper.host_data,
+        ctx,
+        c_params.ptr,
+        param_count,
+        c_results.ptr,
+        result_count,
+    );
     if (ret != 0) {
+        // The callback may have supplied a message via wasmz_context_trap.
+        if (ctx.pending_trap == null) {
+            ctx.pending_trap = Trap.hostMessage("host function returned a non-zero status");
+        }
         return error.HostTrap;
     }
-    for (c_results, 0..) |cr, i| {
-        results[i] = cvalToRaw(cr);
+
+    for (results[0..result_count], c_results) |*dst, cr| {
+        dst.* = cvalToRaw(cr) orelse
+            return ctx.raiseTrap(Trap.hostMessage("unsupported host function result kind"));
     }
 }
 
@@ -529,12 +789,20 @@ export fn wasmz_linker_define_global(
     const h = handle orelse return makeError("linker is null", .{});
     const mod_name_input = module_name_ptr orelse return makeError("module_name is null", .{});
     const global_name_input = global_name_ptr orelse return makeError("global_name is null", .{});
-    const linker: *Linker = @ptrCast(@alignCast(h.ptr));
-    const mod_slice = std.mem.span(mod_name_input);
-    const global_slice = std.mem.span(global_name_input);
+    const clinker: *CLinker = @ptrCast(@alignCast(h.ptr));
 
-    const raw = cvalToRaw(value);
-    linker.defineGlobal(alloc, mod_slice, global_slice, raw) catch |err|
+    const raw = cvalToRaw(value) orelse return makeError(
+        "unsupported value kind for global '{s}::{s}': {s}",
+        .{ std.mem.span(mod_name_input), std.mem.span(global_name_input), kindName(value.kind) },
+    );
+
+    // `Linker.defineGlobal` borrows the key strings, so keep owned copies.
+    const mod_slice = clinker.dupeString(std.mem.span(mod_name_input)) catch
+        return makeError("out of memory", .{});
+    const global_slice = clinker.dupeString(std.mem.span(global_name_input)) catch
+        return makeError("out of memory", .{});
+
+    clinker.linker.defineGlobal(alloc, mod_slice, global_slice, raw) catch |err|
         return makeError("linker define global failed: {s}", .{@errorName(err)});
 
     return null;
@@ -548,34 +816,15 @@ export fn wasmz_instance_new_with_linker(
 ) ?*wasmz_error_t {
     const sh = store_handle orelse return makeError("store is null", .{});
     const mh = module_handle orelse return makeError("module is null", .{});
-    const lh = linker_handle;
     const out = out_instance orelse return makeError("out_instance is null", .{});
 
-    const store: *Store = @ptrCast(@alignCast(sh.ptr));
-    const arc: *ArcModule = @ptrCast(@alignCast(mh.ptr));
-
     var linker: Linker = Linker.empty;
-    if (lh) |lh_valid| {
-        const linker_ptr: *Linker = @ptrCast(@alignCast(lh_valid.ptr));
-        linker = linker_ptr.*;
+    if (linker_handle) |lh| {
+        const clinker: *CLinker = @ptrCast(@alignCast(lh.ptr));
+        linker = clinker.linker;
     }
 
-    const inst_ptr = alloc.create(Instance) catch
-        return makeError("out of memory", .{});
-
-    inst_ptr.* = Instance.init(store, arc.retain(), linker) catch |err| {
-        alloc.destroy(inst_ptr);
-        return makeError("instantiation failed: {s}", .{@errorName(err)});
-    };
-
-    const handle = alloc.create(wasmz_instance_t) catch {
-        inst_ptr.deinit();
-        alloc.destroy(inst_ptr);
-        return makeError("out of memory", .{});
-    };
-    handle.* = .{ .ptr = inst_ptr };
-    out.* = handle;
-    return null;
+    return instantiate(sh, mh, out, linker);
 }
 
 // Host Context
@@ -717,13 +966,15 @@ export fn wasmz_module_export_name(handle: ?*const wasmz_module_t, index: usize)
 
 export fn wasmz_store_set_user_data(handle: ?*wasmz_store_t, user_data: ?*anyopaque) void {
     const h = handle orelse return;
-    const store: *Store = @ptrCast(@alignCast(h.ptr));
+    const cstore: *CStore = @ptrCast(@alignCast(h.ptr));
+    const store = &cstore.store;
     store.setUserData(user_data);
 }
 
 export fn wasmz_store_get_user_data(handle: ?*wasmz_store_t) ?*anyopaque {
     const h = handle orelse return null;
-    const store: *Store = @ptrCast(@alignCast(h.ptr));
+    const cstore: *CStore = @ptrCast(@alignCast(h.ptr));
+    const store = &cstore.store;
     return store.user_data;
 }
 

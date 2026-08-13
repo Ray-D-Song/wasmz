@@ -153,7 +153,14 @@ void wasmz_engine_delete(wasmz_engine_t *engine);
  */
 wasmz_store_t *wasmz_store_new(wasmz_engine_t *engine);
 
-/** Destroy a store.  All instances using this store must be destroyed first. */
+/**
+ * Destroy a store.
+ *
+ * The store is reference counted: instances created from it keep it alive, so
+ * `wasmz_store_delete` may be called in any order relative to
+ * `wasmz_instance_delete`.  The underlying resources are released once the
+ * handle and every instance derived from it have been destroyed.
+ */
 void wasmz_store_delete(wasmz_store_t *store);
 
 /* ── Module ──────────────────────────────────────────────────────────────── */
@@ -224,7 +231,11 @@ wasmz_error_t *wasmz_instance_initialize(wasmz_instance_t *instance);
  * @param args         Array of input arguments (may be NULL if args_len == 0).
  * @param args_len     Number of arguments.
  * @param results      Array to receive return values (may be NULL if results_len == 0).
- * @param results_len  Expected number of return values (must match the function signature).
+ *                     Each slot's `kind` must be set by the caller to the
+ *                     expected result type; the value is written back in place.
+ * @param results_len  Expected number of return values (must match the function
+ *                     signature).  At most 1; multi-value results are not
+ *                     supported yet and return an error.
  * @return NULL on success, non-NULL on trap, export-not-found, or error.
  */
 wasmz_error_t *wasmz_instance_call(
