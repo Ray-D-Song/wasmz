@@ -2060,7 +2060,7 @@ pub fn handle_i32_add_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const ops = readOps(encode.ops.OpsBinopImm, ip);
     const result = slots[ops.lhs].readAs(i32) +% ops.imm;
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(result)))), fp0, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(result)))), fp0);
 }
 pub fn handle_i32_sub_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2069,7 +2069,7 @@ pub fn handle_i32_sub_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const ops = readOps(encode.ops.OpsBinopImm, ip);
     const result = slots[ops.lhs].readAs(i32) -% ops.imm;
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(result)))), fp0, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(result)))), fp0);
 }
 pub fn handle_i32_mul_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2078,7 +2078,7 @@ pub fn handle_i32_mul_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const ops = readOps(encode.ops.OpsBinopImm, ip);
     const result = slots[ops.lhs].readAs(i32) *% ops.imm;
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(result)))), fp0, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(result)))), fp0);
 }
 pub fn handle_i32_and_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2087,7 +2087,7 @@ pub fn handle_i32_and_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const ops = readOps(encode.ops.OpsBinopImm, ip);
     const result = slots[ops.lhs].readAs(i32) & ops.imm;
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(result)))), fp0, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(result)))), fp0);
 }
 pub fn handle_i32_or_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2096,7 +2096,7 @@ pub fn handle_i32_or_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
     const ops = readOps(encode.ops.OpsBinopImm, ip);
     const result = slots[ops.lhs].readAs(i32) | ops.imm;
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(result)))), fp0, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(result)))), fp0);
 }
 pub fn handle_i32_xor_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2105,7 +2105,7 @@ pub fn handle_i32_xor_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const ops = readOps(encode.ops.OpsBinopImm, ip);
     const result = slots[ops.lhs].readAs(i32) ^ ops.imm;
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(result)))), fp0, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(result)))), fp0);
 }
 pub fn handle_i32_shl_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2114,7 +2114,7 @@ pub fn handle_i32_shl_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const ops = readOps(encode.ops.OpsBinopImm, ip);
     const result = helper.shl(slots[ops.lhs].readAs(i32), ops.imm);
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(result)))), fp0, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(result)))), fp0);
 }
 pub fn handle_i32_shr_s_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2123,7 +2123,7 @@ pub fn handle_i32_shr_s_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
     const ops = readOps(encode.ops.OpsBinopImm, ip);
     const result = helper.shrS(slots[ops.lhs].readAs(i32), ops.imm);
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(result)))), fp0, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(result)))), fp0);
 }
 pub fn handle_i32_shr_u_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2132,7 +2132,7 @@ pub fn handle_i32_shr_u_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
     const ops = readOps(encode.ops.OpsBinopImm, ip);
     const result = @as(i32, @bitCast(helper.shrU(i32, slots[ops.lhs].readAs(u32), @as(u32, @bitCast(ops.imm)))));
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(result)))), fp0, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm), slots, frame, env, @as(u64, @intCast(@as(u32, @bitCast(result)))), fp0);
 }
 // compare-imm variants (result = i32 boolean)
 pub fn handle_i32_eq_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
@@ -2464,7 +2464,7 @@ pub fn handle_i64_add_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const ops = readOps(encode.ops.OpsBinopImm64, ip);
     const result = slots[ops.lhs].readAs(i64) +% ops.imm;
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm64), slots, frame, env, @as(u64, @bitCast(result)), fp0, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm64), slots, frame, env, @as(u64, @bitCast(result)), fp0);
 }
 pub fn handle_i64_sub_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2473,7 +2473,7 @@ pub fn handle_i64_sub_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const ops = readOps(encode.ops.OpsBinopImm64, ip);
     const result = slots[ops.lhs].readAs(i64) -% ops.imm;
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm64), slots, frame, env, @as(u64, @bitCast(result)), fp0, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm64), slots, frame, env, @as(u64, @bitCast(result)), fp0);
 }
 pub fn handle_i64_mul_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2482,7 +2482,7 @@ pub fn handle_i64_mul_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const ops = readOps(encode.ops.OpsBinopImm64, ip);
     const result = slots[ops.lhs].readAs(i64) *% ops.imm;
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm64), slots, frame, env, @as(u64, @bitCast(result)), fp0, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm64), slots, frame, env, @as(u64, @bitCast(result)), fp0);
 }
 pub fn handle_i64_and_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2491,7 +2491,7 @@ pub fn handle_i64_and_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const ops = readOps(encode.ops.OpsBinopImm64, ip);
     const result = slots[ops.lhs].readAs(i64) & ops.imm;
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm64), slots, frame, env, @as(u64, @bitCast(result)), fp0, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm64), slots, frame, env, @as(u64, @bitCast(result)), fp0);
 }
 pub fn handle_i64_or_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2500,7 +2500,7 @@ pub fn handle_i64_or_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
     const ops = readOps(encode.ops.OpsBinopImm64, ip);
     const result = slots[ops.lhs].readAs(i64) | ops.imm;
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm64), slots, frame, env, @as(u64, @bitCast(result)), fp0, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm64), slots, frame, env, @as(u64, @bitCast(result)), fp0);
 }
 pub fn handle_i64_xor_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2509,7 +2509,7 @@ pub fn handle_i64_xor_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const ops = readOps(encode.ops.OpsBinopImm64, ip);
     const result = slots[ops.lhs].readAs(i64) ^ ops.imm;
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm64), slots, frame, env, @as(u64, @bitCast(result)), fp0, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm64), slots, frame, env, @as(u64, @bitCast(result)), fp0);
 }
 pub fn handle_i64_shl_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2518,7 +2518,7 @@ pub fn handle_i64_shl_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const ops = readOps(encode.ops.OpsBinopImm64, ip);
     const result = helper.shl(slots[ops.lhs].readAs(i64), ops.imm);
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm64), slots, frame, env, @as(u64, @bitCast(result)), fp0, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm64), slots, frame, env, @as(u64, @bitCast(result)), fp0);
 }
 pub fn handle_i64_shr_s_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2527,7 +2527,7 @@ pub fn handle_i64_shr_s_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
     const ops = readOps(encode.ops.OpsBinopImm64, ip);
     const result = helper.shrS(slots[ops.lhs].readAs(i64), ops.imm);
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm64), slots, frame, env, @as(u64, @bitCast(result)), fp0, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm64), slots, frame, env, @as(u64, @bitCast(result)), fp0);
 }
 pub fn handle_i64_shr_u_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2536,7 +2536,7 @@ pub fn handle_i64_shr_u_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
     const ops = readOps(encode.ops.OpsBinopImm64, ip);
     const result = @as(i64, @bitCast(helper.shrU(i64, slots[ops.lhs].readAs(u64), @as(u64, @bitCast(ops.imm)))));
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm64), slots, frame, env, @as(u64, @bitCast(result)), fp0, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImm64), slots, frame, env, @as(u64, @bitCast(result)), fp0);
 }
 // i64 compare-imm variants (result = i32 boolean)
 pub fn handle_i64_eq_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
@@ -2619,7 +2619,7 @@ pub fn handle_f32_add_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const ops = readOps(encode.ops.OpsBinopImmF32, ip);
     const result = slots[ops.lhs].readAs(f32) + ops.imm;
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImmF32), slots, frame, env, r0, @as(f64, @floatCast(result)), RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImmF32), slots, frame, env, r0, @as(f64, @floatCast(result)));
 }
 pub fn handle_f32_sub_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2628,7 +2628,7 @@ pub fn handle_f32_sub_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const ops = readOps(encode.ops.OpsBinopImmF32, ip);
     const result = slots[ops.lhs].readAs(f32) - ops.imm;
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImmF32), slots, frame, env, r0, @as(f64, @floatCast(result)), RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImmF32), slots, frame, env, r0, @as(f64, @floatCast(result)));
 }
 pub fn handle_f32_mul_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2637,7 +2637,7 @@ pub fn handle_f32_mul_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const ops = readOps(encode.ops.OpsBinopImmF32, ip);
     const result = slots[ops.lhs].readAs(f32) * ops.imm;
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImmF32), slots, frame, env, r0, @as(f64, @floatCast(result)), RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImmF32), slots, frame, env, r0, @as(f64, @floatCast(result)));
 }
 pub fn handle_f32_div_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2646,7 +2646,7 @@ pub fn handle_f32_div_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const ops = readOps(encode.ops.OpsBinopImmF32, ip);
     const result = slots[ops.lhs].readAs(f32) / ops.imm;
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImmF32), slots, frame, env, r0, @as(f64, @floatCast(result)), RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImmF32), slots, frame, env, r0, @as(f64, @floatCast(result)));
 }
 pub fn handle_f64_add_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2655,7 +2655,7 @@ pub fn handle_f64_add_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const ops = readOps(encode.ops.OpsBinopImmF64, ip);
     const result = slots[ops.lhs].readAs(f64) + ops.imm;
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImmF64), slots, frame, env, r0, result, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImmF64), slots, frame, env, r0, result);
 }
 pub fn handle_f64_sub_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2664,7 +2664,7 @@ pub fn handle_f64_sub_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const ops = readOps(encode.ops.OpsBinopImmF64, ip);
     const result = slots[ops.lhs].readAs(f64) - ops.imm;
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImmF64), slots, frame, env, r0, result, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImmF64), slots, frame, env, r0, result);
 }
 pub fn handle_f64_mul_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2673,7 +2673,7 @@ pub fn handle_f64_mul_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const ops = readOps(encode.ops.OpsBinopImmF64, ip);
     const result = slots[ops.lhs].readAs(f64) * ops.imm;
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImmF64), slots, frame, env, r0, result, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImmF64), slots, frame, env, r0, result);
 }
 pub fn handle_f64_div_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
     dispatch.countOp("imm");
@@ -2682,7 +2682,7 @@ pub fn handle_f64_div_imm(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     const ops = readOps(encode.ops.OpsBinopImmF64, ip);
     const result = slots[ops.lhs].readAs(f64) / ops.imm;
     slots[ops.dst] = RawVal.from(result);
-    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImmF64), slots, frame, env, r0, result, RawVal.from(result));
+    dispatch.nextWithLocalSetFusion(ip, stride(encode.ops.OpsBinopImmF64), slots, frame, env, r0, result);
 }
 
 // r0 variants: i32 binop-imm-r (lhs from r0 accumulator)

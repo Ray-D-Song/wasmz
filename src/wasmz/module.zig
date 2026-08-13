@@ -2818,11 +2818,13 @@ fn decodeAndLower(
         .local_get => {
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
             const local = p.read_var_uint32();
+            lower.recordLocalRead(local);
             try lower.stack.push(lower.allocator, lower.local_to_slot(local));
         },
         .local_set => {
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
             const local = p.read_var_uint32();
+            try lower.preserveAliasedLocal(local);
             const src = try lower.pop_slot();
             const local_slot = lower.local_to_slot(local);
             if (lower.is_v128_wasm_local(local)) {
@@ -2837,10 +2839,12 @@ fn decodeAndLower(
             } else {
                 try lower.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
             }
+            lower.recordLocalWrite(local);
         },
         .local_tee => {
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
             const local = p.read_var_uint32();
+            try lower.preserveAliasedLocal(local);
             const src = lower.stack.peek() orelse return error.StackUnderflow;
             const local_slot = lower.local_to_slot(local);
             if (lower.is_v128_wasm_local(local)) {
@@ -2848,6 +2852,7 @@ fn decodeAndLower(
             } else if (!lower.try_fuse_local_tee(local_slot, src)) {
                 try lower.emit(.{ .local_set = .{ .local = local_slot, .src = src } });
             }
+            lower.recordLocalWrite(local);
         },
         .global_get => {
             if (!p.has_var_int_bytes()) return error.NeedMoreData;

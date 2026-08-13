@@ -760,7 +760,6 @@ pub const Lower = struct {
     /// Base slot for each Wasm local index (borrowed for the duration of lowering).
     local_bases: []const Slot = &.{},
 
-
     pub fn init(allocator: Allocator) Lower {
         return .{ .allocator = allocator, .pending_call_dst = null };
     }
@@ -819,13 +818,23 @@ pub const Lower = struct {
         self.local_init.setUnion(src);
     }
 
-    fn recordLocalRead(self: *Lower, local: u32) void {
+    /// Record a read of a non-parameter local. A read that is not dominated by a
+    /// write means the function observes the spec-mandated zero value, so the
+    /// frame must be zeroed at entry.
+    ///
+    /// Every lowering path that consumes a local must call this, including the
+    /// fused decode+lower path in `module.zig`; a path that forgets to report
+    /// reads silently leaves `needs_zero` false and hands the function whatever
+    /// the previous frame left on the value stack.
+    pub fn recordLocalRead(self: *Lower, local: u32) void {
         if (!self.local_init_analysis_active) return;
         const idx = self.trackedLocalIndex(local) orelse return;
         if (!self.local_init.isSet(idx)) self.disableLocalInitAnalysis();
     }
 
-    fn recordLocalWrite(self: *Lower, local: u32) void {
+    /// Record a write of a non-parameter local. See [`recordLocalRead`] for the
+    /// obligation this places on lowering paths.
+    pub fn recordLocalWrite(self: *Lower, local: u32) void {
         if (!self.local_init_analysis_active) return;
         const idx = self.trackedLocalIndex(local) orelse return;
         self.local_init.set(idx);
@@ -1087,6 +1096,40 @@ pub const Lower = struct {
             self.free_slots.append(self.allocator, slot) catch {};
         }
         return slot;
+    }
+
+    /// `local.get` pushes the local's own slot rather than a copy, so operands
+    /// already on the value stack alias the local's storage. Before lowering a
+    /// write to `local_slot`, copy the current value into a fresh temporary and
+    /// retarget every aliasing operand, otherwise those operands silently
+    /// observe the new value instead of the one they were pushed with.
+    ///
+    /// The topmost operand is excluded: `local.set` consumes it as the source
+    /// and `local.tee` leaves it in place, so in both cases it is the value
+    /// being written rather than a stale read.
+    pub fn preserveAliasedLocal(self: *Lower, local: u32) !void {
+        const height = self.stack.slots.items.len;
+        if (height < 2) return;
+        const local_slot = self.local_to_slot(local);
+        const below_top = self.stack.slots.items[0 .. height - 1];
+        var aliased = false;
+        for (below_top) |slot| {
+            if (slot == local_slot) {
+                aliased = true;
+                break;
+            }
+        }
+        if (!aliased) return;
+
+        const is_v128 = self.is_v128_wasm_local(local);
+        const temp = if (is_v128) self.alloc_simd_slot() else self.alloc_slot();
+        try self.emit(if (is_v128)
+            .{ .local_set_v128 = .{ .local = temp, .src = local_slot } }
+        else
+            .{ .local_set = .{ .local = temp, .src = local_slot } });
+        for (below_top) |*slot| {
+            if (slot.* == local_slot) slot.* = temp;
+        }
     }
 
     pub fn local_to_slot(self: *const Lower, local: u32) Slot {
@@ -3658,6 +3701,7 @@ pub const Lower = struct {
                 try self.stack.push(self.allocator, slot);
             },
             .local_set => |local| {
+                try self.preserveAliasedLocal(local);
                 const src = try self.pop_slot();
                 const local_slot = self.local_to_slot(local);
                 if (self.is_v128_wasm_local(local)) {
@@ -3677,6 +3721,7 @@ pub const Lower = struct {
                 self.recordLocalWrite(local);
             },
             .local_tee => |local| {
+                try self.preserveAliasedLocal(local);
                 const src = self.stack.peek() orelse return error.StackUnderflow;
                 const local_slot = self.local_to_slot(local);
                 if (self.is_v128_wasm_local(local)) {
@@ -5490,6 +5535,7 @@ pub const Lower = struct {
             },
             .local_set => {
                 const local = info.local_index orelse return error.UnsupportedOperator;
+                try self.preserveAliasedLocal(local);
                 const src = try self.pop_slot();
                 const local_slot = self.local_to_slot(local);
                 if (self.is_v128_wasm_local(local)) {
@@ -5509,6 +5555,7 @@ pub const Lower = struct {
             },
             .local_tee => {
                 const local = info.local_index orelse return error.UnsupportedOperator;
+                try self.preserveAliasedLocal(local);
                 const src = self.stack.peek() orelse return error.StackUnderflow;
                 const local_slot = self.local_to_slot(local);
                 if (self.is_v128_wasm_local(local)) {

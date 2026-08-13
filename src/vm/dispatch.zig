@@ -493,7 +493,6 @@ pub inline fn nextWithLocalSetFusion(
     env: *const ExecEnv,
     r0: u64,
     fp0: f64,
-    value: RawVal,
 ) void {
     countOp("total");
     const next_ip = ip + cur_stride;
@@ -502,10 +501,12 @@ pub inline fn nextWithLocalSetFusion(
     // Check if next handler is handle_local_set
     const is_local_set = @intFromPtr(h) == @intFromPtr(&handlers_root.handle_local_set);
     if (is_local_set) {
-        // Fused: inline execute local_set and skip one dispatch
+        // Fused: inline execute local_set and skip one dispatch.
+        // The source must be read from its own slot: the following local_set is
+        // not guaranteed to consume the value this instruction just produced.
         countOp("dispatch_next");
         const local_set_ops = readOps(encode.ops.OpsLocalSet, next_ip);
-        slots[local_set_ops.local] = value;
+        slots[local_set_ops.local] = slots[local_set_ops.src];
 
         // Advance to the instruction after local_set
         const next_stride = stride(encode.ops.OpsLocalSet);
