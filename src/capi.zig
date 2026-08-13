@@ -30,6 +30,18 @@ const Allocator = std.mem.Allocator;
 
 const alloc = std.heap.c_allocator;
 
+/// Panicking across the C ABI cannot be recovered from, so there is nothing to
+/// gain from Zig's stack-trace machinery here. Skipping it also keeps
+/// `std.debug.SelfInfo` out of the archive, which on windows-msvc would
+/// otherwise need `LdrRegisterDllNotification` — a symbol the Windows SDK's
+/// ntdll import library does not provide.
+pub const panic = std.debug.FullPanic(struct {
+    fn call(msg: []const u8, _: ?usize) noreturn {
+        std.debug.print("wasmz: panic: {s}\n", .{msg});
+        std.process.abort();
+    }
+}.call);
+
 // Error type
 
 /// Opaque error handle exposed to C.

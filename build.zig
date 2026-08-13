@@ -316,6 +316,9 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    // Zig emits calls to compiler-rt helpers such as `___chkstk_ms`; MSVC's
+    // linker has no other source for them, so ship them inside the archive.
+    clib_static.bundle_compiler_rt = true;
 
     const static_lib_step = b.step("static-lib", "Build the C static library (libwasmz.a)");
     static_lib_step.dependOn(&b.addInstallArtifact(clib_static, .{}).step);
