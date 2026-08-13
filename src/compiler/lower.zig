@@ -2228,10 +2228,21 @@ pub const Lower = struct {
         if (ri < 8) frame.result_bound |= (@as(u8, 1) << @intCast(ri));
     }
 
+    /// A label slot is written by every path that delivers a value to it, so it
+    /// may only be renamed onto an SSA temporary. Renaming it onto a local's
+    /// slot would turn those writes into writes to the local.
+    fn can_rename_label_slot(self: *const Lower, src: Slot) bool {
+        return src >= self.reserved_slots;
+    }
+
     /// Block entry: rename the allocated param placeholder to the incoming stack slot.
-    fn bind_param_at_entry(self: *Lower, slots: *SmallSlotList, ri: usize, src: Slot) void {
+    fn bind_param_at_entry(self: *Lower, slots: *SmallSlotList, ri: usize, src: Slot) !void {
         const dst = slots.items()[ri];
         if (dst == src) return;
+        if (!self.can_rename_label_slot(src)) {
+            try self.emit_copy(dst, src);
+            return;
+        }
         slots.itemsMut()[ri] = src;
         self.recycle_slot(dst);
     }
@@ -2251,12 +2262,17 @@ pub const Lower = struct {
     ) !void {
         const dst = slots.items()[ri];
         if (dst == src) {
+            set_result_bound(frame, ri);
             if (pop) try self.pop_slot_pinned();
             return;
         }
 
-        const can_rename = rename_results and ri < 8 and !is_result_bound(frame, ri) and
-            !frame.result_slots_pinned;
+        // Only a binding that consumes the operand may rename. `br_if` and
+        // `br_table` peek: the value stays live on the operand stack (and, for
+        // `br_table`, is shared by every target), so renaming a label slot onto
+        // it would let a later phi copy overwrite a value still in use.
+        const can_rename = pop and rename_results and ri < 8 and !is_result_bound(frame, ri) and
+            !frame.result_slots_pinned and self.can_rename_label_slot(src);
         if (can_rename) {
             slots.itemsMut()[ri] = src;
             self.recycle_slot(dst);
@@ -2265,6 +2281,9 @@ pub const Lower = struct {
             return;
         }
 
+        // Once a path has delivered its value into `dst`, later paths must keep
+        // using `dst`; renaming the label slot now would strand that write.
+        set_result_bound(frame, ri);
         try self.emit_copy(dst, src);
         if (pop) _ = try self.pop_slot();
     }
@@ -3214,7 +3233,7 @@ pub const Lower = struct {
                     while (pi > 0) {
                         pi -= 1;
                         const src = try self.pop_slot_no_recycle();
-                        self.bind_param_at_entry(&slots.params, pi, src);
+                        try self.bind_param_at_entry(&slots.params, pi, src);
                     }
                 }
                 // Record the stack height AFTER consuming params (before block body).
@@ -3250,7 +3269,7 @@ pub const Lower = struct {
                     while (pi > 0) {
                         pi -= 1;
                         const src = try self.pop_slot_no_recycle();
-                        self.bind_param_at_entry(&slots.params, pi, src);
+                        try self.bind_param_at_entry(&slots.params, pi, src);
                     }
                 }
                 const height_after_params = self.stack.len();
@@ -3287,7 +3306,7 @@ pub const Lower = struct {
                     while (pi > 0) {
                         pi -= 1;
                         const src = try self.pop_slot_no_recycle();
-                        self.bind_param_at_entry(&slots.params, pi, src);
+                        try self.bind_param_at_entry(&slots.params, pi, src);
                     }
                 }
                 const height_after_params = self.stack.len();
