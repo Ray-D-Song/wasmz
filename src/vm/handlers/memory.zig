@@ -460,11 +460,12 @@ pub fn handle_memory_copy(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
         return;
     };
     if (len > 0) {
-        if (dst_ea <= src_ea) {
-            std.mem.copyForwards(u8, memory[dst_ea .. dst_ea + len], memory[src_ea .. src_ea + len]);
-        } else {
-            std.mem.copyBackwards(u8, memory[dst_ea .. dst_ea + len], memory[src_ea .. src_ea + len]);
-        }
+        // memory.copy allows overlapping src/dst ranges, so this must be a
+        // memmove, not a memcpy. `@memmove` lowers to the target's optimized
+        // memmove (SIMD/ERMS on x86, etc.); the old copyForwards/copyBackwards
+        // manual byte loops were an order of magnitude slower for this
+        // benchmark's overlapping-copy pattern.
+        @memmove(memory[dst_ea .. dst_ea + len], memory[src_ea .. src_ea + len]);
     }
     dispatch.next(ip, stride(encode.ops.OpsMemoryCopy), slots, frame, env, r0, fp0);
 }
