@@ -133,9 +133,16 @@ pub const wasmz_val_t = extern struct {
 
     comptime {
         // The C header is the published ABI contract; a mismatch here silently
-        // corrupts every multi-value host call.
+        // corrupts every multi-value host call. Size and field offsets are
+        // fixed by the header regardless of target, so they're asserted
+        // exactly. Alignment is intentionally *not* pinned to a literal: the
+        // i386 System V ABI only aligns 8-byte members (double/int64_t) to 4
+        // bytes, so a real C compiler targeting x86-linux computes
+        // `alignof(wasmz_val_t) == 4` there, vs. 8 on every 64-bit target.
+        // Comparing against the union field's own alignment tracks whatever
+        // the target's C ABI actually requires instead of hardcoding one.
         std.debug.assert(@sizeOf(wasmz_val_t) == 24);
-        std.debug.assert(@alignOf(wasmz_val_t) == 8);
+        std.debug.assert(@alignOf(wasmz_val_t) == @alignOf(@FieldType(wasmz_val_t, "of")));
         std.debug.assert(@offsetOf(wasmz_val_t, "kind") == 0);
         std.debug.assert(@offsetOf(wasmz_val_t, "of") == 8);
     }
