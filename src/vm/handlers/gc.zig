@@ -133,7 +133,7 @@ fn gcAlloc(
 
 // struct_new
 
-pub fn handle_struct_new(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_struct_new(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsStructNew, ip);
 
     const struct_type = env.composite_types[ops.type_idx].struct_type;
@@ -165,7 +165,7 @@ pub fn handle_struct_new(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
 
 // struct_new_default
 
-pub fn handle_struct_new_default(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_struct_new_default(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsStructNewDefault, ip);
 
     const layout = env.struct_layouts[ops.type_idx] orelse {
@@ -191,7 +191,7 @@ pub fn handle_struct_new_default(ip: [*]u8, slots: [*]RawVal, frame: *DispatchSt
 
 // struct_get
 
-pub fn handle_struct_get(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_struct_get(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsStructGet, ip);
 
     const gc_ref = slots[ops.ref].readAsGcRef();
@@ -213,7 +213,7 @@ pub fn handle_struct_get(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
 
 // struct_get_s
 
-pub fn handle_struct_get_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_struct_get_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsStructGet, ip);
 
     const gc_ref = slots[ops.ref].readAsGcRef();
@@ -235,7 +235,7 @@ pub fn handle_struct_get_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
 
 // struct_get_u
 
-pub fn handle_struct_get_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_struct_get_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsStructGet, ip);
 
     const gc_ref = slots[ops.ref].readAsGcRef();
@@ -257,7 +257,7 @@ pub fn handle_struct_get_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
 
 // struct_set
 
-pub fn handle_struct_set(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_struct_set(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsStructSet, ip);
 
     const gc_ref = slots[ops.ref].readAsGcRef();
@@ -279,7 +279,7 @@ pub fn handle_struct_set(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
 
 // array_new
 
-pub fn handle_array_new(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_array_new(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsArrayNew, ip);
 
     const array_type = env.composite_types[ops.type_idx].array_type;
@@ -312,7 +312,7 @@ pub fn handle_array_new(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
 
 // array_new_default
 
-pub fn handle_array_new_default(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_array_new_default(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsArrayNewDefault, ip);
 
     const layout = env.array_layouts[ops.type_idx] orelse {
@@ -341,7 +341,7 @@ pub fn handle_array_new_default(ip: [*]u8, slots: [*]RawVal, frame: *DispatchSta
 
 // array_new_fixed
 
-pub fn handle_array_new_fixed(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_array_new_fixed(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsArrayNewFixed, ip);
 
     const array_type = env.composite_types[ops.type_idx].array_type;
@@ -376,7 +376,7 @@ pub fn handle_array_new_fixed(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
 
 // array_new_data
 
-pub fn handle_array_new_data(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_array_new_data(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsArrayNewData, ip);
 
     if (ops.data_idx >= env.data_segments.len) {
@@ -447,7 +447,7 @@ pub fn handle_array_new_data(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState,
 
 // array_new_elem
 
-pub fn handle_array_new_elem(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_array_new_elem(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsArrayNewElem, ip);
 
     if (ops.elem_idx >= env.elem_segments.len) {
@@ -499,7 +499,7 @@ pub fn handle_array_new_elem(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState,
 
 // array_get
 
-pub fn handle_array_get(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_array_get(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsArrayGet, ip);
 
     const gc_ref = slots[ops.ref].readAsGcRef();
@@ -528,7 +528,7 @@ pub fn handle_array_get(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
 
 // array_get_s
 
-pub fn handle_array_get_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_array_get_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsArrayGet, ip);
 
     const gc_ref = slots[ops.ref].readAsGcRef();
@@ -557,7 +557,7 @@ pub fn handle_array_get_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
 
 // array_get_u
 
-pub fn handle_array_get_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_array_get_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsArrayGet, ip);
 
     const gc_ref = slots[ops.ref].readAsGcRef();
@@ -587,7 +587,7 @@ pub fn handle_array_get_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
 
 // array_set
 
-pub fn handle_array_set(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_array_set(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsArraySet, ip);
 
     const gc_ref = slots[ops.ref].readAsGcRef();
@@ -616,7 +616,7 @@ pub fn handle_array_set(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
 
 // array_len
 
-pub fn handle_array_len(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_array_len(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsArrayLen, ip);
 
     const gc_ref = slots[ops.ref].readAsGcRef();
@@ -632,7 +632,7 @@ pub fn handle_array_len(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
 
 // array_fill
 
-pub fn handle_array_fill(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_array_fill(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsArrayFill, ip);
 
     const gc_ref = slots[ops.ref].readAsGcRef();
@@ -666,7 +666,7 @@ pub fn handle_array_fill(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
 
 // array_copy
 
-pub fn handle_array_copy(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_array_copy(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsArrayCopy, ip);
 
     const dst_ref = slots[ops.dst_ref].readAsGcRef();
@@ -723,7 +723,7 @@ pub fn handle_array_copy(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
 
 // array_init_data
 
-pub fn handle_array_init_data(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_array_init_data(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsArrayInitData, ip);
 
     if (ops.data_idx >= env.data_segments.len) {
@@ -796,7 +796,7 @@ pub fn handle_array_init_data(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
 
 // array_init_elem
 
-pub fn handle_array_init_elem(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_array_init_elem(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsArrayInitElem, ip);
 
     if (ops.elem_idx >= env.elem_segments.len) {
@@ -850,7 +850,7 @@ pub fn handle_array_init_elem(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
 
 // ref_i31
 
-pub fn handle_ref_i31(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_ref_i31(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsRefI31, ip);
 
     const value = slots[ops.value].readAs(i32);
@@ -861,7 +861,7 @@ pub fn handle_ref_i31(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *
 
 // i31_get_s
 
-pub fn handle_i31_get_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_i31_get_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsI31Get, ip);
 
     const gc_ref = slots[ops.ref].readAsGcRef();
@@ -884,7 +884,7 @@ pub fn handle_i31_get_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
 
 // i31_get_u
 
-pub fn handle_i31_get_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_i31_get_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsI31Get, ip);
 
     const gc_ref = slots[ops.ref].readAsGcRef();
@@ -908,7 +908,7 @@ pub fn handle_i31_get_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
 
 // ref_test
 
-pub fn handle_ref_test(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_ref_test(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsRefTest, ip);
 
     const nullable = ops.nullable != 0;
@@ -972,7 +972,7 @@ pub fn handle_ref_test(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
 
 // ref_cast
 
-pub fn handle_ref_cast(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_ref_cast(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsRefTest, ip); // ref_cast uses same operand struct as ref_test
     const nullable = ops.nullable != 0;
     const target_heap = @as(core.HeapType, @enumFromInt(ops.type_idx));
@@ -1058,7 +1058,7 @@ pub fn handle_ref_cast(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
 
 // ref_as_non_null
 
-pub fn handle_ref_as_non_null(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_ref_as_non_null(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsRefAsNonNull, ip);
 
     const gc_ref = slots[ops.ref].readAsGcRef();
@@ -1072,7 +1072,7 @@ pub fn handle_ref_as_non_null(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
 
 // br_on_null
 
-pub fn handle_br_on_null(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_br_on_null(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsBrOnNull, ip);
 
     const gc_ref = slots[ops.ref].readAsGcRef();
@@ -1086,7 +1086,7 @@ pub fn handle_br_on_null(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
 
 // br_on_non_null
 
-pub fn handle_br_on_non_null(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_br_on_non_null(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsBrOnNull, ip); // Same operand struct
 
     const gc_ref = slots[ops.ref].readAsGcRef();
@@ -1100,7 +1100,7 @@ pub fn handle_br_on_non_null(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState,
 
 // br_on_cast
 
-pub fn handle_br_on_cast(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_br_on_cast(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsBrOnCast, ip);
 
     const to_heap = @as(core.HeapType, @enumFromInt(ops.to_type_idx));
@@ -1158,7 +1158,7 @@ pub fn handle_br_on_cast(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
 
 // br_on_cast_fail
 
-pub fn handle_br_on_cast_fail(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_br_on_cast_fail(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsBrOnCast, ip); // Same operand struct
 
     const to_heap = @as(core.HeapType, @enumFromInt(ops.to_type_idx));
@@ -1222,7 +1222,7 @@ pub fn handle_br_on_cast_fail(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
 
 // any_convert_extern
 
-pub fn handle_any_convert_extern(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_any_convert_extern(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsConvertRef, ip);
     slots[ops.dst] = slots[ops.ref];
     dispatch.next(ip, stride(encode.ops.OpsConvertRef), slots, frame, env, r0, fp0);
@@ -1230,7 +1230,7 @@ pub fn handle_any_convert_extern(ip: [*]u8, slots: [*]RawVal, frame: *DispatchSt
 
 // extern_convert_any
 
-pub fn handle_extern_convert_any(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_extern_convert_any(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsConvertRef, ip);
     slots[ops.dst] = slots[ops.ref];
     dispatch.next(ip, stride(encode.ops.OpsConvertRef), slots, frame, env, r0, fp0);

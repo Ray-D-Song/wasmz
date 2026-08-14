@@ -10,7 +10,8 @@
 ///   At the end of every handler the macro `next()` reads the handler pointer
 ///   from the *next* instruction and tail-calls it.  The Zig compiler emits a
 ///   true machine-level tail call when `@call(.always_tail, ...)` is used with
-///   `callconv(.c)`.
+///   a consistent calling convention across caller/callee — see
+///   `HandlerCallConv` below for why that isn't simply `.c`.
 ///
 ///   Control never returns from a handler to its caller; instead execution
 ///   terminates when a special terminator handler (`handle_ret` / `handle_trap`)
@@ -99,10 +100,23 @@ const CompiledElemSegment = module_mod.CompiledElemSegment;
 ///            (f32 values are bit-cast to f64 for uniform storage).
 ///            Same write-both semantics as r0.
 ///
-/// Calling convention: `.C` + `@call(.always_tail, …)` produces true TCO.
-/// Because C calling convention is used the function must return `void`; the
-/// execution result is communicated through `frame.result`.
-///
+/// Calling convention: normally plain `.c` + `@call(.always_tail, …)`, which
+/// produces true TCO. Because the handler ABI carries 6 arguments (4
+/// pointer-ish + r0 + fp0), the Windows x64 ("Microsoft x64") convention runs
+/// out of its 4 register slots — slots are assigned by *position*, shared
+/// between integer and floating-point args, unlike SysV which has separate
+/// integer/float register banks. That forces r0 and fp0 onto the stack on
+/// every single dispatch step on Windows, even in handlers that never touch
+/// them. Forcing the target-independent SysV convention on x86_64 sidesteps
+/// this: `Handler` values only ever flow between other `Handler`-typed
+/// functions inside this module (never across the C API / host-function FFI
+/// boundary), so there is no ABI compatibility requirement with the platform
+/// C convention to preserve.
+pub const HandlerCallConv: std.builtin.CallingConvention = if (builtin.target.cpu.arch == .x86_64)
+    .{ .x86_64_sysv = .{} }
+else
+    .c;
+
 /// The r0/fp0 accumulators mirror the wasm3 M3 model: they allow the CPU to
 /// keep the top-of-stack integer/float value in a hardware register across
 /// instruction boundaries, avoiding a slot load on every back-to-back
@@ -114,7 +128,7 @@ pub const Handler = *const fn (
     env: *const ExecEnv,
     r0: u64,
     fp0: f64,
-) callconv(.c) void;
+) callconv(HandlerCallConv) void;
 
 // Execution environment (read-only)
 

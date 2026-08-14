@@ -523,51 +523,51 @@ inline fn handle_call_impl(comptime known_arity: ?u32, ip: [*]u8, slots: [*]RawV
     }
 }
 
-pub fn handle_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     handle_call_impl(null, ip, slots, frame, env, r0, fp0);
 }
 
-pub fn handle_call_0(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_0(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     handle_call_impl(0, ip, slots, frame, env, r0, fp0);
 }
 
-pub fn handle_call_1(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_1(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     handle_call_impl(1, ip, slots, frame, env, r0, fp0);
 }
 
-pub fn handle_call_2(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_2(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     handle_call_impl(2, ip, slots, frame, env, r0, fp0);
 }
 
-pub fn handle_call_3(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_3(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     handle_call_impl(3, ip, slots, frame, env, r0, fp0);
 }
 
-pub fn handle_call_7(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_7(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     handle_call_impl(7, ip, slots, frame, env, r0, fp0);
 }
 
-pub fn handle_call_resolved_0(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_resolved_0(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     _ = slots;
     handle_call_resolved_impl(0, ip, frame, env, r0, fp0);
 }
 
-pub fn handle_call_resolved_1(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_resolved_1(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     _ = slots;
     handle_call_resolved_impl(1, ip, frame, env, r0, fp0);
 }
 
-pub fn handle_call_resolved_2(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_resolved_2(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     _ = slots;
     handle_call_resolved_impl(2, ip, frame, env, r0, fp0);
 }
 
-pub fn handle_call_resolved_3(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_resolved_3(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     _ = slots;
     handle_call_resolved_impl(3, ip, frame, env, r0, fp0);
 }
 
-pub fn handle_call_resolved_7(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_resolved_7(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     _ = slots;
     handle_call_resolved_impl(7, ip, frame, env, r0, fp0);
 }
@@ -695,51 +695,51 @@ inline fn handle_call_to_local_impl(comptime known_arity: ?u32, ip: [*]u8, slots
     }
 }
 
-pub fn handle_call_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_to_local(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     handle_call_to_local_impl(null, ip, slots, frame, env, r0, fp0);
 }
 
-pub fn handle_call_to_local_0(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_to_local_0(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     handle_call_to_local_impl(0, ip, slots, frame, env, r0, fp0);
 }
 
-pub fn handle_call_to_local_1(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_to_local_1(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     handle_call_to_local_impl(1, ip, slots, frame, env, r0, fp0);
 }
 
-pub fn handle_call_to_local_2(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_to_local_2(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     handle_call_to_local_impl(2, ip, slots, frame, env, r0, fp0);
 }
 
-pub fn handle_call_to_local_3(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_to_local_3(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     handle_call_to_local_impl(3, ip, slots, frame, env, r0, fp0);
 }
 
-pub fn handle_call_to_local_7(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_to_local_7(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     handle_call_to_local_impl(7, ip, slots, frame, env, r0, fp0);
 }
 
-pub fn handle_call_to_local_resolved_0(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_to_local_resolved_0(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     _ = slots;
     handle_call_to_local_resolved_impl(0, ip, frame, env, r0, fp0);
 }
 
-pub fn handle_call_to_local_resolved_1(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_to_local_resolved_1(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     _ = slots;
     handle_call_to_local_resolved_impl(1, ip, frame, env, r0, fp0);
 }
 
-pub fn handle_call_to_local_resolved_2(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_to_local_resolved_2(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     _ = slots;
     handle_call_to_local_resolved_impl(2, ip, frame, env, r0, fp0);
 }
 
-pub fn handle_call_to_local_resolved_3(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_to_local_resolved_3(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     _ = slots;
     handle_call_to_local_resolved_impl(3, ip, frame, env, r0, fp0);
 }
 
-pub fn handle_call_to_local_resolved_7(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_to_local_resolved_7(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     _ = slots;
     handle_call_to_local_resolved_impl(7, ip, frame, env, r0, fp0);
 }
@@ -870,51 +870,51 @@ inline fn handle_call_leaf_impl(comptime known_arity: ?u32, ip: [*]u8, slots: [*
     }
 }
 
-pub fn handle_call_leaf(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_leaf(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     handle_call_leaf_impl(null, ip, slots, frame, env, r0, fp0);
 }
 
-pub fn handle_call_leaf_0(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_leaf_0(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     handle_call_leaf_impl(0, ip, slots, frame, env, r0, fp0);
 }
 
-pub fn handle_call_leaf_1(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_leaf_1(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     handle_call_leaf_impl(1, ip, slots, frame, env, r0, fp0);
 }
 
-pub fn handle_call_leaf_2(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_leaf_2(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     handle_call_leaf_impl(2, ip, slots, frame, env, r0, fp0);
 }
 
-pub fn handle_call_leaf_3(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_leaf_3(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     handle_call_leaf_impl(3, ip, slots, frame, env, r0, fp0);
 }
 
-pub fn handle_call_leaf_7(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_leaf_7(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     handle_call_leaf_impl(7, ip, slots, frame, env, r0, fp0);
 }
 
-pub fn handle_call_leaf_resolved_0(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_leaf_resolved_0(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     _ = slots;
     handle_call_leaf_resolved_impl(0, ip, frame, env, r0, fp0);
 }
 
-pub fn handle_call_leaf_resolved_1(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_leaf_resolved_1(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     _ = slots;
     handle_call_leaf_resolved_impl(1, ip, frame, env, r0, fp0);
 }
 
-pub fn handle_call_leaf_resolved_2(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_leaf_resolved_2(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     _ = slots;
     handle_call_leaf_resolved_impl(2, ip, frame, env, r0, fp0);
 }
 
-pub fn handle_call_leaf_resolved_3(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_leaf_resolved_3(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     _ = slots;
     handle_call_leaf_resolved_impl(3, ip, frame, env, r0, fp0);
 }
 
-pub fn handle_call_leaf_resolved_7(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_leaf_resolved_7(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     _ = slots;
     handle_call_leaf_resolved_impl(7, ip, frame, env, r0, fp0);
 }
@@ -1023,7 +1023,7 @@ inline fn dispatchCallIndirectLocal(
 
 // call_indirect
 
-pub fn handle_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsCallIndirect, ip);
 
     const arg_slots = encode.readInlineArgs(encode.ops.OpsCallIndirect, ip, ops.args_len);
@@ -1057,7 +1057,7 @@ pub fn handle_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
 
 // return_call
 
-pub fn handle_return_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_return_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     _ = r0;
     _ = fp0;
     const ops = readOps(encode.ops.OpsReturnCall, ip);
@@ -1134,7 +1134,7 @@ pub fn handle_return_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
 
 // return_call_indirect
 
-pub fn handle_return_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_return_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     _ = r0;
     _ = fp0;
     const ops = readOps(encode.ops.OpsReturnCallIndirect, ip);
@@ -1208,7 +1208,7 @@ pub fn handle_return_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
 
 // call_ref
 
-pub fn handle_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsCallRef, ip);
 
     // funcref is stored as u64: null=0, func_idx+1=non-null
@@ -1300,7 +1300,7 @@ pub fn handle_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
 
 // return_call_ref
 
-pub fn handle_return_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_return_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     _ = r0;
     _ = fp0;
     const ops = readOps(encode.ops.OpsReturnCallRef, ip);

@@ -23,7 +23,7 @@ const effectiveAddr = common.effectiveAddr;
 
 // atomic_fence
 
-pub fn handle_atomic_fence(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_atomic_fence(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const Fence = struct {
         threadlocal var dummy: u8 = 0;
     };
@@ -33,7 +33,7 @@ pub fn handle_atomic_fence(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
 
 // atomic_load
 
-pub fn handle_atomic_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_atomic_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsAtomicLoad, ip);
     const mem = frame.memSlice();
     const width: ir.AtomicWidth = @enumFromInt(ops.width);
@@ -66,7 +66,7 @@ pub fn handle_atomic_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
 
 // atomic_store
 
-pub fn handle_atomic_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_atomic_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsAtomicStore, ip);
     const mem = frame.memSlice();
     const width: ir.AtomicWidth = @enumFromInt(ops.width);
@@ -99,7 +99,7 @@ pub fn handle_atomic_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
 
 // atomic_rmw
 
-pub fn handle_atomic_rmw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_atomic_rmw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsAtomicRmw, ip);
     const mem = frame.memSlice();
     const width: ir.AtomicWidth = @enumFromInt(ops.width);
@@ -182,7 +182,7 @@ pub fn handle_atomic_rmw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
 
 // atomic_cmpxchg
 
-pub fn handle_atomic_cmpxchg(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_atomic_cmpxchg(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsAtomicCmpxchg, ip);
     const mem = frame.memSlice();
     const width: ir.AtomicWidth = @enumFromInt(ops.width);
@@ -248,7 +248,7 @@ pub fn handle_atomic_cmpxchg(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState,
 
 // atomic_notify
 
-pub fn handle_atomic_notify(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_atomic_notify(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsAtomicNotify, ip);
     const mem = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 4, mem, frame.memory64) orelse {
@@ -269,7 +269,7 @@ pub fn handle_atomic_notify(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
 
 // atomic_wait32
 
-pub fn handle_atomic_wait32(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_atomic_wait32(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsAtomicWait32, ip);
 
     if (!env.memory.isShared()) {
@@ -297,7 +297,7 @@ pub fn handle_atomic_wait32(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
 
 // atomic_wait64
 
-pub fn handle_atomic_wait64(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_atomic_wait64(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsAtomicWait64, ip);
 
     if (!env.memory.isShared()) {

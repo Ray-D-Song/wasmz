@@ -163,7 +163,7 @@ fn dispatchException(
 
 // throw
 
-pub fn handle_throw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_throw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsThrow, ip);
 
     // Read inline arg slots directly from the bytecode stream (zero pointer chasing)
@@ -210,7 +210,7 @@ pub fn handle_throw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *co
 
 // throw_ref
 
-pub fn handle_throw_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_throw_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsThrowRef, ip);
 
     const exn_ref = slots[ops.ref].readAsGcRef();
@@ -230,7 +230,7 @@ pub fn handle_throw_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
 
 // try_table_enter
 
-pub fn handle_try_table_enter(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_try_table_enter(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsTryTableEnter, ip);
 
     frame.eh_stack.append(frame.allocator, .{
@@ -247,7 +247,7 @@ pub fn handle_try_table_enter(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
 
 // try_table_leave
 
-pub fn handle_try_table_leave(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_try_table_leave(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsTryTableLeave, ip);
 
     _ = frame.eh_stack.pop();

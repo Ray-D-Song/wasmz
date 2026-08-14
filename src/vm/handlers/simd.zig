@@ -34,7 +34,7 @@ inline fn writeSimd(slots: [*]RawVal, idx: u32, sv: SimdVal) void {
 
 // simd_unary
 
-pub fn handle_simd_unary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_simd_unary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops_val = readOps(encode.ops.OpsSimdUnary, ip);
     const opcode: core.simd.SimdOpcode = @enumFromInt(ops_val.opcode);
     // splat: src is a scalar slot; all others: src is a V128 (two slots)
@@ -54,7 +54,7 @@ pub fn handle_simd_unary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
 
 // simd_binary
 
-pub fn handle_simd_binary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_simd_binary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops_val = readOps(encode.ops.OpsSimdBinary, ip);
     const opcode: core.simd.SimdOpcode = @enumFromInt(ops_val.opcode);
     const result = simd.executeBinary(opcode, readSimd(slots, ops_val.lhs), readSimd(slots, ops_val.rhs));
@@ -64,7 +64,7 @@ pub fn handle_simd_binary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
 
 // simd_ternary
 
-pub fn handle_simd_ternary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_simd_ternary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops_val = readOps(encode.ops.OpsSimdTernary, ip);
     const opcode: core.simd.SimdOpcode = @enumFromInt(ops_val.opcode);
     const result = simd.executeTernary(opcode, readSimd(slots, ops_val.first), readSimd(slots, ops_val.second), readSimd(slots, ops_val.third));
@@ -74,7 +74,7 @@ pub fn handle_simd_ternary(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
 
 // simd_compare
 
-pub fn handle_simd_compare(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_simd_compare(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops_val = readOps(encode.ops.OpsSimdBinary, ip);
     const opcode: core.simd.SimdOpcode = @enumFromInt(ops_val.opcode);
     const result = simd.executeCompare(opcode, readSimd(slots, ops_val.lhs), readSimd(slots, ops_val.rhs));
@@ -84,7 +84,7 @@ pub fn handle_simd_compare(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
 
 // simd_shift_scalar
 
-pub fn handle_simd_shift_scalar(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_simd_shift_scalar(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops_val = readOps(encode.ops.OpsSimdBinary, ip);
     const opcode: core.simd.SimdOpcode = @enumFromInt(ops_val.opcode);
     // lhs is V128 (two slots), rhs is scalar (one slot)
@@ -95,7 +95,7 @@ pub fn handle_simd_shift_scalar(ip: [*]u8, slots: [*]RawVal, frame: *DispatchSta
 
 // simd_extract_lane
 
-pub fn handle_simd_extract_lane(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_simd_extract_lane(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops_val = readOps(encode.ops.OpsSimdExtractLane, ip);
     const opcode: core.simd.SimdOpcode = @enumFromInt(ops_val.opcode);
     // src is V128 (two slots), dst is scalar
@@ -105,7 +105,7 @@ pub fn handle_simd_extract_lane(ip: [*]u8, slots: [*]RawVal, frame: *DispatchSta
 
 // simd_replace_lane
 
-pub fn handle_simd_replace_lane(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_simd_replace_lane(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops_val = readOps(encode.ops.OpsSimdReplaceLane, ip);
     const opcode: core.simd.SimdOpcode = @enumFromInt(ops_val.opcode);
     // src_vec is V128 (two slots), src_lane is scalar (one slot)
@@ -116,7 +116,7 @@ pub fn handle_simd_replace_lane(ip: [*]u8, slots: [*]RawVal, frame: *DispatchSta
 
 // simd_shuffle
 
-pub fn handle_simd_shuffle(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_simd_shuffle(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops_val = readOps(encode.ops.OpsSimdShuffle, ip);
     const result = simd.shuffleVectors(readSimd(slots, ops_val.lhs), readSimd(slots, ops_val.rhs), ops_val.lanes);
     writeSimd(slots, ops_val.dst, result);
@@ -125,7 +125,7 @@ pub fn handle_simd_shuffle(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
 
 // simd_load
 
-pub fn handle_simd_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_simd_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops_val = readOps(encode.ops.OpsSimdLoad, ip);
     const opcode: core.simd.SimdOpcode = @enumFromInt(ops_val.opcode);
     const memory = frame.memSlice();
@@ -166,7 +166,7 @@ pub fn handle_simd_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
 
 // simd_store
 
-pub fn handle_simd_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_simd_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops_val = readOps(encode.ops.OpsSimdStore, ip);
     const opcode: core.simd.SimdOpcode = @enumFromInt(ops_val.opcode);
     const memory = frame.memSlice();

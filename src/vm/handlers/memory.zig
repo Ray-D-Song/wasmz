@@ -37,7 +37,7 @@ inline fn nextAfterF64Load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
 
 // Memory Loads
 
-pub fn handle_i32_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_i32_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
         _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
@@ -50,7 +50,7 @@ pub fn handle_i32_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
     nextAfterI32Load(ip, slots, frame, env, fp0, val);
 }
 
-pub fn handle_i32_load8_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_i32_load8_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
         _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
@@ -63,7 +63,7 @@ pub fn handle_i32_load8_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     nextAfterI32Load(ip, slots, frame, env, fp0, val);
 }
 
-pub fn handle_i32_load8_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_i32_load8_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
         _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
@@ -76,7 +76,7 @@ pub fn handle_i32_load8_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     nextAfterI32Load(ip, slots, frame, env, fp0, val);
 }
 
-pub fn handle_i32_load16_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_i32_load16_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
         _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
@@ -90,7 +90,7 @@ pub fn handle_i32_load16_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
     nextAfterI32Load(ip, slots, frame, env, fp0, val);
 }
 
-pub fn handle_i32_load16_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_i32_load16_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
         _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
@@ -103,7 +103,7 @@ pub fn handle_i32_load16_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
     nextAfterI32Load(ip, slots, frame, env, fp0, val);
 }
 
-pub fn handle_i64_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_i64_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
         _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
@@ -116,7 +116,7 @@ pub fn handle_i64_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
     nextAfterI64Load(ip, slots, frame, env, fp0, val);
 }
 
-pub fn handle_i64_load8_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_i64_load8_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
         _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
@@ -129,7 +129,7 @@ pub fn handle_i64_load8_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     nextAfterI64Load(ip, slots, frame, env, fp0, val);
 }
 
-pub fn handle_i64_load8_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_i64_load8_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
         _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
@@ -142,7 +142,7 @@ pub fn handle_i64_load8_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     nextAfterI64Load(ip, slots, frame, env, fp0, val);
 }
 
-pub fn handle_i64_load16_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_i64_load16_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
         _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
@@ -156,7 +156,7 @@ pub fn handle_i64_load16_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
     nextAfterI64Load(ip, slots, frame, env, fp0, val);
 }
 
-pub fn handle_i64_load16_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_i64_load16_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
         _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
@@ -169,7 +169,7 @@ pub fn handle_i64_load16_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
     nextAfterI64Load(ip, slots, frame, env, fp0, val);
 }
 
-pub fn handle_i64_load32_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_i64_load32_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
         _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
@@ -183,7 +183,7 @@ pub fn handle_i64_load32_s(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
     nextAfterI64Load(ip, slots, frame, env, fp0, val);
 }
 
-pub fn handle_i64_load32_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_i64_load32_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
         _ = r0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
@@ -196,7 +196,7 @@ pub fn handle_i64_load32_u(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
     nextAfterI64Load(ip, slots, frame, env, fp0, val);
 }
 
-pub fn handle_f32_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_f32_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
         _ = fp0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
@@ -210,7 +210,7 @@ pub fn handle_f32_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
     nextAfterF32Load(ip, slots, frame, env, r0, val);
 }
 
-pub fn handle_f64_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_f64_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
         _ = fp0;
     const ops = readOps(encode.ops.OpsLoad, ip);
     const memory = frame.memSlice();
@@ -226,7 +226,7 @@ pub fn handle_f64_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
 
 // Memory Stores
 
-pub fn handle_i32_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_i32_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsStore, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 4, memory, frame.memory64) orelse {
@@ -237,7 +237,7 @@ pub fn handle_i32_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
     dispatch.next(ip, stride(encode.ops.OpsStore), slots, frame, env, r0, fp0);
 }
 
-pub fn handle_i32_store8(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_i32_store8(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsStore, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 1, memory, frame.memory64) orelse {
@@ -248,7 +248,7 @@ pub fn handle_i32_store8(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
     dispatch.next(ip, stride(encode.ops.OpsStore), slots, frame, env, r0, fp0);
 }
 
-pub fn handle_i32_store16(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_i32_store16(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsStore, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 2, memory, frame.memory64) orelse {
@@ -259,7 +259,7 @@ pub fn handle_i32_store16(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     dispatch.next(ip, stride(encode.ops.OpsStore), slots, frame, env, r0, fp0);
 }
 
-pub fn handle_i64_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_i64_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsStore, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 8, memory, frame.memory64) orelse {
@@ -270,7 +270,7 @@ pub fn handle_i64_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
     dispatch.next(ip, stride(encode.ops.OpsStore), slots, frame, env, r0, fp0);
 }
 
-pub fn handle_i64_store8(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_i64_store8(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsStore, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 1, memory, frame.memory64) orelse {
@@ -281,7 +281,7 @@ pub fn handle_i64_store8(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
     dispatch.next(ip, stride(encode.ops.OpsStore), slots, frame, env, r0, fp0);
 }
 
-pub fn handle_i64_store16(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_i64_store16(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsStore, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 2, memory, frame.memory64) orelse {
@@ -292,7 +292,7 @@ pub fn handle_i64_store16(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     dispatch.next(ip, stride(encode.ops.OpsStore), slots, frame, env, r0, fp0);
 }
 
-pub fn handle_i64_store32(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_i64_store32(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsStore, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 4, memory, frame.memory64) orelse {
@@ -303,7 +303,7 @@ pub fn handle_i64_store32(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     dispatch.next(ip, stride(encode.ops.OpsStore), slots, frame, env, r0, fp0);
 }
 
-pub fn handle_f32_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_f32_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsStore, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 4, memory, frame.memory64) orelse {
@@ -314,7 +314,7 @@ pub fn handle_f32_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
     dispatch.next(ip, stride(encode.ops.OpsStore), slots, frame, env, r0, fp0);
 }
 
-pub fn handle_f64_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_f64_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsStore, ip);
     const memory = frame.memSlice();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, 8, memory, frame.memory64) orelse {
@@ -327,7 +327,7 @@ pub fn handle_f64_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
 
 // Bulk Memory
 
-pub fn handle_memory_size(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_memory_size(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsMemorySize, ip);
     const page_count = env.memory.pageCount();
     if (frame.memory64) {
@@ -338,7 +338,7 @@ pub fn handle_memory_size(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     dispatch.next(ip, stride(encode.ops.OpsMemorySize), slots, frame, env, r0, fp0);
 }
 
-pub fn handle_memory_grow(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_memory_grow(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsMemoryGrow, ip);
     const delta: u64 = if (frame.memory64)
         @bitCast(slots[ops.delta].readAs(i64))
@@ -402,7 +402,7 @@ pub fn handle_memory_grow(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     dispatch.next(ip, stride(encode.ops.OpsMemoryGrow), slots, frame, env, r0, fp0);
 }
 
-pub fn handle_memory_init(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_memory_init(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsMemoryInit, ip);
     const memory = frame.memSlice();
     const len = slots[ops.len].readAs(u32);
@@ -437,7 +437,7 @@ pub fn handle_memory_init(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     dispatch.next(ip, stride(encode.ops.OpsMemoryInit), slots, frame, env, r0, fp0);
 }
 
-pub fn handle_data_drop(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_data_drop(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsDataDrop, ip);
     if (ops.segment_idx >= env.data_segments.len) {
         trapReturn(frame, .MemoryOutOfBounds);
@@ -447,7 +447,7 @@ pub fn handle_data_drop(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
     dispatch.next(ip, stride(encode.ops.OpsDataDrop), slots, frame, env, r0, fp0);
 }
 
-pub fn handle_memory_copy(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_memory_copy(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsMemoryCopy, ip);
     const memory = frame.memSlice();
     const len = slots[ops.len].readAs(u32);
@@ -470,7 +470,7 @@ pub fn handle_memory_copy(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
     dispatch.next(ip, stride(encode.ops.OpsMemoryCopy), slots, frame, env, r0, fp0);
 }
 
-pub fn handle_memory_fill(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(.c) void {
+pub fn handle_memory_fill(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsMemoryFill, ip);
     const memory = frame.memSlice();
     const value = slots[ops.value].readAs(u32);
