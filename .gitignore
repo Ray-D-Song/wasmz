@@ -39,6 +39,10 @@ bench/results/hyperfine/
 # Binary file for benchmarking and testing
 /wasm3
 
+# Rust bindings workspace build output
+/target
+/Cargo.lock
+
 report-*.md
 
 wasmz.sln

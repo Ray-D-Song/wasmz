@@ -1,0 +1,14 @@
+[package]
+name = "wasmz"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Safe Rust bindings for the wasmz WebAssembly interpreter"
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+publish = false
+
+[dependencies]
+wasmz-sys = { path = "../wasmz-sys", version = "0.1.3" }
+
