@@ -64,3 +64,35 @@ fn links_host_functions_and_exposes_memory() {
     unsafe { memory.write(0xab) };
     assert_eq!(unsafe { memory.read() }, 0xab);
 }
+
+/// This is intentionally a process-lifecycle test rather than a throughput
+/// benchmark. On Windows it catches a C runtime or FFI teardown mismatch that
+/// otherwise only appears after Criterion has completed its final benchmark.
+#[test]
+fn repeatedly_drops_ffi_handles_before_process_exit() {
+    for _ in 0..256 {
+        let engine = Engine::new().unwrap();
+        let mut linker = Linker::new().unwrap();
+        linker
+            .define_func(
+                "env",
+                "inc",
+                &[ValKind::I32],
+                &[ValKind::I32],
+                Box::new(|params, results| {
+                    results[0] = match params[0] {
+                        Val::I32(value) => Val::I32(value + 1),
+                        _ => unreachable!(),
+                    };
+                }),
+            )
+            .unwrap();
+        let store = Store::new(&engine).unwrap();
+        let module = Module::compile(&engine, HOST_MODULE).unwrap();
+        let instance = Instance::new(&store, &module, Some(&linker)).unwrap();
+        assert!(matches!(
+            instance.call("call", &[Val::I32(41)], &[ValKind::I32]),
+            Ok(values) if matches!(values.as_slice(), [Val::I32(42)])
+        ));
+    }
+}

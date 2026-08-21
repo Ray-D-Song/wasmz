@@ -270,8 +270,8 @@ pub fn build(b: *std.Build) void {
     // Output:     zig-out/lib/libwasmz.{so,dylib,dll}
     //             zig-out/include/wasmz.h  (copied from include/wasmz.h)
     //
-    // The C API is implemented in src/capi.zig and uses the libc allocator so
-    // that callers can free error strings with the standard free().
+    // The C API is implemented in src/capi.zig and owns all returned handles
+    // and errors through its matching delete functions.
     const clib = b.addLibrary(.{
         .name = "wasmz",
         .linkage = .dynamic,
@@ -282,7 +282,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "wasmz", .module = mod },
             },
-            .link_libc = true,
+            .link_libc = false,
         }),
     });
     b.installArtifact(clib);
@@ -310,10 +310,13 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/capi.zig"),
             .target = target,
             .optimize = optimize,
+            // Rust test binaries are PIE on modern Linux. The archive is also
+            // linked into shared consumers, so keep its relocations PIC.
+            .pic = true,
             .imports = &.{
                 .{ .name = "wasmz", .module = mod },
             },
-            .link_libc = true,
+            .link_libc = false,
         }),
     });
 

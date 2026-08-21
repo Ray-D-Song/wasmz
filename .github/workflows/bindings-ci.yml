@@ -1,0 +1,28 @@
+name: Rust Bindings CI
+
+on:
+  push:
+    branches: ["**"]
+    tags-ignore: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    name: Test bindings (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run Zig tests
+        run: zig build test
+      - name: Run C API tests
+        run: zig build test-capi
+      - name: Run Rust bindings tests
+        run: cargo test --workspace

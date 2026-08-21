@@ -4,8 +4,10 @@
 /// It is compiled as a shared library (libwasmz) or static library.
 ///
 /// Design decisions:
-///   - All allocations use the libc allocator (std.heap.c_allocator) so that
-///     callers using C's malloc/free are ABI-compatible.
+///   - All allocations use Zig's process-wide allocator. The C API never
+///     transfers ownership of its allocations to callers: every handle and
+///     error is released with its matching `wasmz_*_delete` function. This
+///     keeps a static library compatible with Rust's MSVC CRT selection.
 ///   - Opaque handle types are thin C-ABI structs that hold a single pointer
 ///     to a heap-allocated Zig struct.  This avoids "extern struct cannot
 ///     contain non-extern type" errors.
@@ -28,7 +30,7 @@ const ValType = wasmz.ValType;
 const Trap = wasmz.Trap;
 const Allocator = std.mem.Allocator;
 
-const alloc = std.heap.c_allocator;
+const alloc = std.heap.smp_allocator;
 
 /// Panicking across the C ABI cannot be recovered from, so there is nothing to
 /// gain from Zig's stack-trace machinery here. Skipping it also keeps
