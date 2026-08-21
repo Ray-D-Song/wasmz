@@ -30,7 +30,11 @@ const ValType = wasmz.ValType;
 const Trap = wasmz.Trap;
 const Allocator = std.mem.Allocator;
 
-const alloc = std.heap.smp_allocator;
+// This allocation domain crosses the Rust/MSVC boundary only through opaque
+// handles that are released by the matching C API delete functions.  Use the
+// OS page allocator instead of a process-global slab allocator so teardown is
+// independent of the host executable's CRT and thread-local allocator state.
+const alloc = std.heap.page_allocator;
 
 /// Panicking across the C ABI cannot be recovered from, so there is nothing to
 /// gain from Zig's stack-trace machinery here. Skipping it also keeps
