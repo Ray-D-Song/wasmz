@@ -73,7 +73,7 @@ export fn result_buf_len() i32 {
 export fn db_open(path_ptr: i32, path_len: i32, db_out_ptr: i32) i32 {
     // Build null-terminated path
     const path_slice: []const u8 = @as([*]const u8, @ptrFromInt(@as(usize, @intCast(path_ptr))))[0..@intCast(path_len)];
-    const path_z = allocator.dupeZ(u8, path_slice) catch return c.SQLITE_NOMEM;
+    const path_z = allocator.dupeSentinel(u8, path_slice, 0) catch return c.SQLITE_NOMEM;
     defer allocator.free(path_z);
 
     var db: ?*c.sqlite3 = null;
@@ -128,7 +128,7 @@ export fn db_exec(db_handle: i32, sql_ptr: i32, sql_len: i32) i32 {
 
     const db: *c.sqlite3 = @ptrFromInt(@as(usize, @intCast(db_handle)));
     const sql_slice: []const u8 = @as([*]const u8, @ptrFromInt(@as(usize, @intCast(sql_ptr))))[0..@intCast(sql_len)];
-    const sql_z = allocator.dupeZ(u8, sql_slice) catch return c.SQLITE_NOMEM;
+    const sql_z = allocator.dupeSentinel(u8, sql_slice, 0) catch return c.SQLITE_NOMEM;
     defer allocator.free(sql_z);
 
     const rc = c.sqlite3_exec(db, sql_z.ptr, execCallback, null, null);

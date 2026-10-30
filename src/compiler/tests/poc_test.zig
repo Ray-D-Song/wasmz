@@ -101,7 +101,7 @@ test "lower simple add function into slot IR" {
 test "translate folds simd ops into generic wasm ops" {
     const v = try translate_mod.operatorToWasmOp(.{
         .code = .v128_const,
-        .literal = .{ .bytes = &[_]u8{0} ** 16 },
+        .literal = .{ .bytes = &@as([16]u8, @splat(0)) },
     });
     switch (v) {
         .v128_const => {},

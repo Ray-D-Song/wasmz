@@ -29,7 +29,7 @@ pub inline fn comptime_call(
 ) void {
     // .always_tail not supported by Zig native backend (Debug mode) on x86_64,
     // nor by LLVM on MIPS / wasm32.
-    const use_tail = !(builtin.mode == .Debug or
+    const use_tail = !(builtin.mode == .debug or
         builtin.target.cpu.arch == .mips or
         builtin.target.cpu.arch == .wasm32);
     if (use_tail) {

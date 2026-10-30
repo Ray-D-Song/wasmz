@@ -148,7 +148,7 @@ pub const SmallPatchList = struct {
             return;
         }
         // First spill: move inline_buf into ArrayList then append new entry.
-        var list = std.ArrayListUnmanaged(u32){};
+        var list = std.ArrayListUnmanaged(u32).empty;
         try list.ensureTotalCapacity(allocator, INLINE_CAP + 1);
         list.appendSliceAssumeCapacity(self.inline_buf[0..INLINE_CAP]);
         list.appendAssumeCapacity(site);
@@ -2699,7 +2699,15 @@ pub const Lower = struct {
         const imm_tag = op_tag ++ "_imm";
         if (comptime @hasField(Op, imm_tag)) {
             // Determine imm type from the fused op's struct field at compile time.
-            const ImmType = @TypeOf(@field(@as(std.meta.TagPayload(Op, @field(Op, imm_tag)), undefined), "imm"));
+            const ImmType = comptime blk: {
+                const op_info = @typeInfo(Op).@"union";
+                for (op_info.field_names, op_info.field_types) |field_name, field_type| {
+                    if (std.mem.eql(u8, field_name, @tagName(@field(Op, imm_tag)))) {
+                        break :blk @TypeOf(@field(@as(field_type, undefined), "imm"));
+                    }
+                }
+                @compileError("tag not found in Op union");
+            };
             const ops = self.compiled.ops.items;
             if (ops.len > 0) {
                 switch (ops[ops.len - 1]) {
@@ -2855,7 +2863,15 @@ pub const Lower = struct {
         // Peephole C (compare variant): const_i32/i64 + xxx_cmp → xxx_cmp_imm
         const imm_tag = op_tag ++ "_imm";
         if (comptime @hasField(Op, imm_tag)) {
-            const ImmType = @TypeOf(@field(@as(std.meta.TagPayload(Op, @field(Op, imm_tag)), undefined), "imm"));
+            const ImmType = comptime blk: {
+                const op_info = @typeInfo(Op).@"union";
+                for (op_info.field_names, op_info.field_types) |field_name, field_type| {
+                    if (std.mem.eql(u8, field_name, @tagName(@field(Op, imm_tag)))) {
+                        break :blk @TypeOf(@field(@as(field_type, undefined), "imm"));
+                    }
+                }
+                @compileError("tag not found in Op union");
+            };
             const ops = self.compiled.ops.items;
             if (ops.len > 0) {
                 switch (ops[ops.len - 1]) {

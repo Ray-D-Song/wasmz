@@ -213,7 +213,7 @@ pub const Subscription = extern struct {
     userdata: u64,
     u: extern struct {
         tag: EventType,
-        _padding: [3]u8 = [_]u8{0} ** 3,
+        _padding: [3]u8 = @splat(0),
         u: SubscriptionU,
     },
 };

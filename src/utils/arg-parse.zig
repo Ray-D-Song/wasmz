@@ -57,97 +57,67 @@ pub const Command = struct {
     flags: []const Flag = &.{},
     args: []const Arg = &.{},
 
-    pub const UsageWriter = struct {
-        context: *const Command,
-        writer: std.fs.File,
+    pub fn printUsage(self: *const Command) void {
+        var buf: [4096]u8 = undefined;
+        var pos: usize = 0;
 
-        pub fn write(self: *UsageWriter) !void {
-            const w = self.writer;
-            try w.writeAll("Usage:\n");
-            try self.writeCommandUsage(w);
-            try self.writeFlags(w);
-            try self.writeArgs(w);
+        inlineAppend(&buf, &pos, "Usage:\n", .{}) catch return;
+        inlineAppend(&buf, &pos, "  {s}", .{self.name}) catch return;
+        if (self.flags.len > 0) {
+            inlineAppend(&buf, &pos, " [options]", .{}) catch return;
         }
-
-        fn writeCommandUsage(self: *UsageWriter, w: std.fs.File) !void {
-            var buf: [256]u8 = undefined;
-            var fbs = std.io.fixedBufferStream(&buf);
-            const writer = fbs.writer();
-
-            try writer.print("  {s}", .{self.context.name});
-            if (self.context.flags.len > 0) {
-                try writer.writeAll(" [options]");
+        for (self.args) |arg| {
+            if (arg.required) {
+                inlineAppend(&buf, &pos, " <{s}>", .{arg.name}) catch return;
+            } else {
+                inlineAppend(&buf, &pos, " [{s}]", .{arg.name}) catch return;
             }
-            for (self.context.args) |arg| {
-                if (arg.required) {
-                    try writer.print(" <{s}>", .{arg.name});
-                } else {
-                    try writer.print(" [{s}]", .{arg.name});
-                }
-            }
-            try writer.writeAll("\n\n");
-            try w.writeAll(fbs.getWritten());
         }
+        inlineAppend(&buf, &pos, "\n\n", .{}) catch return;
 
-        fn writeFlags(self: *UsageWriter, w: std.fs.File) !void {
-            if (self.context.flags.len == 0) return;
-
-            try w.writeAll("Options:\n");
-            var buf: [256]u8 = undefined;
-            for (self.context.flags) |flag| {
-                var fbs = std.io.fixedBufferStream(&buf);
-                const writer = fbs.writer();
-
+        if (self.flags.len > 0) {
+            inlineAppend(&buf, &pos, "Options:\n", .{}) catch return;
+            for (self.flags) |flag| {
                 if (flag.short) |short| {
-                    try writer.print("  -{s}, --{s}", .{ short, flag.name });
+                    inlineAppend(&buf, &pos, "  -{s}, --{s}", .{ short, flag.name }) catch return;
                 } else {
-                    try writer.print("  --{s}", .{flag.name});
+                    inlineAppend(&buf, &pos, "  --{s}", .{flag.name}) catch return;
                 }
                 switch (flag.type) {
-                    .string => try writer.writeAll(" <string>"),
-                    .int => try writer.writeAll(" <int>"),
+                    .string => inlineAppend(&buf, &pos, " <string>", .{}) catch return,
+                    .int => inlineAppend(&buf, &pos, " <int>", .{}) catch return,
                     .boolean => {},
                 }
                 if (flag.help.len > 0) {
-                    try writer.print("  {s}", .{flag.help});
+                    inlineAppend(&buf, &pos, "  {s}", .{flag.help}) catch return;
                 }
-                try writer.writeAll("\n");
-                try w.writeAll(fbs.getWritten());
+                inlineAppend(&buf, &pos, "\n", .{}) catch return;
             }
-            try w.writeAll("\n");
         }
 
-        fn writeArgs(self: *UsageWriter, w: std.fs.File) !void {
-            if (self.context.args.len == 0) return;
-
-            try w.writeAll("Arguments:\n");
-            var buf: [128]u8 = undefined;
-            for (self.context.args) |arg| {
-                var fbs = std.io.fixedBufferStream(&buf);
-                const writer = fbs.writer();
-                try writer.print("  {s}", .{arg.name});
+        if (self.args.len > 0) {
+            inlineAppend(&buf, &pos, "Arguments:\n", .{}) catch return;
+            for (self.args) |arg| {
+                inlineAppend(&buf, &pos, "  {s}", .{arg.name}) catch return;
                 if (arg.help.len > 0) {
-                    try writer.print("  {s}", .{arg.help});
+                    inlineAppend(&buf, &pos, "  {s}", .{arg.help}) catch return;
                 }
-                try writer.writeAll("\n");
-                try w.writeAll(fbs.getWritten());
+                inlineAppend(&buf, &pos, "\n", .{}) catch return;
             }
         }
-    };
 
-    pub fn printUsage(self: *const Command) void {
-        var writer = UsageWriter{
-            .context = self,
-            .writer = std.fs.File.stderr(),
-        };
-        writer.write() catch {};
+        _ = std.c.write(2, &buf, pos);
+    }
+
+    fn inlineAppend(buf: []u8, pos: *usize, comptime fmt: []const u8, args: anytype) !void {
+        const written = try std.fmt.bufPrint(buf[pos.*..], fmt, args);
+        pos.* += written.len;
     }
 };
 
 pub const Parsed = struct {
     flags: std.StringHashMap(FlagValue),
     positional: []const []const u8,
-    _args_alloc: [][:0]u8,
     _allocator: std.mem.Allocator,
     _string_values: std.ArrayList([]const u8),
 
@@ -193,7 +163,6 @@ pub const Parsed = struct {
             self._allocator.free(s);
         }
         self._string_values.deinit(self._allocator);
-        std.process.argsFree(self._allocator, self._args_alloc);
     }
 };
 
@@ -215,11 +184,7 @@ pub const Parser = struct {
         };
     }
 
-    pub fn parse(self: *Parser) ParseError!Parsed {
-        const args = std.process.argsAlloc(self.allocator) catch
-            return error.OutOfMemory;
-        errdefer std.process.argsFree(self.allocator, args);
-
+    pub fn parse(self: *Parser, args: []const [:0]const u8) ParseError!Parsed {
         var flags = std.StringHashMap(Parsed.FlagValue).init(self.allocator);
         errdefer flags.deinit();
 
@@ -312,7 +277,6 @@ pub const Parser = struct {
                             .flags = flags,
                             .positional = positional.toOwnedSlice(self.allocator) catch
                                 return error.OutOfMemory,
-                            ._args_alloc = args,
                             ._allocator = self.allocator,
                             ._string_values = string_values,
                         };
@@ -328,7 +292,6 @@ pub const Parser = struct {
             .flags = flags,
             .positional = positional.toOwnedSlice(self.allocator) catch
                 return error.OutOfMemory,
-            ._args_alloc = args,
             ._allocator = self.allocator,
             ._string_values = string_values,
         };

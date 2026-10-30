@@ -24,7 +24,7 @@ test "load/store lane roundtrip" {
     const loaded = exec_mod.load(.v128_load16_lane, memory[0..], 0, 0, 1, RawVal.from(base));
     try testing.expectEqual(@as(i32, 0x2211), exec_mod.extractLane(.i16x8_extract_lane_u, RawVal.from(loaded), 1).readAs(i32));
 
-    var out = [_]u8{0} ** 8;
+    var out: [8]u8 = @splat(0);
     exec_mod.store(.v128_store16_lane, out[0..], 0, 0, 1, RawVal.from(loaded));
     try testing.expectEqualSlices(u8, memory[0..2], out[0..2]);
 }

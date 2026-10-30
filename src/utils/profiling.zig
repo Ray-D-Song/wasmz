@@ -63,8 +63,8 @@ fn currentRssMacOS() usize {
 
 fn currentRssLinux() usize {
     var buf: [256]u8 = undefined;
-    const fd = std.posix.open("/proc/self/statm", .{}, 0) catch return 0;
-    defer std.posix.close(fd);
+    const fd = std.posix.openatZ(std.posix.AT.FDCWD, "/proc/self/statm", .{ .ACCMODE = .RDONLY }, 0) catch return 0;
+    defer _ = std.c.close(fd);
     const n = std.posix.read(fd, &buf) catch return 0;
     if (n == 0) return 0;
     var it = std.mem.tokenizeScalar(u8, buf[0..n], ' ');

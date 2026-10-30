@@ -42,6 +42,12 @@ const core = @import("root.zig");
 const arch = core.platform;
 const Allocator = std.mem.Allocator;
 
+fn nanoTimestamp() i64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    return @as(i64, ts.sec) * std.time.ns_per_s + @as(i64, ts.nsec);
+}
+
 /// Maximum virtual address space reserved for an owned memory when the module
 /// declares no maximum page count.  4 GiB is the hard limit imposed by the
 /// 32-bit address space of WebAssembly linear memory.
@@ -72,16 +78,16 @@ fn ownedMmapInit(committed: usize, capacity: usize) Allocator.Error![]align(mmap
         const base = posix.mmap(
             null,
             capacity,
-            posix.PROT.NONE,
+            @as(posix.PROT, .{}),
             .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
             -1,
             0,
         ) catch return error.OutOfMemory;
         if (committed > 0) {
-            posix.mprotect(base[0..committed], posix.PROT.READ | posix.PROT.WRITE) catch {
+            if (std.c.mprotect(@ptrCast(base.ptr), committed, @as(posix.PROT, .{ .READ = true, .WRITE = true })) < 0) {
                 posix.munmap(base);
                 return error.OutOfMemory;
-            };
+            }
             @memset(base[0..committed], 0);
         }
         return base;
@@ -96,7 +102,7 @@ fn ownedMmapGrow(base: []align(mmap_page_align) u8, old_committed: usize, new_co
     if (use_mmap) {
         const posix = std.posix;
         const new_range: []align(mmap_page_align) u8 = @alignCast(base[old_committed..new_committed]);
-        posix.mprotect(new_range, posix.PROT.READ | posix.PROT.WRITE) catch return false;
+        if (std.c.mprotect(@ptrCast(new_range.ptr), new_range.len, @as(posix.PROT, .{ .READ = true, .WRITE = true })) < 0) return false;
         @memset(new_range, 0);
         return true;
     } else {
@@ -124,8 +130,8 @@ const FutexBucket = if (builtin.single_threaded) struct {
     waiters: u32 = 0,
     notify_seq: u32 = 0,
 } else struct {
-    mutex: std.Thread.Mutex = .{},
-    cond: std.Thread.Condition = .{},
+    mutex: std.c.pthread_mutex_t = .{},
+    cond: std.c.pthread_cond_t = .{},
     waiters: u32 = 0,
     notify_seq: u32 = 0,
 };
@@ -171,7 +177,7 @@ const SharedMemoryInner = struct {
             .allocator = allocator,
             .bytes = bytes,
             .current_size = std.atomic.Value(usize).init(min_bytes),
-            .futex = [_]FutexBucket{.{}} ** FUTEX_BUCKETS,
+            .futex = @splat(.{}),
         };
         return ptr;
     }
@@ -194,18 +200,18 @@ const SharedMemoryInner = struct {
         if (builtin.single_threaded) return 0;
         const idx = bucketIndex(ea);
         const bucket = &self.futex[idx];
-        bucket.mutex.lock();
-        defer bucket.mutex.unlock();
+        _ = std.c.pthread_mutex_lock(&bucket.mutex);
+        defer _ = std.c.pthread_mutex_unlock(&bucket.mutex);
         const waiting = bucket.waiters;
         if (waiting == 0 or count == 0) return 0;
         const to_wake = @min(count, waiting);
         bucket.notify_seq +%= 1;
         if (to_wake >= waiting) {
-            bucket.cond.broadcast();
+            _ = std.c.pthread_cond_broadcast(&bucket.cond);
         } else {
             var i: u32 = 0;
             while (i < to_wake) : (i += 1) {
-                bucket.cond.signal();
+                _ = std.c.pthread_cond_signal(&bucket.cond);
             }
         }
         return to_wake;
@@ -225,8 +231,8 @@ const SharedMemoryInner = struct {
         const idx = bucketIndex(ea);
         const bucket = &self.futex[idx];
 
-        bucket.mutex.lock();
-        defer bucket.mutex.unlock();
+        _ = std.c.pthread_mutex_lock(&bucket.mutex);
+        defer _ = std.c.pthread_mutex_unlock(&bucket.mutex);
 
         const cur = @atomicLoad(u32, @as(*u32, @ptrCast(@alignCast(self.bytes.ptr + ea))), .seq_cst);
         if (cur != expected) return .not_equal;
@@ -238,19 +244,21 @@ const SharedMemoryInner = struct {
 
         if (timeout_ns < 0) {
             while (bucket.notify_seq == initial_seq) {
-                bucket.cond.wait(&bucket.mutex);
+                _ = std.c.pthread_cond_wait(&bucket.cond, &bucket.mutex);
             }
             return .ok;
         } else {
-            const start_ns = std.time.nanoTimestamp();
+            const start_ns = nanoTimestamp();
             const deadline_ns = start_ns + timeout_ns;
             while (bucket.notify_seq == initial_seq) {
-                const now_ns = std.time.nanoTimestamp();
+                const now_ns = nanoTimestamp();
                 if (now_ns >= deadline_ns) return .timed_out;
-                const left: u64 = @intCast(deadline_ns - now_ns);
-                bucket.cond.timedWait(&bucket.mutex, left) catch {
-                    return .timed_out;
+                var ts: std.c.timespec = .{
+                    .sec = @intCast(@divTrunc(deadline_ns, std.time.ns_per_s)),
+                    .nsec = @as(c_long, @intCast(@rem(deadline_ns, @as(i64, std.time.ns_per_s)))),
                 };
+                const rc = std.c.pthread_cond_timedwait(&bucket.cond, &bucket.mutex, &ts);
+                if (rc != .SUCCESS) return .timed_out;
             }
             return .ok;
         }
@@ -269,8 +277,8 @@ const SharedMemoryInner = struct {
         const idx = bucketIndex(ea);
         const bucket = &self.futex[idx];
 
-        bucket.mutex.lock();
-        defer bucket.mutex.unlock();
+        _ = std.c.pthread_mutex_lock(&bucket.mutex);
+        defer _ = std.c.pthread_mutex_unlock(&bucket.mutex);
 
         const AtomicUint = arch.AtomicUint;
         const cur = @atomicLoad(AtomicUint, @as(*AtomicUint, @ptrCast(@alignCast(self.bytes.ptr + ea))), .seq_cst);
@@ -283,19 +291,21 @@ const SharedMemoryInner = struct {
 
         if (timeout_ns < 0) {
             while (bucket.notify_seq == initial_seq) {
-                bucket.cond.wait(&bucket.mutex);
+                _ = std.c.pthread_cond_wait(&bucket.cond, &bucket.mutex);
             }
             return .ok;
         } else {
-            const start_ns = std.time.nanoTimestamp();
+            const start_ns = nanoTimestamp();
             const deadline_ns = start_ns + timeout_ns;
             while (bucket.notify_seq == initial_seq) {
-                const now_ns = std.time.nanoTimestamp();
+                const now_ns = nanoTimestamp();
                 if (now_ns >= deadline_ns) return .timed_out;
-                const left: u64 = @intCast(deadline_ns - now_ns);
-                bucket.cond.timedWait(&bucket.mutex, left) catch {
-                    return .timed_out;
+                var ts: std.c.timespec = .{
+                    .sec = @intCast(@divTrunc(deadline_ns, std.time.ns_per_s)),
+                    .nsec = @as(c_long, @intCast(@rem(deadline_ns, @as(i64, std.time.ns_per_s)))),
                 };
+                const rc = std.c.pthread_cond_timedwait(&bucket.cond, &bucket.mutex, &ts);
+                if (rc != .SUCCESS) return .timed_out;
             }
             return .ok;
         }

@@ -107,7 +107,7 @@ pub fn encode(
             .const_v128 => |inst| {
                 writeOps(ops.OpsConstV128, ops_ptr, .{
                     .dst = inst.dst,
-                    .value = @bitCast(inst.value),
+                    .value = inst.value.bytes,
                 });
             },
             .const_ref_null => |inst| {

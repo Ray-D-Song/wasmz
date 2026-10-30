@@ -2,24 +2,134 @@ const std = @import("std");
 const core = @import("core");
 const wasmz = @import("wasmz");
 const types = @import("./types.zig");
+const builtin = @import("builtin");
 
 const Allocator = std.mem.Allocator;
 const RawVal = core.RawVal;
 const HostContext = wasmz.HostContext;
 
-fn wasiInode(inode: anytype) u64 {
-    const T = @TypeOf(inode);
-    const info = @typeInfo(T);
-    if (info != .int) @compileError("inode must be an integer");
+// ── POSIX stat — platform-dependent ─────────────────────────────────────────
+// On macOS/BSD Zig's Stat is well-defined.  On Linux cross-compilation
+// from macOS, Stat and std.c.fstat/fstatat are `void`, so we provide
+// our own extern declarations and Stat layout matching glibc x86_64.
+const isBsd = builtin.target.os.tag == .macos or
+    builtin.target.os.tag == .freebsd or
+    builtin.target.os.tag == .openbsd or
+    builtin.target.os.tag == .dragonfly or
+    builtin.target.os.tag == .netbsd;
 
-    return switch (info.int.signedness) {
-        .unsigned => @as(u64, @intCast(inode)),
-        .signed => blk: {
-            const UnsignedT = std.meta.Int(.unsigned, @bitSizeOf(T));
-            const raw: UnsignedT = @bitCast(inode);
-            break :blk @as(u64, @intCast(raw));
-        },
+const timespec = extern struct { tv_sec: i64, tv_nsec: i64 };
+
+const Stat = if (isBsd) std.c.Stat else extern struct {
+    st_dev: u64,
+    st_ino: u64,
+    st_nlink: u64,
+    st_mode: u32,
+    st_uid: u32,
+    st_gid: u32,
+    __pad0: u32,
+    st_rdev: u64,
+    st_size: i64,
+    st_blksize: i64,
+    st_blocks: i64,
+    st_atim: timespec,
+    st_mtim: timespec,
+    st_ctim: timespec,
+    __unused: [3]i64,
+};
+
+extern "c" fn fstat(fd: c_int, buf: *Stat) c_int;
+extern "c" fn fstatat(dir_fd: c_int, path: [*:0]const u8, buf: *Stat, flags: c_int) c_int;
+extern "c" fn ftruncate(fd: c_int, length: i64) c_int;
+
+/// AT_SYMLINK_NOFOLLOW — POSIX constant, 0x100 on Linux, 0x20 on macOS.
+/// We define our own so we don't depend on std.c.AT which may be void
+/// during cross-compilation.
+const AT_SYMLINK_NOFOLLOW: c_int = if (isBsd) 0x20 else 0x100;
+
+/// POSIX S_IFMT constants to extract file type from `Stat.mode`.
+const S_IFMT = 0xF000;
+const S_IFREG = 0x8000;
+const S_IFDIR = 0x4000;
+const S_IFLNK = 0xA000;
+const S_IFCHR = 0x2000;
+const S_IFBLK = 0x6000;
+const S_IFIFO = 0x1000;
+const S_IFSOCK = 0xC000;
+
+/// POSIX dirent d_type constants.
+const DT_UNKNOWN: u8 = 0;
+const DT_FIFO: u8 = 1;
+const DT_CHR: u8 = 2;
+const DT_DIR: u8 = 4;
+const DT_BLK: u8 = 6;
+const DT_REG: u8 = 8;
+const DT_LNK: u8 = 10;
+const DT_SOCK: u8 = 12;
+const DT_WHT: u8 = 14;
+
+fn modeToFiletype(mode: u16) types.Filetype {
+    return switch (mode & S_IFMT) {
+        S_IFREG => .regular_file,
+        S_IFDIR => .directory,
+        S_IFLNK => .symbolic_link,
+        S_IFCHR => .character_device,
+        S_IFBLK => .block_device,
+        S_IFIFO => .socket_stream,
+        S_IFSOCK => .socket_dgram,
+        else => .unknown,
     };
+}
+
+fn direntTypeToFiletype(dt: u8) types.Filetype {
+    return switch (dt) {
+        DT_REG => .regular_file,
+        DT_DIR => .directory,
+        DT_LNK => .symbolic_link,
+        DT_CHR => .character_device,
+        DT_BLK => .block_device,
+        DT_FIFO => .socket_stream,
+        DT_SOCK => .socket_dgram,
+        else => .unknown,
+    };
+}
+
+/// Convert a platform `Stat` to WASI `types.Filestat`.
+fn statToFilestat(stat: Stat) types.Filestat {
+    if (isBsd) {
+        return .{
+            .dev = @intCast(stat.dev),
+            .ino = @intCast(stat.ino),
+            .filetype = modeToFiletype(@as(u16, @intCast(stat.mode))),
+            .nlink = @intCast(stat.nlink),
+            .size = @intCast(stat.size),
+            .atim = @intCast(stat.atimespec.sec * std.time.ns_per_s + stat.atimespec.nsec),
+            .mtim = @intCast(stat.mtimespec.sec * std.time.ns_per_s + stat.mtimespec.nsec),
+            .ctim = @intCast(stat.ctimespec.sec * std.time.ns_per_s + stat.ctimespec.nsec),
+        };
+    } else {
+        return .{
+            .dev = @intCast(stat.st_dev),
+            .ino = @intCast(stat.st_ino),
+            .filetype = modeToFiletype(@as(u16, @intCast(stat.st_mode))),
+            .nlink = @intCast(stat.st_nlink),
+            .size = @intCast(stat.st_size),
+            .atim = @intCast(stat.st_atim.tv_sec * std.time.ns_per_s + stat.st_atim.tv_nsec),
+            .mtim = @intCast(stat.st_mtim.tv_sec * std.time.ns_per_s + stat.st_mtim.tv_nsec),
+            .ctim = @intCast(stat.st_ctim.tv_sec * std.time.ns_per_s + stat.st_ctim.tv_nsec),
+        };
+    }
+}
+
+/// Write all bytes to a file descriptor, retrying on partial writes.
+fn writeAllFd(fd: std.c.fd_t, bytes: []const u8) bool {
+    var remaining = bytes;
+    while (remaining.len > 0) {
+        const n = std.c.write(fd, remaining.ptr, remaining.len);
+        if (n < 0) return false;
+        remaining = remaining[@intCast(n)..];
+    }
+    return true;
 }
 
 pub const WriteError = error{Io};
@@ -41,28 +151,48 @@ pub const Output = struct {
     }
 
     fn write_stdout(_: ?*anyopaque, bytes: []const u8) WriteError!void {
-        std.fs.File.stdout().writeAll(bytes) catch return error.Io;
+        if (!writeAllFd(1, bytes)) return error.Io;
     }
 
     fn write_stderr(_: ?*anyopaque, bytes: []const u8) WriteError!void {
-        std.fs.File.stderr().writeAll(bytes) catch return error.Io;
+        if (!writeAllFd(2, bytes)) return error.Io;
     }
 };
 
 const FileEntry = struct {
     kind: enum { file, directory },
-    handle: union {
-        file: std.fs.File,
-        directory: std.fs.Dir,
-    },
+    fd: std.c.fd_t,
     offset: u64,
     rights: types.Rights,
 };
 
 const Preopen = struct {
     path: []const u8,
-    dir: std.fs.Dir,
+    fd: std.c.fd_t,
 };
+
+fn errnoToWasi(rc: c_int) types.Errno {
+    const err = std.c.errno(rc);
+    return switch (err) {
+        .SUCCESS => .success,
+        .BADF => .badf,
+        .NOENT => .noent,
+        .EXIST => .exist,
+        .FAULT => .fault,
+        .INVAL => .inval,
+        .IO => .io,
+        .NOSYS => .nosys,
+        .NOTDIR => .notdir,
+        .ISDIR => .isdir,
+        .ACCES => .noent,
+        .FBIG => .overflow,
+        .OVERFLOW => .overflow,
+        .SPIPE => .spi,
+        .DQUOT, .NAMETOOLONG, .ROFS, .MLINK => .noent,
+        .INTR, .AGAIN => .io,
+        else => .io,
+    };
+}
 
 pub const FdIO = struct {
     const Self = @This();
@@ -88,20 +218,13 @@ pub const FdIO = struct {
     pub fn deinit(self: *Self) void {
         var iter = self.files.iterator();
         while (iter.next()) |entry| {
-            switch (entry.value_ptr.kind) {
-                .file => entry.value_ptr.handle.file.close(),
-                .directory => {
-                    var dir = @constCast(&entry.value_ptr.handle.directory);
-                    dir.close();
-                },
-            }
+            _ = std.c.close(entry.value_ptr.fd);
         }
         self.files.deinit();
 
         var preopen_iter = self.preopens.iterator();
         while (preopen_iter.next()) |entry| {
-            var dir = @constCast(&entry.value_ptr.dir);
-            dir.close();
+            _ = std.c.close(entry.value_ptr.fd);
             self.allocator.free(entry.value_ptr.path);
         }
         self.preopens.deinit();
@@ -116,11 +239,17 @@ pub const FdIO = struct {
     }
 
     pub fn addPreopen(self: *Self, path: []const u8) !types.Fd {
-        const dir = std.fs.cwd().openDir(path, .{}) catch |err| switch (err) {
-            error.FileNotFound => return error.PathNotFound,
-            error.NotDir => return error.NotDirectory,
-            else => return error.Io,
-        };
+        const path_z = try self.allocator.dupeSentinel(u8, path, 0);
+        defer self.allocator.free(path_z);
+
+        const dirfd = std.c.openat(
+            std.c.AT.FDCWD,
+            path_z,
+            @as(std.c.O, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }),
+        );
+        if (dirfd < 0) {
+            return error.PathNotFound;
+        }
 
         const fd = self.next_fd;
         self.next_fd +%= 1;
@@ -128,7 +257,7 @@ pub const FdIO = struct {
         const path_dup = try self.allocator.dupe(u8, path);
         try self.preopens.put(fd, .{
             .path = path_dup,
-            .dir = dir,
+            .fd = dirfd,
         });
 
         return fd;
@@ -156,52 +285,59 @@ pub const FdIO = struct {
 
         const path_bytes = try ctx.readBytes(path_ptr, path_len);
         const path = std.mem.sliceTo(path_bytes, 0);
+        const path_z = try self.allocator.dupeSentinel(u8, path, 0);
+        defer self.allocator.free(path_z);
 
-        const entry: FileEntry = blk: {
-            if (oflags.directory) {
-                const subdir = preopen.dir.openDir(path, .{}) catch {
-                    types.writeErrno(results, .noent);
-                    return;
-                };
-                break :blk .{
-                    .kind = .directory,
-                    .handle = .{ .directory = subdir },
-                    .offset = 0,
-                    .rights = fs_rights_base,
-                };
-            }
-
-            if (oflags.creat) {
-                const file = preopen.dir.createFile(path, .{ .truncate = oflags.trunc }) catch {
-                    types.writeErrno(results, .exist);
-                    return;
-                };
-                break :blk .{
-                    .kind = .file,
-                    .handle = .{ .file = file },
-                    .offset = 0,
-                    .rights = fs_rights_base,
-                };
-            }
-
-            const file = preopen.dir.openFile(path, .{ .mode = .read_write }) catch {
-                types.writeErrno(results, .noent);
+        if (oflags.directory) {
+            const new_fd = std.c.openat(
+                preopen.fd,
+                path_z,
+                @as(std.c.O, .{ .ACCMODE = .RDONLY, .DIRECTORY = true, .CLOEXEC = true }),
+            );
+            if (new_fd < 0) {
+                types.writeErrno(results, errnoToWasi(new_fd));
                 return;
-            };
-            break :blk .{
-                .kind = .file,
-                .handle = .{ .file = file },
+            }
+            const new_fd_num = self.next_fd;
+            self.next_fd +%= 1;
+            try self.files.put(new_fd_num, .{
+                .kind = .directory,
+                .fd = new_fd,
                 .offset = 0,
                 .rights = fs_rights_base,
-            };
-        };
+            });
+            try ctx.writeValue(fd_ptr, new_fd_num);
+            types.writeErrno(results, .success);
+            return;
+        }
 
-        const new_fd = self.next_fd;
+        // File open
+        var open_flags: std.c.O = .{ .ACCMODE = .RDWR, .CLOEXEC = true };
+        if (oflags.creat) {
+            open_flags.CREAT = true;
+            open_flags.TRUNC = oflags.trunc;
+            open_flags.EXCL = oflags.excl;
+        }
+        const new_fd = std.c.openat(
+            preopen.fd,
+            path_z,
+            open_flags,
+            @as(c_uint, 0o644),
+        );
+        if (new_fd < 0) {
+            types.writeErrno(results, errnoToWasi(new_fd));
+            return;
+        }
+
+        const new_fd_num = self.next_fd;
         self.next_fd +%= 1;
-
-        try self.files.put(new_fd, entry);
-
-        try ctx.writeValue(fd_ptr, new_fd);
+        try self.files.put(new_fd_num, .{
+            .kind = .file,
+            .fd = new_fd,
+            .offset = 0,
+            .rights = fs_rights_base,
+        });
+        try ctx.writeValue(fd_ptr, new_fd_num);
         types.writeErrno(results, .success);
     }
 
@@ -215,17 +351,10 @@ pub const FdIO = struct {
             },
             else => {
                 if (self.files.fetchRemove(fd)) |removed| {
-                    switch (removed.value.kind) {
-                        .file => removed.value.handle.file.close(),
-                        .directory => {
-                            var dir = @constCast(&removed.value.handle.directory);
-                            dir.close();
-                        },
-                    }
+                    _ = std.c.close(removed.value.fd);
                     types.writeErrno(results, .success);
                 } else if (self.preopens.fetchRemove(fd)) |removed| {
-                    var dir = @constCast(&removed.value.dir);
-                    dir.close();
+                    _ = std.c.close(removed.value.fd);
                     self.allocator.free(removed.value.path);
                     types.writeErrno(results, .success);
                 } else {
@@ -247,10 +376,10 @@ pub const FdIO = struct {
                 var total_written: u32 = 0;
                 for (iovs) |iov| {
                     const bytes = try ctx.readBytes(iov.buf, iov.buf_len);
-                    self.stdout.writeAll(bytes) catch {
+                    if (!writeAllFd(1, bytes)) {
                         types.writeErrno(results, .io);
                         return;
-                    };
+                    }
                     total_written +%= iov.buf_len;
                 }
                 try ctx.writeValue(nwritten_ptr, total_written);
@@ -261,10 +390,10 @@ pub const FdIO = struct {
                 var total_written: u32 = 0;
                 for (iovs) |iov| {
                     const bytes = try ctx.readBytes(iov.buf, iov.buf_len);
-                    self.stderr.writeAll(bytes) catch {
+                    if (!writeAllFd(2, bytes)) {
                         types.writeErrno(results, .io);
                         return;
-                    };
+                    }
                     total_written +%= iov.buf_len;
                 }
                 try ctx.writeValue(nwritten_ptr, total_written);
@@ -279,19 +408,20 @@ pub const FdIO = struct {
                 const iovs = try ctx.readSlice(iovs_ptr, iovs_len, types.Ciovec);
                 var total_written: u32 = 0;
 
-                entry.handle.file.seekTo(entry.offset) catch {
+                if (std.c.lseek(entry.fd, @intCast(entry.offset), @as(c_int, 0)) < 0) {
                     types.writeErrno(results, .io);
                     return;
-                };
+                }
 
                 for (iovs) |iov| {
                     const bytes = try ctx.readBytes(iov.buf, iov.buf_len);
-                    const written = entry.handle.file.write(bytes) catch {
+                    const n = std.c.write(entry.fd, bytes.ptr, bytes.len);
+                    if (n < 0) {
                         types.writeErrno(results, .io);
                         return;
-                    };
-                    total_written +%= @intCast(written);
-                    entry.offset += written;
+                    }
+                    total_written +%= @intCast(n);
+                    entry.offset += @intCast(n);
                 }
 
                 try ctx.writeValue(nwritten_ptr, total_written);
@@ -327,13 +457,14 @@ pub const FdIO = struct {
                     const bytes_to_read = @min(buf_len, @as(u32, @intCast(guest_mem.len - buf)));
                     const read_buf = guest_mem[buf .. buf + bytes_to_read];
 
-                    const bytes_read = std.fs.File.stdin().read(read_buf) catch {
+                    const bytes_read = std.c.read(0, read_buf.ptr, read_buf.len);
+                    if (bytes_read < 0) {
                         types.writeErrno(results, .io);
                         return;
-                    };
+                    }
 
                     total_read +%= @intCast(bytes_read);
-                    if (bytes_read < buf_len) break;
+                    if (bytes_read == 0 or @as(u64, @intCast(bytes_read)) < buf_len) break;
                 }
 
                 try ctx.writeValue(nread_ptr, total_read);
@@ -348,10 +479,10 @@ pub const FdIO = struct {
                 const iovs = try ctx.readSlice(iovs_ptr, iovs_len, types.Iovec);
                 var total_read: u32 = 0;
 
-                entry.handle.file.seekTo(entry.offset) catch {
+                if (std.c.lseek(entry.fd, @intCast(entry.offset), @as(c_int, 0)) < 0) {
                     types.writeErrno(results, .io);
                     return;
-                };
+                }
 
                 for (iovs) |iov| {
                     const buf = iov.buf;
@@ -369,14 +500,15 @@ pub const FdIO = struct {
                     const bytes_to_read = @min(buf_len, @as(u32, @intCast(guest_mem.len - buf)));
                     const read_buf = guest_mem[buf .. buf + bytes_to_read];
 
-                    const bytes_read = entry.handle.file.read(read_buf) catch {
+                    const bytes_read = std.c.read(entry.fd, read_buf.ptr, read_buf.len);
+                    if (bytes_read < 0) {
                         types.writeErrno(results, .io);
                         return;
-                    };
+                    }
 
                     total_read +%= @intCast(bytes_read);
-                    entry.offset += bytes_read;
-                    if (bytes_read < buf_len) break;
+                    entry.offset += @intCast(bytes_read);
+                    if (bytes_read == 0 or @as(u64, @intCast(bytes_read)) < buf_len) break;
                 }
 
                 try ctx.writeValue(nread_ptr, total_read);
@@ -420,11 +552,12 @@ pub const FdIO = struct {
                         break :blk @intCast(new);
                     },
                     .end => blk: {
-                        const stat = entry.handle.file.stat() catch {
+                        var stat: Stat = undefined;
+                        if (fstat(entry.fd, &stat) < 0) {
                             types.writeErrno(results, .io);
                             return;
-                        };
-                        const end = @as(i64, @intCast(stat.size));
+                        }
+                        const end = @as(i64, @intCast(if (isBsd) stat.size else stat.st_size));
                         const new = end + offset;
                         if (new < 0) {
                             types.writeErrno(results, .inval);
@@ -445,7 +578,7 @@ pub const FdIO = struct {
         const fd = params[0].readAs(u32);
         const buf_ptr = params[1].readAs(u32);
 
-        const stat: types.Filestat = switch (fd) {
+        const result: types.Filestat = switch (fd) {
             0 => .{
                 .dev = 0,
                 .ino = 0,
@@ -468,50 +601,25 @@ pub const FdIO = struct {
             },
             else => {
                 if (self.files.get(fd)) |entry| {
-                    const file_stat = entry.handle.file.stat() catch {
+                    var stat: Stat = undefined;
+                    if (fstat(entry.fd, &stat) < 0) {
                         types.writeErrno(results, .io);
                         return;
-                    };
-
-                    const result: types.Filestat = .{
-                        .dev = 0,
-                        .ino = wasiInode(file_stat.inode),
-                        .filetype = switch (file_stat.kind) {
-                            .file => .regular_file,
-                            .directory => .directory,
-                            .sym_link => .symbolic_link,
-                            else => .unknown,
-                        },
-                        .nlink = 1,
-                        .size = file_stat.size,
-                        .atim = @intCast(file_stat.atime),
-                        .mtim = @intCast(file_stat.mtime),
-                        .ctim = @intCast(file_stat.ctime),
-                    };
-
-                    try ctx.writeBytes(buf_ptr, std.mem.asBytes(&result));
+                    }
+                    const fs = statToFilestat(stat);
+                    try ctx.writeBytes(buf_ptr, std.mem.asBytes(&fs));
                     types.writeErrno(results, .success);
                     return;
                 }
 
                 if (self.preopens.get(fd)) |preopen| {
-                    const dir_stat = preopen.dir.stat() catch {
+                    var stat: Stat = undefined;
+                    if (fstat(preopen.fd, &stat) < 0) {
                         types.writeErrno(results, .io);
                         return;
-                    };
-
-                    const result: types.Filestat = .{
-                        .dev = 0,
-                        .ino = wasiInode(dir_stat.inode),
-                        .filetype = .directory,
-                        .nlink = 1,
-                        .size = dir_stat.size,
-                        .atim = @intCast(dir_stat.atime),
-                        .mtim = @intCast(dir_stat.mtime),
-                        .ctim = @intCast(dir_stat.ctime),
-                    };
-
-                    try ctx.writeBytes(buf_ptr, std.mem.asBytes(&result));
+                    }
+                    const fs = statToFilestat(stat);
+                    try ctx.writeBytes(buf_ptr, std.mem.asBytes(&fs));
                     types.writeErrno(results, .success);
                     return;
                 }
@@ -521,7 +629,7 @@ pub const FdIO = struct {
             },
         };
 
-        try ctx.writeBytes(buf_ptr, std.mem.asBytes(&stat));
+        try ctx.writeBytes(buf_ptr, std.mem.asBytes(&result));
         types.writeErrno(results, .success);
     }
 
@@ -550,18 +658,19 @@ pub const FdIO = struct {
                 const iovs = try ctx.readSlice(iovs_ptr, iovs_len, types.Ciovec);
                 var total_written: u32 = 0;
 
-                entry.handle.file.seekTo(@intCast(offset)) catch {
+                if (std.c.lseek(entry.fd, @intCast(offset), @as(c_int, 0)) < 0) {
                     types.writeErrno(results, .io);
                     return;
-                };
+                }
 
                 for (iovs) |iov| {
                     const bytes = try ctx.readBytes(iov.buf, iov.buf_len);
-                    const written = entry.handle.file.write(bytes) catch {
+                    const n = std.c.write(entry.fd, bytes.ptr, bytes.len);
+                    if (n < 0) {
                         types.writeErrno(results, .io);
                         return;
-                    };
-                    total_written +%= @intCast(written);
+                    }
+                    total_written +%= @intCast(n);
                 }
 
                 try ctx.writeValue(nwritten_ptr, total_written);
@@ -595,10 +704,10 @@ pub const FdIO = struct {
                 const iovs = try ctx.readSlice(iovs_ptr, iovs_len, types.Iovec);
                 var total_read: u32 = 0;
 
-                entry.handle.file.seekTo(@intCast(offset)) catch {
+                if (std.c.lseek(entry.fd, @intCast(offset), @as(c_int, 0)) < 0) {
                     types.writeErrno(results, .io);
                     return;
-                };
+                }
 
                 for (iovs) |iov| {
                     const buf = iov.buf;
@@ -616,13 +725,14 @@ pub const FdIO = struct {
                     const bytes_to_read = @min(buf_len, @as(u32, @intCast(guest_mem.len - buf)));
                     const read_buf = guest_mem[buf .. buf + bytes_to_read];
 
-                    const bytes_read = entry.handle.file.read(read_buf) catch {
+                    const bytes_read = std.c.read(entry.fd, read_buf.ptr, read_buf.len);
+                    if (bytes_read < 0) {
                         types.writeErrno(results, .io);
                         return;
-                    };
+                    }
 
                     total_read +%= @intCast(bytes_read);
-                    if (bytes_read < buf_len) break;
+                    if (bytes_read == 0 or @as(u64, @intCast(bytes_read)) < buf_len) break;
                 }
 
                 try ctx.writeValue(nread_ptr, total_read);
@@ -650,30 +760,23 @@ pub const FdIO = struct {
             },
             else => {
                 if (self.files.get(fd)) |entry| {
-                    const file_stat = entry.handle.file.stat() catch {
+                    var stat: Stat = undefined;
+                    if (fstat(entry.fd, &stat) < 0) {
                         types.writeErrno(results, .io);
                         return;
-                    };
-
+                    }
                     const result: types.FdStat = .{
-                        .fs_filetype = switch (file_stat.kind) {
-                            .file => .regular_file,
-                            .directory => .directory,
-                            .sym_link => .symbolic_link,
-                            else => .unknown,
-                        },
+                        .fs_filetype = modeToFiletype(@as(u16, @intCast(if (isBsd) stat.mode else stat.st_mode))),
                         .fs_flags = .{},
                         .fs_rights_base = entry.rights,
                         .fs_rights_inheriting = .{},
                     };
-
                     try ctx.writeBytes(buf_ptr, std.mem.asBytes(&result));
                     types.writeErrno(results, .success);
                     return;
                 }
 
-                if (self.preopens.get(fd)) |preopen| {
-                    _ = preopen;
+                if (self.preopens.get(fd)) |_| {
                     const result: types.FdStat = .{
                         .fs_filetype = .directory,
                         .fs_flags = .{},
@@ -690,7 +793,6 @@ pub const FdIO = struct {
                         },
                         .fs_rights_inheriting = .{},
                     };
-
                     try ctx.writeBytes(buf_ptr, std.mem.asBytes(&result));
                     types.writeErrno(results, .success);
                     return;
@@ -749,14 +851,11 @@ pub const FdIO = struct {
         types.writeErrno(results, .success);
     }
 
-    /// fd_advise: Provide file access advice (hint only, no-op is acceptable)
-    /// params: fd(i32), offset(i64), len(i64), advice(i32)
     pub fn fdAdvise(self: *Self, _: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
-        // offset and len are hints only; advice is advisory
-        _ = params[1]; // offset
-        _ = params[2]; // len
-        _ = params[3]; // advice
+        _ = params[1];
+        _ = params[2];
+        _ = params[3];
 
         switch (fd) {
             0, 1, 2 => {
@@ -767,14 +866,11 @@ pub const FdIO = struct {
                     types.writeErrno(results, .badf);
                     return;
                 }
-                // No-op: posix_fadvise not available everywhere; treat as success
                 types.writeErrno(results, .success);
             },
         }
     }
 
-    /// fd_allocate: Allocate space in a file
-    /// params: fd(i32), offset(i64), len(i64)
     pub fn fdAllocate(self: *Self, _: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
         const offset = params[1].readAs(i64);
@@ -798,23 +894,22 @@ pub const FdIO = struct {
                     return;
                 }
                 const new_size: u64 = @intCast(offset + len);
-                const stat = entry.handle.file.stat() catch {
+                var stat: Stat = undefined;
+                if (fstat(entry.fd, &stat) < 0) {
                     types.writeErrno(results, .io);
                     return;
-                };
-                if (new_size > stat.size) {
-                    entry.handle.file.setEndPos(new_size) catch {
+                }
+                if (new_size > @as(u64, @intCast(if (isBsd) stat.size else stat.st_size))) {
+                    if (ftruncate(entry.fd, @intCast(new_size)) < 0) {
                         types.writeErrno(results, .io);
                         return;
-                    };
+                    }
                 }
                 types.writeErrno(results, .success);
             },
         }
     }
 
-    /// fd_datasync: Synchronize the data of a file to disk
-    /// params: fd(i32)
     pub fn fdDatasync(self: *Self, _: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
 
@@ -831,20 +926,18 @@ pub const FdIO = struct {
                     types.writeErrno(results, .badf);
                     return;
                 }
-                entry.handle.file.sync() catch {
+                if (std.c.fsync(entry.fd) < 0) {
                     types.writeErrno(results, .io);
                     return;
-                };
+                }
                 types.writeErrno(results, .success);
             },
         }
     }
 
-    /// fd_fdstat_set_flags: Update the flags associated with a file descriptor
-    /// params: fd(i32), flags(i32)
     pub fn fdFdstatSetFlags(self: *Self, _: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
-        _ = params[1]; // flags — not enforced in this implementation
+        _ = params[1];
 
         switch (fd) {
             0, 1, 2 => {
@@ -855,18 +948,15 @@ pub const FdIO = struct {
                     types.writeErrno(results, .badf);
                     return;
                 }
-                // Flag changes (append/nonblock/sync) are not persisted in this impl
                 types.writeErrno(results, .success);
             },
         }
     }
 
-    /// fd_fdstat_set_rights: Update the rights of a file descriptor
-    /// params: fd(i32), fs_rights_base(i64), fs_rights_inheriting(i64)
     pub fn fdFdstatSetRights(self: *Self, _: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
         const fs_rights_base: types.Rights = @bitCast(params[1].readAs(u64));
-        _ = params[2]; // fs_rights_inheriting
+        _ = params[2];
 
         switch (fd) {
             0, 1, 2 => {
@@ -877,15 +967,12 @@ pub const FdIO = struct {
                     types.writeErrno(results, .badf);
                     return;
                 };
-                // Rights can only be reduced, not increased
                 entry.rights = fs_rights_base;
                 types.writeErrno(results, .success);
             },
         }
     }
 
-    /// fd_filestat_set_size: Set the size of a file
-    /// params: fd(i32), size(i64)
     pub fn fdFilestatSetSize(self: *Self, _: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
         const size = params[1].readAs(u64);
@@ -903,22 +990,20 @@ pub const FdIO = struct {
                     types.writeErrno(results, .badf);
                     return;
                 }
-                entry.handle.file.setEndPos(size) catch {
+                if (ftruncate(entry.fd, @intCast(size)) < 0) {
                     types.writeErrno(results, .io);
                     return;
-                };
+                }
                 types.writeErrno(results, .success);
             },
         }
     }
 
-    /// fd_filestat_set_times: Set the timestamps of a file
-    /// params: fd(i32), atim(i64), mtim(i64), fst_flags(i32)
     pub fn fdFilestatSetTimes(self: *Self, _: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
-        _ = params[1]; // atim
-        _ = params[2]; // mtim
-        _ = params[3]; // fst_flags
+        _ = params[1];
+        _ = params[2];
+        _ = params[3];
 
         switch (fd) {
             0, 1, 2 => {
@@ -929,14 +1014,11 @@ pub const FdIO = struct {
                     types.writeErrno(results, .badf);
                     return;
                 }
-                // Timestamp setting is not supported portably; return nosys
                 types.writeErrno(results, .nosys);
             },
         }
     }
 
-    /// fd_readdir: Read directory entries
-    /// params: fd(i32), buf_ptr(i32), buf_len(i32), cookie(i64), bufused_ptr(i32)
     pub fn fdReaddir(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
         const buf_ptr = params[1].readAs(u32);
@@ -944,17 +1026,16 @@ pub const FdIO = struct {
         const cookie = params[3].readAs(u64);
         const bufused_ptr = params[4].readAs(u32);
 
-        // Get the directory handle
-        const dir_handle: std.fs.Dir = blk: {
+        const dir_fd: std.c.fd_t = blk: {
             if (self.files.getPtr(fd)) |entry| {
                 if (entry.kind != .directory) {
                     types.writeErrno(results, .notdir);
                     return;
                 }
-                break :blk entry.handle.directory;
+                break :blk entry.fd;
             }
             if (self.preopens.getPtr(fd)) |preopen| {
-                break :blk preopen.dir;
+                break :blk preopen.fd;
             }
             types.writeErrno(results, .badf);
             return;
@@ -971,54 +1052,53 @@ pub const FdIO = struct {
         }
 
         const available = @min(buf_len, @as(u32, @intCast(guest_mem.len - buf_ptr)));
-        var write_offset: u32 = 0;
 
-        // Open an iterator — we need to re-iterate from the cookie position
-        var iter = dir_handle.iterate();
+        const dir = std.c.fdopendir(dir_fd) orelse {
+            types.writeErrno(results, .noent);
+            return;
+        };
+        defer _ = std.c.closedir(dir);
+
+        var write_offset: u32 = 0;
         var current_cookie: u64 = 0;
 
         // Skip entries until we reach the cookie
         while (current_cookie < cookie) {
-            const entry = iter.next() catch {
-                types.writeErrno(results, .io);
-                return;
-            };
-            if (entry == null) break;
+            const entry = std.c.readdir(dir) orelse break;
+            _ = entry;
             current_cookie += 1;
         }
 
         // Write directory entries into the buffer
         while (true) {
-            const entry = iter.next() catch {
-                types.writeErrno(results, .io);
-                return;
-            };
-            const e = entry orelse break;
+            const entry = std.c.readdir(dir) orelse break;
 
-            const name_bytes = e.name;
-            const name_len: u32 = @intCast(name_bytes.len);
+            const name_bytes = &entry.name;
+            const name_len: u32 = if (@hasField(@TypeOf(entry.*), "namlen"))
+                @intCast(entry.namlen)
+            else
+                @intCast(std.mem.indexOfScalar(u8, name_bytes, 0) orelse name_bytes.len);
+            const name_slice = name_bytes[0..name_len];
             const dirent_size: u32 = @intCast(@sizeOf(types.Dirent));
             const needed = dirent_size + name_len;
 
             if (write_offset + needed > available) break;
 
             current_cookie += 1;
-            const dirent = types.Dirent{
+            const wasi_dirent = types.Dirent{
                 .d_next = current_cookie,
-                .d_ino = 0,
+                .d_ino = entry.ino,
                 .d_namlen = name_len,
-                .d_type = switch (e.kind) {
-                    .file => .regular_file,
-                    .directory => .directory,
-                    .sym_link => .symbolic_link,
-                    else => .unknown,
-                },
+                .d_type = if (@hasField(@TypeOf(entry.*), "type"))
+                    direntTypeToFiletype(entry.type)
+                else
+                    .unknown,
             };
 
-            const dirent_bytes = std.mem.asBytes(&dirent);
+            const dirent_bytes = std.mem.asBytes(&wasi_dirent);
             @memcpy(guest_mem[buf_ptr + write_offset .. buf_ptr + write_offset + dirent_size], dirent_bytes);
             write_offset += dirent_size;
-            @memcpy(guest_mem[buf_ptr + write_offset .. buf_ptr + write_offset + name_len], name_bytes);
+            @memcpy(guest_mem[buf_ptr + write_offset .. buf_ptr + write_offset + name_len], name_slice);
             write_offset += name_len;
         }
 
@@ -1026,8 +1106,6 @@ pub const FdIO = struct {
         types.writeErrno(results, .success);
     }
 
-    /// fd_renumber: Renumber a file descriptor
-    /// params: fd(i32), to(i32)
     pub fn fdRenumber(self: *Self, _: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
         const to = params[1].readAs(u32);
@@ -1037,22 +1115,13 @@ pub const FdIO = struct {
             return;
         }
 
-        // Close the destination fd if it exists
         if (self.files.fetchRemove(to)) |removed| {
-            switch (removed.value.kind) {
-                .file => removed.value.handle.file.close(),
-                .directory => {
-                    var dir = @constCast(&removed.value.handle.directory);
-                    dir.close();
-                },
-            }
+            _ = std.c.close(removed.value.fd);
         } else if (self.preopens.fetchRemove(to)) |removed| {
-            var dir = @constCast(&removed.value.dir);
-            dir.close();
+            _ = std.c.close(removed.value.fd);
             self.allocator.free(removed.value.path);
         }
 
-        // Move source to destination
         if (self.files.fetchRemove(fd)) |removed| {
             self.files.put(to, removed.value) catch {
                 types.writeErrno(results, .io);
@@ -1070,8 +1139,6 @@ pub const FdIO = struct {
         }
     }
 
-    /// fd_sync: Synchronize the data and metadata of a file to disk
-    /// params: fd(i32)
     pub fn fdSync(self: *Self, _: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
 
@@ -1088,17 +1155,15 @@ pub const FdIO = struct {
                     types.writeErrno(results, .badf);
                     return;
                 }
-                entry.handle.file.sync() catch {
+                if (std.c.fsync(entry.fd) < 0) {
                     types.writeErrno(results, .io);
                     return;
-                };
+                }
                 types.writeErrno(results, .success);
             },
         }
     }
 
-    /// fd_tell: Return the current offset of a file descriptor
-    /// params: fd(i32), offset_ptr(i32)
     pub fn fdTell(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
         const offset_ptr = params[1].readAs(u32);
@@ -1118,17 +1183,15 @@ pub const FdIO = struct {
         }
     }
 
-    /// path_create_directory: Create a directory
-    /// params: fd(i32), path_ptr(i32), path_len(i32)
     pub fn pathCreateDirectory(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
         const path_ptr = params[1].readAs(u32);
         const path_len = params[2].readAs(u32);
 
-        const dir_handle: std.fs.Dir = blk: {
-            if (self.preopens.get(fd)) |p| break :blk p.dir;
+        const dir_fd: std.c.fd_t = blk: {
+            if (self.preopens.get(fd)) |p| break :blk p.fd;
             if (self.files.get(fd)) |e| {
-                if (e.kind == .directory) break :blk e.handle.directory;
+                if (e.kind == .directory) break :blk e.fd;
             }
             types.writeErrno(results, .badf);
             return;
@@ -1136,27 +1199,17 @@ pub const FdIO = struct {
 
         const path_bytes = try ctx.readBytes(path_ptr, path_len);
         const path = std.mem.sliceTo(path_bytes, 0);
+        const path_z = try self.allocator.dupeSentinel(u8, path, 0);
+        defer self.allocator.free(path_z);
 
-        dir_handle.makeDir(path) catch |err| switch (err) {
-            error.PathAlreadyExists => {
-                types.writeErrno(results, .exist);
-                return;
-            },
-            error.FileNotFound => {
-                types.writeErrno(results, .noent);
-                return;
-            },
-            else => {
-                types.writeErrno(results, .io);
-                return;
-            },
-        };
-
+        const rc = std.c.mkdirat(dir_fd, path_z, @as(c_uint, 0o755));
+        if (rc < 0) {
+            types.writeErrno(results, errnoToWasi(rc));
+            return;
+        }
         types.writeErrno(results, .success);
     }
 
-    /// path_filestat_get: Get file status for a path
-    /// params: fd(i32), flags(i32), path_ptr(i32), path_len(i32), buf_ptr(i32)
     pub fn pathFilestatGet(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
         _ = params[1]; // flags (symlink_follow)
@@ -1164,10 +1217,10 @@ pub const FdIO = struct {
         const path_len = params[3].readAs(u32);
         const buf_ptr = params[4].readAs(u32);
 
-        const dir_handle: std.fs.Dir = blk: {
-            if (self.preopens.get(fd)) |p| break :blk p.dir;
+        const dir_fd: std.c.fd_t = blk: {
+            if (self.preopens.get(fd)) |p| break :blk p.fd;
             if (self.files.get(fd)) |e| {
-                if (e.kind == .directory) break :blk e.handle.directory;
+                if (e.kind == .directory) break :blk e.fd;
             }
             types.writeErrno(results, .badf);
             return;
@@ -1175,40 +1228,20 @@ pub const FdIO = struct {
 
         const path_bytes = try ctx.readBytes(path_ptr, path_len);
         const path = std.mem.sliceTo(path_bytes, 0);
+        const path_z = try self.allocator.dupeSentinel(u8, path, 0);
+        defer self.allocator.free(path_z);
 
-        const stat = dir_handle.statFile(path) catch |err| switch (err) {
-            error.FileNotFound => {
-                types.writeErrno(results, .noent);
-                return;
-            },
-            else => {
-                types.writeErrno(results, .io);
-                return;
-            },
-        };
+        var stat: Stat = undefined;
+        if (fstatat(dir_fd, path_z, &stat, @as(u32, AT_SYMLINK_NOFOLLOW)) < 0) {
+            types.writeErrno(results, .noent);
+            return;
+        }
 
-        const result = types.Filestat{
-            .dev = 0,
-            .ino = wasiInode(stat.inode),
-            .filetype = switch (stat.kind) {
-                .file => .regular_file,
-                .directory => .directory,
-                .sym_link => .symbolic_link,
-                else => .unknown,
-            },
-            .nlink = 1,
-            .size = stat.size,
-            .atim = @intCast(stat.atime),
-            .mtim = @intCast(stat.mtime),
-            .ctim = @intCast(stat.ctime),
-        };
-
+        const result = statToFilestat(stat);
         try ctx.writeBytes(buf_ptr, std.mem.asBytes(&result));
         types.writeErrno(results, .success);
     }
 
-    /// path_filestat_set_times: Set timestamps of a path
-    /// params: fd(i32), flags(i32), path_ptr(i32), path_len(i32), atim(i64), mtim(i64), fst_flags(i32)
     pub fn pathFilestatSetTimes(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
         _ = params[1]; // flags
@@ -1226,13 +1259,9 @@ pub const FdIO = struct {
             return;
         }
 
-        // Timestamp setting is not supported portably
         types.writeErrno(results, .nosys);
     }
 
-    /// path_link: Create a hard link
-    /// params: old_fd(i32), old_flags(i32), old_path_ptr(i32), old_path_len(i32),
-    ///         new_fd(i32), new_path_ptr(i32), new_path_len(i32)
     pub fn pathLink(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const old_fd = params[0].readAs(u32);
         _ = params[1]; // old_flags
@@ -1242,19 +1271,19 @@ pub const FdIO = struct {
         const new_path_ptr = params[5].readAs(u32);
         const new_path_len = params[6].readAs(u32);
 
-        const old_dir: std.fs.Dir = blk: {
-            if (self.preopens.get(old_fd)) |p| break :blk p.dir;
+        const old_dir_fd: std.c.fd_t = blk: {
+            if (self.preopens.get(old_fd)) |p| break :blk p.fd;
             if (self.files.get(old_fd)) |e| {
-                if (e.kind == .directory) break :blk e.handle.directory;
+                if (e.kind == .directory) break :blk e.fd;
             }
             types.writeErrno(results, .badf);
             return;
         };
 
-        const new_dir: std.fs.Dir = blk: {
-            if (self.preopens.get(new_fd)) |p| break :blk p.dir;
+        const new_dir_fd: std.c.fd_t = blk: {
+            if (self.preopens.get(new_fd)) |p| break :blk p.fd;
             if (self.files.get(new_fd)) |e| {
-                if (e.kind == .directory) break :blk e.handle.directory;
+                if (e.kind == .directory) break :blk e.fd;
             }
             types.writeErrno(results, .badf);
             return;
@@ -1265,28 +1294,26 @@ pub const FdIO = struct {
         const new_path_bytes = try ctx.readBytes(new_path_ptr, new_path_len);
         const new_path = std.mem.sliceTo(new_path_bytes, 0);
 
-        old_dir.symLink(old_path, new_path, .{}) catch |err| switch (err) {
-            error.PathAlreadyExists => {
-                types.writeErrno(results, .exist);
-                return;
-            },
-            error.FileNotFound => {
-                types.writeErrno(results, .noent);
-                return;
-            },
-            else => {
-                // Hard links not portably available; fallback to nosys
+        const old_path_z = try self.allocator.dupeSentinel(u8, old_path, 0);
+        defer self.allocator.free(old_path_z);
+        const new_path_z = try self.allocator.dupeSentinel(u8, new_path, 0);
+        defer self.allocator.free(new_path_z);
+
+        // Try hard link first; fall back to nosys if not available
+        const rc = std.c.linkat(old_dir_fd, old_path_z, new_dir_fd, new_path_z, @as(c_uint, 0));
+        if (rc < 0) {
+            const err = std.c.errno(rc);
+            if (err == .NOSYS or err == .MLINK or err == .OPNOTSUPP) {
                 types.writeErrno(results, .nosys);
                 return;
-            },
-        };
-        _ = new_dir;
+            }
+            types.writeErrno(results, errnoToWasi(rc));
+            return;
+        }
 
         types.writeErrno(results, .success);
     }
 
-    /// path_readlink: Read a symbolic link
-    /// params: fd(i32), path_ptr(i32), path_len(i32), buf_ptr(i32), buf_len(i32), bufused_ptr(i32)
     pub fn pathReadlink(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
         const path_ptr = params[1].readAs(u32);
@@ -1295,10 +1322,10 @@ pub const FdIO = struct {
         const buf_len = params[4].readAs(u32);
         const bufused_ptr = params[5].readAs(u32);
 
-        const dir_handle: std.fs.Dir = blk: {
-            if (self.preopens.get(fd)) |p| break :blk p.dir;
+        const dir_fd: std.c.fd_t = blk: {
+            if (self.preopens.get(fd)) |p| break :blk p.fd;
             if (self.files.get(fd)) |e| {
-                if (e.kind == .directory) break :blk e.handle.directory;
+                if (e.kind == .directory) break :blk e.fd;
             }
             types.writeErrno(results, .badf);
             return;
@@ -1306,6 +1333,8 @@ pub const FdIO = struct {
 
         const path_bytes = try ctx.readBytes(path_ptr, path_len);
         const path = std.mem.sliceTo(path_bytes, 0);
+        const path_z = try self.allocator.dupeSentinel(u8, path, 0);
+        defer self.allocator.free(path_z);
 
         const guest_mem = ctx.memory() orelse {
             types.writeErrno(results, .fault);
@@ -1318,36 +1347,30 @@ pub const FdIO = struct {
         }
 
         const available = @min(buf_len, @as(u32, @intCast(guest_mem.len - buf_ptr)));
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        var link_buf: [std.c.PATH_MAX]u8 = undefined;
 
-        const link_target = dir_handle.readLink(path, &buf) catch |err| switch (err) {
-            error.FileNotFound => {
-                types.writeErrno(results, .noent);
-                return;
-            },
-            else => {
-                types.writeErrno(results, .io);
-                return;
-            },
-        };
+        const n = std.c.readlinkat(dir_fd, path_z, &link_buf, link_buf.len);
+        if (n < 0) {
+            types.writeErrno(results, errnoToWasi(@intCast(n)));
+            return;
+        }
 
+        const link_target = link_buf[0..@intCast(n)];
         const copy_len = @min(@as(u32, @intCast(link_target.len)), available);
         @memcpy(guest_mem[buf_ptr .. buf_ptr + copy_len], link_target[0..copy_len]);
         try ctx.writeValue(bufused_ptr, copy_len);
         types.writeErrno(results, .success);
     }
 
-    /// path_remove_directory: Remove a directory
-    /// params: fd(i32), path_ptr(i32), path_len(i32)
     pub fn pathRemoveDirectory(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
         const path_ptr = params[1].readAs(u32);
         const path_len = params[2].readAs(u32);
 
-        const dir_handle: std.fs.Dir = blk: {
-            if (self.preopens.get(fd)) |p| break :blk p.dir;
+        const dir_fd: std.c.fd_t = blk: {
+            if (self.preopens.get(fd)) |p| break :blk p.fd;
             if (self.files.get(fd)) |e| {
-                if (e.kind == .directory) break :blk e.handle.directory;
+                if (e.kind == .directory) break :blk e.fd;
             }
             types.writeErrno(results, .badf);
             return;
@@ -1355,28 +1378,17 @@ pub const FdIO = struct {
 
         const path_bytes = try ctx.readBytes(path_ptr, path_len);
         const path = std.mem.sliceTo(path_bytes, 0);
+        const path_z = try self.allocator.dupeSentinel(u8, path, 0);
+        defer self.allocator.free(path_z);
 
-        dir_handle.deleteDir(path) catch |err| switch (err) {
-            error.FileNotFound => {
-                types.writeErrno(results, .noent);
-                return;
-            },
-            error.DirNotEmpty => {
-                types.writeErrno(results, .inout);
-                return;
-            },
-            else => {
-                types.writeErrno(results, .io);
-                return;
-            },
-        };
-
+        const rc = std.c.unlinkat(dir_fd, path_z, @as(c_uint, std.c.AT.REMOVEDIR));
+        if (rc < 0) {
+            types.writeErrno(results, errnoToWasi(rc));
+            return;
+        }
         types.writeErrno(results, .success);
     }
 
-    /// path_rename: Rename a file or directory
-    /// params: fd(i32), old_path_ptr(i32), old_path_len(i32),
-    ///         new_fd(i32), new_path_ptr(i32), new_path_len(i32)
     pub fn pathRename(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const old_fd = params[0].readAs(u32);
         const old_path_ptr = params[1].readAs(u32);
@@ -1385,19 +1397,19 @@ pub const FdIO = struct {
         const new_path_ptr = params[4].readAs(u32);
         const new_path_len = params[5].readAs(u32);
 
-        const old_dir: std.fs.Dir = blk: {
-            if (self.preopens.get(old_fd)) |p| break :blk p.dir;
+        const old_dir_fd: std.c.fd_t = blk: {
+            if (self.preopens.get(old_fd)) |p| break :blk p.fd;
             if (self.files.get(old_fd)) |e| {
-                if (e.kind == .directory) break :blk e.handle.directory;
+                if (e.kind == .directory) break :blk e.fd;
             }
             types.writeErrno(results, .badf);
             return;
         };
 
-        const new_dir: std.fs.Dir = blk: {
-            if (self.preopens.get(new_fd)) |p| break :blk p.dir;
+        const new_dir_fd: std.c.fd_t = blk: {
+            if (self.preopens.get(new_fd)) |p| break :blk p.fd;
             if (self.files.get(new_fd)) |e| {
-                if (e.kind == .directory) break :blk e.handle.directory;
+                if (e.kind == .directory) break :blk e.fd;
             }
             types.writeErrno(results, .badf);
             return;
@@ -1408,22 +1420,19 @@ pub const FdIO = struct {
         const new_path_bytes = try ctx.readBytes(new_path_ptr, new_path_len);
         const new_path = std.mem.sliceTo(new_path_bytes, 0);
 
-        std.fs.rename(old_dir, old_path, new_dir, new_path) catch |err| switch (err) {
-            error.FileNotFound => {
-                types.writeErrno(results, .noent);
-                return;
-            },
-            else => {
-                types.writeErrno(results, .io);
-                return;
-            },
-        };
+        const old_path_z = try self.allocator.dupeSentinel(u8, old_path, 0);
+        defer self.allocator.free(old_path_z);
+        const new_path_z = try self.allocator.dupeSentinel(u8, new_path, 0);
+        defer self.allocator.free(new_path_z);
 
+        const rc = std.c.renameat(old_dir_fd, old_path_z, new_dir_fd, new_path_z);
+        if (rc < 0) {
+            types.writeErrno(results, errnoToWasi(rc));
+            return;
+        }
         types.writeErrno(results, .success);
     }
 
-    /// path_symlink: Create a symbolic link
-    /// params: old_path_ptr(i32), old_path_len(i32), fd(i32), new_path_ptr(i32), new_path_len(i32)
     pub fn pathSymlink(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const old_path_ptr = params[0].readAs(u32);
         const old_path_len = params[1].readAs(u32);
@@ -1431,10 +1440,10 @@ pub const FdIO = struct {
         const new_path_ptr = params[3].readAs(u32);
         const new_path_len = params[4].readAs(u32);
 
-        const dir_handle: std.fs.Dir = blk: {
-            if (self.preopens.get(fd)) |p| break :blk p.dir;
+        const dir_fd: std.c.fd_t = blk: {
+            if (self.preopens.get(fd)) |p| break :blk p.fd;
             if (self.files.get(fd)) |e| {
-                if (e.kind == .directory) break :blk e.handle.directory;
+                if (e.kind == .directory) break :blk e.fd;
             }
             types.writeErrno(results, .badf);
             return;
@@ -1445,35 +1454,28 @@ pub const FdIO = struct {
         const new_path_bytes = try ctx.readBytes(new_path_ptr, new_path_len);
         const new_path = std.mem.sliceTo(new_path_bytes, 0);
 
-        dir_handle.symLink(old_path, new_path, .{}) catch |err| switch (err) {
-            error.PathAlreadyExists => {
-                types.writeErrno(results, .exist);
-                return;
-            },
-            error.FileNotFound => {
-                types.writeErrno(results, .noent);
-                return;
-            },
-            else => {
-                types.writeErrno(results, .io);
-                return;
-            },
-        };
+        const old_path_z = try self.allocator.dupeSentinel(u8, old_path, 0);
+        defer self.allocator.free(old_path_z);
+        const new_path_z = try self.allocator.dupeSentinel(u8, new_path, 0);
+        defer self.allocator.free(new_path_z);
 
+        const rc = std.c.symlinkat(old_path_z, dir_fd, new_path_z);
+        if (rc < 0) {
+            types.writeErrno(results, errnoToWasi(rc));
+            return;
+        }
         types.writeErrno(results, .success);
     }
 
-    /// path_unlink_file: Remove a file
-    /// params: fd(i32), path_ptr(i32), path_len(i32)
     pub fn pathUnlinkFile(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
         const path_ptr = params[1].readAs(u32);
         const path_len = params[2].readAs(u32);
 
-        const dir_handle: std.fs.Dir = blk: {
-            if (self.preopens.get(fd)) |p| break :blk p.dir;
+        const dir_fd: std.c.fd_t = blk: {
+            if (self.preopens.get(fd)) |p| break :blk p.fd;
             if (self.files.get(fd)) |e| {
-                if (e.kind == .directory) break :blk e.handle.directory;
+                if (e.kind == .directory) break :blk e.fd;
             }
             types.writeErrno(results, .badf);
             return;
@@ -1481,22 +1483,14 @@ pub const FdIO = struct {
 
         const path_bytes = try ctx.readBytes(path_ptr, path_len);
         const path = std.mem.sliceTo(path_bytes, 0);
+        const path_z = try self.allocator.dupeSentinel(u8, path, 0);
+        defer self.allocator.free(path_z);
 
-        dir_handle.deleteFile(path) catch |err| switch (err) {
-            error.FileNotFound => {
-                types.writeErrno(results, .noent);
-                return;
-            },
-            error.IsDir => {
-                types.writeErrno(results, .isdir);
-                return;
-            },
-            else => {
-                types.writeErrno(results, .io);
-                return;
-            },
-        };
-
+        const rc = std.c.unlinkat(dir_fd, path_z, @as(c_uint, 0));
+        if (rc < 0) {
+            types.writeErrno(results, errnoToWasi(rc));
+            return;
+        }
         types.writeErrno(results, .success);
     }
 };

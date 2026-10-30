@@ -24,13 +24,15 @@ pub const ClockSource = struct {
     }
 
     fn default_realtime_now(_: ?*anyopaque) u64 {
-        const ts = std.time.nanoTimestamp();
-        return @intCast(@max(ts, 0));
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        return @as(u64, @intCast(@as(i128, ts.sec) * std.time.ns_per_s + ts.nsec));
     }
 
     fn default_monotonic_now(_: ?*anyopaque) u64 {
-        const ts = std.time.nanoTimestamp();
-        return @intCast(@max(ts, 0));
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        return @as(u64, @intCast(@as(i128, ts.sec) * std.time.ns_per_s + ts.nsec));
     }
 };
 
@@ -83,5 +85,10 @@ pub const Clock = struct {
 };
 
 fn clockId(raw: RawVal) types.ClockId {
-    return std.meta.intToEnum(types.ClockId, raw.readAs(u32)) catch .thread_cputime_id;
+    const val = raw.readAs(u32);
+    const clock_info = @typeInfo(types.ClockId).@"enum";
+    inline for (clock_info.field_values) |field_value| {
+        if (val == field_value) return @enumFromInt(val);
+    }
+    return .thread_cputime_id;
 }

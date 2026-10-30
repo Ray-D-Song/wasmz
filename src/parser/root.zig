@@ -45,6 +45,17 @@ const LinkingEntry = payload_mod.LinkingEntry;
 const WASM_MAGIC_NUMBER = 0x6d736100;
 const WASM_SUPPORTED_VERSION = [_]u32{ 0x1, 0x2, 0x0d };
 
+/// Convert an integer to an enum value, returning an error if the value
+/// does not match any declared field.  Replaces the removed
+/// `std.meta.intToEnum`.
+fn intToEnumChecked(comptime T: type, value: anytype) !T {
+    const enum_info = @typeInfo(T).@"enum";
+    inline for (enum_info.field_values) |field_value| {
+        if (value == field_value) return @as(T, @enumFromInt(value));
+    }
+    return error.InvalidEnumValue;
+}
+
 const ElementSegmentType = enum(u8) {
     legacy_active_funcref_externval = 0x00,
     passive_externval = 0x01,
@@ -695,7 +706,7 @@ pub const Parser = struct {
         const module = self.read_str_bytes();
         const field = self.read_str_bytes();
         const kind_raw = self.read_u8();
-        const kind = std.meta.intToEnum(ExternalKind, kind_raw) catch {
+        const kind = intToEnumChecked(ExternalKind, kind_raw) catch {
             std.debug.panic("Unknown external kind: {}", .{kind_raw});
         };
 
@@ -735,7 +746,7 @@ pub const Parser = struct {
 
         const field = self.read_str_bytes();
         const kind_raw = self.read_u8();
-        const kind = std.meta.intToEnum(ExternalKind, kind_raw) catch {
+        const kind = intToEnumChecked(ExternalKind, kind_raw) catch {
             std.debug.panic("Unknown external kind: {}", .{kind_raw});
         };
         const index = self.read_var_uint32();
@@ -848,7 +859,7 @@ pub const Parser = struct {
             const typ_raw = self.read_var_uint7();
             const payload_len = self.read_var_uint32();
             const payload_end = self.cur_pos + payload_len;
-            const typ = std.meta.intToEnum(NameType, typ_raw) catch {
+            const typ = intToEnumChecked(NameType, typ_raw) catch {
                 self.cur_pos = payload_end;
                 continue;
             };
@@ -978,7 +989,7 @@ pub const Parser = struct {
         }
 
         const typ_raw = self.read_var_uint7();
-        const typ = std.meta.intToEnum(RelocType, typ_raw) catch {
+        const typ = intToEnumChecked(RelocType, typ_raw) catch {
             self.last_err_arg = typ_raw;
             return self.fail_with_state(ParserError.BadRelocationType);
         };
@@ -1097,7 +1108,7 @@ pub const Parser = struct {
         }
 
         const segment_type_raw = self.read_u8();
-        const segment_type = std.meta.intToEnum(ElementSegmentType, segment_type_raw) catch {
+        const segment_type = intToEnumChecked(ElementSegmentType, segment_type_raw) catch {
             self.last_err_arg = segment_type_raw;
             return self.fail_with_state(ParserError.UnsupportedElementSegmentType);
         };
@@ -1213,7 +1224,7 @@ pub const Parser = struct {
         }
 
         const typ_raw = self.read_var_uint32();
-        const typ = std.meta.intToEnum(LinkingType, typ_raw) catch {
+        const typ = intToEnumChecked(LinkingType, typ_raw) catch {
             self.last_err_arg = typ_raw;
             return self.fail_with_state(ParserError.BadLinkingType);
         };
@@ -1492,7 +1503,7 @@ pub const Parser = struct {
     fn read_tag_type(self: *Parser) TagType {
         const attribute = self.read_var_uint32();
         return .{
-            .attribute = std.meta.intToEnum(TagAttribute, @as(u8, @intCast(attribute))) catch {
+            .attribute = intToEnumChecked(TagAttribute, @as(u8, @intCast(attribute))) catch {
                 std.debug.panic("Unknown tag attribute: {}", .{attribute});
             },
             .type_index = self.read_var_uint32(),
@@ -1570,7 +1581,7 @@ pub const Parser = struct {
         for (handlers) |*handler| {
             if (!self.has_var_int_bytes()) return error.NeedMoreData;
             const kind_raw = self.read_var_uint32();
-            const kind = std.meta.intToEnum(CatchHandlerKind, kind_raw) catch {
+            const kind = intToEnumChecked(CatchHandlerKind, kind_raw) catch {
                 self.last_err_arg = kind_raw;
                 return error.UnknownOperator;
             };
@@ -1596,7 +1607,7 @@ pub const Parser = struct {
         if (!self.has_var_int_bytes()) return error.NeedMoreData;
         const subcode = self.read_var_uint32();
         const code_value = 0xfb00 | subcode;
-        const code = std.meta.intToEnum(OperatorCode, code_value) catch {
+        const code = intToEnumChecked(OperatorCode, code_value) catch {
             self.last_err_arg = code_value;
             return error.UnknownOperator;
         };
@@ -1670,7 +1681,7 @@ pub const Parser = struct {
         if (!self.has_var_int_bytes()) return error.NeedMoreData;
         const subcode = self.read_var_uint32();
         const code_value = 0xfc00 | subcode;
-        const code = std.meta.intToEnum(OperatorCode, code_value) catch {
+        const code = intToEnumChecked(OperatorCode, code_value) catch {
             self.last_err_arg = code_value;
             return error.UnknownOperator;
         };
@@ -1734,7 +1745,7 @@ pub const Parser = struct {
         if (!self.has_var_int_bytes()) return error.NeedMoreData;
         const subcode = self.read_var_uint32();
         const code_value = 0xfd000 | subcode;
-        const code = std.meta.intToEnum(OperatorCode, code_value) catch {
+        const code = intToEnumChecked(OperatorCode, code_value) catch {
             self.last_err_arg = code_value;
             return error.UnknownOperator;
         };
@@ -2026,7 +2037,7 @@ pub const Parser = struct {
         if (!self.has_var_int_bytes()) return error.NeedMoreData;
         const subcode = self.read_var_uint32();
         const code_value = 0xfe00 | subcode;
-        const code = std.meta.intToEnum(OperatorCode, code_value) catch {
+        const code = intToEnumChecked(OperatorCode, code_value) catch {
             self.last_err_arg = code_value;
             return error.UnknownOperator;
         };
@@ -2122,7 +2133,7 @@ pub const Parser = struct {
 
         if (!self.has_bytes(1)) return error.NeedMoreData;
         const code_raw = self.read_u8();
-        const code = std.meta.intToEnum(OperatorCode, code_raw) catch {
+        const code = intToEnumChecked(OperatorCode, code_raw) catch {
             self.last_err_arg = code_raw;
             return error.UnknownOperator;
         };
@@ -2485,7 +2496,7 @@ pub const Parser = struct {
         if (!self.has_bytes(1)) return false;
 
         const kind_raw = self.read_u8();
-        const kind = std.meta.intToEnum(ExternalKind, kind_raw) catch return true;
+        const kind = intToEnumChecked(ExternalKind, kind_raw) catch return true;
         return switch (kind) {
             .function => blk: {
                 if (!self.has_var_int_bytes()) break :blk false;
@@ -2531,7 +2542,7 @@ pub const Parser = struct {
     fn skip_element_entry(self: *Parser) bool {
         if (!self.has_bytes(1)) return false;
         const segment_type_raw = self.read_u8();
-        const segment_type = std.meta.intToEnum(ElementSegmentType, segment_type_raw) catch return true;
+        const segment_type = intToEnumChecked(ElementSegmentType, segment_type_raw) catch return true;
         return switch (segment_type) {
             .active_externval, .active_elemexpr => blk: {
                 if (!self.has_var_int_bytes()) break :blk false;
@@ -2576,7 +2587,7 @@ pub const Parser = struct {
     fn skip_linking_entry(self: *Parser) bool {
         if (!self.has_var_int_bytes()) return false;
         const typ_raw = self.read_var_uint32();
-        const typ = std.meta.intToEnum(LinkingType, typ_raw) catch return true;
+        const typ = intToEnumChecked(LinkingType, typ_raw) catch return true;
         return switch (typ) {
             .stack_pointer => blk: {
                 if (!self.has_var_int_bytes()) break :blk false;
@@ -2608,7 +2619,7 @@ pub const Parser = struct {
         if (!self.has_bytes(payload_len)) return false;
 
         const payload_end = self.cur_pos + payload_len;
-        const typ = std.meta.intToEnum(NameType, typ_raw) catch {
+        const typ = intToEnumChecked(NameType, typ_raw) catch {
             self.cur_pos = payload_end;
             return true;
         };
@@ -2663,7 +2674,7 @@ pub const Parser = struct {
     fn skip_reloc_entry(self: *Parser) bool {
         if (!self.has_var_int_bytes()) return false;
         const typ_raw = self.read_var_uint7();
-        const typ = std.meta.intToEnum(RelocType, typ_raw) catch return true;
+        const typ = intToEnumChecked(RelocType, typ_raw) catch return true;
         if (!self.has_var_int_bytes()) return false;
         _ = self.read_var_uint32();
         if (!self.has_var_int_bytes()) return false;
@@ -3054,11 +3065,11 @@ fn contains_u32(values: []const u32, value: u32) bool {
 }
 
 fn parse_section_code(raw: u7) ?SectionCode {
-    return std.meta.intToEnum(SectionCode, raw) catch null;
+    return intToEnumChecked(SectionCode, raw) catch null;
 }
 
 fn parse_type_kind(kind: i64) TypeKind {
-    return std.meta.intToEnum(TypeKind, @as(i32, @intCast(kind))) catch {
+    return intToEnumChecked(TypeKind, @as(i32, @intCast(kind))) catch {
         std.debug.panic("Unknown type kind: {}", .{kind});
     };
 }

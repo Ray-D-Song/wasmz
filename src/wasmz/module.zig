@@ -1569,13 +1569,13 @@ pub const Module = struct {
         var reachable = try std.DynamicBitSet.initEmpty(allocator, n);
         errdefer reachable.deinit();
 
-        var worklist = std.ArrayListUnmanaged(u32){};
+        var worklist = std.ArrayListUnmanaged(u32).empty;
         defer worklist.deinit(allocator);
 
         // Seed
         try worklist.append(allocator, entry_func_idx);
 
-        var callees_buf = std.ArrayListUnmanaged(u32){};
+        var callees_buf = std.ArrayListUnmanaged(u32).empty;
         defer callees_buf.deinit(allocator);
 
         while (worklist.items.len > 0) {
@@ -2530,7 +2530,12 @@ fn decodeAndLower(
 
     if (!p.has_bytes(1)) return error.NeedMoreData;
     const code_raw = p.read_u8();
-    const code = std.meta.intToEnum(payload_mod.OperatorCode, code_raw) catch {
+    // Validate that code_raw maps to a known OperatorCode before converting.
+    const code: payload_mod.OperatorCode = blk: {
+        const opcode_info = @typeInfo(payload_mod.OperatorCode).@"enum";
+        inline for (opcode_info.field_values) |field_value| {
+            if (code_raw == field_value) break :blk @enumFromInt(code_raw);
+        }
         return error.UnknownOperator;
     };
 

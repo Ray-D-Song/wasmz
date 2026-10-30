@@ -11,7 +11,6 @@ const builtin = @import("builtin");
 
 const page_align = std.heap.page_size_min;
 
-const is_wasi = builtin.os.tag == .wasi;
 const is_windows = builtin.os.tag == .windows;
 
 pub const MappedFile = struct {
@@ -22,7 +21,7 @@ pub const MappedFile = struct {
     section_handle: if (is_windows) std.os.windows.HANDLE else void = if (is_windows) undefined else {},
 
     /// Owned heap buffer (WASI only); freed on unmap.
-    wasi_buf: if (is_wasi) []align(page_align) u8 else void = if (is_wasi) undefined else {},
+    wasi_buf: if (builtin.os.tag == .wasi) []align(page_align) u8 else void = if (builtin.os.tag == .wasi) undefined else {},
 };
 
 pub const MapError = error{
@@ -31,49 +30,27 @@ pub const MapError = error{
 };
 
 /// Memory-map (or read) an open file for reading.
-pub fn mapFile(file: std.fs.File) MapError!MappedFile {
-    const stat = file.stat() catch return error.MapFailed;
-    if (stat.size == 0) return error.EmptyFile;
+pub fn mapFile(fd: std.c.fd_t, file_size: u64) MapError!MappedFile {
+    if (file_size == 0) return error.EmptyFile;
 
-    if (comptime is_wasi) {
-        return mapFileWasi(file, stat.size);
-    } else if (comptime is_windows) {
-        return mapFileWindows(file.handle, stat.size);
+    if (comptime is_windows) {
+        const handle = @as(std.os.windows.HANDLE, @ptrFromInt(@as(usize, @intCast(fd))));
+        return mapFileWindows(handle, file_size);
     } else {
-        return mapFilePosix(file.handle, stat.size);
+        return mapFilePosix(fd, file_size);
     }
 }
 
 /// Release a mapping.
 pub fn unmap(m: MappedFile) void {
-    if (comptime is_wasi) {
-        unmapWasi(m);
+    if (comptime builtin.os.tag == .wasi) {
+        const buf: []align(page_align) u8 = @alignCast(@constCast(m.data));
+        std.heap.c_allocator.free(buf);
     } else if (comptime is_windows) {
         unmapWindows(m);
     } else {
         std.posix.munmap(m.data);
     }
-}
-
-// WASI implementation — plain heap allocation + file read
-
-fn mapFileWasi(file: std.fs.File, size: u64) MapError!MappedFile {
-    const len: usize = std.math.cast(usize, size) orelse return error.MapFailed;
-    const allocator = std.heap.page_allocator;
-    const buf = allocator.alignedAlloc(u8, std.mem.Alignment.fromByteUnits(page_align), len) catch return error.MapFailed;
-    errdefer allocator.free(buf);
-    _ = file.readAll(buf) catch |err| {
-        allocator.free(buf);
-        return if (err == error.EndOfStream) error.MapFailed else error.MapFailed;
-    };
-    return .{
-        .data = buf,
-        .wasi_buf = buf,
-    };
-}
-
-fn unmapWasi(m: MappedFile) void {
-    std.heap.page_allocator.free(m.wasi_buf);
 }
 
 // POSIX implementation
@@ -83,7 +60,7 @@ fn mapFilePosix(fd: std.posix.fd_t, size: u64) MapError!MappedFile {
     const mapped = std.posix.mmap(
         null,
         len,
-        std.posix.PROT.READ,
+        @as(std.posix.PROT, .{ .READ = true }),
         .{ .TYPE = .PRIVATE },
         fd,
         0,

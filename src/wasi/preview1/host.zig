@@ -6,6 +6,15 @@ const types = @import("./types.zig");
 const fd_io = @import("./fd_io.zig");
 const clock = @import("./clock.zig");
 const env_args = @import("./env_args.zig");
+const builtin = @import("builtin");
+
+const isBsd = builtin.target.os.tag == .macos or
+    builtin.target.os.tag == .freebsd or
+    builtin.target.os.tag == .openbsd or
+    builtin.target.os.tag == .dragonfly or
+    builtin.target.os.tag == .netbsd;
+
+extern "c" fn getrandom(buf: [*]u8, buflen: usize, flags: c_uint) isize;
 
 const Allocator = std.mem.Allocator;
 const RawVal = core.RawVal;
@@ -20,6 +29,12 @@ pub const EnvArgs = env_args.EnvArgs;
 pub const EnvVar = env_args.EnvVar;
 pub const Output = fd_io.Output;
 pub const ClockSource = clock.ClockSource;
+
+fn nanoTimestamp() u64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    return @as(u64, @intCast(@as(i128, ts.sec) * std.time.ns_per_s + ts.nsec));
+}
 
 pub const Host = struct {
     allocator: Allocator,
@@ -175,7 +190,7 @@ pub const Host = struct {
         const default_result_types = &[_]ValType{.I32};
 
         inline for (specs) |spec| {
-            const result_types: []const ValType = if (@typeInfo(@TypeOf(spec)).@"struct".fields.len == 4) spec[3] else default_result_types;
+            const result_types: []const ValType = if (@typeInfo(@TypeOf(spec)).@"struct".field_names.len == 4) spec[3] else default_result_types;
             try linker.define(allocator, types.module_name, spec[0], HostFunc.init(
                 self,
                 spec[1],
@@ -188,29 +203,29 @@ pub const Host = struct {
 
 fn args_sizes_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    const t0 = if (profiling.enabled) std.time.nanoTimestamp() else 0;
-    defer host.diag.record(.args_sizes_get, std.time.nanoTimestamp() - t0);
+    const t0 = if (profiling.enabled) nanoTimestamp() else 0;
+    defer host.diag.record(.args_sizes_get, nanoTimestamp() - t0);
     return host.getEnvArgs().argsSizesGet(ctx, params, results);
 }
 
 fn args_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    const t0 = if (profiling.enabled) std.time.nanoTimestamp() else 0;
-    defer host.diag.record(.args_get, std.time.nanoTimestamp() - t0);
+    const t0 = if (profiling.enabled) nanoTimestamp() else 0;
+    defer host.diag.record(.args_get, nanoTimestamp() - t0);
     return host.getEnvArgs().argsGet(ctx, params, results);
 }
 
 fn environ_sizes_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    const t0 = if (profiling.enabled) std.time.nanoTimestamp() else 0;
-    defer host.diag.record(.environ_sizes_get, std.time.nanoTimestamp() - t0);
+    const t0 = if (profiling.enabled) nanoTimestamp() else 0;
+    defer host.diag.record(.environ_sizes_get, nanoTimestamp() - t0);
     return host.getEnvArgs().environSizesGet(ctx, params, results);
 }
 
 fn environ_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    const t0 = if (profiling.enabled) std.time.nanoTimestamp() else 0;
-    defer host.diag.record(.environ_get, std.time.nanoTimestamp() - t0);
+    const t0 = if (profiling.enabled) nanoTimestamp() else 0;
+    defer host.diag.record(.environ_get, nanoTimestamp() - t0);
     return host.getEnvArgs().environGet(ctx, params, results);
 }
 
@@ -221,22 +236,22 @@ fn clock_res_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawV
 
 fn clock_time_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    const t0 = if (profiling.enabled) std.time.nanoTimestamp() else 0;
-    defer host.diag.record(.clock_time_get, std.time.nanoTimestamp() - t0);
+    const t0 = if (profiling.enabled) nanoTimestamp() else 0;
+    defer host.diag.record(.clock_time_get, nanoTimestamp() - t0);
     return host.getClock().clockTimeGet(ctx, params, results);
 }
 
 fn fd_write(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    const t0 = if (profiling.enabled) std.time.nanoTimestamp() else 0;
-    defer host.diag.record(.fd_write, std.time.nanoTimestamp() - t0);
+    const t0 = if (profiling.enabled) nanoTimestamp() else 0;
+    defer host.diag.record(.fd_write, nanoTimestamp() - t0);
     return host.getFdIO().fdWrite(ctx, params, results);
 }
 
 fn fd_seek(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    const t0 = if (profiling.enabled) std.time.nanoTimestamp() else 0;
-    defer host.diag.record(.fd_seek, std.time.nanoTimestamp() - t0);
+    const t0 = if (profiling.enabled) nanoTimestamp() else 0;
+    defer host.diag.record(.fd_seek, nanoTimestamp() - t0);
     return host.getFdIO().fdSeek(ctx, params, results);
 }
 
@@ -247,8 +262,8 @@ fn fd_filestat_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const Ra
 
 fn fd_read(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    const t0 = if (profiling.enabled) std.time.nanoTimestamp() else 0;
-    defer host.diag.record(.fd_read, std.time.nanoTimestamp() - t0);
+    const t0 = if (profiling.enabled) nanoTimestamp() else 0;
+    defer host.diag.record(.fd_read, nanoTimestamp() - t0);
     return host.getFdIO().fdRead(ctx, params, results);
 }
 
@@ -264,8 +279,8 @@ fn fd_pread(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, r
 
 fn path_open(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    const t0 = if (profiling.enabled) std.time.nanoTimestamp() else 0;
-    defer host.diag.record(.path_open, std.time.nanoTimestamp() - t0);
+    const t0 = if (profiling.enabled) nanoTimestamp() else 0;
+    defer host.diag.record(.path_open, nanoTimestamp() - t0);
     return host.getFdIO().pathOpen(ctx, params, results);
 }
 
@@ -276,22 +291,22 @@ fn fd_close(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, r
 
 fn fd_fdstat_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    const t0 = if (profiling.enabled) std.time.nanoTimestamp() else 0;
-    defer host.diag.record(.fd_fdstat_get, std.time.nanoTimestamp() - t0);
+    const t0 = if (profiling.enabled) nanoTimestamp() else 0;
+    defer host.diag.record(.fd_fdstat_get, nanoTimestamp() - t0);
     return host.getFdIO().fdFdstatGet(ctx, params, results);
 }
 
 fn fd_prestat_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    const t0 = if (profiling.enabled) std.time.nanoTimestamp() else 0;
-    defer host.diag.record(.fd_prestat_get, std.time.nanoTimestamp() - t0);
+    const t0 = if (profiling.enabled) nanoTimestamp() else 0;
+    defer host.diag.record(.fd_prestat_get, nanoTimestamp() - t0);
     return host.getFdIO().fdPrestatGet(ctx, params, results);
 }
 
 fn fd_prestat_dir_name(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(host_data.?));
-    const t0 = if (profiling.enabled) std.time.nanoTimestamp() else 0;
-    defer host.diag.record(.fd_prestat_dir_name, std.time.nanoTimestamp() - t0);
+    const t0 = if (profiling.enabled) nanoTimestamp() else 0;
+    defer host.diag.record(.fd_prestat_dir_name, nanoTimestamp() - t0);
     return host.getFdIO().fdPrestatDirName(ctx, params, results);
 }
 
@@ -432,7 +447,21 @@ fn random_get(_: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results
     }
 
     const buf = mem[buf_ptr .. buf_ptr + buf_len];
-    std.crypto.random.bytes(buf);
+
+    if (isBsd) {
+        std.c.arc4random_buf(buf.ptr, buf.len);
+    } else {
+        var offset: usize = 0;
+        while (offset < buf.len) {
+            const rc = getrandom(buf.ptr + offset, buf.len - offset, 0);
+            if (rc < 0) {
+                types.writeErrno(results, .io);
+                return;
+            }
+            offset += @as(usize, @intCast(rc));
+        }
+    }
+
     results[0] = RawVal.from(@as(i32, 0)); // ESUCCESS
 }
 
@@ -467,8 +496,8 @@ fn sched_yield(_: ?*anyopaque, _: *HostContext, _: []const RawVal, results: []Ra
 /// params: in_ptr(i32), out_ptr(i32), nsubscriptions(i32), nevents_ptr(i32)
 fn poll_oneoff(_: ?*anyopaque, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
     const host: *Host = @ptrCast(@alignCast(ctx.host_data_ptr.?));
-    const t0 = if (profiling.enabled) std.time.nanoTimestamp() else 0;
-    defer host.diag.record(.poll_oneoff, std.time.nanoTimestamp() - t0);
+    const t0 = if (profiling.enabled) nanoTimestamp() else 0;
+    defer host.diag.record(.poll_oneoff, nanoTimestamp() - t0);
     const in_ptr = params[0].readAs(u32);
     const out_ptr = params[1].readAs(u32);
     const nsubscriptions = params[2].readAs(u32);

@@ -31,27 +31,23 @@ const RawVal = wasmz.RawVal;
 const Linker = wasmz.Linker;
 
 const SMART_SIZE_THRESHOLD: u64 = 3 * 1024 * 1024;
-pub fn main() void {
+pub fn main(minimal: std.process.Init.Minimal) void {
     if (builtin.os.tag == .wasi) {
         const ally: std.mem.Allocator = .{ .ptr = undefined, .vtable = &std.heap.WasmAllocator.vtable };
-        run(ally);
-    } else if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        run(gpa.allocator());
+        const os_args = minimal.args.toSlice(ally) catch &.{};
+        run(ally, os_args);
     } else {
-        run(std.heap.smp_allocator);
+        const allocator = std.heap.c_allocator;
+        const os_args = minimal.args.toSlice(allocator) catch &.{};
+        run(allocator, os_args);
     }
 }
 
-fn run(allocator: std.mem.Allocator) void {
+fn run(allocator: std.mem.Allocator, os_args: []const [:0]const u8) void {
     defer profiling.printReport();
-    var out_buf: [8192]u8 = undefined;
-    var bw = std.fs.File.stdout().writer(&out_buf);
-    const stdout = &bw.interface;
-    defer bw.interface.flush() catch {};
+    // stdout through std.debug.print
 
-    var cli_args = CliArgs.parse(allocator) catch |err| switch (err) {
+    var cli_args = CliArgs.parse(allocator, os_args) catch |err| switch (err) {
         error.MissingFilePath => {
             CliArgs.command.printUsage();
             std.process.exit(1);
@@ -72,10 +68,17 @@ fn run(allocator: std.mem.Allocator) void {
 
     const file_path = cli_args.file_path;
 
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err|
-        fatal("Unable to open {s}: {s}", .{ file_path, @errorName(err) });
-    defer file.close();
-    const mapped = mmap.mapFile(file) catch |err| switch (err) {
+    const path_z = allocator.dupeSentinel(u8, file_path, 0) catch |err|
+        fatal("Failed to allocate path: {s}", .{@errorName(err)});
+    defer allocator.free(path_z);
+    const fd = std.c.open(path_z, @as(std.c.O, .{ .ACCMODE = .RDONLY }), @as(c_uint, 0));
+    if (fd == -1) fatal("Unable to open {s}", .{file_path});
+    defer _ = std.c.close(fd);
+    var fstat_buf: std.c.Stat = undefined;
+    if (std.c.fstat(fd, &fstat_buf) < 0)
+        fatal("Failed to stat {s}", .{file_path});
+    const file_size = @as(u64, @intCast(fstat_buf.size));
+    const mapped = mmap.mapFile(fd, file_size) catch |err| switch (err) {
         error.EmptyFile => fatal("{s}: file is empty", .{file_path}),
         error.MapFailed => fatal("Failed to mmap {s}", .{file_path}),
     };
@@ -185,20 +188,20 @@ fn run(allocator: std.mem.Allocator) void {
         }
 
         if (arc_module.value.exports.count() == 0) {
-            stdout.writeAll("(module has no exported functions)\n") catch {};
+            std.debug.print("(module has no exported functions)\n", .{});
             return;
         }
-        stdout.writeAll("Exported functions:\n") catch {};
+        std.debug.print("Exported functions:\n", .{});
         var iter = arc_module.value.exports.iterator();
         while (iter.next()) |entry| {
-            stdout.print("  {s}\n", .{entry.key_ptr.*}) catch {};
+            std.debug.print("  {s}\n", .{entry.key_ptr.*});
         }
         return;
     }
 
     const func_name = cli_args.func_name.?;
 
-    var call_args = std.ArrayList(RawVal){};
+    var call_args = std.ArrayList(RawVal).empty;
     defer call_args.deinit(allocator);
 
     for (cli_args.i32_args) |arg| {
@@ -212,7 +215,7 @@ fn run(allocator: std.mem.Allocator) void {
         fatal("Failed to call \"{s}\": {s}", .{ func_name, @errorName(err) });
 
     switch (result) {
-        .ok => |val| if (val) |v| stdout.print("{d}\n", .{v.readAs(i32)}) catch {},
+        .ok => |val| if (val) |v| std.debug.print("{d}\n", .{v.readAs(i32)}),
         .trap => |t| fatalTrap(t, allocator, arc_module.value, "trap"),
     }
 }
@@ -260,9 +263,9 @@ const CliArgs = struct {
         .args = &args,
     };
 
-    fn parse(allocator: std.mem.Allocator) !CliArgs {
+    fn parse(allocator: std.mem.Allocator, os_args: []const [:0]const u8) !CliArgs {
         var parser = arg_parse.Parser.init(&command, allocator);
-        var parsed = parser.parse() catch {
+        var parsed = parser.parse(os_args) catch {
             std.process.exit(1);
         };
 
@@ -352,8 +355,8 @@ fn simplePanic(msg: []const u8, _: ?usize) noreturn {
 }
 
 pub const panic = switch (builtin.mode) {
-    .Debug, .ReleaseSafe => std.debug.FullPanic(std.debug.defaultPanic),
-    .ReleaseFast, .ReleaseSmall => std.debug.FullPanic(simplePanic),
+    .debug, .safe => std.debug.FullPanic(std.debug.defaultPanic),
+    .fast, .small => std.debug.FullPanic(simplePanic),
 };
 
 fn fatal(comptime fmt: []const u8, args: anytype) noreturn {

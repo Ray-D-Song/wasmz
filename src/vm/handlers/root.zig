@@ -166,7 +166,7 @@ inline fn trapReturn(frame: *DispatchState, code: core.TrapCode) void {
 }
 
 inline fn UnsignedOf(comptime T: type) type {
-    return std.meta.Int(.unsigned, @bitSizeOf(T));
+    return @Int(.unsigned, @bitSizeOf(T));
 }
 
 inline fn trapReturnTruncate(frame: *DispatchState, err: helper.TruncateError) void {

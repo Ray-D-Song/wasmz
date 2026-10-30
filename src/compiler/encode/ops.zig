@@ -7,10 +7,10 @@ pub const OpsDstSrc = extern struct { dst: Slot, src: Slot };
 pub const OpsDstLhsRhs = extern struct { dst: Slot, lhs: Slot, rhs: Slot };
 
 pub const OpsConstI32 = extern struct { dst: Slot, _pad: u16 = 0, value: i32 };
-pub const OpsConstI64 = extern struct { dst: Slot, _pad: [6]u8 = [_]u8{0} ** 6, value: i64 };
+pub const OpsConstI64 = extern struct { dst: Slot, _pad: [6]u8 = @splat(0), value: i64 };
 pub const OpsConstF32 = extern struct { dst: Slot, _pad: u16 = 0, value: f32 };
-pub const OpsConstF64 = extern struct { dst: Slot, _pad: [6]u8 = [_]u8{0} ** 6, value: f64 };
-pub const OpsConstV128 = extern struct { dst: Slot, _pad: [14]u8 = [_]u8{0} ** 14, value: [16]u8 };
+pub const OpsConstF64 = extern struct { dst: Slot, _pad: [6]u8 = @splat(0), value: f64 };
+pub const OpsConstV128 = extern struct { dst: Slot, _pad: [14]u8 = @splat(0), value: [16]u8 };
 
 pub const OpsLocalGet = extern struct { dst: Slot, local: Slot };
 pub const OpsLocalSet = extern struct { local: Slot, src: Slot };
@@ -24,7 +24,7 @@ pub const OpsJumpIfZ = extern struct { cond: Slot, _pad: u16 = 0, rel_target: i3
 pub const OpsBinopImm = extern struct { dst: Slot, lhs: Slot, imm: i32 };
 pub const OpsBinopImm64 = extern struct { dst: Slot, lhs: Slot, _pad: u32 = 0, imm: i64 };
 pub const OpsBinopImmR0 = extern struct { dst: Slot, _pad: u16 = 0, imm: i32 };
-pub const OpsBinopImmR064 = extern struct { dst: Slot, _pad: [6]u8 = [_]u8{0} ** 6, imm: i64 };
+pub const OpsBinopImmR064 = extern struct { dst: Slot, _pad: [6]u8 = @splat(0), imm: i64 };
 
 pub const OpsCompareJump = extern struct { lhs: Slot, rhs: Slot, rel_target: i32 };
 pub const OpsEqzJump = extern struct { src: Slot, _pad: u16 = 0, rel_target: i32 };
@@ -34,15 +34,15 @@ pub const OpsCmpToLocal = extern struct { local: Slot, lhs: Slot, rhs: Slot };
 pub const OpsBinopImmToLocal = extern struct { local: Slot, lhs: Slot, imm: i32 };
 pub const OpsBinopImmToLocal64 = extern struct { local: Slot, lhs: Slot, _pad: u32 = 0, imm: i64 };
 pub const OpsLocalInplace = extern struct { local: Slot, _pad: u16 = 0, imm: i32 };
-pub const OpsLocalInplace64 = extern struct { local: Slot, _pad: [6]u8 = [_]u8{0} ** 6, imm: i64 };
+pub const OpsLocalInplace64 = extern struct { local: Slot, _pad: [6]u8 = @splat(0), imm: i64 };
 pub const OpsConstToLocal32 = extern struct { local: Slot, _pad: u16 = 0, value: i32 };
-pub const OpsConstToLocal64 = extern struct { local: Slot, _pad: [6]u8 = [_]u8{0} ** 6, value: i64 };
+pub const OpsConstToLocal64 = extern struct { local: Slot, _pad: [6]u8 = @splat(0), value: i64 };
 pub const OpsImm32ToLocal = extern struct { local: Slot, src: Slot, imm: i32 };
-pub const OpsImm64ToLocal = extern struct { local: Slot, src: Slot, _pad: [6]u8 = [_]u8{0} ** 6, imm: i64 };
+pub const OpsImm64ToLocal = extern struct { local: Slot, src: Slot, _pad: [6]u8 = @splat(0), imm: i64 };
 pub const OpsGlobalGetToLocal = extern struct { local: Slot, _pad: u16 = 0, global_idx: u32 };
 pub const OpsLoadToLocal = extern struct { local: Slot, addr: Slot, offset: u32 };
 pub const OpsCompareImmJump = extern struct { lhs: Slot, _pad: u16 = 0, imm: i32, rel_target: i32 };
-pub const OpsCompareImmJump64 = extern struct { lhs: Slot, _pad: [6]u8 = [_]u8{0} ** 6, imm: i64, rel_target: i32, _pad2: u32 = 0 };
+pub const OpsCompareImmJump64 = extern struct { lhs: Slot, _pad: [6]u8 = @splat(0), imm: i64, rel_target: i32, _pad2: u32 = 0 };
 
 pub const OpsJumpTable = extern struct { index: Slot, _pad: u16 = 0, targets_start: u32, targets_len: u32 };
 pub const OpsSelect = extern struct { dst: Slot, val1: Slot, val2: Slot, cond: Slot };
@@ -122,22 +122,22 @@ pub const OpsTryTableLeave = extern struct { rel_target: i32 };
 pub const OpsSimdUnary = extern struct { dst: Slot, src: Slot, opcode: u32 };
 pub const OpsSimdBinary = extern struct { dst: Slot, lhs: Slot, rhs: Slot, _pad: u16 = 0, opcode: u32 };
 pub const OpsSimdTernary = extern struct { dst: Slot, first: Slot, second: Slot, third: Slot, opcode: u32 };
-pub const OpsSimdExtractLane = extern struct { dst: Slot, src: Slot, opcode: u32, lane: u8, _pad2: [3]u8 = [_]u8{0} ** 3 };
-pub const OpsSimdReplaceLane = extern struct { dst: Slot, src_vec: Slot, src_lane: Slot, _pad: u16 = 0, opcode: u32, lane: u8, _pad2: [3]u8 = [_]u8{0} ** 3 };
+pub const OpsSimdExtractLane = extern struct { dst: Slot, src: Slot, opcode: u32, lane: u8, _pad2: [3]u8 = @splat(0) };
+pub const OpsSimdReplaceLane = extern struct { dst: Slot, src_vec: Slot, src_lane: Slot, _pad: u16 = 0, opcode: u32, lane: u8, _pad2: [3]u8 = @splat(0) };
 pub const OpsSimdShuffle = extern struct { dst: Slot, lhs: Slot, rhs: Slot, _pad: u16 = 0, lanes: [16]u8 };
 pub const OpsSimdLoad = extern struct { dst: Slot, addr: Slot, src_vec: Slot, _pad: u16 = 0, opcode: u32, offset: u32, lane_valid: u8, lane: u8, src_vec_valid: u8, _pad2: u8 = 0 };
-pub const OpsSimdStore = extern struct { addr: Slot, src: Slot, opcode: u32, offset: u32, lane_valid: u8, lane: u8, _pad: [2]u8 = [_]u8{0} ** 2 };
+pub const OpsSimdStore = extern struct { addr: Slot, src: Slot, opcode: u32, offset: u32, lane_valid: u8, lane: u8, _pad: [2]u8 = @splat(0) };
 
 // f32/f64 fused operations
 
 pub const OpsBinopImmF32 = extern struct { dst: Slot, lhs: Slot, _pad: u16 = 0, imm: f32 };
-pub const OpsBinopImmF64 = extern struct { dst: Slot, lhs: Slot, _pad: [6]u8 = [_]u8{0} ** 6, imm: f64 };
+pub const OpsBinopImmF64 = extern struct { dst: Slot, lhs: Slot, _pad: [6]u8 = @splat(0), imm: f64 };
 
 pub const OpsCompareImmJumpF32 = extern struct { lhs: Slot, _pad: u16 = 0, imm: f32, rel_target: i32 };
-pub const OpsCompareImmJumpF64 = extern struct { lhs: Slot, _pad: [6]u8 = [_]u8{0} ** 6, imm: f64, rel_target: i32, _pad2: u32 = 0 };
+pub const OpsCompareImmJumpF64 = extern struct { lhs: Slot, _pad: [6]u8 = @splat(0), imm: f64, rel_target: i32, _pad2: u32 = 0 };
 
 pub const OpsBinopImmToLocalF32 = extern struct { local: Slot, lhs: Slot, _pad: u16 = 0, imm: f32 };
-pub const OpsBinopImmToLocalF64 = extern struct { local: Slot, lhs: Slot, _pad: [6]u8 = [_]u8{0} ** 6, imm: f64 };
+pub const OpsBinopImmToLocalF64 = extern struct { local: Slot, lhs: Slot, _pad: [6]u8 = @splat(0), imm: f64 };
 
 pub const OpsLocalInplaceF32 = extern struct { local: Slot, _pad: u16 = 0, imm: f32 };
-pub const OpsLocalInplaceF64 = extern struct { local: Slot, _pad: [6]u8 = [_]u8{0} ** 6, imm: f64 };
+pub const OpsLocalInplaceF64 = extern struct { local: Slot, _pad: [6]u8 = @splat(0), imm: f64 };
