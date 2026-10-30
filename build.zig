@@ -79,7 +79,7 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const wasi_mod = b.createModule(.{
+    const wasi_mod = b.addModule("wasi", .{
         .root_source_file = b.path("src/wasi/root.zig"),
         .target = target,
         .optimize = optimize,
