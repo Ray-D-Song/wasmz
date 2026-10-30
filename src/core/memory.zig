@@ -88,7 +88,13 @@ fn ownedMmapInit(committed: usize, capacity: usize) Allocator.Error![]align(mmap
                 posix.munmap(base);
                 return error.OutOfMemory;
             }
-            @memset(base[0..committed], 0);
+            // Anonymous private mappings (MAP_ANONYMOUS|MAP_PRIVATE) are
+            // already zero-filled by the kernel, so zeroing the committed
+            // range here only faults every page in and dirties it.  A module
+            // that declares `initial memory = 257 pages` (16.8 MiB) would then
+            // become fully resident the moment it is instantiated; leaving the
+            // pages on the shared zero page keeps that at a few KiB until the
+            // module actually writes to them.
         }
         return base;
     } else {
@@ -103,7 +109,7 @@ fn ownedMmapGrow(base: []align(mmap_page_align) u8, old_committed: usize, new_co
         const posix = std.posix;
         const new_range: []align(mmap_page_align) u8 = @alignCast(base[old_committed..new_committed]);
         if (std.c.mprotect(@ptrCast(new_range.ptr), new_range.len, @as(posix.PROT, .{ .READ = true, .WRITE = true })) < 0) return false;
-        @memset(new_range, 0);
+        // Newly committed anonymous pages are already zero-filled by the kernel.
         return true;
     } else {
         unreachable;
