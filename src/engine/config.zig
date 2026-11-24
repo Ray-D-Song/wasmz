@@ -11,4 +11,7 @@ pub const Config = struct {
     /// instead of lazily on first call.  This trades higher startup cost for
     /// zero lazy-compilation overhead at runtime.
     eager_compile: bool = false,
+    /// When true (default), validate the module structure, subtype hierarchy,
+    /// constant expressions, and all function bodies during Module.compile().
+    validate: bool = true,
 };

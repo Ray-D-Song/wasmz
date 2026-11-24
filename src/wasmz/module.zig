@@ -29,6 +29,7 @@ const typed_mod = core.typed;
 const value_type_mod = core.value_type;
 const gc_mod = @import("../vm/gc/root.zig");
 const type_equiv_mod = @import("type_equiv.zig");
+const validator_mod = @import("../validator/root.zig");
 const profiling = @import("../utils/profiling.zig");
 
 const Allocator = std.mem.Allocator;
@@ -193,6 +194,7 @@ pub const ModuleCompileError = Allocator.Error ||
     lower_legacy_mod.LegacyLowerError ||
     func_type_mod.FuncTypeError ||
     translate_mod.TranslateError ||
+    validator_mod.ValidateModuleError ||
     error{
         DuplicateExport,
         InvalidFunctionTypeIndex,
@@ -307,6 +309,19 @@ const BuildState = struct {
     /// Populated from the Wasm Name Section when a function_name_entry is parsed.
     func_names_map: std.AutoHashMapUnmanaged(u32, []const u8) = .empty,
 
+    // Validation metadata collected in `self.arena` (freed via `self.arena.deinit()`).
+    val_rec_group_ids: std.ArrayListUnmanaged(u32) = .empty,
+    val_super_type_counts: std.ArrayListUnmanaged(usize) = .empty,
+    val_table_defs: std.ArrayListUnmanaged(validator_mod.TableDefInfo) = .empty,
+    val_memories: std.ArrayListUnmanaged(validator_mod.MemoryDefInfo) = .empty,
+    val_local_globals: std.ArrayListUnmanaged(validator_mod.LocalGlobalInfo) = .empty,
+    val_exports: std.ArrayListUnmanaged(validator_mod.ExportCheckInfo) = .empty,
+    val_elem_segments: std.ArrayListUnmanaged(validator_mod.ElemSegmentInfo) = .empty,
+    val_data_segments: std.ArrayListUnmanaged(validator_mod.DataSegmentInfo) = .empty,
+    val_local_funcs: std.ArrayListUnmanaged(payload_mod.FunctionInformation) = .empty,
+    in_data_count_section: bool = false,
+    data_count: ?u32 = null,
+
     fn init(engine: Engine) BuildState {
         const allocator = engine.allocator();
         return .{
@@ -399,34 +414,70 @@ const BuildState = struct {
         return false;
     }
 
+    fn appendTableDef(self: *BuildState, tbl: payload_mod.TableType) ModuleCompileError!void {
+        const tbl_val_type = try translate_mod.wasmValTypeFromType(tbl.element_type);
+        try self.val_table_defs.append(self.parserAllocator(), .{
+            .val_type = tbl_val_type,
+            .min = tbl.limits.initial,
+            .max = tbl.limits.maximum,
+        });
+        const tbl_idx = self.tables_lists.items.len;
+        try self.tables_lists.append(self.allocator, .empty);
+
+        const limits_ok = tbl.limits.initial <= std.math.maxInt(u32) and
+            (tbl.limits.maximum == null or tbl.limits.initial <= tbl.limits.maximum.?);
+        if (!self.engine.config().validate or limits_ok) {
+            const initial_size: usize = @intCast(tbl.limits.initial);
+            try self.tables_lists.items[tbl_idx].resize(self.allocator, initial_size);
+            @memset(self.tables_lists.items[tbl_idx].items, std.math.maxInt(u32));
+        }
+    }
+
+    fn dupeBytesIfOwned(self: *BuildState, bytes: []const u8) Allocator.Error![]const u8 {
+        if (!self.body_owned or bytes.len == 0) return bytes;
+        return try self.parserAllocator().dupe(u8, bytes);
+    }
+
     fn handlePayload(self: *BuildState, payload: Payload) ModuleCompileError!void {
         switch (payload) {
+            .section_info => |sec| {
+                self.in_data_count_section = (sec.id == .data_count);
+            },
+            .number => |n| {
+                if (self.in_data_count_section) {
+                    self.data_count = std.math.cast(u32, n) orelse return error.DataCountMismatch;
+                    self.in_data_count_section = false;
+                }
+            },
             .type_entry => |entry| {
+                const direct_parent: ?u32 = blk: {
+                    for (entry.super_types) |st| {
+                        switch (st) {
+                            .index => |idx| break :blk idx,
+                            else => {},
+                        }
+                    }
+                    break :blk null;
+                };
                 switch (entry.type) {
                     .func => {
                         const func_type = try Module.compile_func_type(self.allocator, self.parserAllocator(), entry);
                         try self.composite_types_list.append(self.allocator, CompositeType{ .func_type = func_type });
                         try self.struct_layouts_list.append(self.allocator, null);
                         try self.array_layouts_list.append(self.allocator, null);
-                        try self.direct_parents_list.append(self.allocator, null);
-                        try self.type_final_list.append(self.allocator, false);
+                        try self.direct_parents_list.append(self.allocator, direct_parent);
+                        try self.type_final_list.append(self.allocator, entry.final orelse true);
+                        try self.val_rec_group_ids.append(self.parserAllocator(), entry.rec_group_id);
+                        try self.val_super_type_counts.append(self.parserAllocator(), entry.super_types.len);
                     },
                     .struct_type, .array_type => {
                         self.has_gc_types = true;
                         const composite_type = try translate_mod.wasmCompositeTypeFromTypeEntry(self.allocator, entry);
                         try self.composite_types_list.append(self.allocator, composite_type);
-
-                        const direct_parent: ?u32 = blk: {
-                            for (entry.super_types) |st| {
-                                switch (st) {
-                                    .index => |idx| break :blk idx,
-                                    else => {},
-                                }
-                            }
-                            break :blk null;
-                        };
                         try self.direct_parents_list.append(self.allocator, direct_parent);
-                        try self.type_final_list.append(self.allocator, entry.final orelse false);
+                        try self.type_final_list.append(self.allocator, entry.final orelse true);
+                        try self.val_rec_group_ids.append(self.parserAllocator(), entry.rec_group_id);
+                        try self.val_super_type_counts.append(self.parserAllocator(), entry.super_types.len);
 
                         switch (composite_type) {
                             .struct_type => |s| {
@@ -480,6 +531,12 @@ const BuildState = struct {
                 } else if (entry.kind == .tag) {
                     const tt = if (entry.typ) |t| t.tag else return error.InvalidTagImport;
                     try self.tags_list.append(self.allocator, .{ .type_index = tt.type_index });
+                } else if (entry.kind == .table) {
+                    const tbl_typ = if (entry.typ) |t| switch (t) {
+                        .table => |tbl| tbl,
+                        else => return error.UnsupportedFunctionType,
+                    } else return error.UnsupportedFunctionType;
+                    try self.appendTableDef(tbl_typ);
                 } else if (entry.kind == .memory) {
                     if (self.imported_memory != null) return error.DuplicateImportMemory;
                     const mem_typ = if (entry.typ) |t| switch (t) {
@@ -498,12 +555,25 @@ const BuildState = struct {
                         .shared = mem_typ.shared,
                         .memory64 = mem_typ.memory64,
                     };
+                    try self.val_memories.append(self.parserAllocator(), .{
+                        .min_pages = mem_typ.limits.initial,
+                        .max_pages = mem_typ.limits.maximum,
+                        .shared = mem_typ.shared,
+                        .memory64 = mem_typ.memory64,
+                    });
                 }
             },
             .function_entry => |entry| {
                 try self.function_type_indices.append(self.allocator, entry.type_index);
             },
             .global_variable => |entry| {
+                const g_val_type = try translate_mod.wasmValTypeFromType(entry.typ.content_type);
+                const init_expr = try self.dupeBytesIfOwned(entry.init_expr);
+                try self.val_local_globals.append(self.parserAllocator(), .{
+                    .val_type = g_val_type,
+                    .mutable = entry.typ.mutability == 1,
+                    .init_expr = init_expr,
+                });
                 try self.globals_list.append(
                     self.allocator,
                     try Module.compile_global_init(self.allocator, self.parserAllocator(), entry),
@@ -517,8 +587,18 @@ const BuildState = struct {
                     .shared = entry.shared,
                     .memory64 = entry.memory64,
                 };
+                try self.val_memories.append(self.parserAllocator(), .{
+                    .min_pages = entry.limits.initial,
+                    .max_pages = entry.limits.maximum,
+                    .shared = entry.shared,
+                    .memory64 = entry.memory64,
+                });
             },
             .export_entry => |entry| {
+                try self.val_exports.append(self.parserAllocator(), .{
+                    .kind = entry.kind,
+                    .index = entry.index,
+                });
                 switch (entry.kind) {
                     .function => try Module.put_function_export(
                         self.allocator,
@@ -548,11 +628,7 @@ const BuildState = struct {
                 self.start_function = entry.index;
             },
             .table_type => |tbl| {
-                const tbl_idx = self.tables_lists.items.len;
-                try self.tables_lists.append(self.allocator, .empty);
-                const initial_size: usize = @intCast(tbl.limits.initial);
-                try self.tables_lists.items[tbl_idx].resize(self.allocator, initial_size);
-                @memset(self.tables_lists.items[tbl_idx].items, std.math.maxInt(u32));
+                try self.appendTableDef(tbl);
             },
             .element_segment => |seg| {
                 self.pending_element_mode = seg.mode;
@@ -562,32 +638,64 @@ const BuildState = struct {
                 const func_indices_copy = try self.allocator.dupe(u32, body.func_indices);
                 errdefer self.allocator.free(func_indices_copy);
 
-                const offset: u32 = if (self.pending_element_mode == .active)
-                    (try Module.evaluate_const_expr(self.parserAllocator(), body.offset_expr, .I32)).readAs(u32)
-                else
-                    0;
+                const elem_val_type = try translate_mod.wasmValTypeFromType(body.element_type);
+                const offset_expr = try self.dupeBytesIfOwned(body.offset_expr);
+                var elem_exprs = body.elem_exprs;
+                if (self.body_owned and body.elem_exprs.len > 0) {
+                    const copies = try self.parserAllocator().alloc([]const u8, body.elem_exprs.len);
+                    for (body.elem_exprs, 0..) |e, idx| {
+                        copies[idx] = try self.dupeBytesIfOwned(e);
+                    }
+                    elem_exprs = copies;
+                }
+
+                const table_idx = self.pending_element_table_index orelse 0;
+                try self.val_elem_segments.append(self.parserAllocator(), .{
+                    .mode = self.pending_element_mode,
+                    .table_index = table_idx,
+                    .elem_type = elem_val_type,
+                    .elemkind = body.elemkind,
+                    .is_externval = body.is_externval,
+                    .func_indices = func_indices_copy,
+                    .elem_exprs = elem_exprs,
+                    .offset_expr = offset_expr,
+                });
+
+                var active_offset_valid = false;
+                const offset: u32 = if (self.pending_element_mode == .active) blk: {
+                    if (Module.evaluate_const_expr(self.parserAllocator(), body.offset_expr, .I32)) |val| {
+                        active_offset_valid = true;
+                        break :blk val.readAs(u32);
+                    } else |err| {
+                        if (self.engine.config().validate) break :blk 0;
+                        return err;
+                    }
+                } else 0;
 
                 try self.elem_segments_list.append(self.allocator, .{
                     .mode = self.pending_element_mode,
-                    .table_index = self.pending_element_table_index orelse 0,
+                    .table_index = table_idx,
                     .offset = offset,
                     .func_indices = func_indices_copy,
                 });
 
-                if (self.pending_element_mode == .active) {
-                    const tbl_idx = self.pending_element_table_index orelse 0;
-                    while (self.tables_lists.items.len <= tbl_idx) {
-                        try self.tables_lists.append(self.allocator, .empty);
-                    }
-                    const tbl = &self.tables_lists.items[tbl_idx];
-                    const required_len = offset + body.func_indices.len;
-                    if (tbl.items.len < required_len) {
-                        const old_len = tbl.items.len;
-                        try tbl.resize(self.allocator, required_len);
-                        @memset(tbl.items[old_len..], std.math.maxInt(u32));
-                    }
-                    for (body.func_indices, 0..) |fi, i| {
-                        tbl.items[offset + i] = fi;
+                if (self.pending_element_mode == .active and active_offset_valid) {
+                    const tbl_valid = !self.engine.config().validate or table_idx < self.val_table_defs.items.len;
+                    if (tbl_valid) {
+                        while (self.tables_lists.items.len <= table_idx) {
+                            try self.tables_lists.append(self.allocator, .empty);
+                        }
+                        if (std.math.add(usize, offset, body.func_indices.len)) |required_len| {
+                            const tbl = &self.tables_lists.items[table_idx];
+                            if (tbl.items.len < required_len) {
+                                const old_len = tbl.items.len;
+                                try tbl.resize(self.allocator, required_len);
+                                @memset(tbl.items[old_len..], std.math.maxInt(u32));
+                            }
+                            for (body.func_indices, 0..) |fi, i| {
+                                tbl.items[offset + i] = fi;
+                            }
+                        } else |_| {}
                     }
                 }
             },
@@ -610,16 +718,26 @@ const BuildState = struct {
                     body.data // borrow — no allocation
                 else
                     try self.allocator.dupe(u8, body.data); // owned copy
+                const mem_idx = self.pending_data_memory_index orelse 0;
+                const offset_expr = try self.dupeBytesIfOwned(body.offset_expr);
+                try self.val_data_segments.append(self.parserAllocator(), .{
+                    .mode = self.pending_data_mode,
+                    .memory_index = mem_idx,
+                    .offset_expr = offset_expr,
+                });
+
                 const compiled = CompiledDataSegment{
                     .mode = self.pending_data_mode,
-                    .memory_index = self.pending_data_memory_index orelse 0,
-                    .offset = if (is_active)
-                        if (self.usesMemory64())
-                            (try Module.evaluate_const_expr(self.parserAllocator(), body.offset_expr, .I64)).readAs(u64)
-                        else
-                            (try Module.evaluate_const_expr(self.parserAllocator(), body.offset_expr, .I32)).readAs(u64)
-                    else
-                        0,
+                    .memory_index = mem_idx,
+                    .offset = if (is_active) blk: {
+                        const expected_ty: ValType = if (self.usesMemory64()) .I64 else .I32;
+                        if (Module.evaluate_const_expr(self.parserAllocator(), body.offset_expr, expected_ty)) |val| {
+                            break :blk val.readAs(u64);
+                        } else |err| {
+                            if (self.engine.config().validate) break :blk 0;
+                            return err;
+                        }
+                    } else 0,
                     .data = data_slice,
                     .data_owned = !is_active,
                 };
@@ -662,7 +780,7 @@ const BuildState = struct {
             else => return error.InvalidFunctionTypeIndex,
         };
 
-        if (self.tags_list.items.len > 0 and self.detected_eh_mode != .legacy and !self.engine.config().legacy_exceptions) {
+        if (self.detected_eh_mode != .legacy and !self.engine.config().legacy_exceptions) {
             var fbp = parser_mod.FunctionBodyParser.init(self.parserAllocator(), info.body);
             while (!fbp.done()) {
                 const op_info = fbp.next() catch break;
@@ -696,6 +814,12 @@ const BuildState = struct {
             try self.allocator.dupe(u8, info.body)
         else
             info.body;
+        errdefer if (body_owned) self.allocator.free(body);
+
+        try self.val_local_funcs.append(self.parserAllocator(), .{
+            .locals = info.locals,
+            .body = body,
+        });
 
         try self.local_functions_list.append(self.allocator, .{ .pending = .{
             .body = body,
@@ -714,6 +838,89 @@ const BuildState = struct {
 
         if (self.local_functions_list.items.len != self.function_type_indices.items.len) {
             return error.MismatchedFunctionCount;
+        }
+
+        const n_composite = self.direct_parents_list.items.len;
+        const type_canonical = try type_equiv_mod.computeTypeCanonical(
+            self.allocator,
+            self.composite_types_list.items,
+            self.direct_parents_list.items,
+            self.type_final_list.items,
+        );
+        errdefer self.allocator.free(type_canonical);
+
+        if (self.engine.config().validate) {
+            const arena_alloc = self.parserAllocator();
+            const rec_ranges = try arena_alloc.alloc(validator_mod.RecGroupRange, n_composite);
+            var grp_start: usize = 0;
+            while (grp_start < n_composite) {
+                const gid = self.val_rec_group_ids.items[grp_start];
+                var grp_end = grp_start + 1;
+                while (grp_end < n_composite and self.val_rec_group_ids.items[grp_end] == gid) : (grp_end += 1) {}
+                for (grp_start..grp_end) |k| {
+                    rec_ranges[k] = .{ .start = @intCast(grp_start), .end = @intCast(grp_end) };
+                }
+                grp_start = grp_end;
+            }
+
+            const total_funcs = self.imported_funcs_list.items.len + self.function_type_indices.items.len;
+            const all_func_type_indices = try arena_alloc.alloc(u32, total_funcs);
+            for (self.imported_funcs_list.items, 0..) |def, idx| {
+                all_func_type_indices[idx] = def.type_index;
+            }
+            for (self.function_type_indices.items, 0..) |ti, idx| {
+                all_func_type_indices[self.imported_funcs_list.items.len + idx] = ti;
+            }
+
+            const imported_globals_info = try arena_alloc.alloc(
+                validator_mod.GlobalTypeInfo,
+                self.imported_globals_list.items.len,
+            );
+            for (self.imported_globals_list.items, 0..) |ig, idx| {
+                imported_globals_info[idx] = .{
+                    .val_type = ig.val_type,
+                    .mutable = ig.mutability == .Var,
+                };
+            }
+
+            const tag_type_indices = try arena_alloc.alloc(u32, self.tags_list.items.len);
+            for (self.tags_list.items, 0..) |t, idx| {
+                tag_type_indices[idx] = t.type_index;
+            }
+
+            const val_eh_mode: validator_mod.ValidatorEHMode = switch (self.detected_eh_mode) {
+                .none => .none,
+                .new => .new,
+                .legacy => .legacy,
+            };
+
+            const val_input = validator_mod.ModuleValidationInput{
+                .allocator = self.allocator,
+                .type_ctx = .{
+                    .composite_types = self.composite_types_list.items,
+                    .direct_parents = self.direct_parents_list.items,
+                    .type_final = self.type_final_list.items,
+                    .type_canonical = type_canonical,
+                    .rec_ranges = rec_ranges,
+                },
+                .super_type_counts = self.val_super_type_counts.items,
+                .func_type_indices = all_func_type_indices,
+                .table_defs = self.val_table_defs.items,
+                .memories = self.val_memories.items,
+                .imported_globals = imported_globals_info,
+                .local_globals = self.val_local_globals.items,
+                .tags = tag_type_indices,
+                .exports = self.val_exports.items,
+                .start_function = self.start_function,
+                .elem_segments = self.val_elem_segments.items,
+                .data_segments = self.val_data_segments.items,
+                .data_count = self.data_count,
+                .local_funcs = self.val_local_funcs.items,
+                .local_func_type_indices = self.function_type_indices.items,
+                .eh_mode = val_eh_mode,
+                .config = self.engine.config().*,
+            };
+            try validator_mod.validateModule(&val_input);
         }
 
         const globals = try self.globals_list.toOwnedSlice(self.allocator);
@@ -767,10 +974,11 @@ const BuildState = struct {
         }
 
         const local_functions = try self.local_functions_list.toOwnedSlice(self.allocator);
-        errdefer {
+        var local_functions_moved = false;
+        errdefer if (!local_functions_moved) {
             deinit_function_slots(self.allocator, local_functions);
             self.allocator.free(local_functions);
-        }
+        };
 
         const imported_function_count = imported_funcs.len;
         const function_count = imported_function_count + local_functions.len;
@@ -785,6 +993,7 @@ const BuildState = struct {
         for (local_functions, 0..) |slot, i| {
             functions[imported_function_count + i] = slot;
         }
+        local_functions_moved = true;
         self.allocator.free(local_functions);
 
         const func_type_indices = try self.allocator.alloc(u32, function_count);
@@ -813,8 +1022,8 @@ const BuildState = struct {
         const tags = try self.tags_list.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(tags);
 
-        const n_composite = self.direct_parents_list.items.len;
         const type_ancestors_outer = try self.allocator.alloc([]const u32, n_composite);
+        @memset(type_ancestors_outer, &.{});
         errdefer {
             for (type_ancestors_outer) |anc_slice| self.allocator.free(anc_slice);
             self.allocator.free(type_ancestors_outer);
@@ -822,11 +1031,13 @@ const BuildState = struct {
         for (0..n_composite) |i| {
             const direct_parent = self.direct_parents_list.items[i];
             if (direct_parent) |p| {
-                const parent_ancestors = type_ancestors_outer[p];
-                const anc_slice = try self.allocator.alloc(u32, 1 + parent_ancestors.len);
-                anc_slice[0] = p;
-                @memcpy(anc_slice[1..], parent_ancestors);
-                type_ancestors_outer[i] = anc_slice;
+                if (p < i) {
+                    const parent_ancestors = type_ancestors_outer[p];
+                    const anc_slice = try self.allocator.alloc(u32, 1 + parent_ancestors.len);
+                    anc_slice[0] = p;
+                    @memcpy(anc_slice[1..], parent_ancestors);
+                    type_ancestors_outer[i] = anc_slice;
+                }
             } else {
                 type_ancestors_outer[i] = &.{};
             }
@@ -834,13 +1045,6 @@ const BuildState = struct {
 
         const type_final = try self.type_final_list.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(type_final);
-        const type_canonical = try type_equiv_mod.computeTypeCanonical(
-            self.allocator,
-            composite_types,
-            self.direct_parents_list.items,
-            type_final,
-        );
-        errdefer self.allocator.free(type_canonical);
 
         const exports = self.exports;
         self.exports = .empty;

@@ -31,7 +31,7 @@ pub const RefType = struct {
     }
 
     pub fn i31ref() RefType {
-        return init(false, .I31);
+        return init(true, .I31);
     }
 
     pub fn structref() RefType {

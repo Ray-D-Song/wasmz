@@ -853,6 +853,12 @@ pub const ElementSegmentBody = struct {
     /// Function indices for externval-style elements (e.g. legacy_active_funcref_externval).
     /// Empty for elemexpr-style segments.
     func_indices: []const u32 = &.{},
+    /// Init expression slices for elemexpr-style segments.
+    elem_exprs: []const []const u8 = &.{},
+    /// True for externval-style segments, false for elemexpr-style segments.
+    is_externval: bool = true,
+    /// External kind byte for externval segments (0x00 = funcref).
+    elemkind: u8 = 0,
     /// For active segments, contains the init expression bytes for the offset.
     /// For passive segments, this is empty.
     offset_expr: []const u8 = &.{},
@@ -996,6 +1002,7 @@ pub const TypeEntry = struct {
     mutability: ?bool = null,
     super_types: []const HeapType = &.{},
     final: ?bool = null,
+    rec_group_id: u32 = 0,
 };
 
 pub const SectionInformation = struct {

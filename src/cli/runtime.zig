@@ -60,6 +60,7 @@ pub const Runtime = struct {
             .legacy_exceptions = cli.legacy_exceptions,
             .mem_limit_bytes = if (cli.mem_limit_mb) |mb| mb * 1024 * 1024 else null,
             .eager_compile = use_eager_compile,
+            .validate = !cli.no_validate,
         }) catch |err| errors.fatal("Failed to initialize engine: {s}", .{@errorName(err)});
 
         self.arc_module = Module.compileArc(self.engine, wasm_bytes) catch |err|

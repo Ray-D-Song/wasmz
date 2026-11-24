@@ -16,6 +16,7 @@ pub const CliArgs = struct {
     reactor: bool,
     smart_compile: bool,
     eager_compile: bool,
+    no_validate: bool,
     _parsed: arg_parse.Parsed,
     _wasm_args_parsed: [][]const u8,
 
@@ -27,6 +28,7 @@ pub const CliArgs = struct {
         arg_parse.Flag.boolFlag("reactor", "Initialize as reactor before calling --func"),
         arg_parse.Flag.boolFlag("smart-compile", "Smart compile: eager < 3MB, lazy >= 3MB (default)"),
         arg_parse.Flag.boolFlag("eager-compile", "Compile all functions eagerly"),
+        arg_parse.Flag.boolFlag("no-validate", "Skip WebAssembly module validation"),
         arg_parse.Flag.stringFlag("args", "Arguments to pass to the WASM module"),
         arg_parse.Flag.stringFlag("func", "Name of exported function to call"),
         arg_parse.Flag.intFlag("mem-limit", "Memory limit in MB"),
@@ -109,6 +111,7 @@ pub const CliArgs = struct {
             .reactor = parsed.getBool("reactor"),
             .smart_compile = parsed.getBool("smart-compile"),
             .eager_compile = parsed.getBool("eager-compile"),
+            .no_validate = parsed.getBool("no-validate"),
             .wasi_args = wasi_args,
             .passthrough = passthrough,
             ._parsed = parsed,

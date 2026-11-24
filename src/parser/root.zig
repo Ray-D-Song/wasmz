@@ -84,6 +84,7 @@ pub const Parser = struct {
     cur_sect_id: SectionCode = .unknown,
     cur_sect_entries_left: u32 = 0,
     cur_rec_group_types_left: i32 = -1,
+    cur_rec_group_id: u32 = 0,
     cur_data_segment_active: bool = false,
     cur_element_segment_type: ?ElementSegmentType = null,
     cur_fn_range: ?DataRange = null,
@@ -1173,9 +1174,10 @@ pub const Parser = struct {
         }
 
         var element_type: Type = .{ .kind = .funcref };
+        var elemkind: u8 = 0;
         switch (segment_type) {
             .passive_externval, .active_externval, .declared_externval => {
-                _ = self.read_u8();
+                elemkind = self.read_u8();
             },
             .passive_elemexpr, .active_elemexpr, .declared_elemexpr => {
                 element_type = self.readTypeInternal();
@@ -1185,14 +1187,18 @@ pub const Parser = struct {
 
         const item_count = self.read_var_uint32();
         var func_indices: []const u32 = &.{};
-        if (is_externval_element_segment_type(segment_type)) {
+        var elem_exprs: []const []const u8 = &.{};
+        const is_externval = is_externval_element_segment_type(segment_type);
+        if (is_externval) {
             const indices = self.allocator.alloc(u32, @intCast(item_count)) catch @panic("OOM");
             for (indices) |*idx| {
                 idx.* = self.read_var_uint32();
             }
             func_indices = indices;
         } else {
-            for (0..item_count) |_| {
+            const exprs = self.allocator.alloc([]const u8, @intCast(item_count)) catch @panic("OOM");
+            for (exprs) |*expr_slot| {
+                const expr_start = self.cur_pos;
                 self.readCodeOperator(.expression) catch |err| switch (err) {
                     error.NeedMoreData => return .need_more_data,
                     error.UnknownOperator => return self.fail_with_state(ParserError.UnknownOperator),
@@ -1201,7 +1207,9 @@ pub const Parser = struct {
                     },
                     error.UnsupportedState => return self.fail_with_state(ParserError.UnsupportedState),
                 };
+                expr_slot.* = self.cur_data[expr_start..self.cur_pos];
             }
+            elem_exprs = exprs;
         }
 
         self.cur_state = .END_ELEMENT_SECTION_ENTRY;
@@ -1211,6 +1219,9 @@ pub const Parser = struct {
             .payload = .{ .element_segment_body = ElementSegmentBody{
                 .element_type = element_type,
                 .func_indices = func_indices,
+                .elem_exprs = elem_exprs,
+                .is_externval = is_externval,
+                .elemkind = elemkind,
                 .offset_expr = offset_expr,
             } },
         } };
@@ -1263,9 +1274,10 @@ pub const Parser = struct {
             self.cur_pos = start_pos;
             return .need_more_data;
         }
-        const type_entry = self.read_type_entry_common(type_kind) catch {
+        var type_entry = self.read_type_entry_common(type_kind) catch {
             return self.fail_with_state(ParserError.UnknownTypeKind);
         };
+        type_entry.rec_group_id = self.cur_rec_group_id;
         self.cur_rec_group_types_left -= 1;
         return .{ .parsed = .{
             .consumed = self.cur_pos - start_pos,
@@ -1294,6 +1306,7 @@ pub const Parser = struct {
                     self.cur_rec_group_types_left = -1;
                     continue;
                 }
+                self.cur_rec_group_id += 1;
                 return self.read_rec_group_entry_from(start_pos);
             }
 
@@ -1303,9 +1316,11 @@ pub const Parser = struct {
                 return .need_more_data;
             }
 
-            const type_entry = self.read_type_entry_common(type_kind) catch {
+            var type_entry = self.read_type_entry_common(type_kind) catch {
                 return self.fail_with_state(ParserError.UnknownTypeKind);
             };
+            self.cur_rec_group_id += 1;
+            type_entry.rec_group_id = self.cur_rec_group_id;
             self.cur_sect_entries_left -= 1;
             return .{ .parsed = .{
                 .consumed = self.cur_pos - start_pos,
@@ -1316,11 +1331,23 @@ pub const Parser = struct {
 
     fn read_type_entry_common(self: *Parser, type_kind: i7) !TypeEntry {
         return switch (type_kind) {
-            @intFromEnum(TypeKind.func) => try self.read_func_type(),
+            @intFromEnum(TypeKind.func) => blk: {
+                var entry = try self.read_func_type();
+                entry.final = true;
+                break :blk entry;
+            },
             @intFromEnum(TypeKind.subtype) => try self.read_sub_type(false),
             @intFromEnum(TypeKind.subtype_final) => try self.read_sub_type(true),
-            @intFromEnum(TypeKind.struct_type) => try self.read_struct_type(),
-            @intFromEnum(TypeKind.array_type) => try self.read_array_type(),
+            @intFromEnum(TypeKind.struct_type) => blk: {
+                var entry = try self.read_struct_type();
+                entry.final = true;
+                break :blk entry;
+            },
+            @intFromEnum(TypeKind.array_type) => blk: {
+                var entry = try self.read_array_type();
+                entry.final = true;
+                break :blk entry;
+            },
             @intFromEnum(TypeKind.i32),
             @intFromEnum(TypeKind.i64),
             @intFromEnum(TypeKind.f32),
@@ -1707,13 +1734,13 @@ pub const Parser = struct {
             => {},
             .memory_copy => {
                 if (!self.has_var_int_bytes()) return error.NeedMoreData;
-                _ = self.read_var_uint32();
+                info.destination_index = self.read_var_uint32();
                 if (!self.has_var_int_bytes()) return error.NeedMoreData;
-                _ = self.read_var_uint32();
+                info.table_index = self.read_var_uint32();
             },
             .memory_fill => {
                 if (!self.has_var_int_bytes()) return error.NeedMoreData;
-                _ = self.read_var_uint32();
+                info.destination_index = self.read_var_uint32();
             },
             .table_init => {
                 if (!self.has_var_int_bytes()) return error.NeedMoreData;
@@ -1735,7 +1762,7 @@ pub const Parser = struct {
                 if (!self.has_var_int_bytes()) return error.NeedMoreData;
                 info.segment_index = self.read_var_uint32();
                 if (!self.has_var_int_bytes()) return error.NeedMoreData;
-                _ = self.read_var_uint32();
+                info.destination_index = self.read_var_uint32();
             },
             .data_drop, .elem_drop => {
                 if (!self.has_var_int_bytes()) return error.NeedMoreData;
@@ -2183,7 +2210,7 @@ pub const Parser = struct {
                 if (!self.has_var_int_bytes()) return error.NeedMoreData;
                 info.type_index = .{ .index = self.read_var_uint32() };
                 if (!self.has_var_int_bytes()) return error.NeedMoreData;
-                _ = self.read_var_uint32();
+                info.table_index = self.read_var_uint32();
             },
             .local_get, .local_set, .local_tee => {
                 if (!self.has_var_int_bytes()) return error.NeedMoreData;
@@ -2230,7 +2257,7 @@ pub const Parser = struct {
             => info.memory_address = try self.read_memory_immediate(),
             .memory_size, .memory_grow => {
                 if (!self.has_var_int_bytes()) return error.NeedMoreData;
-                _ = self.read_var_uint32();
+                info.destination_index = self.read_var_uint32();
             },
             .i32_const => {
                 if (!self.has_var_int_bytes()) return error.NeedMoreData;
@@ -2250,9 +2277,13 @@ pub const Parser = struct {
             },
             .select_with_type => {
                 if (!self.has_var_int_bytes()) return error.NeedMoreData;
-                const num_types = self.read_var_int32();
-                if (num_types == 1) {
+                const num_types = self.read_var_uint32();
+                info.len = num_types;
+                if (num_types > 0) {
                     info.select_type = try self.read_type_checked();
+                    for (1..num_types) |_| {
+                        _ = try self.read_type_checked();
+                    }
                 }
             },
             .unreachable_,

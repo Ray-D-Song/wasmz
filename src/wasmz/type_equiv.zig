@@ -147,28 +147,23 @@ fn gcTypesStructurallyEqual(
     type_final: []const bool,
     canonical: []const u32,
 ) bool {
+    if (type_final[i] != type_final[j]) return false;
+    if (!parentsEquivalent(direct_parents[i], direct_parents[j], canonical)) return false;
     return switch (composite_types[i]) {
         .func_type => |fi| funcTypesEqual(fi, composite_types[j].func_type, canonical),
-        .struct_type, .array_type => blk: {
-            if (type_final[i] != type_final[j]) break :blk false;
-            if (!parentsEquivalent(direct_parents[i], direct_parents[j], canonical)) break :blk false;
-            break :blk switch (composite_types[i]) {
-                .struct_type => |si| blk2: {
-                    const sj = composite_types[j].struct_type;
-                    if (si.fields.len != sj.fields.len) return false;
-                    for (si.fields, sj.fields) |fi, fj| {
-                        if (fi.mutable != fj.mutable) return false;
-                        if (!storageTypesEqual(fi.storage_type, fj.storage_type, canonical)) return false;
-                    }
-                    break :blk2 true;
-                },
-                .array_type => |ai| blk2: {
-                    const aj = composite_types[j].array_type;
-                    if (ai.field.mutable != aj.field.mutable) return false;
-                    break :blk2 storageTypesEqual(ai.field.storage_type, aj.field.storage_type, canonical);
-                },
-                .func_type => unreachable,
-            };
+        .struct_type => |si| blk: {
+            const sj = composite_types[j].struct_type;
+            if (si.fields.len != sj.fields.len) return false;
+            for (si.fields, sj.fields) |fi, fj| {
+                if (fi.mutable != fj.mutable) return false;
+                if (!storageTypesEqual(fi.storage_type, fj.storage_type, canonical)) return false;
+            }
+            break :blk true;
+        },
+        .array_type => |ai| blk: {
+            const aj = composite_types[j].array_type;
+            if (ai.field.mutable != aj.field.mutable) return false;
+            break :blk storageTypesEqual(ai.field.storage_type, aj.field.storage_type, canonical);
         },
     };
 }
@@ -189,6 +184,7 @@ fn parentsEquivalent(a: ?u32, b: ?u32, canonical: []const u32) bool {
     if (a == null and b == null) return true;
     const pa = a orelse return false;
     const pb = b orelse return false;
+    if (pa >= canonical.len or pb >= canonical.len) return false;
     return canonical[pa] == canonical[pb];
 }
 
@@ -222,5 +218,6 @@ fn heapTypesEqual(a: HeapType, b: HeapType, canonical: []const u32) bool {
     const b_concrete = b.concreteType();
     if (a_concrete == null and b_concrete == null) return a == b;
     if (a_concrete == null or b_concrete == null) return false;
+    if (a_concrete.? >= canonical.len or b_concrete.? >= canonical.len) return false;
     return canonical[a_concrete.?] == canonical[b_concrete.?];
 }

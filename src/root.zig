@@ -71,5 +71,6 @@ test {
     _ = @import("wasmz/tests/memory64_test.zig");
     _ = @import("wasmz/tests/local_alias_test.zig");
     _ = @import("wasmz/tests/label_slot_test.zig");
+    _ = @import("wasmz/tests/validator_test.zig");
     _ = @import("core/tests/memory_test.zig");
 }
