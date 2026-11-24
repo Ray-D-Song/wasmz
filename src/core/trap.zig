@@ -87,7 +87,7 @@ pub const TrapCode = enum(u8) {
 
     pub fn fromInt(value: u8) InvalidTrapCode!TrapCode {
         return switch (value) {
-            inline 1...19 => @enumFromInt(value),
+            inline 1...19 => @fromBackingInt(value),
             else => InvalidTrapCode.InvalidTrapCode,
         };
     }
@@ -239,8 +239,7 @@ pub const Trap = struct {
     pub fn allocPrint(self: Trap, allocator: std.mem.Allocator) ![]u8 {
         return switch (self.reason) {
             .instruction_trap => |code| allocator.dupe(u8, code.trapMessage()),
-            .i32_exit => |status| std.fmt.allocPrint(
-                allocator,
+            .i32_exit => |status| allocator.print(
                 "Exited with i32 exit status {}",
                 .{status},
             ),

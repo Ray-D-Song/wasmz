@@ -75,7 +75,7 @@ inline fn stride(comptime OpsT: type) usize {
 
 /// Returns the current RSS in bytes, or 0 on unsupported platforms / error.
 fn currentRssBytes() usize {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .macos => currentRssMacOS(),
         .linux => currentRssLinux(),
         .windows => currentRssWindows(),
@@ -122,7 +122,7 @@ fn currentRssLinux() usize {
 }
 
 fn currentRssWindows() usize {
-    if (comptime builtin.os.tag != .windows) return 0;
+    if (comptime builtin.target.os.tag != .windows) return 0;
     const windows = std.os.windows;
     const PROCESS_MEMORY_COUNTERS = extern struct {
         cb: u32,
@@ -154,7 +154,7 @@ fn currentRssWindows() usize {
 }
 
 inline fn UnsignedOf(comptime T: type) type {
-    return std.meta.Int(.unsigned, @bitSizeOf(T));
+    return @Int(.unsigned, @bitSizeOf(T));
 }
 
 inline fn trapReturnTruncate(frame: *DispatchState, err: helper.TruncateError) void {

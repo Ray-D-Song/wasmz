@@ -5,7 +5,6 @@
 // selectors for the operation kind.
 // The public surface is consumed exclusively by exec.zig (the dispatcher).
 const std = @import("std");
-const builtin = @import("builtin");
 const helper = @import("../value/helper.zig");
 const vec = @import("../value/vec.zig");
 
@@ -20,21 +19,18 @@ fn Vector(comptime T: type, comptime N: usize) type {
 /// Used as the "raw bits" type for endian-aware reinterpretation.
 fn UnsignedLane(comptime T: type) type {
     return switch (@typeInfo(T)) {
-        .int => std.meta.Int(.unsigned, @bitSizeOf(T)),
-        .float => std.meta.Int(.unsigned, @bitSizeOf(T)),
+        .int => @Int(.unsigned, @bitSizeOf(T)),
+        .float => @Int(.unsigned, @bitSizeOf(T)),
         else => @compileError("unsupported lane type"),
     };
 }
 
 /// Interprets V128 bytes as an N-element @Vector(N, T).
-/// On big-endian targets, byte-swaps each lane so that the wasm little-endian
-/// byte order is preserved.
+/// Zig 0.17 `@bitCast` on arrays/vectors is endian-agnostic (element 0 maps to
+/// the least-significant bits, matching Wasm little-endian lane layout).
 pub fn vecFromV128(comptime T: type, comptime N: usize, value: V128) Vector(T, N) {
     const U = UnsignedLane(T);
-    var bits: Vector(U, N) = @bitCast(value.bytes);
-    if (@sizeOf(T) > 1 and comptime builtin.cpu.arch.endian() == .big) {
-        bits = @byteSwap(bits);
-    }
+    const bits: Vector(U, N) = @bitCast(value.bytes);
     return switch (@typeInfo(T)) {
         .int => if (@typeInfo(T).int.signedness == .signed) @bitCast(bits) else bits,
         .float => @bitCast(bits),
@@ -43,17 +39,13 @@ pub fn vecFromV128(comptime T: type, comptime N: usize, value: V128) Vector(T, N
 }
 
 /// Packs an N-element @Vector(N, T) back into V128 bytes.
-/// Performs byte-swap on big-endian targets to maintain little-endian storage.
 pub fn v128FromVec(comptime T: type, comptime N: usize, lanes: Vector(T, N)) V128 {
     const U = UnsignedLane(T);
-    var bits: Vector(U, N) = switch (@typeInfo(T)) {
+    const bits: Vector(U, N) = switch (@typeInfo(T)) {
         .int => if (@typeInfo(T).int.signedness == .signed) @bitCast(lanes) else lanes,
         .float => @bitCast(lanes),
         else => unreachable,
     };
-    if (@sizeOf(T) > 1 and comptime builtin.cpu.arch.endian() == .big) {
-        bits = @byteSwap(bits);
-    }
     return v128FromBytes(@bitCast(bits));
 }
 
@@ -81,12 +73,12 @@ pub fn readLane(comptime T: type, bytes: [16]u8, lane: u8) T {
     const fixed: *const [width]u8 = @ptrCast(bytes[start .. start + width].ptr);
     return switch (@typeInfo(T)) {
         .int => {
-            const U = std.meta.Int(.unsigned, @bitSizeOf(T));
+            const U = @Int(.unsigned, @bitSizeOf(T));
             const bits = std.mem.readInt(U, fixed, .little);
             return if (@typeInfo(T).int.signedness == .signed) @as(T, @bitCast(bits)) else @as(T, bits);
         },
         .float => {
-            const U = std.meta.Int(.unsigned, @bitSizeOf(T));
+            const U = @Int(.unsigned, @bitSizeOf(T));
             const bits = std.mem.readInt(U, fixed, .little);
             return @as(T, @bitCast(bits));
         },
@@ -101,12 +93,12 @@ pub fn writeLane(comptime T: type, bytes: *[16]u8, lane: u8, value: T) void {
     const fixed: *[width]u8 = @ptrCast(bytes[start .. start + width].ptr);
     switch (@typeInfo(T)) {
         .int => {
-            const U = std.meta.Int(.unsigned, @bitSizeOf(T));
+            const U = @Int(.unsigned, @bitSizeOf(T));
             const bits: U = if (@typeInfo(T).int.signedness == .signed) @bitCast(value) else value;
             std.mem.writeInt(U, fixed, bits, .little);
         },
         .float => {
-            const U = std.meta.Int(.unsigned, @bitSizeOf(T));
+            const U = @Int(.unsigned, @bitSizeOf(T));
             std.mem.writeInt(U, fixed, @as(U, @bitCast(value)), .little);
         },
         else => @compileError("unsupported lane type"),
@@ -169,7 +161,7 @@ pub fn bitmask(comptime T: type, comptime N: usize, value: V128) i32 {
     // lanes < zero produces a bool vector where true = sign bit set
     const sign_bits: @Vector(N, u1) = @bitCast(lanes < zero);
     // Pack the u1 vector into a small unsigned integer
-    const MaskInt = std.meta.Int(.unsigned, N);
+    const MaskInt = @Int(.unsigned, N);
     const mask_uint: MaskInt = @bitCast(sign_bits);
     return @as(i32, @intCast(mask_uint));
 }
@@ -335,7 +327,7 @@ pub fn shiftInt(comptime T: type, comptime N: usize, value: V128, amount: u32, c
             return v128FromVec(T, N, lanes >> shifts);
         },
         .shr_u => {
-            const U = std.meta.Int(.unsigned, @bitSizeOf(T));
+            const U = @Int(.unsigned, @bitSizeOf(T));
             const lanes = vecFromV128(U, N, value);
             const shifts: @Vector(N, ShiftT) = @splat(shift);
             return v128FromVec(U, N, lanes >> shifts);
@@ -369,7 +361,7 @@ pub fn shuffleBytes(lhs: V128, rhs: V128, lanes_arr: [16]u8) V128 {
 pub fn extaddPairwise(comptime SrcT: type, comptime DstT: type, comptime N: usize, value: V128) V128 {
     const signed = @typeInfo(SrcT).int.signedness == .signed;
     // Wider type that holds pairs as DstT lanes
-    const PairT = std.meta.Int(if (signed) .signed else .unsigned, @bitSizeOf(DstT));
+    const PairT = @Int(if (signed) .signed else .unsigned, @bitSizeOf(DstT));
     const PairVec = @Vector(N, PairT);
 
     // Read the vector as N lanes of the wider (pair) type.
@@ -569,8 +561,8 @@ fn narrowLane(comptime SrcT: type, comptime DstT: type, value: SrcT, comptime si
     if (signed) {
         return clampSigned(DstT, value);
     }
-    const SrcU = std.meta.Int(.unsigned, @bitSizeOf(SrcT));
-    const DstU = std.meta.Int(.unsigned, @bitSizeOf(DstT));
+    const SrcU = @Int(.unsigned, @bitSizeOf(SrcT));
+    const DstU = @Int(.unsigned, @bitSizeOf(DstT));
     const as_unsigned = @as(SrcU, @intCast(value));
     if (as_unsigned > std.math.maxInt(DstU)) {
         return @as(DstT, @bitCast(@as(DstU, std.math.maxInt(DstU))));

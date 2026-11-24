@@ -1873,10 +1873,10 @@ pub const Module = struct {
         self: *const Module,
         allocator: Allocator,
         entry_func_idx: u32,
-    ) error{OutOfMemory}!std.DynamicBitSet {
+    ) error{OutOfMemory}!std.bit_set.Dynamic {
         const n = self.functions.len;
-        var reachable = try std.DynamicBitSet.initEmpty(allocator, n);
-        errdefer reachable.deinit();
+        var reachable = try std.bit_set.Dynamic.initEmpty(allocator, n);
+        errdefer reachable.deinit(allocator);
 
         var worklist: std.ArrayListUnmanaged(u32) = .empty;
         defer worklist.deinit(allocator);
@@ -1940,7 +1940,7 @@ pub const Module = struct {
         if (entry_func_idx >= self.functions.len) return;
 
         var reachable = try self.collectReachable(self.allocator, entry_func_idx);
-        defer reachable.deinit();
+        defer reachable.deinit(self.allocator);
 
         var it = reachable.iterator(.{});
         while (it.next()) |idx| {

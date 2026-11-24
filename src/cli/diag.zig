@@ -22,7 +22,7 @@ pub const DiagSession = struct {
     phase_enabled: bool = false,
     mem_trace: bool = false,
     trace_prev: usize = 0,
-    on_exit_ctx: profiling.OnExitCtx = .{},
+    on_exit_ctx: profiling.OnExitCtx = undefined,
 
     pub fn init(environ: *const std.process.Environ.Map, mem_trace: bool) DiagSession {
         var self: DiagSession = .{

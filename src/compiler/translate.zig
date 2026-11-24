@@ -110,27 +110,27 @@ pub fn wasmBlockTypeFromType(block_type: ?Type) TranslateError!?BlockType {
 /// Converts a PayloadHeapType into a raw u32 suitable for IR storage.
 ///
 /// Encoding convention (shared with core.HeapType):
-///   - Abstract types (.kind variant): @intFromEnum(kind) — values 0–9 after translation
+///   - Abstract types (.kind variant): @backingInt(kind) — values 0–9 after translation
 ///     We map parser TypeKind to the core HeapType enum ordinals (0=Func … 9=None).
 ///   - Concrete types (.index variant): 0x80000000 | type_index
 ///
 /// This raw value can later be recovered with:
-///   @as(core.HeapType, @enumFromInt(raw))
+///   @as(core.HeapType, @fromBackingInt(raw))
 fn heapTypeToRaw(heap_type: ?PayloadHeapType) TranslateError!u32 {
     const ht = heap_type orelse return error.InvalidTypeIndex;
     return switch (ht) {
-        .index => |idx| @intFromEnum(HeapType.fromConcreteType(idx)),
+        .index => |idx| @backingInt(HeapType.fromConcreteType(idx)),
         .kind => |kind| switch (kind) {
-            .funcref => @intFromEnum(HeapType.Func),
-            .null_funcref => @intFromEnum(HeapType.NoFunc),
-            .externref => @intFromEnum(HeapType.Extern),
-            .null_externref => @intFromEnum(HeapType.NoExtern),
-            .anyref => @intFromEnum(HeapType.Any),
-            .null_ref => @intFromEnum(HeapType.None),
-            .eqref => @intFromEnum(HeapType.Eq),
-            .i31ref => @intFromEnum(HeapType.I31),
-            .structref => @intFromEnum(HeapType.Struct),
-            .arrayref => @intFromEnum(HeapType.Array),
+            .funcref => @backingInt(HeapType.Func),
+            .null_funcref => @backingInt(HeapType.NoFunc),
+            .externref => @backingInt(HeapType.Extern),
+            .null_externref => @backingInt(HeapType.NoExtern),
+            .anyref => @backingInt(HeapType.Any),
+            .null_ref => @backingInt(HeapType.None),
+            .eqref => @backingInt(HeapType.Eq),
+            .i31ref => @backingInt(HeapType.I31),
+            .structref => @backingInt(HeapType.Struct),
+            .arrayref => @backingInt(HeapType.Array),
             else => return error.InvalidTypeIndex,
         },
     };
@@ -758,7 +758,7 @@ pub fn wasmCompositeTypeFromTypeEntry(
 /// Returns true if the opcode is a Wasm Threads proposal atomic instruction
 /// (any opcode in the 0xFE.. range).
 fn isAtomicOpcode(code: OperatorCode) bool {
-    const v = @intFromEnum(code);
+    const v = @backingInt(code);
     return v >= 0xfe00 and v <= 0xfeff;
 }
 

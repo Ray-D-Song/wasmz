@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
         .os_tag = .wasi,
     });
 
-    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSmall });
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .small });
 
     const root_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),

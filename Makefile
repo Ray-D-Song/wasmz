@@ -4,15 +4,15 @@ INSTALL  := $(HOME)/.local/bin
 .PHONY: build-debug build release install install-debug install-release uninstall test clib deps bench build-wasi build-wasm
 
 build-debug:
-	zig build -Doptimize=Debug -Dprofiling=true
+	zig build -Doptimize=debug -Dprofiling=true
 	@ls -lh zig-out/bin/$(BIN)
 
 build:
-	zig build -Doptimize=ReleaseSafe -Dprofiling=true
+	zig build -Doptimize=safe -Dprofiling=true
 	@ls -lh zig-out/bin/$(BIN)
 
 release:
-	zig build -Doptimize=ReleaseFast
+	zig build -Doptimize=fast
 	@ls -lh zig-out/bin/$(BIN)
 
 install-debug: build-debug

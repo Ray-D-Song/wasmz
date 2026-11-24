@@ -18,7 +18,7 @@ pub const GcRef = enum(u32) {
     const Self = @This();
 
     /// Sentinel value for null references.
-    pub const null_value: Self = @enumFromInt(0);
+    pub const null_value: Self = @fromBackingInt(0);
 
     /// Encodes an i31 (31-bit small integer) into a GcRef.
     /// Encoding: (value << 1) | 1
@@ -26,7 +26,7 @@ pub const GcRef = enum(u32) {
     pub fn fromI31(value: i31) Self {
         const extended: i32 = value;
         const encoded = (@as(u32, @bitCast(extended)) << 1) | 1;
-        return @enumFromInt(encoded);
+        return @fromBackingInt(encoded);
     }
 
     /// Creates a GcRef from a heap object index.
@@ -34,32 +34,32 @@ pub const GcRef = enum(u32) {
     pub fn fromHeapIndex(index: u32) Self {
         std.debug.assert(index & 1 == 0);
         std.debug.assert(index != 0);
-        return @enumFromInt(index);
+        return @fromBackingInt(index);
     }
 
     /// Returns true if this is a null reference.
     pub fn isNull(self: Self) bool {
-        return @intFromEnum(self) == 0;
+        return @backingInt(self) == 0;
     }
 
     /// Returns true if this is an i31 (small integer).
     /// Discriminated by bit 0 = 1.
     pub fn isI31(self: Self) bool {
-        const bits = @intFromEnum(self);
+        const bits = @backingInt(self);
         return bits != 0 and (bits & 1) == 1;
     }
 
     /// Returns true if this is a heap object reference.
     /// Discriminated by bit 0 = 0 and non-zero.
     pub fn isHeapRef(self: Self) bool {
-        const bits = @intFromEnum(self);
+        const bits = @backingInt(self);
         return bits != 0 and (bits & 1) == 0;
     }
 
     /// Decodes and returns the i31 value, or null if not an i31.
     pub fn asI31(self: Self) ?i31 {
         if (!self.isI31()) return null;
-        const bits = @intFromEnum(self);
+        const bits = @backingInt(self);
         const shifted = @as(i32, @bitCast(bits >> 1));
         return @as(i31, @truncate(shifted));
     }
@@ -67,16 +67,16 @@ pub const GcRef = enum(u32) {
     /// Returns the heap object index, or null if not a heap reference.
     pub fn asHeapIndex(self: Self) ?u32 {
         if (!self.isHeapRef()) return null;
-        return @intFromEnum(self);
+        return @backingInt(self);
     }
 
     /// Creates a GcRef from raw bits (u32).
     pub fn encode(bits: u32) Self {
-        return @enumFromInt(bits);
+        return @fromBackingInt(bits);
     }
 
     /// Returns the raw bits (u32) of this GcRef.
     pub fn decode(self: Self) u32 {
-        return @intFromEnum(self);
+        return @backingInt(self);
     }
 };

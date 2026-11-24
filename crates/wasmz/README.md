@@ -9,7 +9,7 @@ The wasmz sources are built from the same Git checkout as these bindings. Set
 
 ## Requirements
 
-- Zig 0.16
+- Zig 0.17
 
 ## Usage
 

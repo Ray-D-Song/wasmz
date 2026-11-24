@@ -12,8 +12,8 @@ const Io = std.Io;
 
 const page_align = std.heap.page_size_min;
 
-const is_wasi = builtin.os.tag == .wasi;
-const is_windows = builtin.os.tag == .windows;
+const is_wasi = builtin.target.os.tag == .wasi;
+const is_windows = builtin.target.os.tag == .windows;
 
 pub const MappedFile = struct {
     /// The mapped read-only byte slice.

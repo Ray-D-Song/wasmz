@@ -43,14 +43,12 @@ const OperatorInformation = payload_mod.OperatorInformation;
 const OperatorCode = payload_mod.OperatorCode;
 
 const Allocator = std.mem.Allocator;
-const LocalInitSet = std.DynamicBitSetUnmanaged;
+const LocalInitSet = std.bit_set.Dynamic;
 const Slot = ir.Slot;
 const Op = ir.Op;
 
 fn unionPayloadType(comptime UnionType: type, comptime field_name: []const u8) type {
-    const tag = @field(UnionType, field_name);
-    const idx = @intFromEnum(tag);
-    return @typeInfo(UnionType).@"union".fields[idx].type;
+    return @FieldType(UnionType, field_name);
 }
 const CompiledFunction = ir.CompiledFunction;
 const ValType = core.ValType;

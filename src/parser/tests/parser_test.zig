@@ -70,7 +70,7 @@ fn failParseAll(parser: *Parser, err: parser_mod.ParseAllError) parser_mod.Parse
         },
         else => {
             const parser_err: ParserError = @errorCast(err);
-            var detail_buf: [256]u8 = [_]u8{0} ** 256;
+            var detail_buf: [256]u8 = @splat(0);
             var detail_writer: std.Io.Writer = .fixed(&detail_buf);
 
             parser_mod.formatParserError(parser, parser_err, &detail_writer) catch {};

@@ -36,8 +36,8 @@ pub fn handle_atomic_fence(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
 pub fn handle_atomic_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsAtomicLoad, ip);
     const mem = frame.memSlice();
-    const width: ir.AtomicWidth = @enumFromInt(ops.width);
-    const ty: ir.AtomicType = @enumFromInt(ops.ty);
+    const width: ir.AtomicWidth = @fromBackingInt(ops.width);
+    const ty: ir.AtomicType = @fromBackingInt(ops.ty);
     const access_size = width.byteSize();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, access_size, mem, frame.memory64) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
@@ -69,8 +69,8 @@ pub fn handle_atomic_load(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
 pub fn handle_atomic_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsAtomicStore, ip);
     const mem = frame.memSlice();
-    const width: ir.AtomicWidth = @enumFromInt(ops.width);
-    const ty: ir.AtomicType = @enumFromInt(ops.ty);
+    const width: ir.AtomicWidth = @fromBackingInt(ops.width);
+    const ty: ir.AtomicType = @fromBackingInt(ops.ty);
     const access_size = width.byteSize();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, access_size, mem, frame.memory64) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
@@ -102,9 +102,9 @@ pub fn handle_atomic_store(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, e
 pub fn handle_atomic_rmw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsAtomicRmw, ip);
     const mem = frame.memSlice();
-    const width: ir.AtomicWidth = @enumFromInt(ops.width);
-    const ty: ir.AtomicType = @enumFromInt(ops.ty);
-    const rmw_op: ir.AtomicRmwOp = @enumFromInt(ops.op);
+    const width: ir.AtomicWidth = @fromBackingInt(ops.width);
+    const ty: ir.AtomicType = @fromBackingInt(ops.ty);
+    const rmw_op: ir.AtomicRmwOp = @fromBackingInt(ops.op);
     const access_size = width.byteSize();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, access_size, mem, frame.memory64) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
@@ -185,8 +185,8 @@ pub fn handle_atomic_rmw(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
 pub fn handle_atomic_cmpxchg(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsAtomicCmpxchg, ip);
     const mem = frame.memSlice();
-    const width: ir.AtomicWidth = @enumFromInt(ops.width);
-    const ty: ir.AtomicType = @enumFromInt(ops.ty);
+    const width: ir.AtomicWidth = @fromBackingInt(ops.width);
+    const ty: ir.AtomicType = @fromBackingInt(ops.ty);
     const access_size = width.byteSize();
     const ea = effectiveAddr(slots, ops.addr, ops.offset, access_size, mem, frame.memory64) orelse {
         trapReturn(frame, .MemoryOutOfBounds);
@@ -291,7 +291,7 @@ pub fn handle_atomic_wait32(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
     const expected = @as(u32, @bitCast(slots[ops.expected].readAs(i32)));
     const timeout_ns = slots[ops.timeout].readAs(i64);
     const result = env.memory.wait32(ea, expected, timeout_ns);
-    slots[ops.dst] = RawVal.from(@as(i32, @intFromEnum(result)));
+    slots[ops.dst] = RawVal.from(@as(i32, @backingInt(result)));
     dispatch.next(ip, stride(encode.ops.OpsAtomicWait32), slots, frame, env, r0, fp0);
 }
 
@@ -319,6 +319,6 @@ pub fn handle_atomic_wait64(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
     const expected = @as(u64, @bitCast(slots[ops.expected].readAs(i64)));
     const timeout_ns = slots[ops.timeout].readAs(i64);
     const result = env.memory.wait64(ea, expected, timeout_ns);
-    slots[ops.dst] = RawVal.from(@as(i32, @intFromEnum(result)));
+    slots[ops.dst] = RawVal.from(@as(i32, @backingInt(result)));
     dispatch.next(ip, stride(encode.ops.OpsAtomicWait64), slots, frame, env, r0, fp0);
 }

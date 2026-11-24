@@ -54,17 +54,17 @@ inline fn pagesToBytes(pages: u64) ?usize {
 }
 
 /// True when the platform supports mmap/mprotect for the virtual-reserve strategy.
-const use_mmap = builtin.os.tag == .linux or
-    builtin.os.tag == .macos or
-    builtin.os.tag == .ios or
-    builtin.os.tag == .tvos or
-    builtin.os.tag == .watchos or
-    builtin.os.tag == .visionos or
-    builtin.os.tag == .freebsd or
-    builtin.os.tag == .netbsd or
-    builtin.os.tag == .openbsd or
-    builtin.os.tag == .dragonfly or
-    builtin.os.tag == .illumos;
+const use_mmap = builtin.target.os.tag == .linux or
+    builtin.target.os.tag == .macos or
+    builtin.target.os.tag == .ios or
+    builtin.target.os.tag == .tvos or
+    builtin.target.os.tag == .watchos or
+    builtin.target.os.tag == .visionos or
+    builtin.target.os.tag == .freebsd or
+    builtin.target.os.tag == .netbsd or
+    builtin.target.os.tag == .openbsd or
+    builtin.target.os.tag == .dragonfly or
+    builtin.target.os.tag == .illumos;
 
 // Owned memory helpers (POSIX mmap strategy)
 
@@ -185,14 +185,14 @@ const SharedMemoryInner = struct {
     fn init(allocator: Allocator, io: Io, min_bytes: usize, max_bytes: usize) Allocator.Error!*SharedMemoryInner {
         const ptr = try allocator.create(SharedMemoryInner);
         errdefer allocator.destroy(ptr);
-        const bytes = try allocator.alignedAlloc(u8, @enumFromInt(3), max_bytes);
+        const bytes = try allocator.alignedAlloc(u8, .@"8", max_bytes);
         @memset(bytes, 0);
         ptr.* = .{
             .allocator = allocator,
             .io = io,
             .bytes = bytes,
             .current_size = std.atomic.Value(usize).init(min_bytes),
-            .futex = [_]FutexBucket{.{}} ** FUTEX_BUCKETS,
+            .futex = @splat(.{}),
         };
         return ptr;
     }

@@ -6,8 +6,8 @@ fn linuxFullLtoEnabled(resolved: std.Build.ResolvedTarget) bool {
     return info.cpu.arch == .x86_64 or info.cpu.arch == .aarch64;
 }
 
-fn applyLinuxFullLto(compile: *std.Build.Step.Compile, resolved: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
-    if (optimize == .Debug) return;
+fn applyLinuxFullLto(compile: *std.Build.Step.Compile, resolved: std.Build.ResolvedTarget, optimize: std.lang.Optimize) void {
+    if (optimize == .debug) return;
     if (!linuxFullLtoEnabled(resolved)) return;
     compile.lto = .full;
 }
@@ -134,11 +134,11 @@ pub fn build(b: *std.Build) void {
             },
             // strip when Release mode
             .strip = switch (optimize) {
-                .ReleaseFast, .ReleaseSafe, .ReleaseSmall => true,
+                .fast, .safe, .small => true,
                 else => false,
             },
             .unwind_tables = switch (optimize) {
-                .ReleaseFast, .ReleaseSmall => .none,
+                .fast, .small => .none,
                 else => null,
             },
         }),
@@ -173,9 +173,7 @@ pub fn build(b: *std.Build) void {
 
     // This allows the user to pass arguments to the application in the build
     // command itself, like this: `zig build run -- arg1 arg2 etc`
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to
@@ -357,7 +355,7 @@ pub fn build(b: *std.Build) void {
     // Compiles the wasmz runtime itself to wasm32-wasi.  Runs as a CLI tool
     // under any WASI-compatible host (wasmtime, wasmer, Node.js WASI).
     const wasi_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .wasi });
-    const wasi_optimize: std.builtin.OptimizeMode = .ReleaseSmall;
+    const wasi_optimize: std.lang.Optimize = .small;
     const wasi_profiling = false;
 
     const wasi_build_options = b.addOptions();
@@ -441,7 +439,7 @@ pub fn build(b: *std.Build) void {
     // Compiles the wasmz runtime to wasm32-freestanding.  Exports C-style
     // functions callable from JavaScript.  No OS or filesystem dependencies.
     const wasm_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
-    const wasm_optimize: std.builtin.OptimizeMode = .ReleaseSmall;
+    const wasm_optimize: std.lang.Optimize = .small;
     const wasm_profiling = false;
 
     const wasm_build_options = b.addOptions();

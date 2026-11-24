@@ -166,27 +166,27 @@ pub const SimdVal = extern struct {
     /// Read from a pair of consecutive RawVal slots (slot[0] and slot[1]).
     pub fn fromSlots(lo: RawVal, hi: RawVal) SimdVal {
         var s: SimdVal = undefined;
-        @memcpy(s.bytes[0..8], @as(*const [8]u8, @ptrCast(&lo.low64)));
-        @memcpy(s.bytes[8..16], @as(*const [8]u8, @ptrCast(&hi.low64)));
+        s.bytes[0..8].* = @bitCast(lo.low64);
+        s.bytes[8..16].* = @bitCast(hi.low64);
         return s;
     }
 
     /// Write this SimdVal into a pair of consecutive RawVal slots.
     pub fn toSlots(self: SimdVal, lo: *RawVal, hi: *RawVal) void {
-        lo.low64 = @as(u64, @bitCast(self.bytes[0..8].*));
-        hi.low64 = @as(u64, @bitCast(self.bytes[8..16].*));
+        lo.low64 = @bitCast(self.bytes[0..8].*);
+        hi.low64 = @bitCast(self.bytes[8..16].*);
     }
 
     /// Wrap a scalar RawVal as a SimdVal (high 8 bytes zeroed).
     /// Used for splat sources and bitmask/any_true scalar results.
     pub fn fromScalar(r: RawVal) SimdVal {
         var s: SimdVal = std.mem.zeroes(SimdVal);
-        @memcpy(s.bytes[0..8], @as(*const [8]u8, @ptrCast(&r.low64)));
+        s.bytes[0..8].* = @bitCast(r.low64);
         return s;
     }
 
     /// Extract the low 8 bytes as a scalar RawVal.
     pub fn toScalar(self: SimdVal) RawVal {
-        return .{ .low64 = @as(u64, @bitCast(self.bytes[0..8].*)) };
+        return .{ .low64 = @bitCast(self.bytes[0..8].*) };
     }
 };

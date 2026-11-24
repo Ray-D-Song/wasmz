@@ -24,7 +24,7 @@ const cli = @import("cli/root.zig");
 pub const panic = cli.errors.panic;
 
 pub fn main(init: std.process.Init) !void {
-    const allocator = if (builtin.os.tag == .wasi) std.heap.wasm_allocator else init.gpa;
+    const allocator = if (builtin.target.os.tag == .wasi) std.heap.wasm_allocator else init.gpa;
     const io = init.io;
     defer wasmz.profiling.printReport();
 

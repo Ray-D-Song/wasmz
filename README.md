@@ -102,7 +102,7 @@ wasmz program.wasm --mem-stats
 
 ### Prerequisites
 
-- **Zig 0.16.0** - Download from [ziglang.org](https://ziglang.org/download/)
+- **Zig 0.17.1** - Download from [ziglang.org](https://ziglang.org/download/)
 - **Git** - For cloning the repository
 - **make** - For build commands
 

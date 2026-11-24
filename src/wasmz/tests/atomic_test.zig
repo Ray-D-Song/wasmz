@@ -96,7 +96,7 @@ const WaitCtx = struct {
     fn run(ctx: *WaitCtx) void {
         // addr=0, expected=0, infinite timeout
         const r = ctx.sm.wait32(0, 0, -1);
-        ctx.result.store(@intFromEnum(r), .release);
+        ctx.result.store(@backingInt(r), .release);
     }
 };
 
@@ -124,5 +124,5 @@ test "SharedMemory wait32/notify cross-thread round-trip" {
     // Exactly one waiter should have been woken.
     try testing.expectEqual(@as(u32, 1), woken);
     // The waiter returns .ok (it was woken by notify, not a value mismatch).
-    try testing.expectEqual(@as(i32, @intFromEnum(WaitResult.ok)), ctx.result.load(.acquire));
+    try testing.expectEqual(@as(i32, @backingInt(WaitResult.ok)), ctx.result.load(.acquire));
 }

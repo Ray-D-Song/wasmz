@@ -97,7 +97,7 @@ pub inline fn writeSimdToSlots(slots: [*]RawVal, idx: ir.Slot, sv: core.SimdVal)
 }
 
 pub inline fn UnsignedOf(comptime T: type) type {
-    return std.meta.Int(.unsigned, @bitSizeOf(T));
+    return @Int(.unsigned, @bitSizeOf(T));
 }
 
 pub inline fn trapFromTruncateError(err: helper.TruncateError) Trap {

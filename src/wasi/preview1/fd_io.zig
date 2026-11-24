@@ -9,8 +9,8 @@ const Io = std.Io;
 const RawVal = core.RawVal;
 const HostContext = wasmz.HostContext;
 
-const is_wasi = builtin.os.tag == .wasi;
-const is_windows = builtin.os.tag == .windows;
+const is_wasi = builtin.target.os.tag == .wasi;
+const is_windows = builtin.target.os.tag == .windows;
 
 const GuestIov = struct {
     buf: u64,
@@ -123,7 +123,7 @@ fn wasiInode(inode: anytype) u64 {
     return switch (info.int.signedness) {
         .unsigned => @as(u64, @intCast(inode)),
         .signed => blk: {
-            const UnsignedT = std.meta.Int(.unsigned, @bitSizeOf(T));
+            const UnsignedT = @Int(.unsigned, @bitSizeOf(T));
             const raw: UnsignedT = @bitCast(inode);
             break :blk @as(u64, @intCast(raw));
         },
@@ -512,7 +512,7 @@ pub const FdIO = struct {
     pub fn fdSeek(self: *Self, ctx: *HostContext, params: []const RawVal, results: []RawVal) wasmz.HostError!void {
         const fd = params[0].readAs(u32);
         const offset = params[1].readAs(i64);
-        const whence: types.Whence = @enumFromInt(params[2].readAs(u32));
+        const whence: types.Whence = @fromBackingInt(params[2].readAs(u32));
         const newoffset_ptr = guestPtr(ctx, params[3]);
 
         switch (fd) {

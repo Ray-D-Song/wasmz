@@ -17,17 +17,17 @@ pub const HeapType = enum(u32) {
 
     // Check if it is a user-defined concrete type
     pub fn isConcrete(self: HeapType) bool {
-        return @intFromEnum(self) >= 0x80000000;
+        return @backingInt(self) >= 0x80000000;
     }
 
     // For concrete types, return the type index (subtracting the offset).
     pub fn concreteType(self: HeapType) ?u32 {
-        return if (self.isConcrete()) @intFromEnum(self) -% 0x80000000 else null;
+        return if (self.isConcrete()) @backingInt(self) -% 0x80000000 else null;
     }
 
     // Create a HeapType for a user-defined concrete type given its type index.
     pub fn fromConcreteType(type_index: u32) HeapType {
-        return @enumFromInt(type_index +% 0x80000000);
+        return @fromBackingInt(type_index +% 0x80000000);
     }
 };
 

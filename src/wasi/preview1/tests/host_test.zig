@@ -244,7 +244,8 @@ test "preview1 file operations" {
             },
         },
     };
-    const prestat: Prestat = @bitCast(try ctx.readValue(0, u64));
+    const raw_prestat = try ctx.readValue(0, u64);
+    const prestat: Prestat = @as(*const Prestat, @ptrCast(&raw_prestat)).*;
     try testing.expectEqual(@as(u32, 1), prestat.pr_type.tag);
     try testing.expectEqual(@as(u32, 1), prestat.u.dir.pr_len);
 

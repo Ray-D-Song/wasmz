@@ -188,7 +188,7 @@ test "module.compile handles active element segment with non-zero offset" {
 test "compileFunctionBody rejects simd when disabled" {
     const body = [_]u8{
         0xfd, 0x0c,
-    } ++ ([_]u8{0} ** 16) ++ [_]u8{0x0b};
+    } ++ @as([16]u8, @splat(0)) ++ [_]u8{0x0b};
 
     try testing.expectError(error.DisabledSimd, module_mod.compileFunctionBody(
         testing.allocator,
@@ -209,7 +209,7 @@ test "compileFunctionBody rejects simd when disabled" {
 }
 
 test "compileFunctionBody rejects relaxed simd when disabled" {
-    const zero_vec = [_]u8{ 0xfd, 0x0c } ++ ([_]u8{0} ** 16);
+    const zero_vec = [_]u8{ 0xfd, 0x0c } ++ @as([16]u8, @splat(0));
     const body = zero_vec ++ zero_vec ++ [_]u8{
         0xfd, 0x80, 0x02,
         0x0b,

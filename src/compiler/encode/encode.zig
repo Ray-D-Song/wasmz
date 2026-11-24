@@ -107,7 +107,7 @@ pub fn encode(
             .const_v128 => |inst| {
                 writeOps(ops.OpsConstV128, ops_ptr, .{
                     .dst = inst.dst,
-                    .value = @bitCast(inst.value),
+                    .value = inst.value.bytes,
                 });
             },
             .const_ref_null => |inst| {
@@ -486,8 +486,8 @@ pub fn encode(
                     .dst = inst.dst,
                     .addr = inst.addr,
                     .offset = inst.offset,
-                    .width = @intFromEnum(inst.width),
-                    .ty = @intFromEnum(inst.ty),
+                    .width = @backingInt(inst.width),
+                    .ty = @backingInt(inst.ty),
                 });
             },
             .atomic_store => |inst| {
@@ -495,8 +495,8 @@ pub fn encode(
                     .addr = inst.addr,
                     .src = inst.src,
                     .offset = inst.offset,
-                    .width = @intFromEnum(inst.width),
-                    .ty = @intFromEnum(inst.ty),
+                    .width = @backingInt(inst.width),
+                    .ty = @backingInt(inst.ty),
                 });
             },
             .atomic_rmw => |inst| {
@@ -505,9 +505,9 @@ pub fn encode(
                     .addr = inst.addr,
                     .src = inst.src,
                     .offset = inst.offset,
-                    .op = @intFromEnum(inst.op),
-                    .width = @intFromEnum(inst.width),
-                    .ty = @intFromEnum(inst.ty),
+                    .op = @backingInt(inst.op),
+                    .width = @backingInt(inst.width),
+                    .ty = @backingInt(inst.ty),
                 });
             },
             .atomic_cmpxchg => |inst| {
@@ -517,8 +517,8 @@ pub fn encode(
                     .expected = inst.expected,
                     .replacement = inst.replacement,
                     .offset = inst.offset,
-                    .width = @intFromEnum(inst.width),
-                    .ty = @intFromEnum(inst.ty),
+                    .width = @backingInt(inst.width),
+                    .ty = @backingInt(inst.ty),
                 });
             },
             .atomic_fence => {},
@@ -1560,14 +1560,14 @@ pub fn encode(
             .simd_unary => |inst| {
                 writeOps(ops.OpsSimdUnary, ops_ptr, .{
                     .dst = inst.dst,
-                    .opcode = @intFromEnum(inst.opcode),
+                    .opcode = @backingInt(inst.opcode),
                     .src = inst.src,
                 });
             },
             .simd_binary => |inst| {
                 writeOps(ops.OpsSimdBinary, ops_ptr, .{
                     .dst = inst.dst,
-                    .opcode = @intFromEnum(inst.opcode),
+                    .opcode = @backingInt(inst.opcode),
                     .lhs = inst.lhs,
                     .rhs = inst.rhs,
                 });
@@ -1575,7 +1575,7 @@ pub fn encode(
             .simd_ternary => |inst| {
                 writeOps(ops.OpsSimdTernary, ops_ptr, .{
                     .dst = inst.dst,
-                    .opcode = @intFromEnum(inst.opcode),
+                    .opcode = @backingInt(inst.opcode),
                     .first = inst.first,
                     .second = inst.second,
                     .third = inst.third,
@@ -1584,14 +1584,14 @@ pub fn encode(
             .simd_compare => |inst| {
                 writeOps(ops.OpsSimdUnary, ops_ptr, .{
                     .dst = inst.dst,
-                    .opcode = @intFromEnum(inst.opcode),
+                    .opcode = @backingInt(inst.opcode),
                     .src = inst.lhs,
                 });
             },
             .simd_shift_scalar => |inst| {
                 writeOps(ops.OpsSimdBinary, ops_ptr, .{
                     .dst = inst.dst,
-                    .opcode = @intFromEnum(inst.opcode),
+                    .opcode = @backingInt(inst.opcode),
                     .lhs = inst.lhs,
                     .rhs = inst.rhs,
                 });
@@ -1599,7 +1599,7 @@ pub fn encode(
             .simd_extract_lane => |inst| {
                 writeOps(ops.OpsSimdExtractLane, ops_ptr, .{
                     .dst = inst.dst,
-                    .opcode = @intFromEnum(inst.opcode),
+                    .opcode = @backingInt(inst.opcode),
                     .src = inst.src,
                     .lane = inst.lane,
                 });
@@ -1607,7 +1607,7 @@ pub fn encode(
             .simd_replace_lane => |inst| {
                 writeOps(ops.OpsSimdReplaceLane, ops_ptr, .{
                     .dst = inst.dst,
-                    .opcode = @intFromEnum(inst.opcode),
+                    .opcode = @backingInt(inst.opcode),
                     .src_vec = inst.src_vec,
                     .src_lane = inst.src_lane,
                     .lane = inst.lane,
@@ -1624,7 +1624,7 @@ pub fn encode(
             .simd_load => |inst| {
                 writeOps(ops.OpsSimdLoad, ops_ptr, .{
                     .dst = inst.dst,
-                    .opcode = @intFromEnum(inst.opcode),
+                    .opcode = @backingInt(inst.opcode),
                     .addr = inst.addr,
                     .offset = inst.offset,
                     .lane_valid = if (inst.lane != null) 1 else 0,
@@ -1635,7 +1635,7 @@ pub fn encode(
             },
             .simd_store => |inst| {
                 writeOps(ops.OpsSimdStore, ops_ptr, .{
-                    .opcode = @intFromEnum(inst.opcode),
+                    .opcode = @backingInt(inst.opcode),
                     .addr = inst.addr,
                     .src = inst.src,
                     .offset = inst.offset,

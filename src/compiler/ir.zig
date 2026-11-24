@@ -265,10 +265,10 @@ pub const AtomicWidth = enum(u8) {
 };
 
 /// Whether the result slot is treated as i32 or i64 by the caller.
-pub const AtomicType = enum { i32, i64 };
+pub const AtomicType = enum(u8) { i32, i64 };
 
 /// The read-modify-write operation applied by atomic.rmw.
-pub const AtomicRmwOp = enum { add, sub, @"and", @"or", xor, xchg };
+pub const AtomicRmwOp = enum(u8) { add, sub, @"and", @"or", xor, xchg };
 
 // Main Op Union
 

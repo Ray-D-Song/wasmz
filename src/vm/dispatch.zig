@@ -24,12 +24,12 @@ const core = @import("core");
 const arch = core.platform;
 
 pub inline fn comptime_call(
-    comptime modifier: std.builtin.CallModifier,
+    comptime modifier: std.lang.CallModifier,
     func: anytype,
     args: anytype,
 ) void {
     _ = modifier;
-    if (builtin.mode == .Debug or builtin.target.cpu.arch == .mips or builtin.target.cpu.arch == .wasm32) {
+    if (builtin.mode == .debug or builtin.target.cpu.arch == .mips or builtin.target.cpu.arch == .wasm32) {
         @call(.auto, func, args);
     } else {
         @call(.always_tail, func, args);
@@ -112,7 +112,7 @@ const CompiledElemSegment = module_mod.CompiledElemSegment;
 /// functions inside this module (never across the C API / host-function FFI
 /// boundary), so there is no ABI compatibility requirement with the platform
 /// C convention to preserve.
-pub const HandlerCallConv: std.builtin.CallingConvention = if (builtin.target.cpu.arch == .x86_64)
+pub const HandlerCallConv: std.lang.CallingConvention = if (builtin.target.cpu.arch == .x86_64)
     .{ .x86_64_sysv = .{} }
 else
     .c;

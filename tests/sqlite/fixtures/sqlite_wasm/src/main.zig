@@ -14,18 +14,23 @@
 //   result_buf_len() -> i32   — length of exec result buffer
 
 const std = @import("std");
-const c = @cImport({
-    @cDefine("SQLITE_OMIT_LOAD_EXTENSION", "1");
-    @cDefine("SQLITE_THREADSAFE", "0");
-    @cDefine("SQLITE_DEFAULT_MEMSTATUS", "0");
-    @cDefine("SQLITE_OMIT_DECLTYPE", "1");
-    @cDefine("SQLITE_OMIT_DEPRECATED", "1");
-    @cInclude("sqlite3.h");
-});
 
-// Simple bump allocator backed by wasm memory — enough for our test wrapper
-var gpa = std.heap.DebugAllocator(.{}).init;
-const allocator = gpa.allocator();
+const c = struct {
+    pub const SQLITE_OK: c_int = 0;
+    pub const SQLITE_NOMEM: c_int = 7;
+    pub const SQLITE_MISUSE: c_int = 21;
+    pub const sqlite3 = opaque {};
+    pub const ExecCallback = *const fn (?*anyopaque, c_int, [*c][*c]u8, [*c][*c]u8) callconv(.c) c_int;
+
+    pub extern "c" fn sqlite3_open(filename: [*:0]const u8, ppDb: *?*sqlite3) c_int;
+    pub extern "c" fn sqlite3_close(db: ?*sqlite3) c_int;
+    pub extern "c" fn sqlite3_exec(db: ?*sqlite3, sql: [*:0]const u8, callback: ?ExecCallback, arg: ?*anyopaque, errmsg: ?*?[*:0]u8) c_int;
+    pub extern "c" fn sqlite3_errmsg(db: ?*sqlite3) ?[*:0]const u8;
+    pub extern "c" fn sqlite3_last_insert_rowid(db: ?*sqlite3) i64;
+    pub extern "c" fn sqlite3_changes(db: ?*sqlite3) c_int;
+};
+
+const allocator = std.heap.wasm_allocator;
 
 // Shared result buffer: sqlite3_exec stores rows here as length-prefixed text
 // Format: each row is "col1\tcol2\t...\n"
@@ -73,7 +78,7 @@ export fn result_buf_len() i32 {
 export fn db_open(path_ptr: i32, path_len: i32, db_out_ptr: i32) i32 {
     // Build null-terminated path
     const path_slice: []const u8 = @as([*]const u8, @ptrFromInt(@as(usize, @intCast(path_ptr))))[0..@intCast(path_len)];
-    const path_z = allocator.dupeZ(u8, path_slice) catch return c.SQLITE_NOMEM;
+    const path_z = allocator.dupeSentinel(u8, path_slice, 0) catch return c.SQLITE_NOMEM;
     defer allocator.free(path_z);
 
     var db: ?*c.sqlite3 = null;
@@ -128,7 +133,7 @@ export fn db_exec(db_handle: i32, sql_ptr: i32, sql_len: i32) i32 {
 
     const db: *c.sqlite3 = @ptrFromInt(@as(usize, @intCast(db_handle)));
     const sql_slice: []const u8 = @as([*]const u8, @ptrFromInt(@as(usize, @intCast(sql_ptr))))[0..@intCast(sql_len)];
-    const sql_z = allocator.dupeZ(u8, sql_slice) catch return c.SQLITE_NOMEM;
+    const sql_z = allocator.dupeSentinel(u8, sql_slice, 0) catch return c.SQLITE_NOMEM;
     defer allocator.free(sql_z);
 
     const rc = c.sqlite3_exec(db, sql_z.ptr, execCallback, null, null);

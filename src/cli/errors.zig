@@ -15,8 +15,8 @@ fn simplePanic(msg: []const u8, _: ?usize) noreturn {
 }
 
 pub const panic = switch (builtin.mode) {
-    .Debug, .ReleaseSafe => std.debug.FullPanic(std.debug.defaultPanic),
-    .ReleaseFast, .ReleaseSmall => std.debug.FullPanic(simplePanic),
+    .debug, .safe => std.debug.FullPanic(std.debug.defaultPanic),
+    .fast, .small => std.debug.FullPanic(simplePanic),
 };
 
 pub fn fatal(comptime fmt: []const u8, args: anytype) noreturn {

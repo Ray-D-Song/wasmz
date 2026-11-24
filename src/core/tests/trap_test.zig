@@ -26,7 +26,7 @@ test "trap code conversion" {
     };
 
     for (cases) |code| {
-        try testing.expectEqual(code, try TrapCode.fromInt(@intFromEnum(code)));
+        try testing.expectEqual(code, try TrapCode.fromInt(@backingInt(code)));
     }
     try testing.expectError(
         trap_mod.InvalidTrapCode.InvalidTrapCode,

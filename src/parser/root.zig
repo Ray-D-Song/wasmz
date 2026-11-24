@@ -602,7 +602,7 @@ pub const Parser = struct {
                 } };
             },
             else => {
-                self.last_err_arg = @bitCast(@as(i32, @intFromEnum(self.cur_sect_id)));
+                self.last_err_arg = @bitCast(@as(i32, @backingInt(self.cur_sect_id)));
                 return self.fail_with_state(ParserError.UnsupportedSection);
             },
         };
@@ -1294,7 +1294,7 @@ pub const Parser = struct {
             }
 
             const type_kind = self.read_var_int7();
-            if (type_kind == @intFromEnum(TypeKind.rec_group)) {
+            if (type_kind == @backingInt(TypeKind.rec_group)) {
                 if (!self.has_var_int_bytes()) {
                     self.cur_pos = start_pos;
                     return .need_more_data;
@@ -1331,35 +1331,35 @@ pub const Parser = struct {
 
     fn read_type_entry_common(self: *Parser, type_kind: i7) !TypeEntry {
         return switch (type_kind) {
-            @intFromEnum(TypeKind.func) => blk: {
+            @backingInt(TypeKind.func) => blk: {
                 var entry = try self.read_func_type();
                 entry.final = true;
                 break :blk entry;
             },
-            @intFromEnum(TypeKind.subtype) => try self.read_sub_type(false),
-            @intFromEnum(TypeKind.subtype_final) => try self.read_sub_type(true),
-            @intFromEnum(TypeKind.struct_type) => blk: {
+            @backingInt(TypeKind.subtype) => try self.read_sub_type(false),
+            @backingInt(TypeKind.subtype_final) => try self.read_sub_type(true),
+            @backingInt(TypeKind.struct_type) => blk: {
                 var entry = try self.read_struct_type();
                 entry.final = true;
                 break :blk entry;
             },
-            @intFromEnum(TypeKind.array_type) => blk: {
+            @backingInt(TypeKind.array_type) => blk: {
                 var entry = try self.read_array_type();
                 entry.final = true;
                 break :blk entry;
             },
-            @intFromEnum(TypeKind.i32),
-            @intFromEnum(TypeKind.i64),
-            @intFromEnum(TypeKind.f32),
-            @intFromEnum(TypeKind.f64),
-            @intFromEnum(TypeKind.v128),
-            @intFromEnum(TypeKind.i8),
-            @intFromEnum(TypeKind.i16),
-            @intFromEnum(TypeKind.funcref),
-            @intFromEnum(TypeKind.externref),
-            @intFromEnum(TypeKind.exnref),
-            @intFromEnum(TypeKind.anyref),
-            @intFromEnum(TypeKind.eqref),
+            @backingInt(TypeKind.i32),
+            @backingInt(TypeKind.i64),
+            @backingInt(TypeKind.f32),
+            @backingInt(TypeKind.f64),
+            @backingInt(TypeKind.v128),
+            @backingInt(TypeKind.i8),
+            @backingInt(TypeKind.i16),
+            @backingInt(TypeKind.funcref),
+            @backingInt(TypeKind.externref),
+            @backingInt(TypeKind.exnref),
+            @backingInt(TypeKind.anyref),
+            @backingInt(TypeKind.eqref),
             => .{ .type = parse_type_kind(type_kind) },
             else => error.UnknownTypeKind,
         };
@@ -1393,9 +1393,9 @@ pub const Parser = struct {
     fn read_base_type(self: *Parser) !TypeEntry {
         const type_kind = self.read_var_int7();
         return switch (type_kind) {
-            @intFromEnum(TypeKind.func) => try self.read_func_type(),
-            @intFromEnum(TypeKind.struct_type) => try self.read_struct_type(),
-            @intFromEnum(TypeKind.array_type) => try self.read_array_type(),
+            @backingInt(TypeKind.func) => try self.read_func_type(),
+            @backingInt(TypeKind.struct_type) => try self.read_struct_type(),
+            @backingInt(TypeKind.array_type) => try self.read_array_type(),
             else => error.UnexpectedTypeKind,
         };
     }
@@ -2428,7 +2428,7 @@ pub const Parser = struct {
             .throw_ref,
             => {},
             else => {
-                self.last_err_arg = @intFromEnum(code);
+                self.last_err_arg = @backingInt(code);
                 return error.UnknownOperator;
             },
         }
@@ -2437,23 +2437,23 @@ pub const Parser = struct {
 
     fn skip_type_entry_common(self: *Parser, type_kind: i7) bool {
         return switch (type_kind) {
-            @intFromEnum(TypeKind.func) => self.skip_func_type(),
-            @intFromEnum(TypeKind.subtype) => self.skip_sub_type(),
-            @intFromEnum(TypeKind.subtype_final) => self.skip_sub_type(),
-            @intFromEnum(TypeKind.struct_type) => self.skip_struct_type(),
-            @intFromEnum(TypeKind.array_type) => self.skip_array_type(),
-            @intFromEnum(TypeKind.i32),
-            @intFromEnum(TypeKind.i64),
-            @intFromEnum(TypeKind.f32),
-            @intFromEnum(TypeKind.f64),
-            @intFromEnum(TypeKind.v128),
-            @intFromEnum(TypeKind.i8),
-            @intFromEnum(TypeKind.i16),
-            @intFromEnum(TypeKind.funcref),
-            @intFromEnum(TypeKind.externref),
-            @intFromEnum(TypeKind.exnref),
-            @intFromEnum(TypeKind.anyref),
-            @intFromEnum(TypeKind.eqref),
+            @backingInt(TypeKind.func) => self.skip_func_type(),
+            @backingInt(TypeKind.subtype) => self.skip_sub_type(),
+            @backingInt(TypeKind.subtype_final) => self.skip_sub_type(),
+            @backingInt(TypeKind.struct_type) => self.skip_struct_type(),
+            @backingInt(TypeKind.array_type) => self.skip_array_type(),
+            @backingInt(TypeKind.i32),
+            @backingInt(TypeKind.i64),
+            @backingInt(TypeKind.f32),
+            @backingInt(TypeKind.f64),
+            @backingInt(TypeKind.v128),
+            @backingInt(TypeKind.i8),
+            @backingInt(TypeKind.i16),
+            @backingInt(TypeKind.funcref),
+            @backingInt(TypeKind.externref),
+            @backingInt(TypeKind.exnref),
+            @backingInt(TypeKind.anyref),
+            @backingInt(TypeKind.eqref),
             => true,
             else => true,
         };
@@ -2491,9 +2491,9 @@ pub const Parser = struct {
         if (!self.has_bytes(1)) return false;
         const type_kind = self.read_var_int7();
         return switch (type_kind) {
-            @intFromEnum(TypeKind.func) => self.skip_func_type(),
-            @intFromEnum(TypeKind.struct_type) => self.skip_struct_type(),
-            @intFromEnum(TypeKind.array_type) => self.skip_array_type(),
+            @backingInt(TypeKind.func) => self.skip_func_type(),
+            @backingInt(TypeKind.struct_type) => self.skip_struct_type(),
+            @backingInt(TypeKind.array_type) => self.skip_array_type(),
             else => true,
         };
     }
@@ -2832,7 +2832,7 @@ pub const Parser = struct {
     }
 
     fn fail_with_state(self: *Parser, err: ParserError) ParseResult {
-        self.last_err_state = @intFromEnum(self.cur_state);
+        self.last_err_state = @backingInt(self.cur_state);
         return .{ .err = err };
     }
 

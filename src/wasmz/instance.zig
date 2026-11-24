@@ -829,7 +829,7 @@ fn evaluateGcConstExpr(
             },
             else => {
                 if (!builtin.single_threaded) {
-                    std.log.err("evaluateGcConstExpr: unsupported opcode 0x{x}", .{@intFromEnum(info.code)});
+                    std.log.err("evaluateGcConstExpr: unsupported opcode 0x{x}", .{@backingInt(info.code)});
                 }
                 return error.UnsupportedOpcode;
             },

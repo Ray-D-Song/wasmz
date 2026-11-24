@@ -36,7 +36,7 @@ pub fn nanoNow() i128 {
 // runtime guards that evaluate to false, so the function is never invoked.
 
 pub fn currentRssBytes() usize {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .macos => currentRssMacOS(),
         .linux => currentRssLinux(),
         .windows => currentRssWindows(),
@@ -83,7 +83,7 @@ fn currentRssLinux() usize {
 }
 
 fn currentRssWindows() usize {
-    if (comptime builtin.os.tag != .windows) return 0;
+    if (comptime builtin.target.os.tag != .windows) return 0;
     const windows = std.os.windows;
     const PROCESS_MEMORY_COUNTERS = extern struct {
         cb: u32,

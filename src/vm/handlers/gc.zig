@@ -912,7 +912,7 @@ pub fn handle_ref_test(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
     const ops = readOps(encode.ops.OpsRefTest, ip);
 
     const nullable = ops.nullable != 0;
-    const target_heap = @as(core.HeapType, @enumFromInt(ops.type_idx));
+    const target_heap = @as(core.HeapType, @fromBackingInt(ops.type_idx));
 
     if (type_equiv_mod.isFuncrefTargetHeapType(target_heap, env.composite_types)) {
         const ref_bits = slots[ops.ref].readAs(u64);
@@ -936,7 +936,7 @@ pub fn handle_ref_test(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
         // ref.test (nullable=false): null never matches.
         slots[ops.dst] = RawVal.from(@as(i32, if (nullable) 1 else 0));
     } else if (gc_ref.isI31()) {
-        const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @enumFromInt(ops.type_idx)));
+        const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @fromBackingInt(ops.type_idx)));
         if (target_kind) |kind| {
             const is_match = GcRefKind.init(GcRefKind.I31).isSubtypeOf(kind);
             slots[ops.dst] = RawVal.from(@as(i32, if (is_match) 1 else 0));
@@ -945,7 +945,7 @@ pub fn handle_ref_test(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
         }
     } else {
         const obj_header = env.store.gc_heap.?.getHeader(gc_ref);
-        const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @enumFromInt(ops.type_idx)));
+        const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @fromBackingInt(ops.type_idx)));
         if (target_kind) |kind| {
             const kind_bits: u32 = @as(u32, kind.bits) << 26;
             const is_match = obj_header.isSubtypeOf(kind_bits);
@@ -975,7 +975,7 @@ pub fn handle_ref_test(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
 pub fn handle_ref_cast(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsRefTest, ip); // ref_cast uses same operand struct as ref_test
     const nullable = ops.nullable != 0;
-    const target_heap = @as(core.HeapType, @enumFromInt(ops.type_idx));
+    const target_heap = @as(core.HeapType, @fromBackingInt(ops.type_idx));
 
     if (type_equiv_mod.isFuncrefTargetHeapType(target_heap, env.composite_types)) {
         const ref_bits = slots[ops.ref].readAs(u64);
@@ -1012,7 +1012,7 @@ pub fn handle_ref_cast(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
     }
 
     if (gc_ref.isI31()) {
-        const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @enumFromInt(ops.type_idx)));
+        const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @fromBackingInt(ops.type_idx)));
         if (target_kind) |kind| {
             const is_match = GcRefKind.init(GcRefKind.I31).isSubtypeOf(kind);
             if (!is_match) {
@@ -1026,7 +1026,7 @@ pub fn handle_ref_cast(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
         slots[ops.dst] = RawVal.fromGcRef(gc_ref);
     } else {
         const obj_header = env.store.gc_heap.?.getHeader(gc_ref);
-        const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @enumFromInt(ops.type_idx)));
+        const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @fromBackingInt(ops.type_idx)));
         if (target_kind) |kind| {
             const kind_bits: u32 = @as(u32, kind.bits) << 26;
             if (!obj_header.isSubtypeOf(kind_bits)) {
@@ -1103,7 +1103,7 @@ pub fn handle_br_on_non_null(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState,
 pub fn handle_br_on_cast(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsBrOnCast, ip);
 
-    const to_heap = @as(core.HeapType, @enumFromInt(ops.to_type_idx));
+    const to_heap = @as(core.HeapType, @fromBackingInt(ops.to_type_idx));
     var should_branch = false;
 
     if (type_equiv_mod.isFuncrefTargetHeapType(to_heap, env.composite_types)) {
@@ -1123,18 +1123,18 @@ pub fn handle_br_on_cast(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
             // If the target type is nullable, null satisfies the cast => branch.
             should_branch = ops.to_nullable != 0;
         } else if (gc_ref.isI31()) {
-            const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @enumFromInt(ops.to_type_idx)));
+            const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @fromBackingInt(ops.to_type_idx)));
             if (target_kind) |kind| {
                 should_branch = GcRefKind.init(GcRefKind.I31).isSubtypeOf(kind);
             }
         } else {
             const obj_header = env.store.gc_heap.?.getHeader(gc_ref);
-            const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @enumFromInt(ops.to_type_idx)));
+            const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @fromBackingInt(ops.to_type_idx)));
             if (target_kind) |kind| {
                 const kind_bits: u32 = @as(u32, kind.bits) << 26;
                 should_branch = obj_header.isSubtypeOf(kind_bits);
             } else {
-                const target_heap = @as(core.HeapType, @enumFromInt(ops.to_type_idx));
+                const target_heap = @as(core.HeapType, @fromBackingInt(ops.to_type_idx));
                 if (target_heap.concreteType()) |target_type_idx| {
                     const obj_idx = obj_header.type_index;
                     should_branch = type_equiv_mod.concreteTypeMatches(
@@ -1161,7 +1161,7 @@ pub fn handle_br_on_cast(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
 pub fn handle_br_on_cast_fail(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
     const ops = readOps(encode.ops.OpsBrOnCast, ip); // Same operand struct
 
-    const to_heap = @as(core.HeapType, @enumFromInt(ops.to_type_idx));
+    const to_heap = @as(core.HeapType, @fromBackingInt(ops.to_type_idx));
     var should_branch = false;
 
     if (type_equiv_mod.isFuncrefTargetHeapType(to_heap, env.composite_types)) {
@@ -1182,7 +1182,7 @@ pub fn handle_br_on_cast_fail(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
             // If the target type is nullable, null satisfies the cast => do NOT branch.
             should_branch = ops.to_nullable == 0;
         } else if (gc_ref.isI31()) {
-            const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @enumFromInt(ops.to_type_idx)));
+            const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @fromBackingInt(ops.to_type_idx)));
             if (target_kind) |kind| {
                 should_branch = !GcRefKind.init(GcRefKind.I31).isSubtypeOf(kind);
             } else {
@@ -1190,12 +1190,12 @@ pub fn handle_br_on_cast_fail(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
             }
         } else {
             const obj_header = env.store.gc_heap.?.getHeader(gc_ref);
-            const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @enumFromInt(ops.to_type_idx)));
+            const target_kind = gcRefKindFromHeapType(@as(core.HeapType, @fromBackingInt(ops.to_type_idx)));
             if (target_kind) |kind| {
                 const kind_bits: u32 = @as(u32, kind.bits) << 26;
                 should_branch = !obj_header.isSubtypeOf(kind_bits);
             } else {
-                const target_heap = @as(core.HeapType, @enumFromInt(ops.to_type_idx));
+                const target_heap = @as(core.HeapType, @fromBackingInt(ops.to_type_idx));
                 if (target_heap.concreteType()) |target_type_idx| {
                     const obj_idx = obj_header.type_index;
                     const is_match = type_equiv_mod.concreteTypeMatches(

@@ -83,8 +83,8 @@ pub fn signExtendFrom(comptime From: type, value: anytype) @TypeOf(value) {
         }
     }
 
-    const ToUnsigned = std.meta.Int(.unsigned, @bitSizeOf(To));
-    const FromUnsigned = std.meta.Int(.unsigned, @bitSizeOf(From));
+    const ToUnsigned = @Int(.unsigned, @bitSizeOf(To));
+    const FromUnsigned = @Int(.unsigned, @bitSizeOf(From));
 
     const raw: ToUnsigned = @bitCast(value);
     const narrowed_bits: FromUnsigned = @truncate(raw);
@@ -95,7 +95,7 @@ pub fn signExtendFrom(comptime From: type, value: anytype) @TypeOf(value) {
 
 fn UnsignedOf(comptime T: type) type {
     const info = @typeInfo(T).int;
-    return std.meta.Int(.unsigned, info.bits);
+    return @Int(.unsigned, info.bits);
 }
 
 fn ensureSignedInt(comptime T: type) void {

@@ -161,14 +161,14 @@ const TestCtx = struct {
         ctx.engine = try Engine.init(testing.allocator, Config{});
         errdefer ctx.engine.deinit();
 
-        ctx.wasi_host = wasi_mod.preview1.Host.init(testing.allocator);
+        ctx.wasi_host = wasi_mod.preview1.Host.init(testing.allocator, std.Io.Threaded.global_single_threaded.io());
         errdefer ctx.wasi_host.deinit();
 
         ctx.linker = Linker.empty;
         try ctx.wasi_host.addToLinker(&ctx.linker, testing.allocator);
         errdefer ctx.linker.deinit(testing.allocator);
 
-        ctx.store = try Store.init(testing.allocator, ctx.engine);
+        ctx.store = try Store.init(testing.allocator, ctx.engine, std.Io.Threaded.global_single_threaded.io());
         errdefer ctx.store.deinit();
         // Store is now at its permanent heap address — patch the GC budget pointer.
         ctx.store.linkBudget();

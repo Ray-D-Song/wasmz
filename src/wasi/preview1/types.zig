@@ -21,7 +21,7 @@ pub const Errno = enum(u16) {
 };
 
 pub inline fn writeErrno(results: []RawVal, errno: Errno) void {
-    results[0] = RawVal.from(@as(i32, @intCast(@intFromEnum(errno))));
+    results[0] = RawVal.from(@as(i32, @intCast(@backingInt(errno))));
 }
 
 pub const ClockId = enum(u32) {
@@ -213,7 +213,7 @@ pub const Subscription = extern struct {
     userdata: u64,
     u: extern struct {
         tag: EventType,
-        _padding: [3]u8 = [_]u8{0} ** 3,
+        _padding: [3]u8 = @splat(0),
         u: SubscriptionU,
     },
 };

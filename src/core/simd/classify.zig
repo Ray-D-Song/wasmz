@@ -53,7 +53,7 @@ pub const SimdStoreInfo = struct {
 
 /// Returns true if the opcode falls within the SIMD numeric range (0xFD000..0xFE000).
 pub fn isSimdOpcode(opcode: SimdOpcode) bool {
-    const value = @intFromEnum(opcode);
+    const value = @backingInt(opcode);
     return value >= 0xFD000 and value < 0xFE000;
 }
 

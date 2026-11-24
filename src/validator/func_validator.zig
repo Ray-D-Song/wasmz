@@ -122,7 +122,7 @@ pub const FuncValidator = struct {
     val_stack: std.ArrayListUnmanaged(StackValType) = .empty,
     ctrl_stack: std.ArrayListUnmanaged(ControlFrame) = .empty,
     local_types: std.ArrayListUnmanaged(ValType) = .empty,
-    local_init_bits: std.DynamicBitSetUnmanaged = .{},
+    local_init_bits: std.bit_set.Dynamic = .{},
     local_init_undo: std.ArrayListUnmanaged(u32) = .empty,
     scratch_vals: std.ArrayListUnmanaged(StackValType) = .empty,
 

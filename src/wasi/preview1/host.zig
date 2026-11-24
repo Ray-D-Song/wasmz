@@ -178,7 +178,7 @@ pub const Host = struct {
         const default_result_types = &[_]ValType{.I32};
 
         inline for (specs) |spec| {
-            const result_types: []const ValType = if (@typeInfo(@TypeOf(spec)).@"struct".fields.len == 4) spec[3] else default_result_types;
+            const result_types: []const ValType = if (@typeInfo(@TypeOf(spec)).@"struct".field_types.len == 4) spec[3] else default_result_types;
             try linker.define(allocator, types.module_name, spec[0], HostFunc.init(
                 self,
                 spec[1],

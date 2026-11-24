@@ -53,7 +53,7 @@ pub const wasmz_error_t = extern struct {
 };
 
 fn makeError(comptime fmt: []const u8, args: anytype) *wasmz_error_t {
-    const msg = std.fmt.allocPrintSentinel(alloc, fmt, args, 0) catch
+    const msg = alloc.printSentinel(fmt, args, 0) catch
         return makeStaticError("(out of memory formatting error)");
     const err = alloc.create(wasmz_error_t) catch {
         alloc.free(msg);
@@ -78,7 +78,7 @@ export fn wasmz_error_delete(err: ?*wasmz_error_t) void {
     const is_static_oom1 = std.mem.eql(u8, msg, "(out of memory formatting error)");
     const is_static_oom2 = std.mem.eql(u8, msg, "(out of memory allocating error)");
     if (!is_static_oom1 and !is_static_oom2) {
-        // The slice was allocated with allocPrintSentinel; free the sentinel slice.
+        // The slice was allocated with printSentinel; free the sentinel slice.
         const sentinel_slice: [:0]u8 = @ptrCast(msg);
         alloc.free(sentinel_slice);
         alloc.destroy(e);

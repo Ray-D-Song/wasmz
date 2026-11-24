@@ -53,7 +53,7 @@ test "call issue #2: return_call_indirect overlapping tail-call args" {
 }
 
 test "call issue #2: vtable_mono wasm-benchmark regression" {
-    if (@import("builtin").mode != .ReleaseFast) return;
+    if (@import("builtin").mode != .fast) return;
 
     var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
     defer engine.deinit();

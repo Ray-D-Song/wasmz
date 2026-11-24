@@ -90,22 +90,20 @@ jobs:
             asset_suffix: wasi
             binary_name: wasmz.wasm
             archive_kind: tar.gz
-          # wasm32-freestanding disabled: Zig 0.16 Io.Threaded needs
-          # posix.system.getrandom/IOV_MAX which are absent on this target.
-          # - target: wasm32-freestanding
-          #   runner: ubuntu-latest
-          #   asset_suffix: wasm
-          #   binary_name: wasmz.wasm
-          #   archive_kind: tar.gz
+          - target: wasm32-freestanding
+            runner: ubuntu-latest
+            asset_suffix: wasm
+            binary_name: wasmz.wasm
+            archive_kind: tar.gz
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Zig 0.16.0
+      - name: Install Zig 0.17.1
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.1
 
       - name: Build
         shell: bash
@@ -113,7 +111,7 @@ jobs:
           case "${{ matrix.target }}" in
             wasm32-wasi)   zig build wasi ;;
             wasm32-freestanding) zig build wasm ;;
-            *)             zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ;;
+            *)             zig build -Dtarget=${{ matrix.target }} -Doptimize=safe ;;
           esac
 
       - name: Stage release files

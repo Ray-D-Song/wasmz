@@ -8,13 +8,13 @@ fn main() {
 
     if Command::new("zig").arg("version").output().is_err() {
         panic!(
-            "zig is required to build wasmz-sys (Zig 0.16). \
+            "zig is required to build wasmz-sys (Zig 0.17). \
              Install from https://ziglang.org/download/"
         );
     }
 
     let mut zig = Command::new("zig");
-    zig.args(["build", "static-lib", "-Doptimize=ReleaseFast"]);
+    zig.args(["build", "static-lib", "-Doptimize=fast"]);
     if let Some(target) = windows_zig_target() {
         zig.arg(format!("-Dtarget={target}"));
     }
