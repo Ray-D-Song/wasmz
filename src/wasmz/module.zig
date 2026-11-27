@@ -1284,6 +1284,9 @@ pub const Module = struct {
     /// True when the module defines any struct or array types.
     /// Used to lazily initialize the GC heap only when needed.
     has_gc_types: bool,
+    /// Owned copy of source Wasm bytes when created via `compileArcOwned` (e.g. C API).
+    /// Null when borrowing caller-owned bytes or mmap memory.
+    owned_source: ?[]const u8 = null,
 
     /// Returns true when the module's linear memory uses the memory64 address space.
     pub fn memory64(self: *const Module) bool {
@@ -1381,6 +1384,19 @@ pub const Module = struct {
             eof = n == 0;
             try pending.appendSlice(allocator, read_buf[0..n]);
         }
+    }
+
+    /// Compile and wrap the module in an `ArcModule`, taking ownership of a copy
+    /// of `bytes` inside the module so callers may free the input slice immediately.
+    pub fn compileArcOwned(engine: Engine, bytes: []const u8) (ModuleCompileError || std.mem.Allocator.Error)!ArcModule {
+        const owned = try engine.allocator().dupe(u8, bytes);
+        var m = compile(engine, owned) catch |err| {
+            engine.allocator().free(owned);
+            return err;
+        };
+        m.owned_source = owned;
+        errdefer m.deinit();
+        return ArcModule.init(engine.allocator(), m);
     }
 
     /// Compile and wrap the module in an `ArcModule`.
@@ -2183,6 +2199,8 @@ pub const Module = struct {
 
         for (self.func_names) |n| if (n) |s| self.allocator.free(s);
         self.allocator.free(self.func_names);
+
+        if (self.owned_source) |src| self.allocator.free(src);
 
         self.* = undefined;
     }

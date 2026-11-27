@@ -602,7 +602,6 @@ pub const Instance = struct {
                 data_segments_dropped[i] = true;
             }
         }
-        @constCast(module).releaseActiveSegmentData();
 
         // 5. initialize element segment dropped flags & apply active element segments
         const elem_segments_dropped = try allocator.alloc(bool, module.elem_segments.len);
@@ -754,7 +753,6 @@ pub const Instance = struct {
                 data_segments_dropped[i] = true;
             }
         }
-        @constCast(module).releaseActiveSegmentData();
 
         const elem_segments_dropped = try allocator.alloc(bool, module.elem_segments.len);
         errdefer allocator.free(elem_segments_dropped);

@@ -306,3 +306,45 @@ fn instance_outlives_dropped_linker_with_host_imports() {
         vec![Val::I32(17)]
     );
 }
+
+#[test]
+fn instance_outlives_dropped_module_and_source_bytes_and_reinstantiates_data() {
+    // Module with active data segment writing 0x2a at memory[0], exporting memory & add(i32,i32)->i32
+    let wasm_bytes = vec![
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f,
+        0x01, 0x7f, 0x03, 0x02, 0x01, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01, 0x07, 0x10, 0x02, 0x03,
+        b'a', b'd', b'd', 0x00, 0x00, 0x06, b'm', b'e', b'm', b'o', b'r', b'y', 0x02, 0x00, 0x0a,
+        0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6a, 0x0b, 0x0b, 0x07, 0x01, 0x00, 0x41,
+        0x00, 0x0b, 0x01, 0x2a,
+    ];
+
+    let engine = Engine::new().unwrap();
+    let store = Store::new(&engine).unwrap();
+    let inst1 = {
+        let mut buf = wasm_bytes.clone();
+        let module = Module::compile(&engine, &buf).unwrap();
+        // Zero and drop input buffer immediately before calling or re-instantiating.
+        buf.fill(0);
+        drop(buf);
+        let i1 = Instance::new(&store, &module, None).unwrap();
+        let i2 = Instance::new(&store, &module, None).unwrap();
+        let mem2 = i2.export_memory("memory").unwrap();
+        assert_eq!(unsafe { mem2.as_slice()[0] }, 0x2a);
+        assert_eq!(
+            i2.call("add", &[Val::I32(10), Val::I32(20)], &[ValKind::I32])
+                .unwrap(),
+            vec![Val::I32(30)]
+        );
+        drop(module);
+        i1
+    };
+
+    let mem1 = inst1.export_memory("memory").unwrap();
+    assert_eq!(unsafe { mem1.as_slice()[0] }, 0x2a);
+    assert_eq!(
+        inst1
+            .call("add", &[Val::I32(1), Val::I32(2)], &[ValKind::I32])
+            .unwrap(),
+        vec![Val::I32(3)]
+    );
+}

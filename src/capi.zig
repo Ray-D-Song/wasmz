@@ -367,7 +367,7 @@ export fn wasmz_module_new(
     const arc_ptr = alloc.create(ArcModule) catch
         return makeError("out of memory", .{});
 
-    arc_ptr.* = Module.compileArc(eng.*, b[0..len]) catch |err| {
+    arc_ptr.* = Module.compileArcOwned(eng.*, b[0..len]) catch |err| {
         alloc.destroy(arc_ptr);
         return makeErrorKind(ERR_COMPILE, "module compilation failed: {s}", .{@errorName(err)});
     };
