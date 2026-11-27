@@ -437,6 +437,8 @@ const CInstance = struct {
     instance: Instance,
     /// Reference held on the store so it outlives this instance.
     store: *CStore,
+    /// Reference held on the linker so host import wrappers/metadata outlive this instance.
+    linker: ?*CLinker,
 };
 
 /// Shared tail of `wasmz_instance_new` and `wasmz_instance_new_with_linker`.
@@ -445,6 +447,7 @@ fn instantiate(
     mh: *wasmz_module_t,
     out: *?*wasmz_instance_t,
     imports: Linker,
+    clinker_opt: ?*CLinker,
 ) ?*wasmz_error_t {
     const cstore: *CStore = @ptrCast(@alignCast(sh.ptr));
     const arc: *ArcModule = @ptrCast(@alignCast(mh.ptr));
@@ -470,6 +473,7 @@ fn instantiate(
             return makeErrorKind(err_kind, "instantiation failed: {s}", .{@errorName(err)});
         },
         .store = cstore,
+        .linker = clinker_opt,
     };
 
     const handle = alloc.create(wasmz_instance_t) catch {
@@ -477,8 +481,9 @@ fn instantiate(
         alloc.destroy(cinst);
         return makeError("out of memory", .{});
     };
-    // The instance keeps the store alive regardless of deletion order.
+    // Keep the store and linker alive regardless of deletion order.
     cstore.retain();
+    if (clinker_opt) |cl| cl.retain();
     handle.* = .{ .ptr = &cinst.instance };
     out.* = handle;
     return null;
@@ -492,7 +497,7 @@ export fn wasmz_instance_new(
     const sh = store_handle orelse return makeError("store is null", .{});
     const mh = module_handle orelse return makeError("module is null", .{});
     const out = out_instance orelse return makeError("out_instance is null", .{});
-    return instantiate(sh, mh, out, Linker.empty);
+    return instantiate(sh, mh, out, Linker.empty, null);
 }
 
 export fn wasmz_instance_delete(handle: ?*wasmz_instance_t) void {
@@ -500,8 +505,10 @@ export fn wasmz_instance_delete(handle: ?*wasmz_instance_t) void {
     const inst: *Instance = @ptrCast(@alignCast(h.ptr));
     const cinst: *CInstance = @fieldParentPtr("instance", inst);
     const cstore = cinst.store;
+    const clinker = cinst.linker;
     inst.deinit();
     alloc.destroy(cinst);
+    if (clinker) |cl| cl.release();
     cstore.release();
     alloc.destroy(h);
 }
@@ -825,6 +832,7 @@ const HostFuncWrapper = struct {
 const CLinker = struct {
     linker: Linker,
     owned: std.ArrayListUnmanaged(Owned) = .empty,
+    refs: usize = 1,
 
     const Owned = union(enum) {
         bytes: []u8,
@@ -844,6 +852,19 @@ const CLinker = struct {
         return copy;
     }
 
+    fn retain(self: *CLinker) void {
+        self.refs += 1;
+    }
+
+    fn release(self: *CLinker) void {
+        std.debug.assert(self.refs > 0);
+        self.refs -= 1;
+        if (self.refs == 0) {
+            self.deinit();
+            alloc.destroy(self);
+        }
+    }
+
     fn deinit(self: *CLinker) void {
         self.linker.deinit(alloc);
         for (self.owned.items) |item| {
@@ -860,7 +881,7 @@ const CLinker = struct {
 
 export fn wasmz_linker_new() ?*wasmz_linker_t {
     const linker_ptr = alloc.create(CLinker) catch return null;
-    linker_ptr.* = .{ .linker = Linker.empty };
+    linker_ptr.* = .{ .linker = Linker.empty, .refs = 1 };
     const handle = alloc.create(wasmz_linker_t) catch {
         alloc.destroy(linker_ptr);
         return null;
@@ -872,8 +893,7 @@ export fn wasmz_linker_new() ?*wasmz_linker_t {
 export fn wasmz_linker_delete(handle: ?*wasmz_linker_t) void {
     const h = handle orelse return;
     const linker: *CLinker = @ptrCast(@alignCast(h.ptr));
-    linker.deinit();
-    alloc.destroy(linker);
+    linker.release();
     alloc.destroy(h);
 }
 
@@ -1071,12 +1091,14 @@ export fn wasmz_instance_new_with_linker(
     const out = out_instance orelse return makeError("out_instance is null", .{});
 
     var linker: Linker = Linker.empty;
+    var clinker_opt: ?*CLinker = null;
     if (linker_handle) |lh| {
         const clinker: *CLinker = @ptrCast(@alignCast(lh.ptr));
         linker = clinker.linker;
+        clinker_opt = clinker;
     }
 
-    return instantiate(sh, mh, out, linker);
+    return instantiate(sh, mh, out, linker, clinker_opt);
 }
 
 // Host Context

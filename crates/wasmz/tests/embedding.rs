@@ -266,3 +266,43 @@ fn wasi_host_args_env_preopen_and_return_on_exit() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn instance_outlives_dropped_linker_with_host_imports() {
+    // Module: imports env.inc(i32)->i32, exports run(i32)->i32 calling import 0
+    let wasm: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01,
+        0x7f, 0x02, 0x0b, 0x01, 0x03, b'e', b'n', b'v', 0x03, b'i', b'n', b'c', 0x00, 0x00, 0x03,
+        0x02, 0x01, 0x00, 0x07, 0x07, 0x01, 0x03, b'r', b'u', b'n', 0x00, 0x01, 0x0a, 0x08, 0x01,
+        0x06, 0x00, 0x20, 0x00, 0x10, 0x00, 0x0b,
+    ];
+
+    let engine = Engine::new().unwrap();
+    let store = Store::new(&engine).unwrap();
+    let module = Module::compile(&engine, wasm).unwrap();
+
+    let inst = {
+        let mut linker = Linker::new().unwrap();
+        linker
+            .define_trappable_func(
+                "env",
+                "inc",
+                &[ValKind::I32],
+                &[ValKind::I32],
+                Box::new(|_caller, params, results| {
+                    let Val::I32(v) = params[0] else {
+                        return Err("expected i32".into());
+                    };
+                    results[0] = Val::I32(v + 10);
+                    Ok(())
+                }),
+            )
+            .unwrap();
+        Instance::new(&store, &module, Some(&linker)).unwrap()
+    };
+
+    assert_eq!(
+        inst.call("run", &[Val::I32(7)], &[ValKind::I32]).unwrap(),
+        vec![Val::I32(17)]
+    );
+}

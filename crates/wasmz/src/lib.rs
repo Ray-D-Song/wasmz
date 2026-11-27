@@ -1,9 +1,11 @@
 //! Rust bindings for the wasmz C API.
 
+use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::fmt;
 use std::os::raw::c_void;
 use std::ptr;
+use std::rc::Rc;
 use std::slice;
 
 use wasmz_sys as sys;
@@ -916,11 +918,26 @@ extern "C" fn trappable_trampoline(
     }
 }
 
+struct LinkerCallbacks {
+    host_data: Vec<*mut HostFuncData>,
+    trappable_data: Vec<*mut TrappableHostFuncData>,
+}
+
+impl Drop for LinkerCallbacks {
+    fn drop(&mut self) {
+        for data in self.host_data.drain(..) {
+            unsafe { drop(Box::from_raw(data)) };
+        }
+        for data in self.trappable_data.drain(..) {
+            unsafe { drop(Box::from_raw(data)) };
+        }
+    }
+}
+
 /// Linker for host imports.
 pub struct Linker {
     ptr: *mut sys::wasmz_linker_t,
-    host_data: Vec<*mut HostFuncData>,
-    trappable_data: Vec<*mut TrappableHostFuncData>,
+    callbacks: Rc<RefCell<LinkerCallbacks>>,
 }
 
 impl Linker {
@@ -934,8 +951,10 @@ impl Linker {
         }
         Ok(Self {
             ptr,
-            host_data: Vec::new(),
-            trappable_data: Vec::new(),
+            callbacks: Rc::new(RefCell::new(LinkerCallbacks {
+                host_data: Vec::new(),
+                trappable_data: Vec::new(),
+            })),
         })
     }
 
@@ -965,7 +984,7 @@ impl Linker {
             result_kinds: results.to_vec(),
         });
         let data_ptr = Box::into_raw(data);
-        self.host_data.push(data_ptr);
+        self.callbacks.borrow_mut().host_data.push(data_ptr);
 
         extern "C" fn trampoline(
             host_data: *mut c_void,
@@ -1044,7 +1063,7 @@ impl Linker {
             result_kinds: results.to_vec(),
         });
         let data_ptr = Box::into_raw(data);
-        self.trappable_data.push(data_ptr);
+        self.callbacks.borrow_mut().trappable_data.push(data_ptr);
 
         let err = unsafe {
             wasmz_linker_define_func(
@@ -1129,12 +1148,6 @@ impl Linker {
 
 impl Drop for Linker {
     fn drop(&mut self) {
-        for data in self.host_data.drain(..) {
-            unsafe { drop(Box::from_raw(data)) };
-        }
-        for data in self.trappable_data.drain(..) {
-            unsafe { drop(Box::from_raw(data)) };
-        }
         unsafe { wasmz_linker_delete(self.ptr) };
     }
 }
@@ -1142,6 +1155,7 @@ impl Drop for Linker {
 /// Instantiated module.
 pub struct Instance {
     ptr: *mut sys::wasmz_instance_t,
+    _callbacks: Option<Rc<RefCell<LinkerCallbacks>>>,
 }
 
 impl Instance {
@@ -1159,7 +1173,10 @@ impl Instance {
                 message: "wasmz_instance_new_with_linker returned null instance".into(),
             });
         }
-        Ok(Self { ptr: out })
+        Ok(Self {
+            ptr: out,
+            _callbacks: linker.map(|l| Rc::clone(&l.callbacks)),
+        })
     }
 
     pub fn id(&self) -> u64 {
