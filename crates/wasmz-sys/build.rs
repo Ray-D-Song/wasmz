@@ -18,7 +18,7 @@ fn main() {
     let mut zig = Command::new("zig");
     zig.args(["build", "static-lib", "-Doptimize=fast", "--prefix"])
         .arg(&out_prefix);
-    if let Some(target) = windows_zig_target() {
+    if let Some(target) = zig_target() {
         zig.arg(format!("-Dtarget={target}"));
     }
 
@@ -41,23 +41,21 @@ fn main() {
     }
 }
 
-/// Zig picks the mingw ABI for its native Windows target, which leaves the
-/// archive referencing `___chkstk_ms` and ntdll entry points that the MSVC
-/// toolchain cannot resolve. Everywhere else Zig's native default already
-/// matches what rustc links against.
-fn windows_zig_target() -> Option<String> {
-    if env::var("CARGO_CFG_TARGET_OS").ok()? != "windows" {
-        return None;
-    }
+/// Map Cargo's target triple components to the corresponding Zig target so
+/// cross-compilation (macOS arm64 -> x86_64, Linux musl, Windows MSVC, and
+/// glibc 2.28 baseline builds) always produces a matching static library.
+fn zig_target() -> Option<String> {
     let arch = env::var("CARGO_CFG_TARGET_ARCH").ok()?;
-    let abi = match env::var("CARGO_CFG_TARGET_ENV")
-        .unwrap_or_default()
-        .as_str()
-    {
-        "gnu" => "gnu",
-        _ => "msvc",
-    };
-    Some(format!("{arch}-windows-{abi}"))
+    let os = env::var("CARGO_CFG_TARGET_OS").ok()?;
+    let abi = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    match (os.as_str(), abi.as_str()) {
+        ("windows", "gnu") => Some(format!("{arch}-windows-gnu")),
+        ("windows", _) => Some(format!("{arch}-windows-msvc")),
+        ("macos", _) => Some(format!("{arch}-macos")),
+        ("linux", "musl") => Some(format!("{arch}-linux-musl")),
+        ("linux", "gnu") => Some(format!("{arch}-linux-gnu.2.28")),
+        _ => None,
+    }
 }
 
 fn locate_wasmz_root() -> PathBuf {
