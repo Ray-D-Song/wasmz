@@ -1060,6 +1060,10 @@ pub const Op = union(enum) {
     ret: struct {
         value: ?Slot,
     },
+    ret_multi: struct {
+        slots_start: u32,
+        slots_len: u32,
+    },
 
     // Fused binop+ret: compute result and return immediately
     // Peephole I: final binop whose result is immediately returned.
@@ -1117,8 +1121,9 @@ pub const Op = union(enum) {
     /// args slots are stored in CompiledFunction.call_args, indexed by (args_start, args_len).
     /// This allows us to avoid per-call allocations for argument lists and instead reuse a single contiguous array for all call arguments.
     call: struct {
-        /// result slot (void functions have null)
+        /// Base result slot (void functions have null; for multi-value, N consecutive slots starting at `dst`)
         dst: ?Slot,
+        n_results: u16 = 1,
         /// Index of the callee function in module.functions
         func_idx: u32,
         /// Starting offset of the argument slots in CompiledFunction.call_args
@@ -1151,8 +1156,9 @@ pub const Op = union(enum) {
     /// The callee function index is read at runtime from tables[table_index][index_slot].
     /// Runtime checks: TableOutOfBounds, IndirectCallToNull, BadSignature.
     call_indirect: struct {
-        /// result slot (void functions have null)
+        /// Base result slot (void functions have null; multi-value uses `n_results` consecutive slots)
         dst: ?Slot,
+        n_results: u16 = 1,
         /// Slot holding the runtime table index (i32, interpreted as u32)
         index: Slot,
         /// Type section index — used for runtime signature check
@@ -1626,6 +1632,7 @@ pub const Op = union(enum) {
     /// call_ref: indirect call via funcref.
     call_ref: struct {
         dst: ?Slot,
+        n_results: u16 = 1,
         ref: Slot,
         type_idx: u32,
         args_start: u32,

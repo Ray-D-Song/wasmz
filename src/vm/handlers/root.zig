@@ -259,6 +259,64 @@ pub fn handle_ret(
     }
 }
 
+pub fn handle_ret_multi(
+    ip: [*]u8,
+    slots: [*]RawVal,
+    frame: *DispatchState,
+    env: *const ExecEnv,
+    r0: u64,
+    fp0: f64,
+) callconv(dispatch.HandlerCallConv) void {
+    _ = r0;
+    _ = fp0;
+    dispatch.countOp("call_ret");
+
+    const ops = readOps(encode.ops.OpsRetMulti, ip);
+    const slot_indices = encode.readInlineArgs(encode.ops.OpsRetMulti, ip, ops.slots_len);
+
+    var inline_buf: [16]RawVal = undefined;
+    var heap_buf: ?[]RawVal = null;
+    defer if (heap_buf) |hb| frame.allocator.free(hb);
+
+    const vals: []RawVal = if (ops.slots_len <= inline_buf.len) blk: {
+        for (slot_indices, 0..) |si, i| {
+            inline_buf[i] = slots[si];
+        }
+        break :blk inline_buf[0..ops.slots_len];
+    } else blk: {
+        const hb = frame.allocator.alloc(RawVal, ops.slots_len) catch {
+            frame.result = .{ .trap = Trap.fromTrapCode(.OutOfMemory) };
+            return;
+        };
+        heap_buf = hb;
+        for (slot_indices, 0..) |si, i| {
+            hb[i] = slots[si];
+        }
+        break :blk hb;
+    };
+
+    const popped = frame.callStackPop();
+    frame.valStackFree(popped.slots_sp_base);
+
+    if (frame.call_depth == 0) {
+        if (!frame.setMultiResults(vals)) {
+            frame.result = .{ .trap = Trap.fromTrapCode(.OutOfMemory) };
+            return;
+        }
+        frame.result = .{ .ok = if (vals.len > 0) vals[0] else null };
+        return;
+    }
+
+    const caller_idx = frame.call_depth - 1;
+    const caller = frame.callStackAt(caller_idx);
+    if (popped.dst) |dst_base| {
+        for (vals, 0..) |v, i| {
+            caller.slots[dst_base + i] = v;
+        }
+    }
+    dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env, 0, 0.0);
+}
+
 // Fused binop+ret handlers (Peephole I)
 // Compute result and return immediately, saving one dispatch event per call.
 

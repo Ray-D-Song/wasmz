@@ -29,6 +29,7 @@ pub const HandlerTable = struct {
     ret: Handler,
     ret_void: Handler,
     ret_value: Handler,
+    ret_multi: Handler,
     i32_add_ret: Handler,
     i32_sub_ret: Handler,
     i64_add_ret: Handler,

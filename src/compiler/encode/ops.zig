@@ -53,6 +53,9 @@ pub const OpsRet = extern struct {
     has_value: u16,
     value: Slot,
 };
+pub const OpsRetMulti = extern struct {
+    slots_len: u32,
+};
 pub const OpsLhsRhs = extern struct { lhs: Slot, rhs: Slot };
 pub const OpsRefFunc = extern struct { dst: Slot, _pad: u16 = 0, func_idx: u32 };
 pub const OpsRefTest = extern struct { dst: Slot, ref: Slot, type_idx: u32, nullable: u32 };

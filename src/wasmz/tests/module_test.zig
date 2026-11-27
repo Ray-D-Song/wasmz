@@ -51,10 +51,10 @@ test "module.compile builds exported function bodies" {
     defer vm.deinit();
     var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
-    var globals = [_]Global{};
+    var globals = [_]*Global{};
     var raw_memory: [0]u8 = .{};
     var mem = Memory.initBorrowed(raw_memory[0..]);
-    var tables = [_][]u32{};
+    var tables = [_]core.SharedTable{};
     var host_instance = HostInstance{
         .module = &module,
         .globals = globals[0..],

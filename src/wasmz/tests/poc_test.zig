@@ -262,10 +262,10 @@ fn executeWithEmptyRuntime(
     var module = try module_mod.Module.compile(engine, &empty_runtime_module_wasm);
     defer module.deinit();
 
-    var globals = [_]Global{};
+    var globals = [_]*Global{};
     var raw_memory: [0]u8 = .{};
     var mem = Memory.initBorrowed(raw_memory[0..]);
-    var tables = [_][]u32{};
+    var tables = [_]core.SharedTable{};
     var host_instance = HostInstance{
         .module = &module,
         .globals = globals[0..],
@@ -720,10 +720,10 @@ test "return_call: tail call replaces current frame" {
     var module = try module_mod.Module.compile(engine, &empty_runtime_module_wasm);
     defer module.deinit();
 
-    var globals = [_]Global{};
+    var globals = [_]*Global{};
     var raw_memory2: [0]u8 = .{};
     var mem2 = Memory.initBorrowed(raw_memory2[0..]);
-    var tables = [_][]u32{};
+    var tables = [_]core.SharedTable{};
     var host_instance = HostInstance{
         .module = &module,
         .globals = globals[0..],

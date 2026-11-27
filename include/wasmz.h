@@ -53,8 +53,21 @@ typedef struct wasmz_engine   wasmz_engine_t;
 typedef struct wasmz_store    wasmz_store_t;
 typedef struct wasmz_module   wasmz_module_t;
 typedef struct wasmz_instance wasmz_instance_t;
+typedef struct wasmz_memory   wasmz_memory_t;
+typedef struct wasmz_table    wasmz_table_t;
+typedef struct wasmz_global   wasmz_global_t;
+typedef struct wasmz_table_host_func wasmz_table_host_func_t;
+typedef struct wasmz_wasi_host wasmz_wasi_host_t;
 
 /* ── Error type ──────────────────────────────────────────────────────────── */
+
+typedef enum {
+    WASMZ_ERR_UNKNOWN   = 0,
+    WASMZ_ERR_COMPILE   = 1,
+    WASMZ_ERR_LINK      = 2,
+    WASMZ_ERR_RUNTIME   = 3,
+    WASMZ_ERR_HOST_TRAP = 4,
+} wasmz_error_kind_t;
 
 /**
  * An opaque error object.  NULL means no error (success).
@@ -71,6 +84,9 @@ void wasmz_error_delete(wasmz_error_t *error);
  * Returns "(null)" if error is NULL.
  */
 const char *wasmz_error_message(const wasmz_error_t *error);
+
+/** Get the coarse category of an error returned by wasmz. */
+wasmz_error_kind_t wasmz_error_kind(const wasmz_error_t *error);
 
 /* ── Value types ─────────────────────────────────────────────────────────── */
 
@@ -182,6 +198,12 @@ wasmz_error_t *wasmz_module_new(
     wasmz_module_t **out_module
 );
 
+/** Validate raw WebAssembly module bytes against default engine config. */
+wasmz_error_t *wasmz_validate(const uint8_t *bytes, size_t len);
+
+/** Validate raw WebAssembly module bytes using an existing engine. */
+wasmz_error_t *wasmz_validate_with_engine(wasmz_engine_t *engine, const uint8_t *bytes, size_t len);
+
 /** Destroy a module.  Safe to call after all instances using it are destroyed. */
 void wasmz_module_delete(wasmz_module_t *module);
 
@@ -234,8 +256,7 @@ wasmz_error_t *wasmz_instance_initialize(wasmz_instance_t *instance);
  *                     Each slot's `kind` must be set by the caller to the
  *                     expected result type; the value is written back in place.
  * @param results_len  Expected number of return values (must match the function
- *                     signature).  At most 1; multi-value results are not
- *                     supported yet and return an error.
+ *                     signature; 0, 1, or N multi-value results are supported).
  * @return NULL on success, non-NULL on trap, export-not-found, or error.
  */
 wasmz_error_t *wasmz_instance_call(
@@ -245,6 +266,43 @@ wasmz_error_t *wasmz_instance_call(
     size_t             args_len,
     wasmz_val_t       *results,
     size_t             results_len
+);
+
+/** Execute ONLY the module's start section function (without `_start`). */
+wasmz_error_t *wasmz_instance_run_start(wasmz_instance_t *instance);
+
+/** Call a function on an instance by its Wasm function index space slot. */
+wasmz_error_t *wasmz_instance_call_index(
+    wasmz_instance_t  *instance,
+    uint32_t           func_index,
+    const wasmz_val_t *args,
+    size_t             args_len,
+    wasmz_val_t       *results,
+    size_t             results_len
+);
+
+/** Unique non-zero runtime instance identifier. */
+uint64_t wasmz_instance_id(const wasmz_instance_t *instance);
+
+/** Query exported function index and arity. Returns 0 on success, -1 if not an exported function. */
+int wasmz_instance_export_func_info(
+    const wasmz_instance_t *instance,
+    const char             *func_name,
+    uint32_t               *out_func_index,
+    size_t                 *out_param_count,
+    size_t                 *out_result_count
+);
+
+/** Query signature kinds of any function by index in the instance's function index space. */
+int wasmz_instance_func_sig(
+    const wasmz_instance_t *instance,
+    uint32_t                func_index,
+    wasmz_val_kind_t       *out_params,
+    size_t                  param_cap,
+    size_t                 *out_param_count,
+    wasmz_val_kind_t       *out_results,
+    size_t                  result_cap,
+    size_t                 *out_result_count
 );
 
 /**
@@ -521,6 +579,149 @@ typedef struct {
 } wasmz_vm_stats_t;
 
 void wasmz_instance_vm_stats(const wasmz_instance_t *instance, wasmz_vm_stats_t *out_stats);
+
+/* ── Shared Memory / Table / Global handles ─────────────────────────────── */
+
+wasmz_error_t *wasmz_memory_new(
+    uint64_t         initial,
+    uint64_t         max_pages,
+    int              has_max,
+    int              is_shared,
+    int              is_64,
+    wasmz_memory_t **out_mem
+);
+wasmz_memory_t *wasmz_memory_clone(const wasmz_memory_t *mem);
+void wasmz_memory_delete(wasmz_memory_t *mem);
+wasmz_memory_t *wasmz_instance_export_memory(const wasmz_instance_t *instance, const char *name);
+uint8_t *wasmz_memory_data(wasmz_memory_t *mem);
+size_t wasmz_memory_data_len(const wasmz_memory_t *mem);
+uint64_t wasmz_memory_pages(const wasmz_memory_t *mem);
+uint64_t wasmz_memory_min(const wasmz_memory_t *mem);
+uint64_t wasmz_memory_max(const wasmz_memory_t *mem, int *out_has_max);
+int wasmz_memory_is_shared(const wasmz_memory_t *mem);
+int wasmz_memory_is_64(const wasmz_memory_t *mem);
+uint64_t wasmz_memory_grow_seq(const wasmz_memory_t *mem);
+uint64_t wasmz_memory_identity(const wasmz_memory_t *mem);
+int wasmz_memory_grow(wasmz_memory_t *mem, uint64_t delta, uint64_t *out_prev_pages);
+wasmz_error_t *wasmz_linker_define_memory(
+    wasmz_linker_t *linker,
+    const char     *module_name,
+    const char     *field_name,
+    wasmz_memory_t *mem
+);
+
+wasmz_error_t *wasmz_global_new(
+    wasmz_val_kind_t  kind,
+    int               is_mutable,
+    wasmz_val_t       initial,
+    wasmz_global_t  **out_global
+);
+wasmz_global_t *wasmz_global_clone(const wasmz_global_t *global);
+void wasmz_global_delete(wasmz_global_t *global);
+wasmz_global_t *wasmz_instance_export_global(const wasmz_instance_t *instance, const char *name);
+wasmz_val_kind_t wasmz_global_kind(const wasmz_global_t *global);
+int wasmz_global_is_mutable(const wasmz_global_t *global);
+wasmz_val_t wasmz_global_get(const wasmz_global_t *global);
+uint64_t wasmz_global_identity(const wasmz_global_t *global);
+wasmz_error_t *wasmz_global_set(wasmz_global_t *global, wasmz_val_t value);
+wasmz_error_t *wasmz_linker_define_global_handle(
+    wasmz_linker_t *linker,
+    const char     *module_name,
+    const char     *global_name,
+    wasmz_global_t *global
+);
+
+wasmz_error_t *wasmz_table_new(
+    wasmz_val_kind_t  elem_kind,
+    uint32_t          initial,
+    uint32_t          max_len,
+    int               has_max,
+    uint64_t          init_raw,
+    const wasmz_instance_t *init_func_owner,
+    uint32_t          init_func_idx,
+    wasmz_table_t   **out_table
+);
+wasmz_table_t *wasmz_table_clone(const wasmz_table_t *table);
+void wasmz_table_delete(wasmz_table_t *table);
+wasmz_table_t *wasmz_instance_export_table(const wasmz_instance_t *instance, const char *name);
+uint32_t wasmz_table_len(const wasmz_table_t *table);
+uint32_t wasmz_table_max(const wasmz_table_t *table, int *out_has_max);
+wasmz_val_kind_t wasmz_table_elem_kind(const wasmz_table_t *table);
+uint64_t wasmz_table_identity(const wasmz_table_t *table);
+int wasmz_table_get_entry(
+    const wasmz_table_t *table,
+    uint32_t             index,
+    int                 *out_is_null,
+    uint64_t            *out_owner_id,
+    uint32_t            *out_func_idx,
+    uint64_t            *out_raw
+);
+int wasmz_table_set_null(wasmz_table_t *table, uint32_t index);
+int wasmz_table_set_externref(wasmz_table_t *table, uint32_t index, uint64_t raw_ref);
+int wasmz_table_set_instance_func(
+    wasmz_table_t          *table,
+    uint32_t                index,
+    const wasmz_instance_t *owner_inst,
+    uint32_t                func_idx
+);
+int wasmz_table_grow(wasmz_table_t *table, uint32_t delta, uint64_t init_raw, uint32_t *out_prev_len);
+int wasmz_table_grow_instance_func(
+    wasmz_table_t          *table,
+    uint32_t                delta,
+    const wasmz_instance_t *owner_inst,
+    uint32_t                func_idx,
+    uint32_t               *out_prev_len
+);
+wasmz_error_t *wasmz_table_host_func_new(
+    const wasmz_val_kind_t    *param_kinds,
+    size_t                     param_count,
+    const wasmz_val_kind_t    *result_kinds,
+    size_t                     result_count,
+    wasmz_func_t               func,
+    void                      *host_data,
+    uint64_t                   tag,
+    wasmz_table_host_func_t  **out_func
+);
+void wasmz_table_host_func_delete(wasmz_table_host_func_t *func);
+int wasmz_table_set_host_func(wasmz_table_t *table, uint32_t index, const wasmz_table_host_func_t *func);
+int wasmz_table_grow_host_func(
+    wasmz_table_t                 *table,
+    uint32_t                       delta,
+    const wasmz_table_host_func_t *func,
+    uint32_t                      *out_prev_len
+);
+wasmz_error_t *wasmz_linker_define_table(
+    wasmz_linker_t *linker,
+    const char     *module_name,
+    const char     *field_name,
+    wasmz_table_t  *table
+);
+
+/* ── WASI Preview 1 ──────────────────────────────────────────────────────── */
+
+wasmz_wasi_host_t *wasmz_wasi_host_new(void);
+void wasmz_wasi_host_delete(wasmz_wasi_host_t *wasi);
+wasmz_error_t *wasmz_wasi_host_set_args(wasmz_wasi_host_t *wasi, const char *const *args, size_t count);
+wasmz_error_t *wasmz_wasi_host_set_env(
+    wasmz_wasi_host_t *wasi,
+    const char *const *keys,
+    const char *const *values,
+    size_t             count
+);
+wasmz_error_t *wasmz_wasi_host_add_preopen(
+    wasmz_wasi_host_t *wasi,
+    const char        *guest_path,
+    const char        *host_path
+);
+void wasmz_wasi_host_set_stdio_fds(
+    wasmz_wasi_host_t *wasi,
+    int32_t            stdin_fd,
+    int32_t            stdout_fd,
+    int32_t            stderr_fd
+);
+void wasmz_wasi_host_set_return_on_exit(wasmz_wasi_host_t *wasi, int return_on_exit);
+int wasmz_wasi_host_exit_code(const wasmz_wasi_host_t *wasi, uint32_t *out_code);
+wasmz_error_t *wasmz_linker_add_wasi(wasmz_linker_t *linker, wasmz_wasi_host_t *wasi);
 
 #ifdef __cplusplus
 } /* extern "C" */

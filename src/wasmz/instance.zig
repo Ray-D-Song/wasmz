@@ -25,8 +25,13 @@ const Engine = engine_mod.Engine;
 pub const ArcModule = module_mod.ArcModule;
 const Global = core.Global;
 const GlobalType = core.GlobalType;
+const SharedGlobal = core.SharedGlobal;
+const SharedTable = core.SharedTable;
+const TableEntry = core.TableEntry;
 const Memory = core.Memory;
 const SharedMemory = core.SharedMemory;
+
+var next_instance_id = std.atomic.Value(u64).init(1);
 const VM = vm_mod.VM;
 const ExecEnv = vm_mod.ExecEnv;
 const HostInstance = host_mod.HostInstance;
@@ -60,9 +65,227 @@ pub const InstanceError = Allocator.Error || error{
     DataSegmentOutOfBounds,
     /// A host-provided memory does not match the imported memory type.
     ImportMemoryMismatch,
+    /// A host-provided global does not match the imported global type/mutability.
+    ImportGlobalMismatch,
+    /// A host-provided table does not match the imported table element type/limits.
+    ImportTableMismatch,
+    /// An active element segment's target range exceeds the table size.
+    ElemSegmentOutOfBounds,
     /// memory64 linear memory is not supported on 32-bit hosts.
     Memory64UnsupportedOn32BitHost,
 };
+
+const CrossDispatchCtx = struct {
+    allocator: Allocator,
+    instance_id: u64,
+    store: *Store,
+    module: *Module,
+    globals: []*Global,
+    memory: Memory,
+    tables: []SharedTable,
+    host_funcs: []HostFunc,
+    host_view: HostInstance,
+    data_segments_dropped: []bool,
+    elem_segments_dropped: []bool,
+    memory64: bool,
+    vm: VM,
+    foreign_funcs: []core.ForeignFunc,
+    last_trap_msg: ?[:0]u8 = null,
+
+    fn deinit(self: *CrossDispatchCtx) void {
+        if (self.last_trap_msg) |msg| self.allocator.free(msg);
+        self.vm.deinit();
+        self.allocator.free(self.foreign_funcs);
+        self.allocator.destroy(self);
+    }
+
+    fn setTrapMsg(self: *CrossDispatchCtx, msg: []const u8) [*:0]const u8 {
+        if (self.last_trap_msg) |prev| {
+            self.allocator.free(prev);
+            self.last_trap_msg = null;
+        }
+        const z = self.allocator.allocSentinel(u8, msg.len, 0) catch return "trap";
+        @memcpy(z, msg);
+        self.last_trap_msg = z;
+        return z.ptr;
+    }
+
+    fn execEnv(self: *CrossDispatchCtx) ExecEnv {
+        self.host_view.memory = &self.memory;
+        self.host_view.globals = self.globals;
+        self.host_view.tables = self.tables;
+        const m = self.module;
+        const budget_ptr: ?*store_mod.MemoryBudget = if (self.store.memory_budget.limit_bytes != null)
+            &self.store.memory_budget
+        else
+            null;
+        return .{
+            .store = self.store,
+            .host_instance = &self.host_view,
+            .globals = self.globals,
+            .memory = &self.memory,
+            .functions = m.functions,
+            .engine = self.store.engine,
+            .module = m,
+            .host_funcs = self.host_funcs,
+            .tables = self.tables,
+            .foreign_funcs = self.foreign_funcs,
+            .instance_id = self.instance_id,
+            .func_type_indices = m.func_type_indices,
+            .data_segments = m.data_segments,
+            .data_segments_dropped = self.data_segments_dropped,
+            .elem_segments = m.elem_segments,
+            .elem_segments_dropped = self.elem_segments_dropped,
+            .composite_types = m.composite_types,
+            .struct_layouts = m.struct_layouts,
+            .array_layouts = m.array_layouts,
+            .type_ancestors = m.type_ancestors,
+            .type_canonical = m.type_canonical,
+            .memory_budget = budget_ptr,
+            .mem_trace = false,
+            .memory64 = self.memory64,
+        };
+    }
+};
+
+fn foreignTrampoline(
+    raw_ctx: ?*anyopaque,
+    func_idx: u32,
+    args: []const u64,
+    results: []u64,
+    trap_out: *?[*:0]const u8,
+) bool {
+    const ctx: *CrossDispatchCtx = @ptrCast(@alignCast(raw_ctx orelse {
+        trap_out.* = "null cross-instance context";
+        return false;
+    }));
+    const m = ctx.module;
+    if (func_idx >= m.functions.len) {
+        trap_out.* = "function index out of bounds";
+        return false;
+    }
+    const raw_args = ctx.allocator.alloc(RawVal, args.len) catch {
+        trap_out.* = "out of memory";
+        return false;
+    };
+    defer ctx.allocator.free(raw_args);
+    for (args, 0..) |bits, i| {
+        raw_args[i] = RawVal.fromBits64(bits);
+    }
+
+    if (func_idx < ctx.host_funcs.len) {
+        const hf = ctx.host_funcs[func_idx];
+        const res_len = m.composite_types[m.func_type_indices[func_idx]].func_type.results().len;
+        const host_results = ctx.allocator.alloc(RawVal, res_len) catch {
+            trap_out.* = "out of memory";
+            return false;
+        };
+        defer ctx.allocator.free(host_results);
+        @memset(host_results, RawVal.fromBits64(0));
+
+        ctx.host_view.memory = &ctx.memory;
+        ctx.host_view.globals = ctx.globals;
+        ctx.host_view.tables = ctx.tables;
+        var hctx = host_mod.HostContext.init(ctx.store, &ctx.host_view, hf.host_data);
+        hf.call(&hctx, raw_args, host_results) catch |err| switch (err) {
+            error.HostTrap => {
+                var t = hctx.takeTrap();
+                defer t.deinit();
+                const printed = t.allocPrint(ctx.allocator) catch "host trap";
+                defer if (!std.mem.eql(u8, printed, "host trap")) ctx.allocator.free(printed);
+                trap_out.* = ctx.setTrapMsg(printed);
+                return false;
+            },
+            error.OutOfMemory => {
+                trap_out.* = "out of memory";
+                return false;
+            },
+        };
+        const copy_n = @min(results.len, host_results.len);
+        for (0..copy_n) |i| results[i] = host_results[i].low64;
+        return true;
+    }
+
+    m.compileFunctionAt(ctx.store.engine, func_idx) catch {
+        trap_out.* = "compilation failed";
+        return false;
+    };
+    const encoded = &m.functions[func_idx].encoded;
+    const exec_res = ctx.vm.execute(encoded, raw_args, ctx.execEnv()) catch {
+        trap_out.* = "out of memory";
+        return false;
+    };
+    switch (exec_res) {
+        .ok => {
+            const lr = ctx.vm.lastResults();
+            const copy_n = @min(results.len, lr.len);
+            for (0..copy_n) |i| results[i] = lr[i].low64;
+            return true;
+        },
+        .trap => |t| {
+            var tt = t;
+            defer tt.deinit();
+            const printed = tt.allocPrint(ctx.allocator) catch "trap";
+            defer if (!std.mem.eql(u8, printed, "trap")) ctx.allocator.free(printed);
+            trap_out.* = ctx.setTrapMsg(printed);
+            return false;
+        },
+    }
+}
+
+fn buildCrossCtx(
+    allocator: Allocator,
+    instance_id: u64,
+    store: *Store,
+    module: *Module,
+    globals: []*Global,
+    memory: Memory,
+    tables: []SharedTable,
+    host_funcs: []HostFunc,
+    data_segments_dropped: []bool,
+    elem_segments_dropped: []bool,
+) Allocator.Error!*CrossDispatchCtx {
+    const ctx = try allocator.create(CrossDispatchCtx);
+    errdefer allocator.destroy(ctx);
+
+    const ff = try allocator.alloc(core.ForeignFunc, module.functions.len);
+    errdefer allocator.free(ff);
+
+    for (0..module.functions.len) |fi| {
+        const ft = &module.composite_types[module.func_type_indices[fi]].func_type;
+        ff[fi] = .{
+            .ctx = ctx,
+            .func_idx = @intCast(fi),
+            .param_types = ft.params(),
+            .result_types = ft.results(),
+            .trampoline = &foreignTrampoline,
+        };
+    }
+
+    ctx.* = .{
+        .allocator = allocator,
+        .instance_id = instance_id,
+        .store = store,
+        .module = module,
+        .globals = globals,
+        .memory = memory,
+        .tables = tables,
+        .host_funcs = host_funcs,
+        .host_view = .{
+            .module = module,
+            .globals = globals,
+            .memory = undefined,
+            .tables = tables,
+        },
+        .data_segments_dropped = data_segments_dropped,
+        .elem_segments_dropped = elem_segments_dropped,
+        .memory64 = module.memory64(),
+        .vm = VM.init(allocator),
+        .foreign_funcs = ff,
+    };
+    ctx.host_view.memory = &ctx.memory;
+    return ctx;
+}
 
 pub fn printInitError(arc: ArcModule, imports: Linker, err: InstanceError) void {
     if (builtin.single_threaded) return;
@@ -99,13 +322,22 @@ pub fn printInitError(arc: ArcModule, imports: Linker, err: InstanceError) void 
 
 pub const Instance = struct {
     store: *Store,
+    /// Unique non-zero runtime id used to distinguish local vs foreign table `funcref` entries.
+    instance_id: u64,
     /// Reference-counted module handle; the Instance owns one strong reference.
     /// The underlying Module is freed when the last Instance (or ArcModule handle) is released.
     module: ArcModule,
-    /// Runtime globals, copied and initialized from module.globals.
-    globals: []Global,
-    /// Linear memory, either exclusively owned or shared across instances (Threads proposal).
+    /// Reference-counted global handles covering the full Wasm global index space
+    /// (imported globals 0..n_imported, then module-defined local globals).
+    global_handles: []SharedGlobal,
+    /// Direct `*Global` pointers parallel to `global_handles` for VM hot-path access.
+    globals: []*Global,
+    /// Heap-allocated cross-instance table dispatch context (stable across Instance value moves).
+    cross_ctx: *CrossDispatchCtx,
+    /// Linear memory, either refcounted `.rc` or `.shared` across instances.
     memory: Memory,
+    /// Reference-counted runtime tables (imported tables first, then module-defined tables).
+    tables: []SharedTable,
     /// Resolved host functions for each imported function slot, in the same order as module.imported_funcs.
     /// Length == module.imported_funcs.len.
     host_funcs: []HostFunc,
@@ -138,56 +370,156 @@ pub const Instance = struct {
     ///
     /// The Instance takes ownership of one strong reference (i.e., the caller should
     /// pass `arc.retain()` or move the arc in).  The reference is released in `deinit`.
+    fn buildGlobals(
+        store: *Store,
+        module: *const Module,
+        imports: Linker,
+        allocator: Allocator,
+    ) InstanceError!struct { handles: []SharedGlobal, ptrs: []*Global } {
+        const n_imp = module.imported_globals.len;
+        const n_loc = module.globals.len;
+        const total = n_imp + n_loc;
+
+        const handles = try allocator.alloc(SharedGlobal, total);
+        errdefer allocator.free(handles);
+        const ptrs = try allocator.alloc(*Global, total);
+        errdefer allocator.free(ptrs);
+
+        var inited: usize = 0;
+        errdefer for (handles[0..inited]) |*h| h.deinit();
+
+        const imp_raws = try allocator.alloc(RawVal, n_imp);
+        defer allocator.free(imp_raws);
+
+        for (module.imported_globals, 0..) |def, i| {
+            if (imports.getGlobalHandle(def.module_name, def.global_name)) |gh| {
+                if (!gh.valueType().eql(def.val_type) or gh.mutability() != def.mutability) {
+                    return error.ImportGlobalMismatch;
+                }
+                handles[i] = gh.clone();
+                ptrs[i] = handles[i].asGlobal();
+                imp_raws[i] = gh.getRaw();
+                inited += 1;
+            } else if (imports.getGlobal(def.module_name, def.global_name)) |raw| {
+                if (def.mutability == .Var) {
+                    // Legacy value-only global import assumes const unless handle provided; wrap cleanly.
+                }
+                handles[i] = try SharedGlobal.init(allocator, GlobalType.init(def.mutability, def.val_type), raw, 0);
+                ptrs[i] = handles[i].asGlobal();
+                imp_raws[i] = raw;
+                inited += 1;
+            } else {
+                return error.ImportNotSatisfied;
+            }
+        }
+
+        for (module.globals, 0..) |global_init, i| {
+            const val = if (global_init.init_expr) |init_expr| blk: {
+                const gc_heap = try store.ensureGcHeap();
+                break :blk evaluateGcConstExpr(
+                    store.allocator,
+                    gc_heap,
+                    init_expr,
+                    imp_raws,
+                    ptrs[n_imp .. n_imp + i],
+                    module.composite_types,
+                    module.struct_layouts,
+                    module.array_layouts,
+                ) catch return error.GcConstExprError;
+            } else global_init.value.value;
+
+            const idx = n_imp + i;
+            handles[idx] = try SharedGlobal.init(
+                allocator,
+                GlobalType.init(global_init.mutability, global_init.value.ty),
+                val,
+                0,
+            );
+            ptrs[idx] = handles[idx].asGlobal();
+            inited += 1;
+        }
+
+        return .{ .handles = handles, .ptrs = ptrs };
+    }
+
+    fn buildTables(
+        module: *const Module,
+        imports: Linker,
+        allocator: Allocator,
+    ) InstanceError![]SharedTable {
+        const n_imp = module.imported_tables.len;
+        const total = module.table_defs.len;
+        const tables = try allocator.alloc(SharedTable, total);
+        errdefer allocator.free(tables);
+
+        var inited: usize = 0;
+        errdefer for (tables[0..inited]) |*t| t.deinit();
+
+        for (module.imported_tables, 0..) |def, i| {
+            const tbl = imports.getTable(def.module_name, def.table_name) orelse {
+                return error.ImportNotSatisfied;
+            };
+            if (!tbl.elemType().eql(def.elem_type) or tbl.len() < def.min) {
+                return error.ImportTableMismatch;
+            }
+            if (def.max) |req_max| {
+                const got_max = tbl.max() orelse return error.ImportTableMismatch;
+                if (got_max > req_max) return error.ImportTableMismatch;
+            }
+            tables[i] = tbl.clone();
+            inited += 1;
+        }
+
+        var idx: usize = n_imp;
+        while (idx < total) : (idx += 1) {
+            const td = module.table_defs[idx];
+            tables[idx] = try SharedTable.init(allocator, td.elem_type, td.min, td.max, TableEntry.null_entry);
+            inited += 1;
+        }
+
+        return tables;
+    }
+
+    fn seedActiveElemSegments(
+        module: *const Module,
+        tables: []SharedTable,
+        instance_id: u64,
+        foreign_funcs: []const core.ForeignFunc,
+        elem_segments_dropped: []bool,
+    ) InstanceError!void {
+        for (module.elem_segments, 0..) |seg, i| {
+            if (seg.mode != .active) continue;
+            if (seg.table_index >= tables.len) return error.ElemSegmentOutOfBounds;
+            const entries = tables[seg.table_index].inner.entries;
+            const dst: usize = seg.offset;
+            const end = std.math.add(usize, dst, seg.func_indices.len) catch return error.ElemSegmentOutOfBounds;
+            if (end > entries.len) return error.ElemSegmentOutOfBounds;
+            for (seg.func_indices, 0..) |fi, j| {
+                entries[dst + j] = if (fi == std.math.maxInt(u32))
+                    TableEntry.null_entry
+                else
+                    TableEntry.fromFuncWithForeign(fi, instance_id, if (fi < foreign_funcs.len) &foreign_funcs[fi] else null);
+            }
+            tables[seg.table_index].inner.version +%= 1;
+            elem_segments_dropped[i] = true;
+        }
+    }
+
     pub fn init(store: *Store, arc: ArcModule, imports: Linker) InstanceError!Instance {
         const module = arc.value;
         const allocator = store.allocator;
         var instance_alloc_count: usize = 0;
+        const instance_id = next_instance_id.fetchAdd(1, .monotonic);
 
-        // 0. resolve imported global values
-        // Build a flat slice of RawVal for each imported global, in the order they
-        // appear in the Import Section.  These values are used by global.get in
-        // constant expressions (Wasm spec: global.get in const expr can only
-        // reference imported globals).  Missing imported globals default to zero.
-        const imported_global_values = try allocator.alloc(RawVal, module.imported_globals.len);
-        defer allocator.free(imported_global_values);
-        instance_alloc_count += 1;
-        for (module.imported_globals, 0..) |def, i| {
-            imported_global_values[i] = imports.getGlobal(def.module_name, def.global_name) orelse
-                RawVal.fromBits64(0);
+        const g = try buildGlobals(store, module, imports, allocator);
+        const global_handles = g.handles;
+        const global_ptrs = g.ptrs;
+        errdefer {
+            for (global_handles) |*h| @constCast(h).deinit();
+            allocator.free(global_handles);
+            allocator.free(global_ptrs);
         }
-
-        // 1. copy globals
-        const globals = try allocator.alloc(Global, module.globals.len);
-        errdefer allocator.free(globals);
-        instance_alloc_count += 1;
-
-        for (module.globals, 0..) |global_init, i| {
-            if (global_init.init_expr) |init_expr| {
-                // Deferred const expr — evaluate at runtime (ref.i31, ref.func, struct.new, …).
-                const gc_heap = try store.ensureGcHeap();
-                const value = evaluateGcConstExpr(
-                    store.allocator,
-                    gc_heap,
-                    init_expr,
-                    imported_global_values,
-                    globals[0..i],
-                    module.composite_types,
-                    module.struct_layouts,
-                    module.array_layouts,
-                ) catch {
-                    return error.GcConstExprError;
-                };
-                globals[i] = Global.init(
-                    GlobalType.init(global_init.mutability, global_init.value.ty),
-                    value,
-                );
-            } else {
-                globals[i] = Global.init(
-                    GlobalType.init(global_init.mutability, global_init.value.ty),
-                    global_init.value.value,
-                );
-            }
-        }
+        instance_alloc_count += 2;
 
         // 2. allocate memory
         if (module.memory64() and !core.platform.is_64bit) {
@@ -201,6 +533,10 @@ pub const Instance = struct {
             if (imp.shared != provided.isShared()) return error.ImportMemoryMismatch;
             const min_bytes = imp.min_pages * core.WASM_PAGE_SIZE;
             if (provided.byteLen() < min_bytes) return error.ImportMemoryMismatch;
+            if (imp.max_pages) |req_max| {
+                const got_max = provided.maxPages() orelse return error.ImportMemoryMismatch;
+                if (got_max > req_max) return error.ImportMemoryMismatch;
+            }
             break :blk provided.clone();
         } else if (module.memory) |mem_def| blk: {
             if (mem_def.shared) {
@@ -209,15 +545,20 @@ pub const Instance = struct {
                 instance_alloc_count += 1;
                 break :blk Memory.initShared(shared);
             } else {
-                break :blk try Memory.initOwnedWithMax(allocator, mem_def.min_pages, mem_def.max_pages, mem_def.memory64);
+                break :blk try Memory.initRc(allocator, mem_def.min_pages, mem_def.max_pages, mem_def.memory64);
             }
         } else Memory.initEmpty();
         errdefer mem.deinit();
         if (module.imported_memory != null or module.memory != null) instance_alloc_count += 1;
 
+        // 2b. allocate or resolve runtime tables
+        const tables = try buildTables(module, imports, allocator);
+        errdefer {
+            for (tables) |*t| @constCast(t).deinit();
+            allocator.free(tables);
+        }
+
         // 3. resolve host functions
-        // Build a flat slice parallel to module.imported_funcs, looking up each
-        // import by (module_name, func_name) in the provided Imports map.
         const host_funcs = try allocator.alloc(HostFunc, module.imported_funcs.len);
         errdefer allocator.free(host_funcs);
         instance_alloc_count += 1;
@@ -238,9 +579,9 @@ pub const Instance = struct {
 
         const host_view = HostInstance{
             .module = module,
-            .globals = globals,
+            .globals = global_ptrs,
             .memory = &mem,
-            .tables = module.tables,
+            .tables = tables,
         };
 
         // 4. initialize data segment dropped flags
@@ -250,8 +591,6 @@ pub const Instance = struct {
         instance_alloc_count += 1;
 
         // 4a. apply active data segments to linear memory (WASM spec §4.5.4)
-        // Active segments are copied into linear memory at instantiation time and
-        // then implicitly dropped (they cannot be used by memory.init after this).
         {
             const mem_bytes = mem.bytes();
             for (module.data_segments, 0..) |seg, i| {
@@ -263,30 +602,44 @@ pub const Instance = struct {
                 data_segments_dropped[i] = true;
             }
         }
-        // Free the in-module copies of active segment data now that they have been
-        // written into linear memory.  Active segments are immediately dropped after
-        // instantiation (data_segments_dropped[i] = true above) so the VM will
-        // never access their .data field again.  Releasing them here avoids keeping
-        // a redundant copy alive for the lifetime of the Module.
         @constCast(module).releaseActiveSegmentData();
 
-        // 5. initialize element segment dropped flags
+        // 5. initialize element segment dropped flags & apply active element segments
         const elem_segments_dropped = try allocator.alloc(bool, module.elem_segments.len);
         errdefer allocator.free(elem_segments_dropped);
         @memset(elem_segments_dropped, false);
         instance_alloc_count += 1;
 
+        const cross_ctx = try buildCrossCtx(
+            allocator,
+            instance_id,
+            store,
+            module,
+            global_ptrs,
+            mem,
+            tables,
+            host_funcs,
+            data_segments_dropped,
+            elem_segments_dropped,
+        );
+        errdefer cross_ctx.deinit();
+
+        try seedActiveElemSegments(module, tables, instance_id, cross_ctx.foreign_funcs, elem_segments_dropped);
+
         store.registerInstance();
         errdefer store.unregisterInstance();
 
-        // Register initial linear memory size into the budget.
         store.memory_budget.recordLinearGrow(mem.byteLen());
 
         return .{
             .store = store,
+            .instance_id = instance_id,
             .module = arc,
-            .globals = globals,
+            .global_handles = global_handles,
+            .globals = global_ptrs,
+            .cross_ctx = cross_ctx,
             .memory = mem,
+            .tables = tables,
             .host_funcs = host_funcs,
             .host_view = host_view,
             .data_segments_dropped = data_segments_dropped,
@@ -336,51 +689,28 @@ pub const Instance = struct {
         const max = mem_def.max_pages orelse return error.SharedMemoryMissingMax;
         const required_capacity = @as(usize, max) * @import("core").WASM_PAGE_SIZE;
         if (shared.capacity() < required_capacity) return error.SharedMemoryTooSmall;
+        const instance_id = next_instance_id.fetchAdd(1, .monotonic);
 
-        // 1. copy globals
-        // Resolve imported global values first for use in global.get const exprs.
-        const imported_global_values_shared = try allocator.alloc(RawVal, module.imported_globals.len);
-        defer allocator.free(imported_global_values_shared);
-        instance_alloc_count += 1;
-        for (module.imported_globals, 0..) |def, i| {
-            imported_global_values_shared[i] = imports.getGlobal(def.module_name, def.global_name) orelse
-                RawVal.fromBits64(0);
+        const g = try buildGlobals(store, module, imports, allocator);
+        const global_handles = g.handles;
+        const global_ptrs = g.ptrs;
+        errdefer {
+            for (global_handles) |*h| @constCast(h).deinit();
+            allocator.free(global_handles);
+            allocator.free(global_ptrs);
         }
-
-        const globals = try allocator.alloc(Global, module.globals.len);
-        errdefer allocator.free(globals);
-        instance_alloc_count += 1;
-
-        for (module.globals, 0..) |global_init, i| {
-            if (global_init.init_expr) |init_expr| {
-                // Deferred const expr — evaluate at runtime (ref.i31, ref.func, struct.new, …).
-                const gc_heap = try store.ensureGcHeap();
-                const value = evaluateGcConstExpr(
-                    store.allocator,
-                    gc_heap,
-                    init_expr,
-                    imported_global_values_shared,
-                    globals[0..i],
-                    module.composite_types,
-                    module.struct_layouts,
-                    module.array_layouts,
-                ) catch return error.GcConstExprError;
-                globals[i] = Global.init(
-                    GlobalType.init(global_init.mutability, global_init.value.ty),
-                    value,
-                );
-            } else {
-                globals[i] = Global.init(
-                    GlobalType.init(global_init.mutability, global_init.value.ty),
-                    global_init.value.value,
-                );
-            }
-        }
+        instance_alloc_count += 2;
 
         // 2. wrap the provided shared memory (increments refcount)
         var mem = Memory.initShared(shared);
         errdefer mem.deinit();
         instance_alloc_count += 1;
+
+        const tables = try buildTables(module, imports, allocator);
+        errdefer {
+            for (tables) |*t| @constCast(t).deinit();
+            allocator.free(tables);
+        }
 
         // 3. resolve host functions
         const host_funcs = try allocator.alloc(HostFunc, module.imported_funcs.len);
@@ -401,9 +731,9 @@ pub const Instance = struct {
 
         const host_view = HostInstance{
             .module = module,
-            .globals = globals,
+            .globals = global_ptrs,
             .memory = &mem,
-            .tables = module.tables,
+            .tables = tables,
         };
 
         // 4. segment dropped flags
@@ -431,6 +761,22 @@ pub const Instance = struct {
         @memset(elem_segments_dropped, false);
         instance_alloc_count += 1;
 
+        const cross_ctx = try buildCrossCtx(
+            allocator,
+            instance_id,
+            store,
+            module,
+            global_ptrs,
+            mem,
+            tables,
+            host_funcs,
+            data_segments_dropped,
+            elem_segments_dropped,
+        );
+        errdefer cross_ctx.deinit();
+
+        try seedActiveElemSegments(module, tables, instance_id, cross_ctx.foreign_funcs, elem_segments_dropped);
+
         store.registerInstance();
         errdefer store.unregisterInstance();
 
@@ -439,9 +785,13 @@ pub const Instance = struct {
 
         return .{
             .store = store,
+            .instance_id = instance_id,
             .module = arc,
-            .globals = globals,
+            .global_handles = global_handles,
+            .globals = global_ptrs,
+            .cross_ctx = cross_ctx,
             .memory = mem,
+            .tables = tables,
             .host_funcs = host_funcs,
             .host_view = host_view,
             .data_segments_dropped = data_segments_dropped,
@@ -480,8 +830,13 @@ pub const Instance = struct {
 
     pub fn deinit(self: *Instance) void {
         const allocator = self.store.allocator;
+        self.cross_ctx.deinit();
+        for (self.global_handles) |*h| h.deinit();
+        allocator.free(self.global_handles);
         allocator.free(self.globals);
         self.memory.deinit();
+        for (self.tables) |*t| t.deinit();
+        allocator.free(self.tables);
         allocator.free(self.host_funcs);
         allocator.free(self.data_segments_dropped);
         allocator.free(self.elem_segments_dropped);
@@ -496,9 +851,10 @@ pub const Instance = struct {
     }
 
     pub fn execEnv(self: *Instance) ExecEnv {
-        // Ensure host_view.memory always points to the Instance's own memory
-        // field (not a stale local from init).
+        // Ensure host_view pointers always reflect the live Instance address.
         self.host_view.memory = &self.memory;
+        self.host_view.globals = self.globals;
+        self.host_view.tables = self.tables;
         const m = self.module.value;
         // Expose budget pointer if the store has a limit configured.
         const budget_ptr: ?*store_mod.MemoryBudget = if (self.store.memory_budget.limit_bytes != null)
@@ -515,7 +871,9 @@ pub const Instance = struct {
             .engine = self.store.engine,
             .module = m,
             .host_funcs = self.host_funcs,
-            .tables = m.tables,
+            .tables = self.tables,
+            .foreign_funcs = self.cross_ctx.foreign_funcs,
+            .instance_id = self.instance_id,
             .func_type_indices = m.func_type_indices,
             .data_segments = m.data_segments,
             .data_segments_dropped = self.data_segments_dropped,
@@ -550,10 +908,68 @@ pub const Instance = struct {
             .function_index => |idx| idx,
             else => return error.ExportNotCallable,
         };
+        return self.callByIndex(func_index, args);
+    }
+
+    pub fn callByIndex(self: *Instance, func_index: u32, args: []const RawVal) (module_mod.ModuleCompileError || Allocator.Error || error{ ExportNotFound, ExportNotCallable })!ExecResult {
+        const m = self.module.value;
+        if (func_index >= m.functions.len) return error.ExportNotFound;
+        if (func_index < self.host_funcs.len) {
+            // Re-exported host import function: call host function directly.
+            const hf = self.host_funcs[func_index];
+            const res_len = m.composite_types[m.func_type_indices[func_index]].func_type.results().len;
+            const host_results = try self.store.allocator.alloc(RawVal, res_len);
+            defer self.store.allocator.free(host_results);
+            @memset(host_results, RawVal.fromBits64(0));
+
+            self.host_view.memory = &self.memory;
+            self.host_view.globals = self.globals;
+            self.host_view.tables = self.tables;
+            var ctx = host_mod.HostContext.init(self.store, &self.host_view, hf.host_data);
+            hf.call(&ctx, args, host_results) catch |err| switch (err) {
+                error.HostTrap => return .{ .trap = ctx.takeTrap() },
+                error.OutOfMemory => return error.OutOfMemory,
+            };
+            try self.vm.saveLastResults(host_results);
+            return .{ .ok = if (res_len > 0) host_results[0] else null };
+        }
         // Lazily compile the function on first call.
         try m.compileFunctionAt(self.store.engine, func_index);
         const encoded = &m.functions[func_index].encoded;
         return self.vm.execute(encoded, args, self.execEnv());
+    }
+
+    pub fn lastResults(self: *const Instance) []const RawVal {
+        return self.vm.lastResults();
+    }
+
+    pub fn foreignFuncAt(self: *const Instance, func_idx: u32) ?*const core.ForeignFunc {
+        if (func_idx >= self.cross_ctx.foreign_funcs.len) return null;
+        return &self.cross_ctx.foreign_funcs[func_idx];
+    }
+
+    pub fn exportGlobal(self: *const Instance, name: []const u8) ?SharedGlobal {
+        const entry = self.module.value.exports.get(name) orelse return null;
+        return switch (entry) {
+            .global_index => |idx| if (idx < self.global_handles.len) self.global_handles[idx] else null,
+            else => null,
+        };
+    }
+
+    pub fn exportTable(self: *const Instance, name: []const u8) ?SharedTable {
+        const entry = self.module.value.exports.get(name) orelse return null;
+        return switch (entry) {
+            .table_index => |idx| if (idx < self.tables.len) self.tables[idx] else null,
+            else => null,
+        };
+    }
+
+    pub fn exportMemory(self: *const Instance, name: []const u8) ?Memory {
+        const entry = self.module.value.exports.get(name) orelse return null;
+        return switch (entry) {
+            .memory_index => self.memory,
+            else => null,
+        };
     }
 
     /// Execute the module's start function (WebAssembly spec §4.5.4).
@@ -641,7 +1057,7 @@ fn evaluateGcConstExpr(
     /// Values for imported globals (index 0..n_imported-1 in the global index space).
     imported_global_values: []const RawVal,
     /// Already-initialized module-defined globals (index n_imported..i-1 in the global index space).
-    initialized_globals: []const Global,
+    initialized_globals: []const *Global,
     composite_types: []const CompositeType,
     struct_layouts: []const ?StructLayout,
     array_layouts: []const ?ArrayLayout,

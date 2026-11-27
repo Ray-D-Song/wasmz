@@ -62,12 +62,17 @@ const encode_mod = @import("../compiler/encode/encode.zig");
 const handler_table_mod = @import("../vm/handler_table.zig");
 
 /// Exported item from a Wasm module.
-/// Currently function and tag exports are supported; memory/global/table exports are ignored.
 pub const ExportEntry = union(enum) {
     /// Index into Module.functions (imports + locals, in Wasm function index space).
     function_index: u32,
     /// Index into Module.tags (imports + locals, in Wasm tag index space).
     tag_index: u32,
+    /// Index into Instance.tables (imports + locals, in Wasm table index space).
+    table_index: u32,
+    /// Index into linear memories (0 for single-memory modules).
+    memory_index: u32,
+    /// Index into Instance.globals (imports + locals, in Wasm global index space).
+    global_index: u32,
 };
 
 /// Exception tag definition.
@@ -127,6 +132,20 @@ pub const ImportedMemoryDef = struct {
     max_pages: ?u64,
     shared: bool = false,
     memory64: bool = false,
+};
+
+pub const ImportedTableDef = struct {
+    module_name: []const u8,
+    table_name: []const u8,
+    elem_type: ValType,
+    min: u32,
+    max: ?u32,
+};
+
+pub const TableDef = struct {
+    elem_type: ValType,
+    min: u32,
+    max: ?u32,
 };
 
 /// Global variable compilation result, including mutability and the initial value evaluated from constant expressions.
@@ -286,6 +305,7 @@ const BuildState = struct {
     function_type_indices: std.ArrayListUnmanaged(u32) = .empty,
     imported_funcs_list: std.ArrayListUnmanaged(ImportedFuncDef) = .empty,
     imported_globals_list: std.ArrayListUnmanaged(ImportedGlobalDef) = .empty,
+    imported_tables_list: std.ArrayListUnmanaged(ImportedTableDef) = .empty,
     imported_memory: ?ImportedMemoryDef = null,
     globals_list: std.ArrayListUnmanaged(GlobalInit) = .empty,
     exports: std.StringHashMapUnmanaged(ExportEntry) = .empty,
@@ -295,6 +315,7 @@ const BuildState = struct {
     pending_element_mode: payload_mod.ElementMode = .passive,
     pending_element_table_index: ?u32 = null,
     tables_lists: std.ArrayListUnmanaged(std.ArrayListUnmanaged(u32)) = .empty,
+    table_defs_list: std.ArrayListUnmanaged(TableDef) = .empty,
     pending_data_mode: payload_mod.DataMode = .passive,
     pending_data_memory_index: ?u32 = null,
     data_segments_list: std.ArrayListUnmanaged(CompiledDataSegment) = .empty,
@@ -360,6 +381,13 @@ const BuildState = struct {
         }
         self.imported_globals_list.deinit(self.allocator);
 
+        for (self.imported_tables_list.items) |def| {
+            self.allocator.free(def.module_name);
+            self.allocator.free(def.table_name);
+        }
+        self.imported_tables_list.deinit(self.allocator);
+        self.table_defs_list.deinit(self.allocator);
+
         if (self.imported_memory) |imp| {
             self.allocator.free(imp.module_name);
             self.allocator.free(imp.memory_name);
@@ -420,6 +448,19 @@ const BuildState = struct {
             .val_type = tbl_val_type,
             .min = tbl.limits.initial,
             .max = tbl.limits.maximum,
+        });
+        const min_u32: u32 = if (tbl.limits.initial <= std.math.maxInt(u32))
+            @intCast(tbl.limits.initial)
+        else
+            std.math.maxInt(u32);
+        const max_u32: ?u32 = if (tbl.limits.maximum) |m|
+            (if (m <= std.math.maxInt(u32)) @intCast(m) else std.math.maxInt(u32))
+        else
+            null;
+        try self.table_defs_list.append(self.allocator, .{
+            .elem_type = tbl_val_type,
+            .min = min_u32,
+            .max = max_u32,
         });
         const tbl_idx = self.tables_lists.items.len;
         try self.tables_lists.append(self.allocator, .empty);
@@ -536,6 +577,18 @@ const BuildState = struct {
                         .table => |tbl| tbl,
                         else => return error.UnsupportedFunctionType,
                     } else return error.UnsupportedFunctionType;
+                    const tbl_val_type = try translate_mod.wasmValTypeFromType(tbl_typ.element_type);
+                    const mod_name = try self.allocator.dupe(u8, entry.module);
+                    errdefer self.allocator.free(mod_name);
+                    const tbl_name = try self.allocator.dupe(u8, entry.field);
+                    errdefer self.allocator.free(tbl_name);
+                    try self.imported_tables_list.append(self.allocator, .{
+                        .module_name = mod_name,
+                        .table_name = tbl_name,
+                        .elem_type = tbl_val_type,
+                        .min = if (tbl_typ.limits.initial <= std.math.maxInt(u32)) @intCast(tbl_typ.limits.initial) else std.math.maxInt(u32),
+                        .max = if (tbl_typ.limits.maximum) |m| (if (m <= std.math.maxInt(u32)) @intCast(m) else std.math.maxInt(u32)) else null,
+                    });
                     try self.appendTableDef(tbl_typ);
                 } else if (entry.kind == .memory) {
                     if (self.imported_memory != null) return error.DuplicateImportMemory;
@@ -612,16 +665,30 @@ const BuildState = struct {
                         entry.field,
                         .{ .tag_index = entry.index },
                     ),
+                    .table => try Module.put_function_export(
+                        self.allocator,
+                        &self.exports,
+                        entry.field,
+                        .{ .table_index = entry.index },
+                    ),
+                    .global => try Module.put_function_export(
+                        self.allocator,
+                        &self.exports,
+                        entry.field,
+                        .{ .global_index = entry.index },
+                    ),
                     .memory => {
-                        const owned = try self.allocator.dupe(u8, entry.field);
-                        errdefer self.allocator.free(owned);
-                        if (self.memory_export_name != null) {
-                            self.allocator.free(owned);
-                            return error.DuplicateExport;
+                        try Module.put_function_export(
+                            self.allocator,
+                            &self.exports,
+                            entry.field,
+                            .{ .memory_index = entry.index },
+                        );
+                        if (self.memory_export_name == null) {
+                            const owned = try self.allocator.dupe(u8, entry.field);
+                            self.memory_export_name = owned;
                         }
-                        self.memory_export_name = owned;
                     },
-                    else => {},
                 }
             },
             .start_entry => |entry| {
@@ -948,6 +1015,17 @@ const BuildState = struct {
             self.allocator.free(imported_globals);
         }
 
+        const imported_tables = try self.imported_tables_list.toOwnedSlice(self.allocator);
+        errdefer {
+            for (imported_tables) |def| {
+                self.allocator.free(def.module_name);
+                self.allocator.free(def.table_name);
+            }
+            self.allocator.free(imported_tables);
+        }
+        const table_defs = try self.table_defs_list.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(table_defs);
+
         const tables = try self.allocator.alloc([]u32, self.tables_lists.items.len);
         errdefer {
             for (tables) |t| self.allocator.free(t);
@@ -1086,6 +1164,8 @@ const BuildState = struct {
             .start_function = self.start_function,
             .imported_funcs = imported_funcs,
             .imported_globals = imported_globals,
+            .imported_tables = imported_tables,
+            .table_defs = table_defs,
             .tables = tables,
             .func_type_indices = func_type_indices,
             .data_segments = data_segments,
@@ -1150,6 +1230,8 @@ pub const Module = struct {
     /// Metadata for each imported global in the order they appear in the Import Section.
     /// global.get in constant expressions can only reference these imported globals.
     imported_globals: []ImportedGlobalDef,
+    imported_tables: []ImportedTableDef,
+    table_defs: []TableDef,
     /// Tables: each entry is an owned slice of function indices (func_idx) for that table.
     /// tables[t][i] gives the func_idx stored at position i in table t.
     /// Populated from active externval element segments.
@@ -2043,6 +2125,13 @@ pub const Module = struct {
         }
         self.allocator.free(self.imported_globals);
 
+        for (self.imported_tables) |def| {
+            self.allocator.free(def.module_name);
+            self.allocator.free(def.table_name);
+        }
+        self.allocator.free(self.imported_tables);
+        self.allocator.free(self.table_defs);
+
         if (self.imported_memory) |imp| {
             self.allocator.free(imp.module_name);
             self.allocator.free(imp.memory_name);
@@ -2760,6 +2849,7 @@ fn buildWasmOp(
             .func_idx = func_idx,
             .n_params = @intCast(func_type.params().len),
             .has_result = func_type.results().len > 0,
+            .n_results = @intCast(func_type.results().len),
             .result_val_type = singleResultValType(func_type),
         } };
     } else if (info.code == .call_indirect) blk: {
@@ -2777,6 +2867,7 @@ fn buildWasmOp(
             .table_index = 0,
             .n_params = @intCast(func_type.params().len),
             .has_result = func_type.results().len > 0,
+            .n_results = @intCast(func_type.results().len),
             .result_val_type = singleResultValType(func_type),
         } };
     } else if (info.code == .return_call) blk: {
@@ -2866,6 +2957,7 @@ fn buildWasmOp(
             .type_idx = type_idx,
             .n_params = @intCast(func_type.params().len),
             .has_result = func_type.results().len > 0,
+            .n_results = @intCast(func_type.results().len),
             .result_val_type = singleResultValType(func_type),
         } };
     } else if (info.code == .return_call_ref) blk: {
@@ -3435,8 +3527,7 @@ fn decodeAndLower(
 
         // Return
         .return_ => {
-            const value = lower.stack.pop();
-            try lower.emit(.{ .ret = .{ .value = value } });
+            try lower.emitReturnOp();
             lower.is_unreachable = true;
         },
 
@@ -3540,6 +3631,7 @@ fn decodeAndLower(
                 .func_idx = func_idx,
                 .n_params = @intCast(func_type.params().len),
                 .has_result = func_type.results().len > 0,
+                .n_results = @intCast(func_type.results().len),
                 .result_val_type = singleResultValType(func_type),
             } });
         },
@@ -3547,14 +3639,15 @@ fn decodeAndLower(
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
             const type_index = p.read_var_uint32();
             if (!p.has_var_int_bytes()) return error.NeedMoreData;
-            _ = p.read_var_uint32(); // table index (discarded)
+            const table_idx = p.read_var_uint32();
             if (type_index >= resolver.composite_types.len) return error.InvalidFunctionTypeIndex;
             const func_type = try resolver.getFuncType(type_index);
             try lower.lowerOp(.{ .call_indirect = .{
                 .type_index = type_index,
-                .table_index = 0,
+                .table_index = table_idx,
                 .n_params = @intCast(func_type.params().len),
                 .has_result = func_type.results().len > 0,
+                .n_results = @intCast(func_type.results().len),
                 .result_val_type = singleResultValType(func_type),
             } });
         },
@@ -3626,6 +3719,7 @@ fn decodeAndLower(
                 .type_idx = type_idx,
                 .n_params = @intCast(func_type.params().len),
                 .has_result = func_type.results().len > 0,
+                .n_results = @intCast(func_type.results().len),
                 .result_val_type = singleResultValType(func_type),
             } });
         },

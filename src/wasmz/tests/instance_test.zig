@@ -733,3 +733,248 @@ test "Instance issue #4: funcref global initialized by ref.func" {
     const result = exec_r.ok orelse return error.MissingReturnValue;
     try testing.expectEqual(@as(i32, 0), result.readAs(i32));
 }
+
+fn reentrantHostCb(_: ?*anyopaque, ctx: *host_mod.HostContext, params: []const RawVal, results: []RawVal) host_mod.HostError!void {
+    const inst = ctx.host_data(Instance) orelse return ctx.raiseTrap(vm_mod.Trap.hostMessage("missing instance"));
+    const x = params[0].readAs(i32);
+    const inner = inst.call("leaf", &.{RawVal.from(x + 1)}) catch return ctx.raiseTrap(vm_mod.Trap.hostMessage("reentrant call failed"));
+    const val = switch (inner) {
+        .ok => |ov| (ov orelse return ctx.raiseTrap(vm_mod.Trap.hostMessage("missing value"))).readAs(i32),
+        .trap => |*t| {
+            @constCast(t).deinit();
+            return ctx.raiseTrap(vm_mod.Trap.hostMessage("inner trap"));
+        },
+    };
+    results[0] = RawVal.from(val * 10);
+}
+
+test "Instance.call: reentrant call from host import preserves outer frame" {
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
+    defer store.deinit();
+
+    // Import env.reenter(i32)->i32 (idx 0)
+    // Func 1 (outer): (x) -> x + reenter(x)
+    // Func 2 (leaf): (y) -> y * 2
+    const wasm = [_]u8{
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+        0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f,
+        0x02, 0x0e, 0x01, 0x03, 'e', 'n', 'v', 0x07, 'r', 'e', 'e', 'n', 't', 'e', 'r', 0x00, 0x00,
+        0x03, 0x03, 0x02, 0x00, 0x00,
+        0x07, 0x10, 0x02,
+        0x05, 'o', 'u', 't', 'e', 'r', 0x00, 0x01,
+        0x04, 'l', 'e', 'a', 'f', 0x00, 0x02,
+        0x0a, 0x15, 0x02,
+        // outer: local.get 0, local.get 0, call 0, i32.add, end
+        0x09, 0x00, 0x20, 0x00, 0x20, 0x00, 0x10, 0x00, 0x6a, 0x0b,
+        // leaf: local.get 0, i32.const 2, i32.mul, end
+        0x07, 0x00, 0x20, 0x00, 0x41, 0x02, 0x6c, 0x0b,
+    };
+
+    var arc = try compileArc(&wasm, engine);
+    defer releaseArc(arc);
+
+    const i32_t = [_]core.ValType{.I32};
+    var linker = Linker.empty;
+    defer linker.deinit(testing.allocator);
+    try linker.define(testing.allocator, "env", "reenter", HostFunc.init(null, &reentrantHostCb, &i32_t, &i32_t));
+
+    var instance = try Instance.init(&store, arc.retain(), linker);
+    defer instance.deinit();
+    instance.host_funcs[0].host_data = @ptrCast(&instance);
+
+    // outer(5) = 5 + (((5 + 1) * 2) * 10) = 5 + 120 = 125
+    const exec_r = try instance.call("outer", &.{RawVal.from(@as(i32, 5))});
+    const res = exec_r.ok orelse return error.MissingReturnValue;
+    try testing.expectEqual(@as(i32, 125), res.readAs(i32));
+}
+
+test "SharedGlobal, SharedTable cross-instance call_indirect, and RcMemory grow_seq" {
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
+    defer store.deinit();
+
+    // Module A:
+    //   type 0: (i32)->i32, type 1: (i32)->()
+    //   func 0: (x)->x*3
+    //   func 1: (idx, arg)-> call_indirect(type 0)(arg, idx)
+    //   func 2: (delta)-> memory.grow(delta)
+    //   table 0: 2..4 funcref, active elem at 0 = [func 0]
+    //   memory 0: 1..4
+    //   global 0: mut i32 = 42
+    //   exports: g=global0, m=mem0, t=table0, call_tbl=func1, mem_grow=func2
+    const wasm_a = [_]u8{
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+        // Type: [0]=(i32)->i32, [1]=(i32,i32)->i32
+        0x01, 0x0c, 0x02,
+        0x60, 0x01, 0x7f, 0x01, 0x7f,
+        0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f,
+        // Func: [0]=type0, [1]=type1, [2]=type0
+        0x03, 0x04, 0x03, 0x00, 0x01, 0x00,
+        // Table: funcref 2..4
+        0x04, 0x05, 0x01, 0x70, 0x01, 0x02, 0x04,
+        // Memory: 1..4
+        0x05, 0x04, 0x01, 0x01, 0x01, 0x04,
+        // Global: mut i32 = 42
+        0x06, 0x06, 0x01, 0x7f, 0x01, 0x41, 0x2a, 0x0b,
+        // Export: g, m, t, call_tbl, mem_grow
+        0x07, 0x23, 0x05,
+        0x01, 'g', 0x03, 0x00,
+        0x01, 'm', 0x02, 0x00,
+        0x01, 't', 0x01, 0x00,
+        0x08, 'c', 'a', 'l', 'l', '_', 't', 'b', 'l', 0x00, 0x01,
+        0x08, 'm', 'e', 'm', '_', 'g', 'r', 'o', 'w', 0x00, 0x02,
+        // Elem: table 0 offset 0 -> [func 0]
+        0x09, 0x07, 0x01, 0x00, 0x41, 0x00, 0x0b, 0x01, 0x00,
+        // Code:
+        0x0a, 0x1a, 0x03,
+        // func 0: local.get 0, i32.const 3, i32.mul, end
+        0x07, 0x00, 0x20, 0x00, 0x41, 0x03, 0x6c, 0x0b,
+        // func 1 (idx, arg): local.get 1, local.get 0, call_indirect type 0 table 0, end
+        0x09, 0x00, 0x20, 0x01, 0x20, 0x00, 0x11, 0x00, 0x00, 0x0b,
+        // func 2 (delta): local.get 0, memory.grow 0, end
+        0x06, 0x00, 0x20, 0x00, 0x40, 0x00, 0x0b,
+    };
+
+    // Module B:
+    //   imports: env.g (mut i32), env.t (funcref 2..4), env.m (mem 1..4)
+    //   func 0: (x)->x+10
+    //   func 1: (idx, arg)-> call_indirect(type 0)(arg, idx)
+    //   func 2: (v)-> global.set 0; global.get 0
+    //   elem: table 0 offset 1 -> [func 0]
+    //   exports: call_tbl=func1, bump=func2
+    const wasm_b = [_]u8{
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+        0x01, 0x0c, 0x02,
+        0x60, 0x01, 0x7f, 0x01, 0x7f,
+        0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f,
+        // Import: env.g (mut i32), env.t (funcref 2..4), env.m (1..4)
+        0x02, 0x1f, 0x03,
+        0x03, 'e', 'n', 'v', 0x01, 'g', 0x03, 0x7f, 0x01,
+        0x03, 'e', 'n', 'v', 0x01, 't', 0x01, 0x70, 0x01, 0x02, 0x04,
+        0x03, 'e', 'n', 'v', 0x01, 'm', 0x02, 0x01, 0x01, 0x04,
+        // Func: [0]=type0, [1]=type1, [2]=type0
+        0x03, 0x04, 0x03, 0x00, 0x01, 0x00,
+        // Export: call_tbl=func1, bump=func2
+        0x07, 0x13, 0x02,
+        0x08, 'c', 'a', 'l', 'l', '_', 't', 'b', 'l', 0x00, 0x01,
+        0x04, 'b', 'u', 'm', 'p', 0x00, 0x02,
+        // Elem: table 0 offset 1 -> [func 0]
+        0x09, 0x07, 0x01, 0x00, 0x41, 0x01, 0x0b, 0x01, 0x00,
+        // Code:
+        0x0a, 0x1f, 0x03,
+        // func 0: local.get 0, i32.const 10, i32.add, end
+        0x07, 0x00, 0x20, 0x00, 0x41, 0x0a, 0x6a, 0x0b,
+        // func 1: local.get 1, local.get 0, call_indirect type 0 table 0, end
+        0x09, 0x00, 0x20, 0x01, 0x20, 0x00, 0x11, 0x00, 0x00, 0x0b,
+        // func 2: global.get 0, local.get 0, i32.add, global.set 0, global.get 0, end
+        0x0b, 0x00, 0x23, 0x00, 0x20, 0x00, 0x6a, 0x24, 0x00, 0x23, 0x00, 0x0b,
+    };
+
+    var arc_a = try compileArc(&wasm_a, engine);
+    defer releaseArc(arc_a);
+    var arc_b = try compileArc(&wasm_b, engine);
+    defer releaseArc(arc_b);
+
+    var inst_a = try Instance.init(&store, arc_a.retain(), Imports.empty);
+    defer inst_a.deinit();
+
+    var linker_b = Linker.empty;
+    defer linker_b.deinit(testing.allocator);
+    var g_exp = inst_a.exportGlobal("g").?;
+    const m_exp = inst_a.exportMemory("m").?;
+    const t_exp = inst_a.exportTable("t").?;
+    try linker_b.defineGlobalHandle(testing.allocator, "env", "g", g_exp);
+    try linker_b.defineMemory(testing.allocator, "env", "m", m_exp);
+    try linker_b.defineTable(testing.allocator, "env", "t", t_exp);
+
+    var inst_b = try Instance.init(&store, arc_b.retain(), linker_b);
+    defer inst_b.deinit();
+
+    // Cross-instance call_indirect: B invokes slot 0 (A's x*3), A invokes slot 1 (B's x+10)
+    const call_ba = try inst_b.call("call_tbl", &.{ RawVal.from(@as(i32, 0)), RawVal.from(@as(i32, 7)) });
+    const r_ba = switch (call_ba) {
+        .ok => |v| v.?,
+        .trap => |t| {
+            var tt = t;
+            defer tt.deinit();
+            const msg = tt.allocPrint(testing.allocator) catch "trap";
+            defer testing.allocator.free(msg);
+            std.debug.print("inst_b call_tbl trapped: {s}\n", .{msg});
+            return error.UnexpectedTrap;
+        },
+    };
+    try testing.expectEqual(@as(i32, 21), r_ba.readAs(i32));
+    const r_ab = (try inst_a.call("call_tbl", &.{ RawVal.from(@as(i32, 1)), RawVal.from(@as(i32, 7)) })).ok.?;
+    try testing.expectEqual(@as(i32, 17), r_ab.readAs(i32));
+
+    // SharedGlobal mutation observed across instances
+    const r_g = (try inst_b.call("bump", &.{RawVal.from(@as(i32, 8))})).ok.?;
+    try testing.expectEqual(@as(i32, 50), r_g.readAs(i32));
+    try testing.expectEqual(@as(i32, 50), g_exp.getRaw().readAs(i32));
+    try testing.expectEqual(@as(i32, 50), inst_a.globals[0].getRawValue().readAs(i32));
+
+    // RcMemory grow(0) bumps grow_seq; grow(1) visible in both handles
+    const seq0 = inst_a.memory.growSeq();
+    _ = try inst_a.call("mem_grow", &.{RawVal.from(@as(i32, 0))});
+    try testing.expectEqual(seq0 + 1, inst_a.memory.growSeq());
+    const prev = (try inst_a.call("mem_grow", &.{RawVal.from(@as(i32, 1))})).ok.?;
+    try testing.expectEqual(@as(i32, 1), prev.readAs(i32));
+    try testing.expectEqual(seq0 + 2, inst_a.memory.growSeq());
+    try testing.expectEqual(@as(usize, 2), inst_b.memory.pageCount());
+}
+
+test "SharedTable: externref table get, set, grow across host and guest" {
+    var engine = try engine_mod.Engine.init(testing.allocator, config_mod.Config{});
+    defer engine.deinit();
+
+    var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
+    defer store.deinit();
+
+    // Module with imported externref table 1..4: get_ref(idx)->externref, set_ref(idx, ref)
+    const wasm = [_]u8{
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+        0x01, 0x0c, 0x02,
+        0x60, 0x01, 0x7f, 0x01, 0x6f,
+        0x60, 0x02, 0x7f, 0x6f, 0x00,
+        // Import env.ext_tbl (externref 1..4)
+        0x02, 0x12, 0x01, 0x03, 'e', 'n', 'v', 0x07, 'e', 'x', 't', '_', 't', 'b', 'l', 0x01, 0x6f, 0x01, 0x01, 0x04,
+        0x03, 0x03, 0x02, 0x00, 0x01,
+        0x07, 0x15, 0x02,
+        0x07, 'g', 'e', 't', '_', 'r', 'e', 'f', 0x00, 0x00,
+        0x07, 's', 'e', 't', '_', 'r', 'e', 'f', 0x00, 0x01,
+        0x0a, 0x11, 0x02,
+        // get_ref: local.get 0, table.get 0, end
+        0x06, 0x00, 0x20, 0x00, 0x25, 0x00, 0x0b,
+        // set_ref: local.get 0, local.get 1, table.set 0, end
+        0x08, 0x00, 0x20, 0x00, 0x20, 0x01, 0x26, 0x00, 0x0b,
+    };
+
+    var arc = try compileArc(&wasm, engine);
+    defer releaseArc(arc);
+
+    var tbl = try core.SharedTable.init(testing.allocator, core.ValType.externref(), 1, 4, core.TableEntry.fromExternRef(99));
+    defer tbl.deinit();
+
+    var linker = Linker.empty;
+    defer linker.deinit(testing.allocator);
+    try linker.defineTable(testing.allocator, "env", "ext_tbl", tbl);
+
+    var instance = try Instance.init(&store, arc.retain(), linker);
+    defer instance.deinit();
+
+    const r0 = (try instance.call("get_ref", &.{RawVal.from(@as(i32, 0))})).ok.?;
+    try testing.expectEqual(@as(u64, 99), r0.low64);
+
+    _ = try instance.call("set_ref", &.{ RawVal.from(@as(i32, 0)), RawVal.fromBits64(777) });
+    try testing.expectEqual(@as(u64, 777), tbl.get(0).?.raw);
+
+    const prev_len = tbl.grow(2, core.TableEntry.fromExternRef(555)).?;
+    try testing.expectEqual(@as(u32, 1), prev_len);
+    const r2 = (try instance.call("get_ref", &.{RawVal.from(@as(i32, 2))})).ok.?;
+    try testing.expectEqual(@as(u64, 555), r2.low64);
+}

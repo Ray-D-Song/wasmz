@@ -111,7 +111,12 @@ const StdinRead = if (!is_wasi and !is_windows) struct {
     }
 };
 
-fn stdinRead(buf: []u8) !usize {
+fn stdinRead(custom_fd: ?i32, buf: []u8) !usize {
+    if (!is_wasi and !is_windows) {
+        if (custom_fd) |fd| {
+            return std.posix.read(@intCast(fd), buf);
+        }
+    }
     return StdinRead.read(buf);
 }
 
@@ -143,6 +148,28 @@ pub const Output = struct {
 
     pub fn stderr() Output {
         return .{ .ctx = null, .write_fn = write_stderr, .writev_fn = writev_stderr };
+    }
+
+    pub fn fromFd(fd_ptr: *const i32) Output {
+        return .{
+            .ctx = @ptrCast(@constCast(fd_ptr)),
+            .write_fn = write_custom_fd,
+            .writev_fn = writev_custom_fd,
+        };
+    }
+
+    fn write_custom_fd(ctx: ?*anyopaque, bytes: []const u8) WriteError!void {
+        if (is_wasi or is_windows) return error.Io;
+        const fd_p: *const i32 = @ptrCast(@alignCast(ctx orelse return error.Io));
+        const file: std.Io.File = .{ .handle = @intCast(fd_p.*), .flags = .{ .nonblocking = false } };
+        const local_io = Io.Threaded.global_single_threaded.io();
+        std.Io.File.writeStreamingAll(file, local_io, bytes) catch return error.Io;
+    }
+
+    fn writev_custom_fd(ctx: ?*anyopaque, slices: []const []const u8) WriteError!void {
+        for (slices) |s| {
+            try write_custom_fd(ctx, s);
+        }
     }
 
     pub fn writeAll(self: Output, bytes: []const u8) WriteError!void {
@@ -197,6 +224,9 @@ pub const FdIO = struct {
 
     stdout: Output,
     stderr: Output,
+    stdin_fd: ?i32 = null,
+    stdout_fd: i32 = 1,
+    stderr_fd: i32 = 2,
     allocator: Allocator,
     io: Io,
     files: std.AutoHashMap(types.Fd, FileEntry),
@@ -245,8 +275,26 @@ pub const FdIO = struct {
         self.stderr = output;
     }
 
+    pub fn setStdinFd(self: *Self, fd: i32) void {
+        self.stdin_fd = fd;
+    }
+
+    pub fn setStdoutFd(self: *Self, fd: i32) void {
+        self.stdout_fd = fd;
+        self.stdout = Output.fromFd(&self.stdout_fd);
+    }
+
+    pub fn setStderrFd(self: *Self, fd: i32) void {
+        self.stderr_fd = fd;
+        self.stderr = Output.fromFd(&self.stderr_fd);
+    }
+
     pub fn addPreopen(self: *Self, path: []const u8) !types.Fd {
-        const dir = std.Io.Dir.cwd().openDir(self.io, path, .{}) catch |err| switch (err) {
+        return self.addMappedPreopen(path, path);
+    }
+
+    pub fn addMappedPreopen(self: *Self, guest_path: []const u8, host_path: []const u8) !types.Fd {
+        const dir = std.Io.Dir.cwd().openDir(self.io, host_path, .{}) catch |err| switch (err) {
             error.FileNotFound => return error.PathNotFound,
             error.NotDir => return error.NotDirectory,
             else => return error.Io,
@@ -255,7 +303,7 @@ pub const FdIO = struct {
         const fd = self.next_fd;
         self.next_fd +%= 1;
 
-        const path_dup = try self.allocator.dupe(u8, path);
+        const path_dup = try self.allocator.dupe(u8, guest_path);
         try self.preopens.put(fd, .{
             .path = path_dup,
             .dir = dir,
@@ -452,7 +500,7 @@ pub const FdIO = struct {
                     const bytes_to_read = @min(buf_len, @as(u32, @intCast(guest_mem.len - buf_start)));
                     const read_buf = guest_mem[buf_start .. buf_start + bytes_to_read];
 
-                    const bytes_read = stdinRead(read_buf) catch {
+                    const bytes_read = stdinRead(self.stdin_fd, read_buf) catch {
                         types.writeErrno(results, .io);
                         return;
                     };

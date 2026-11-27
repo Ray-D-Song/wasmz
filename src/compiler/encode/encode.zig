@@ -189,6 +189,12 @@ pub fn encode(
                     .value = inst.value orelse 0,
                 });
             },
+            .ret_multi => |inst| {
+                writeOps(ops.OpsRetMulti, ops_ptr, .{
+                    .slots_len = inst.slots_len,
+                });
+                writeInlineArgs(ops_ptr, ops.OpsRetMulti, cf.call_args.items, inst.slots_start, inst.slots_len);
+            },
             inline .i32_add_ret, .i32_sub_ret, .i64_add_ret, .i64_sub_ret => |inst| {
                 writeOps(ops.OpsLhsRhs, ops_ptr, .{ .lhs = inst.lhs, .rhs = inst.rhs });
             },
@@ -414,7 +420,7 @@ pub fn encode(
             },
             .call => |inst| {
                 writeOps(ops.OpsCall, ops_ptr, .{
-                    .dst_valid = if (inst.dst != null) 1 else 0,
+                    .dst_valid = if (inst.dst != null) inst.n_results else 0,
                     .dst = inst.dst orelse 0,
                     .func_idx = inst.func_idx,
                     .args_len = inst.args_len,
@@ -438,7 +444,7 @@ pub fn encode(
             },
             .call_indirect => |inst| {
                 writeOps(ops.OpsCallIndirect, ops_ptr, .{
-                    .dst_valid = if (inst.dst != null) 1 else 0,
+                    .dst_valid = if (inst.dst != null) inst.n_results else 0,
                     .dst = inst.dst orelse 0,
                     .index = inst.index,
                     .type_index = inst.type_index,
@@ -465,7 +471,7 @@ pub fn encode(
             },
             .call_ref => |inst| {
                 writeOps(ops.OpsCallRef, ops_ptr, .{
-                    .dst_valid = if (inst.dst != null) 1 else 0,
+                    .dst_valid = if (inst.dst != null) inst.n_results else 0,
                     .dst = inst.dst orelse 0,
                     .ref = inst.ref,
                     .type_idx = inst.type_idx,

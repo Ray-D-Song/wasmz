@@ -1,6 +1,8 @@
+const std = @import("std");
 const ValType = @import("value/type.zig").ValType;
 const RawVal = @import("raw.zig").RawVal;
 const TypedRawVal = @import("typed.zig").TypedRawVal;
+const Allocator = std.mem.Allocator;
 
 pub const GlobalError = error{
     /// Occurs when trying to write to an immutable global variable.
@@ -76,5 +78,67 @@ pub const Global = struct {
 
     pub fn getRawValue(self: Global) RawVal {
         return self.value;
+    }
+};
+
+pub const SharedGlobalInner = struct {
+    global: Global,
+    hi64: u64 = 0,
+    allocator: Allocator,
+    refs: std.atomic.Value(usize),
+};
+
+/// Reference-counted, shareable runtime WebAssembly Global.
+/// Keeping `global: Global` as the first field lets VM hot-path handlers read/write
+/// `*Global` directly via `SharedGlobal.asGlobal()`.
+pub const SharedGlobal = struct {
+    inner: *SharedGlobalInner,
+
+    pub fn init(allocator: Allocator, ty: GlobalType, value: RawVal, hi64: u64) Allocator.Error!SharedGlobal {
+        const inner = try allocator.create(SharedGlobalInner);
+        inner.* = .{
+            .global = Global.init(ty, value),
+            .hi64 = hi64,
+            .allocator = allocator,
+            .refs = std.atomic.Value(usize).init(1),
+        };
+        return .{ .inner = inner };
+    }
+
+    pub fn clone(self: SharedGlobal) SharedGlobal {
+        _ = self.inner.refs.fetchAdd(1, .monotonic);
+        return self;
+    }
+
+    pub fn deinit(self: *SharedGlobal) void {
+        const prev = self.inner.refs.fetchSub(1, .acq_rel);
+        if (prev == 1) {
+            const allocator = self.inner.allocator;
+            allocator.destroy(self.inner);
+        }
+        self.* = undefined;
+    }
+
+    pub inline fn asGlobal(self: SharedGlobal) *Global {
+        return &self.inner.global;
+    }
+
+    pub inline fn mutability(self: SharedGlobal) Mutability {
+        return self.inner.global.ty.mutability;
+    }
+
+    pub inline fn valueType(self: SharedGlobal) ValType {
+        return self.inner.global.ty.valueType;
+    }
+
+    pub inline fn getRaw(self: SharedGlobal) RawVal {
+        return self.inner.global.value;
+    }
+
+    pub inline fn setRaw(self: SharedGlobal, value: RawVal) GlobalError!void {
+        if (self.inner.global.ty.mutability.isConst()) {
+            return error.ImmutableWrite;
+        }
+        self.inner.global.value = value;
     }
 };

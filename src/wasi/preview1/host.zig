@@ -30,6 +30,8 @@ pub const Host = struct {
     env_args: ?*EnvArgs = null,
     on_exit: ?*const fn (u32, ?*anyopaque) void = null,
     on_exit_data: ?*anyopaque = null,
+    return_on_exit: bool = false,
+    exit_code: ?u32 = null,
     diag: profiling.WasiDiag = .{},
 
     pub fn init(allocator: Allocator, io: Io) Host {
@@ -121,8 +123,32 @@ pub const Host = struct {
         self.on_exit_data = data;
     }
 
+    pub fn setReturnOnExit(self: *Host, return_on_exit: bool) void {
+        self.return_on_exit = return_on_exit;
+    }
+
+    pub fn exitCode(self: *const Host) ?u32 {
+        return self.exit_code;
+    }
+
+    pub fn setStdinFd(self: *Host, fd: i32) void {
+        self.getFdIO().setStdinFd(fd);
+    }
+
+    pub fn setStdoutFd(self: *Host, fd: i32) void {
+        self.getFdIO().setStdoutFd(fd);
+    }
+
+    pub fn setStderrFd(self: *Host, fd: i32) void {
+        self.getFdIO().setStderrFd(fd);
+    }
+
     pub fn addPreopen(self: *Host, path: []const u8) !types.Fd {
         return self.getFdIO().addPreopen(path);
+    }
+
+    pub fn addMappedPreopen(self: *Host, guest_path: []const u8, host_path: []const u8) !types.Fd {
+        return self.getFdIO().addMappedPreopen(guest_path, host_path);
     }
 
     pub fn addToLinker(self: *Host, linker: *Linker, allocator: Allocator) Allocator.Error!void {
@@ -442,14 +468,18 @@ fn random_get(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal,
 
 /// proc_exit: Terminate the process
 /// params: rval(i32)
-fn proc_exit(host_data: ?*anyopaque, _: *HostContext, params: []const RawVal, _: []RawVal) wasmz.HostError!void {
+fn proc_exit(host_data: ?*anyopaque, ctx: *HostContext, params: []const RawVal, _: []RawVal) wasmz.HostError!void {
     const rval = params[0].readAs(i32);
     const code: u32 = @bitCast(rval);
     if (host_data) |data| {
         const host: *Host = @ptrCast(@alignCast(data));
         host.diag.record(.proc_exit, 0);
         host.diag.print();
+        host.exit_code = code;
         if (host.on_exit) |cb| cb(code, host.on_exit_data);
+        if (host.return_on_exit) {
+            return ctx.raiseTrap(wasmz.Trap.hostMessage("__wasmz_wasi_exit"));
+        }
     }
     std.process.exit(@intCast(code));
 }

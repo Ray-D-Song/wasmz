@@ -32,6 +32,7 @@ pub fn instrSize(op: Op) usize {
         .jump_table => @sizeOf(ops.OpsJumpTable),
         .select => @sizeOf(ops.OpsSelect),
         .ret => @sizeOf(ops.OpsRet),
+        .ret_multi => |inst| @sizeOf(ops.OpsRetMulti) + @as(usize, inst.slots_len) * @sizeOf(Slot),
         .i32_add_ret, .i32_sub_ret, .i64_add_ret, .i64_sub_ret => @sizeOf(ops.OpsLhsRhs),
 
         .f32_add_ret, .f32_sub_ret, .f64_add_ret, .f64_sub_ret => @sizeOf(ops.OpsLhsRhs),

@@ -26,10 +26,10 @@ test "HostContext userData and hostData cast opaque pointers" {
     store.setUserData(&user_value);
 
     var host_value: i32 = 42;
-    var globals = [_]Global{};
+    var globals = [_]*Global{};
     var raw_memory = [_]u8{ 1, 2, 3 };
     var mem = Memory.initBorrowed(raw_memory[0..]);
-    var tables = [_][]u32{};
+    var tables = [_]core.SharedTable{};
     var dummy_module = try Module.compile(engine, &[_]u8{
         0x00, 0x61, 0x73, 0x6d,
         0x01, 0x00, 0x00, 0x00,
@@ -59,10 +59,10 @@ test "HostContext readBytes traps on out of bounds" {
     var store = try Store.init(testing.allocator, engine, std.Io.Threaded.global_single_threaded.io());
     defer store.deinit();
 
-    var globals = [_]Global{};
+    var globals = [_]*Global{};
     var raw_memory = [_]u8{ 1, 2, 3 };
     var mem = Memory.initBorrowed(raw_memory[0..]);
-    var tables = [_][]u32{};
+    var tables = [_]core.SharedTable{};
     var dummy_module = try Module.compile(engine, &[_]u8{
         0x00, 0x61, 0x73, 0x6d,
         0x01, 0x00, 0x00, 0x00,

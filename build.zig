@@ -279,6 +279,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "wasmz", .module = mod },
+                .{ .name = "wasi", .module = wasi_mod },
             },
             .link_libc = true,
         }),
@@ -310,6 +311,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "wasmz", .module = mod },
+                .{ .name = "wasi", .module = wasi_mod },
             },
             .link_libc = true,
         }),

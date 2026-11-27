@@ -9,6 +9,8 @@ const Store = store_mod.Store;
 const Module = module_mod.Module;
 const FuncType = core.func_type.FuncType;
 const Global = core.Global;
+const SharedGlobal = core.SharedGlobal;
+const SharedTable = core.SharedTable;
 const RawVal = core.RawVal;
 const Trap = core.Trap;
 const TrapCode = core.TrapCode;
@@ -20,10 +22,10 @@ pub const HostError = Allocator.Error || error{HostTrap};
 /// A readonly runtime view of the current instance passed to host calls.
 pub const HostInstance = struct {
     module: *const Module,
-    globals: []Global,
+    globals: []*Global,
     /// Pointer into the Instance's Memory value (never null for modules with a memory section).
     memory: *Memory,
-    tables: [][]u32,
+    tables: []SharedTable,
 };
 
 /// Runtime context exposed to host functions.
@@ -62,11 +64,11 @@ pub const HostContext = struct {
         return ptr;
     }
 
-    pub fn globals(self: *HostContext) []Global {
+    pub fn globals(self: *HostContext) []*Global {
         return self.host_instance.globals;
     }
 
-    pub fn tables(self: *HostContext) [][]u32 {
+    pub fn tables(self: *HostContext) []SharedTable {
         return self.host_instance.tables;
     }
 
@@ -231,10 +233,20 @@ pub const Linker = struct {
     map: std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(HostFunc)),
     /// Two-level string map for imported globals: module name -> global name -> RawVal (initial value).
     global_map: std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(RawVal)),
+    /// Two-level string map for shared Global handles: module name -> global name -> SharedGlobal.
+    global_handle_map: std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(SharedGlobal)),
     /// Two-level string map for imported memories: module name -> field name -> Memory.
     memory_map: std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(Memory)),
+    /// Two-level string map for imported tables: module name -> field name -> SharedTable.
+    table_map: std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(SharedTable)),
 
-    pub const empty: Linker = .{ .map = .empty, .global_map = .empty, .memory_map = .empty };
+    pub const empty: Linker = .{
+        .map = .empty,
+        .global_map = .empty,
+        .global_handle_map = .empty,
+        .memory_map = .empty,
+        .table_map = .empty,
+    };
 
     pub fn define(
         self: *Linker,
@@ -285,6 +297,29 @@ pub const Linker = struct {
         return inner.get(global_name);
     }
 
+    pub fn defineGlobalHandle(
+        self: *Linker,
+        allocator: Allocator,
+        module_name: []const u8,
+        global_name: []const u8,
+        global: SharedGlobal,
+    ) Allocator.Error!void {
+        const gop = try self.global_handle_map.getOrPut(allocator, module_name);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = .empty;
+        }
+        try gop.value_ptr.put(allocator, global_name, global.clone());
+    }
+
+    pub fn getGlobalHandle(
+        self: *const Linker,
+        module_name: []const u8,
+        global_name: []const u8,
+    ) ?SharedGlobal {
+        const inner = self.global_handle_map.get(module_name) orelse return null;
+        return inner.get(global_name);
+    }
+
     /// Register an imported linear memory with the linker.
     /// The module_name and field_name keys are not copied; the caller must ensure they remain valid.
     pub fn defineMemory(
@@ -311,6 +346,29 @@ pub const Linker = struct {
         return inner.get(field_name);
     }
 
+    pub fn defineTable(
+        self: *Linker,
+        allocator: Allocator,
+        module_name: []const u8,
+        field_name: []const u8,
+        table: SharedTable,
+    ) Allocator.Error!void {
+        const gop = try self.table_map.getOrPut(allocator, module_name);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = .empty;
+        }
+        try gop.value_ptr.put(allocator, field_name, table.clone());
+    }
+
+    pub fn getTable(
+        self: *const Linker,
+        module_name: []const u8,
+        field_name: []const u8,
+    ) ?SharedTable {
+        const inner = self.table_map.get(module_name) orelse return null;
+        return inner.get(field_name);
+    }
+
     pub fn deinit(self: *Linker, allocator: Allocator) void {
         var it = self.map.valueIterator();
         while (it.next()) |inner| {
@@ -322,6 +380,16 @@ pub const Linker = struct {
             inner.deinit(allocator);
         }
         self.global_map.deinit(allocator);
+        var gh_it = self.global_handle_map.valueIterator();
+        while (gh_it.next()) |inner| {
+            var entry_it = inner.iterator();
+            while (entry_it.next()) |entry| {
+                var g = entry.value_ptr.*;
+                g.deinit();
+            }
+            inner.deinit(allocator);
+        }
+        self.global_handle_map.deinit(allocator);
         var mem_it = self.memory_map.valueIterator();
         while (mem_it.next()) |inner| {
             var entry_it = inner.iterator();
@@ -332,6 +400,16 @@ pub const Linker = struct {
             inner.deinit(allocator);
         }
         self.memory_map.deinit(allocator);
+        var tbl_it = self.table_map.valueIterator();
+        while (tbl_it.next()) |inner| {
+            var entry_it = inner.iterator();
+            while (entry_it.next()) |entry| {
+                var t = entry.value_ptr.*;
+                t.deinit();
+            }
+            inner.deinit(allocator);
+        }
+        self.table_map.deinit(allocator);
         self.* = .empty;
     }
 };

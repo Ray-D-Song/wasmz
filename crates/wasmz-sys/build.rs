@@ -13,8 +13,11 @@ fn main() {
         );
     }
 
+    let out_prefix = PathBuf::from(env::var("OUT_DIR").unwrap()).join("wasmz-zig-out");
+
     let mut zig = Command::new("zig");
-    zig.args(["build", "static-lib", "-Doptimize=fast"]);
+    zig.args(["build", "static-lib", "-Doptimize=fast", "--prefix"])
+        .arg(&out_prefix);
     if let Some(target) = windows_zig_target() {
         zig.arg(format!("-Dtarget={target}"));
     }
@@ -28,7 +31,7 @@ fn main() {
         panic!("zig build static-lib failed with status: {status}");
     }
 
-    let lib_dir = wasmz_root.join("zig-out/lib");
+    let lib_dir = out_prefix.join("lib");
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=static=wasmz");
 

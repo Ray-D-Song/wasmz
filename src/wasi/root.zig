@@ -1,5 +1,6 @@
 pub const preview1 = struct {
     pub const Host = @import("./preview1/host.zig").Host;
+    pub const EnvVar = @import("./preview1/host.zig").EnvVar;
     pub const types = @import("./preview1/types.zig");
 };
 

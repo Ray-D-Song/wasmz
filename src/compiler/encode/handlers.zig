@@ -30,6 +30,7 @@ pub fn handlerFor(op: Op, t: *const table.HandlerTable) Handler {
         .jump_table => t.jump_table,
         .select => t.select,
         .ret => |inst| if (inst.value != null) t.ret_value else t.ret_void,
+        .ret_multi => t.ret_multi,
         .i32_add_ret => t.i32_add_ret,
         .i32_sub_ret => t.i32_sub_ret,
         .i64_add_ret => t.i64_add_ret,

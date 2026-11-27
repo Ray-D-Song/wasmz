@@ -462,6 +462,7 @@ pub const WasmOp = union(enum) {
         func_idx: u32,
         n_params: u32,
         has_result: bool,
+        n_results: u16 = 0,
         result_val_type: ?ValType = null,
     },
     /// indirect fn call via table.
@@ -471,6 +472,7 @@ pub const WasmOp = union(enum) {
         table_index: u32,
         n_params: u32,
         has_result: bool,
+        n_results: u16 = 0,
         result_val_type: ?ValType = null,
     },
     /// Tail call: direct function call that reuses the current stack frame.
@@ -670,6 +672,7 @@ pub const WasmOp = union(enum) {
         type_idx: u32,
         n_params: u32,
         has_result: bool,
+        n_results: u16 = 0,
         result_val_type: ?ValType = null,
     },
     /// return_call_ref: tail call via funcref.
@@ -757,6 +760,8 @@ pub const Lower = struct {
     local_init_analysis_active: bool = false,
     /// Base slot for each Wasm local index (borrowed for the duration of lowering).
     local_bases: []const Slot = &.{},
+    /// Total result count of the function currently being lowered.
+    func_n_results: u16 = 0,
 
     pub fn init(allocator: Allocator) Lower {
         return .{ .allocator = allocator, .pending_call_dst = null };
@@ -895,6 +900,7 @@ pub const Lower = struct {
     /// The frame uses `kind = .block`; `br depth` that resolves to this frame
     /// is treated as a `return` (just like the function's final `end`).
     pub fn pushFunctionFrame(self: *Lower, n_results: usize) !void {
+        self.func_n_results = @intCast(n_results);
         try self.initLocalInitAnalysis();
         var result_slots: SmallSlotList = .empty;
         // Allocate a result slot for each return value.
@@ -978,6 +984,7 @@ pub const Lower = struct {
         self.composite_types = &.{};
         self.is_unreachable = false;
         self.unreachable_depth = 0;
+        self.func_n_results = 0;
         self.r0_slot = null;
         self.fp0_slot = null;
         self.pending_call_dst = null;
@@ -1075,6 +1082,35 @@ pub const Lower = struct {
             self.compiled.slots_len = self.next_slot;
         }
         return slot;
+    }
+
+    pub fn alloc_consecutive_slots(self: *Lower, count: u16) Slot {
+        const slot = self.next_slot;
+        self.next_slot += count;
+        if (self.compiled.slots_len < self.next_slot) {
+            self.compiled.slots_len = self.next_slot;
+        }
+        return slot;
+    }
+
+    pub fn emitReturnOp(self: *Lower) !void {
+        if (self.func_n_results > 1) {
+            const start: u32 = @intCast(self.compiled.call_args.items.len);
+            var i: u16 = 0;
+            while (i < self.func_n_results) : (i += 1) {
+                const slot = try self.pop_slot();
+                try self.compiled.call_args.append(self.allocator, slot);
+            }
+            const ret_slots = self.compiled.call_args.items[start..];
+            std.mem.reverse(Slot, ret_slots);
+            try self.emit(.{ .ret_multi = .{
+                .slots_start = start,
+                .slots_len = self.func_n_results,
+            } });
+        } else {
+            const value = self.stack.pop();
+            try self.emit(.{ .ret = .{ .value = value } });
+        }
     }
 
     pub fn emit(self: *Lower, op: Op) !void {
@@ -4045,6 +4081,11 @@ pub const Lower = struct {
             },
 
             .ret => {
+                if (self.func_n_results > 1) {
+                    try self.emitReturnOp();
+                    self.is_unreachable = true;
+                    return;
+                }
                 const value = self.stack.pop();
 
                 // TCO: if returning the result of a call, convert to return_call
@@ -4151,20 +4192,29 @@ pub const Lower = struct {
                 const args = self.compiled.call_args.items[args_start..];
                 std.mem.reverse(Slot, args);
 
-                const dst: ?Slot = if (inst.has_result) self.alloc_slot() else null;
+                const n_res: u16 = if (inst.n_results > 0) inst.n_results else if (inst.has_result) 1 else 0;
+                const dst: ?Slot = if (n_res > 1) self.alloc_consecutive_slots(n_res) else if (n_res == 1) self.alloc_slot() else null;
 
                 try self.emit(.{ .call = .{
                     .dst = dst,
+                    .n_results = n_res,
                     .func_idx = inst.func_idx,
                     .args_start = args_start,
                     .args_len = inst.n_params,
                 } });
-                self.pending_call_dst = dst;
+                self.pending_call_dst = if (n_res == 1) dst else null;
 
-                // If the call produces a result, push the result slot.
-                if (dst) |s| {
-                    if (inst.result_val_type) |vt| self.trackNumericResult(vt, s);
-                    try self.stack.push(self.allocator, s);
+                // If the call produces results, push them in order.
+                if (dst) |base| {
+                    if (n_res == 1) {
+                        if (inst.result_val_type) |vt| self.trackNumericResult(vt, base);
+                        try self.stack.push(self.allocator, base);
+                    } else {
+                        var ri: u16 = 0;
+                        while (ri < n_res) : (ri += 1) {
+                            try self.stack.push(self.allocator, base + ri);
+                        }
+                    }
                 }
             },
 
@@ -4185,10 +4235,12 @@ pub const Lower = struct {
                 const args = self.compiled.call_args.items[args_start..];
                 std.mem.reverse(Slot, args);
 
-                const dst: ?Slot = if (inst.has_result) self.alloc_slot() else null;
+                const n_res: u16 = if (inst.n_results > 0) inst.n_results else if (inst.has_result) 1 else 0;
+                const dst: ?Slot = if (n_res > 1) self.alloc_consecutive_slots(n_res) else if (n_res == 1) self.alloc_slot() else null;
 
                 try self.emit(.{ .call_indirect = .{
                     .dst = dst,
+                    .n_results = n_res,
                     .index = index,
                     .type_index = inst.type_index,
                     .table_index = inst.table_index,
@@ -4196,10 +4248,17 @@ pub const Lower = struct {
                     .args_len = inst.n_params,
                 } });
 
-                // If the call produces a result, push the result slot.
-                if (dst) |s| {
-                    if (inst.result_val_type) |vt| self.trackNumericResult(vt, s);
-                    try self.stack.push(self.allocator, s);
+                // If the call produces results, push them in order.
+                if (dst) |base| {
+                    if (n_res == 1) {
+                        if (inst.result_val_type) |vt| self.trackNumericResult(vt, base);
+                        try self.stack.push(self.allocator, base);
+                    } else {
+                        var ri: u16 = 0;
+                        while (ri < n_res) : (ri += 1) {
+                            try self.stack.push(self.allocator, base + ri);
+                        }
+                    }
                 }
             },
 
@@ -5152,19 +5211,28 @@ pub const Lower = struct {
                 const args = self.compiled.call_args.items[args_start..];
                 std.mem.reverse(Slot, args);
 
-                const dst: ?Slot = if (inst.has_result) self.alloc_slot() else null;
+                const n_res: u16 = if (inst.n_results > 0) inst.n_results else if (inst.has_result) 1 else 0;
+                const dst: ?Slot = if (n_res > 1) self.alloc_consecutive_slots(n_res) else if (n_res == 1) self.alloc_slot() else null;
 
                 try self.emit(.{ .call_ref = .{
                     .dst = dst,
+                    .n_results = n_res,
                     .ref = ref,
                     .type_idx = inst.type_idx,
                     .args_start = args_start,
                     .args_len = inst.n_params,
                 } });
 
-                if (dst) |s| {
-                    if (inst.result_val_type) |vt| self.trackNumericResult(vt, s);
-                    try self.stack.push(self.allocator, s);
+                if (dst) |base| {
+                    if (n_res == 1) {
+                        if (inst.result_val_type) |vt| self.trackNumericResult(vt, base);
+                        try self.stack.push(self.allocator, base);
+                    } else {
+                        var ri: u16 = 0;
+                        while (ri < n_res) : (ri += 1) {
+                            try self.stack.push(self.allocator, base + ri);
+                        }
+                    }
                 }
             },
             .return_call_ref => |inst| {
@@ -5984,8 +6052,7 @@ pub const Lower = struct {
 
             // Return
             .return_ => {
-                const value = self.stack.pop();
-                try self.emit(.{ .ret = .{ .value = value } });
+                try self.emitReturnOp();
                 self.is_unreachable = true;
             },
 
@@ -6112,8 +6179,7 @@ pub const Lower = struct {
     pub fn lowerOpEnd(self: *Lower, was_unreachable: bool) !void {
         if (self.control_stack.items.len == 0) {
             if (!was_unreachable) {
-                const value = self.stack.pop();
-                try self.emit(.{ .ret = .{ .value = value } });
+                try self.emitReturnOp();
             } else {
                 try self.emit(.{ .ret = .{ .value = null } });
             }
@@ -6128,13 +6194,39 @@ pub const Lower = struct {
         defer frame.branch_local_init.deinit(self.allocator);
 
         if (frame.is_function_frame) {
-            const ret_pc = self.current_pc();
-            self.patch_forward_jumps(&frame, ret_pc);
-            if (!was_unreachable) {
-                const value = self.stack.pop();
-                try self.emit(.{ .ret = .{ .value = value } });
+            if (self.func_n_results > 1) {
+                if (!was_unreachable) {
+                    const n = frame.result_slots.items().len;
+                    var ri: usize = n;
+                    while (ri > 0) {
+                        ri -= 1;
+                        if (self.stack.pop()) |src| {
+                            const dst = frame.result_slots.items()[ri];
+                            if (dst != src) {
+                                try self.emit(.{ .copy = .{ .dst = dst, .src = src } });
+                            }
+                        }
+                    }
+                }
+                const ret_pc = self.current_pc();
+                self.patch_forward_jumps(&frame, ret_pc);
+                const start: u32 = @intCast(self.compiled.call_args.items.len);
+                for (frame.result_slots.items()) |rs| {
+                    try self.compiled.call_args.append(self.allocator, rs);
+                }
+                try self.emit(.{ .ret_multi = .{
+                    .slots_start = start,
+                    .slots_len = @intCast(frame.result_slots.items().len),
+                } });
             } else {
-                try self.emit(.{ .ret = .{ .value = null } });
+                const ret_pc = self.current_pc();
+                self.patch_forward_jumps(&frame, ret_pc);
+                if (!was_unreachable) {
+                    const value = self.stack.pop();
+                    try self.emit(.{ .ret = .{ .value = value } });
+                } else {
+                    try self.emit(.{ .ret = .{ .value = null } });
+                }
             }
             for (frame.result_slots.items()) |slot| self.recycle_slot(slot);
             for (frame.param_slots.items()) |slot| self.recycle_slot(slot);

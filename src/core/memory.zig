@@ -454,22 +454,98 @@ else
         }
     };
 
-/// The backing store tag: either exclusively-owned, shared, or borrowed (no-alloc view).
-pub const MemoryKind = enum { owned, owned_heap, shared, borrowed };
+/// The backing store tag: exclusively-owned, refcounted shareable non-shared, shared, or borrowed.
+pub const MemoryKind = enum { owned, owned_heap, rc, shared, borrowed };
 
 const OwnedHeapMemory = struct {
     allocator: Allocator,
     bytes: []u8,
 };
 
+pub const RcMemory = struct {
+    allocator: Allocator,
+    storage: union(enum) {
+        owned: OwnedMemory,
+        owned_heap: OwnedHeapMemory,
+    },
+    min_pages: u64,
+    max_pages: ?u64,
+    memory64: bool,
+    grow_seq: u64 = 0,
+    refs: std.atomic.Value(usize),
+
+    pub fn liveSlice(self: *const RcMemory) []u8 {
+        return switch (self.storage) {
+            .owned => |*o| o.liveSlice(),
+            .owned_heap => |*o| o.bytes,
+        };
+    }
+
+    pub fn grow(self: *RcMemory, delta: u64) u64 {
+        const FAIL = std.math.maxInt(u64);
+        const max_limit: u64 = if (self.max_pages) |m| m else if (self.memory64) std.math.maxInt(u64) else 65536;
+        switch (self.storage) {
+            .owned => |*o| {
+                if (comptime !use_mmap) return FAIL;
+                const old_committed = o.committed;
+                const old_pages = old_committed / WASM_PAGE_SIZE;
+                const new_pages = std.math.add(u64, old_pages, delta) catch return FAIL;
+                if (new_pages > max_limit) return FAIL;
+                if (delta == 0) {
+                    self.grow_seq +%= 1;
+                    return old_pages;
+                }
+                const new_committed = pagesToBytes(new_pages) orelse return FAIL;
+                if (new_committed > o.base.len) return FAIL;
+                if (!ownedMmapGrow(o.base, old_committed, new_committed)) return FAIL;
+                o.committed = new_committed;
+                self.grow_seq +%= 1;
+                return old_pages;
+            },
+            .owned_heap => |*o| {
+                const old_bytes = o.bytes.len;
+                const old_pages = @divTrunc(@as(u64, old_bytes), WASM_PAGE_SIZE);
+                const new_pages = std.math.add(u64, old_pages, delta) catch return FAIL;
+                if (new_pages > max_limit) return FAIL;
+                if (delta == 0) {
+                    self.grow_seq +%= 1;
+                    return old_pages;
+                }
+                const new_bytes = pagesToBytes(new_pages) orelse return FAIL;
+                const new_buf = o.allocator.realloc(o.bytes, new_bytes) catch return FAIL;
+                @memset(new_buf[old_bytes..], 0);
+                o.bytes = new_buf;
+                self.grow_seq +%= 1;
+                return old_pages;
+            },
+        }
+    }
+
+    pub fn deinitInner(self: *RcMemory) void {
+        switch (self.storage) {
+            .owned => |*o| {
+                if (comptime use_mmap) {
+                    if (o.base.len > 0) ownedMmapDeinit(o.base);
+                }
+            },
+            .owned_heap => |*o| {
+                if (o.bytes.len > 0) o.allocator.free(o.bytes);
+            },
+        }
+        const allocator = self.allocator;
+        allocator.destroy(self);
+    }
+};
+
 /// WebAssembly linear memory.
 ///
 /// This value is stored inside `Instance` (for owned memories) or shared across Instances
-/// (for shared memories).  The VM always accesses memory through `Memory.bytes()`.
+/// (for refcounted `.rc` and `.shared` memories).  The VM always accesses memory through `Memory.bytes()`.
 pub const Memory = struct {
     kind: union(MemoryKind) {
         owned: OwnedMemory,
         owned_heap: OwnedHeapMemory,
+        rc: *RcMemory,
         shared: SharedMemory,
         /// A non-owning view into an externally-managed byte slice.
         /// Used in tests that hand-construct HostInstance / ExecEnv without an allocator.
@@ -531,6 +607,41 @@ pub const Memory = struct {
         }
     }
 
+    /// Create a refcounted, shareable non-shared linear memory (used for JS/Embedder handles & Instances).
+    pub fn initRc(allocator: Allocator, min_pages: u64, max_pages: ?u64, memory64: bool) Allocator.Error!Memory {
+        const committed = pagesToBytes(min_pages) orelse return error.OutOfMemory;
+        const use_heap_owned = memory64 and max_pages == null;
+        const rc = try allocator.create(RcMemory);
+        errdefer allocator.destroy(rc);
+        if (use_mmap and !use_heap_owned) {
+            const capacity = if (max_pages) |m|
+                pagesToBytes(m) orelse return error.OutOfMemory
+            else
+                MAX_WASM32_CAPACITY;
+            const base = try ownedMmapInit(committed, capacity);
+            rc.* = .{
+                .allocator = allocator,
+                .storage = .{ .owned = .{ .base = base, .committed = committed } },
+                .min_pages = min_pages,
+                .max_pages = max_pages,
+                .memory64 = memory64,
+                .refs = std.atomic.Value(usize).init(1),
+            };
+        } else {
+            const buf = try allocator.alloc(u8, committed);
+            @memset(buf, 0);
+            rc.* = .{
+                .allocator = allocator,
+                .storage = .{ .owned_heap = .{ .allocator = allocator, .bytes = buf } },
+                .min_pages = min_pages,
+                .max_pages = max_pages,
+                .memory64 = memory64,
+                .refs = std.atomic.Value(usize).init(1),
+            };
+        }
+        return .{ .kind = .{ .rc = rc } };
+    }
+
     /// Wrap an existing `SharedMemory` handle (clones the refcount).
     pub fn initShared(shared: SharedMemory) Memory {
         return .{ .kind = .{ .shared = shared.clone() } };
@@ -556,6 +667,10 @@ pub const Memory = struct {
             .owned_heap => |*o| {
                 if (o.bytes.len > 0) o.allocator.free(o.bytes);
             },
+            .rc => |rc| {
+                const prev = rc.refs.fetchSub(1, .acq_rel);
+                if (prev == 1) rc.deinitInner();
+            },
             .shared => |*s| {
                 var shared = s.*;
                 shared.deinit();
@@ -569,8 +684,24 @@ pub const Memory = struct {
         return switch (self.kind) {
             .owned => |*o| o.liveSlice(),
             .owned_heap => |*o| o.bytes,
+            .rc => |rc| rc.liveSlice(),
             .shared => |*s| s.bytes(),
             .borrowed => |b| b,
+        };
+    }
+
+    pub fn maxPages(self: *const Memory) ?u64 {
+        return switch (self.kind) {
+            .rc => |rc| rc.max_pages,
+            .shared => |*s| @divTrunc(@as(u64, s.capacity()), WASM_PAGE_SIZE),
+            else => null,
+        };
+    }
+
+    pub fn growSeq(self: *const Memory) u64 {
+        return switch (self.kind) {
+            .rc => |rc| rc.grow_seq,
+            else => 0,
         };
     }
 
@@ -602,21 +733,21 @@ pub const Memory = struct {
     pub fn notify(self: *Memory, ea: usize, count: u32) u32 {
         return switch (self.kind) {
             .shared => |*s| s.notify(ea, count),
-            .owned, .owned_heap, .borrowed => 0,
+            .owned, .owned_heap, .rc, .borrowed => 0,
         };
     }
 
     pub fn wait32(self: *Memory, ea: usize, expected: u32, timeout_ns: i64) WaitResult {
         return switch (self.kind) {
             .shared => |*s| s.wait32(ea, expected, timeout_ns),
-            .owned, .owned_heap, .borrowed => .not_equal,
+            .owned, .owned_heap, .rc, .borrowed => .not_equal,
         };
     }
 
     pub fn wait64(self: *Memory, ea: usize, expected: u64, timeout_ns: i64) WaitResult {
         return switch (self.kind) {
             .shared => |*s| s.wait64(ea, expected, timeout_ns),
-            .owned, .owned_heap, .borrowed => .not_equal,
+            .owned, .owned_heap, .rc, .borrowed => .not_equal,
         };
     }
 
@@ -646,6 +777,7 @@ pub const Memory = struct {
                 o.bytes = new_buf;
                 break :blk old_pages;
             },
+            .rc => |rc| rc.grow(delta),
             .shared => |*s| s.grow(delta),
             .borrowed => FAIL,
         };
@@ -654,6 +786,10 @@ pub const Memory = struct {
     pub fn clone(self: Memory) Memory {
         return switch (self.kind) {
             .shared => |s| .{ .kind = .{ .shared = s.clone() } },
+            .rc => |rc| blk: {
+                _ = rc.refs.fetchAdd(1, .monotonic);
+                break :blk .{ .kind = .{ .rc = rc } };
+            },
             .owned, .owned_heap, .borrowed => self,
         };
     }

@@ -139,7 +139,7 @@ pub const Handler = *const fn (
 pub const ExecEnv = struct {
     store: *Store,
     host_instance: *HostInstance,
-    globals: []Global,
+    globals: []*Global,
     memory: *Memory,
     /// Full Wasm function index space (imports as `.import`, locals as `.pending`/`.encoded`).
     /// Mutable so that handlers can compile `.pending` slots in place.
@@ -149,7 +149,9 @@ pub const ExecEnv = struct {
     /// Pointer to the Module, used for lazy compilation of pending function slots.
     module: *Module,
     host_funcs: []const HostFunc,
-    tables: [][]u32,
+    tables: []core.SharedTable,
+    foreign_funcs: []const core.ForeignFunc = &.{},
+    instance_id: u64 = 0,
     func_type_indices: []const u32,
     data_segments: []const CompiledDataSegment,
     data_segments_dropped: []bool,
@@ -250,6 +252,10 @@ pub const DispatchState = struct {
     vm: ?*vm_root.VM = null,
     /// When true, linear-memory addresses are i64 (memory64 proposal).
     memory64: bool = false,
+    /// Storage for multi-value function return values at top level (call_depth == 0).
+    multi_results_inline: [16]RawVal = @splat(RawVal.fromBits64(0)),
+    multi_results_heap: ?[]RawVal = null,
+    multi_results_len: usize = 0,
 
     // Cached linear memory base/length
     // Avoids the `env.memory.bytes()` call (tagged-union dispatch + pointer
@@ -270,11 +276,37 @@ pub const DispatchState = struct {
         return self.mem_base[0..self.mem_len];
     }
 
+    pub fn setMultiResults(self: *DispatchState, vals: []const RawVal) bool {
+        self.multi_results_len = vals.len;
+        if (vals.len <= self.multi_results_inline.len) {
+            @memcpy(self.multi_results_inline[0..vals.len], vals);
+            return true;
+        }
+        if (self.multi_results_heap) |prev| self.allocator.free(prev);
+        const duped = self.allocator.dupe(RawVal, vals) catch {
+            self.multi_results_heap = null;
+            self.multi_results_len = 0;
+            return false;
+        };
+        self.multi_results_heap = duped;
+        return true;
+    }
+
+    pub fn multiResultsSlice(self: *const DispatchState) []const RawVal {
+        if (self.multi_results_len == 0) return &.{};
+        if (self.multi_results_len <= self.multi_results_inline.len) {
+            return self.multi_results_inline[0..self.multi_results_len];
+        }
+        if (self.multi_results_heap) |h| return h[0..self.multi_results_len];
+        return &.{};
+    }
+
     pub fn deinit(self: *DispatchState) void {
         // With val_stack, frames do not own their slots — nothing to free per-frame.
         if (self.call_stack_owned and self.call_stack_cap > 0)
             self.allocator.free(self.call_stack[0..self.call_stack_cap]);
         self.eh_stack.deinit(self.allocator);
+        if (self.multi_results_heap) |h| self.allocator.free(h);
         if (self.val_stack_owned and self.val_stack.len > 0) self.allocator.free(self.val_stack);
     }
 

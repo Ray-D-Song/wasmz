@@ -85,7 +85,7 @@ inline fn trapReturn(frame: *DispatchState, code: core.TrapCode) void {
 fn collectGcRoots(
     allocator: Allocator,
     frame: *const DispatchState,
-    globals: []const Global,
+    globals: []const *Global,
 ) Allocator.Error![]GcRef {
     var roots: std.ArrayListUnmanaged(GcRef) = .empty;
     errdefer roots.deinit(allocator);
@@ -116,7 +116,7 @@ fn gcAlloc(
     gc_heap: *GcHeap,
     size: u32,
     frame: *const DispatchState,
-    globals: []const Global,
+    globals: []const *Global,
     composite_types: []const CompositeType,
     struct_layouts: []const ?StructLayout,
     array_layouts: []const ?ArrayLayout,

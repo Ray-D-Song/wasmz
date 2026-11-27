@@ -9,13 +9,11 @@ const core = @import("core");
 
 const RawVal = dispatch.RawVal;
 const Trap = dispatch.Trap;
-const Handler = dispatch.Handler;
 const DispatchState = dispatch.DispatchState;
 const ExecEnv = dispatch.ExecEnv;
+const TableEntry = core.TableEntry;
 
 const HANDLER_SIZE = dispatch.HANDLER_SIZE;
-
-// Helpers
 
 inline fn readOps(comptime T: type, ip: [*]u8) T {
     if (@sizeOf(T) == 0) return .{};
@@ -36,6 +34,16 @@ inline fn trapReturn(frame: *DispatchState, code: core.TrapCode) void {
     frame.result = .{ .trap = trap };
 }
 
+inline fn entryFromRefSlot(tbl: core.SharedTable, ref: u64, env: *const ExecEnv) TableEntry {
+    if (ref == 0) return TableEntry.null_entry;
+    if (tbl.elemType().eql(core.ValType.funcref())) {
+        const fi = @as(u32, @intCast(ref - 1));
+        const foreign = if (fi < env.foreign_funcs.len) &env.foreign_funcs[fi] else null;
+        return TableEntry.fromFuncWithForeign(fi, env.instance_id, foreign);
+    }
+    return TableEntry.fromExternRef(ref);
+}
+
 // table_get
 
 pub fn handle_table_get(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: *const ExecEnv, r0: u64, fp0: f64) callconv(dispatch.HandlerCallConv) void {
@@ -44,18 +52,13 @@ pub fn handle_table_get(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
         trapReturn(frame, .TableOutOfBounds);
         return;
     }
-    const table = env.tables[ops.table_index];
+    const tbl = env.tables[ops.table_index];
     const idx = slots[ops.index].readAs(u32);
-    if (idx >= table.len) {
+    const entry = tbl.get(idx) orelse {
         trapReturn(frame, .TableOutOfBounds);
         return;
-    }
-    const func_idx = table[idx];
-    // Convert u32 table entry to funcref slot value.
-    // Table null sentinel (maxInt(u32)) -> slot null (0).
-    // Non-null: func_idx -> func_idx+1.
-    const ref: u64 = if (func_idx == std.math.maxInt(u32)) 0 else @as(u64, func_idx) + 1;
-    slots[ops.dst] = RawVal.fromBits64(ref);
+    };
+    slots[ops.dst] = RawVal.fromBits64(entry.raw);
     dispatch.next(ip, stride(encode.ops.OpsTableGet), slots, frame, env, r0, fp0);
 }
 
@@ -67,17 +70,14 @@ pub fn handle_table_set(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env:
         trapReturn(frame, .TableOutOfBounds);
         return;
     }
-    const table = env.tables[ops.table_index];
+    const tbl = env.tables[ops.table_index];
     const idx = slots[ops.index].readAs(u32);
-    if (idx >= table.len) {
+    const ref = slots[ops.value].readAs(u64);
+    const entry = entryFromRefSlot(tbl, ref, env);
+    if (!tbl.set(idx, entry)) {
         trapReturn(frame, .TableOutOfBounds);
         return;
     }
-    const ref = slots[ops.value].readAs(u64);
-    // Convert funcref slot value to u32 table entry.
-    // Slot null (0) -> table null sentinel (maxInt(u32)).
-    // Non-null: slot value is func_idx+1 -> table stores func_idx.
-    env.tables[ops.table_index][idx] = if (ref == 0) std.math.maxInt(u32) else @as(u32, @intCast(ref - 1));
     dispatch.next(ip, stride(encode.ops.OpsTableSet), slots, frame, env, r0, fp0);
 }
 
@@ -89,7 +89,7 @@ pub fn handle_table_size(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
         trapReturn(frame, .TableOutOfBounds);
         return;
     }
-    const size: i32 = @intCast(env.tables[ops.table_index].len);
+    const size: i32 = @intCast(env.tables[ops.table_index].len());
     slots[ops.dst] = RawVal.from(size);
     dispatch.next(ip, stride(encode.ops.OpsTableSize), slots, frame, env, r0, fp0);
 }
@@ -101,14 +101,11 @@ pub fn handle_table_grow(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
 
     const result: i32 = blk: {
         if (ops.table_index >= env.tables.len) break :blk -1;
-        const old_len = env.tables[ops.table_index].len;
+        const tbl = env.tables[ops.table_index];
         const delta = slots[ops.delta].readAs(u32);
-        const new_len = std.math.add(usize, old_len, @as(usize, delta)) catch break :blk -1;
         const init_ref = slots[ops.init].readAs(u64);
-        const init_val: u32 = if (init_ref == 0) std.math.maxInt(u32) else @as(u32, @intCast(init_ref - 1));
-        const new_slice = frame.allocator.realloc(env.tables[ops.table_index], new_len) catch break :blk -1;
-        env.tables[ops.table_index] = new_slice;
-        @memset(env.tables[ops.table_index][old_len..], init_val);
+        const init_entry = entryFromRefSlot(tbl, init_ref, env);
+        const old_len = tbl.grow(delta, init_entry) orelse break :blk -1;
         break :blk @intCast(old_len);
     };
     slots[ops.dst] = RawVal.from(result);
@@ -123,17 +120,19 @@ pub fn handle_table_fill(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
         trapReturn(frame, .TableOutOfBounds);
         return;
     }
-    const table = env.tables[ops.table_index];
+    const tbl = env.tables[ops.table_index];
+    const entries = tbl.inner.entries;
     const dst_idx = slots[ops.dst_idx].readAs(u32);
     const len = slots[ops.len].readAs(u32);
     const end = dst_idx +% len;
-    if (end > table.len) {
+    if (end < dst_idx or end > entries.len) {
         trapReturn(frame, .TableOutOfBounds);
         return;
     }
     const ref = slots[ops.value].readAs(u64);
-    const val: u32 = if (ref == 0) std.math.maxInt(u32) else @as(u32, @intCast(ref - 1));
-    @memset(env.tables[ops.table_index][dst_idx..][0..len], val);
+    const val = entryFromRefSlot(tbl, ref, env);
+    @memset(entries[dst_idx..][0..len], val);
+    tbl.inner.version +%= 1;
     dispatch.next(ip, stride(encode.ops.OpsTableFill), slots, frame, env, r0, fp0);
 }
 
@@ -145,32 +144,33 @@ pub fn handle_table_copy(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
         trapReturn(frame, .TableOutOfBounds);
         return;
     }
-    const dst_tbl = env.tables[ops.dst_table];
-    const src_tbl = env.tables[ops.src_table];
+    const dst_entries = env.tables[ops.dst_table].inner.entries;
+    const src_entries = env.tables[ops.src_table].inner.entries;
     const dst_idx = slots[ops.dst_idx].readAs(u32);
     const src_idx = slots[ops.src_idx].readAs(u32);
     const len = slots[ops.len].readAs(u32);
     const src_end = src_idx +% len;
     const dst_end = dst_idx +% len;
-    if (src_end > src_tbl.len or dst_end > dst_tbl.len) {
+    if (src_end < src_idx or dst_end < dst_idx or src_end > src_entries.len or dst_end > dst_entries.len) {
         trapReturn(frame, .TableOutOfBounds);
         return;
     }
     if (len > 0) {
         if (ops.dst_table == ops.src_table) {
             if (dst_idx < src_idx) {
-                @memcpy(env.tables[ops.dst_table][dst_idx..][0..len], env.tables[ops.src_table][src_idx..][0..len]);
+                @memcpy(dst_entries[dst_idx..][0..len], src_entries[src_idx..][0..len]);
             } else if (dst_idx > src_idx) {
                 var i: usize = len;
                 while (i > 0) {
                     i -= 1;
-                    env.tables[ops.dst_table][dst_idx + i] = env.tables[ops.src_table][src_idx + i];
+                    dst_entries[dst_idx + i] = src_entries[src_idx + i];
                 }
             }
         } else {
-            @memcpy(env.tables[ops.dst_table][dst_idx..][0..len], env.tables[ops.src_table][src_idx..][0..len]);
+            @memcpy(dst_entries[dst_idx..][0..len], src_entries[src_idx..][0..len]);
         }
     }
+    env.tables[ops.dst_table].inner.version +%= 1;
     dispatch.next(ip, stride(encode.ops.OpsTableCopy), slots, frame, env, r0, fp0);
 }
 
@@ -191,18 +191,24 @@ pub fn handle_table_init(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env
         return;
     }
     const seg = env.elem_segments[ops.segment_idx];
+    const entries = env.tables[ops.table_index].inner.entries;
     const dst_idx = slots[ops.dst_idx].readAs(u32);
     const src_offset = slots[ops.src_offset].readAs(u32);
     const len = slots[ops.len].readAs(u32);
     const src_end = src_offset +% len;
     const dst_end = dst_idx +% len;
-    if (src_end > seg.func_indices.len or dst_end > env.tables[ops.table_index].len) {
+    if (src_end < src_offset or dst_end < dst_idx or src_end > seg.func_indices.len or dst_end > entries.len) {
         trapReturn(frame, .TableOutOfBounds);
         return;
     }
     for (0..len) |i| {
-        env.tables[ops.table_index][dst_idx + i] = seg.func_indices[src_offset + i];
+        const fi = seg.func_indices[src_offset + i];
+        entries[dst_idx + i] = if (fi == std.math.maxInt(u32))
+            TableEntry.null_entry
+        else
+            TableEntry.fromFuncWithForeign(fi, env.instance_id, if (fi < env.foreign_funcs.len) &env.foreign_funcs[fi] else null);
     }
+    env.tables[ops.table_index].inner.version +%= 1;
     dispatch.next(ip, stride(encode.ops.OpsTableInit), slots, frame, env, r0, fp0);
 }
 

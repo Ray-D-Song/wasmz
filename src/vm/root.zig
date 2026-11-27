@@ -44,7 +44,7 @@ pub const op_counts = dispatch_mod.op_counts;
 pub const ExecEnv = struct {
     store: *Store,
     host_instance: *HostInstance,
-    globals: []Global,
+    globals: []*Global,
     /// Pointer into the Instance's Memory.  Always non-null; even a no-memory module uses
     /// an empty Memory so the pointer is valid.
     memory: *Memory,
@@ -55,7 +55,9 @@ pub const ExecEnv = struct {
     /// Pointer to the Module, used for lazy compilation of pending function slots.
     module: *Module,
     host_funcs: []const HostFunc,
-    tables: [][]u32,
+    tables: []core.SharedTable,
+    foreign_funcs: []const core.ForeignFunc = &.{},
+    instance_id: u64 = 0,
     func_type_indices: []const u32,
     data_segments: []const CompiledDataSegment,
     data_segments_dropped: []bool,
@@ -90,6 +92,12 @@ pub const VM = struct {
     call_stack: []dispatch_mod.CallFrame = &[_]dispatch_mod.CallFrame{},
     /// Number of allocations performed by this VM.
     alloc_count: usize = 0,
+    /// Guard against reentrant `execute` clobbering the active val_stack / call_stack.
+    in_use: bool = false,
+    /// Multi-value results from the most recent execution (for n_results > 1).
+    last_results_inline: [16]RawVal = @splat(RawVal.fromBits64(0)),
+    last_results_heap: ?[]RawVal = null,
+    last_results_len: usize = 0,
 
     pub fn init(allocator: Allocator) VM {
         return .{ .allocator = allocator };
@@ -98,7 +106,28 @@ pub const VM = struct {
     pub fn deinit(self: *VM) void {
         if (self.val_stack.len > 0) self.allocator.free(self.val_stack);
         if (self.call_stack.len > 0) self.allocator.free(self.call_stack);
+        if (self.last_results_heap) |h| self.allocator.free(h);
         self.* = undefined;
+    }
+
+    pub fn lastResults(self: *const VM) []const RawVal {
+        if (self.last_results_len == 0) return &.{};
+        if (self.last_results_len <= self.last_results_inline.len) {
+            return self.last_results_inline[0..self.last_results_len];
+        }
+        if (self.last_results_heap) |h| return h[0..self.last_results_len];
+        return &.{};
+    }
+
+    pub fn saveLastResults(self: *VM, vals: []const RawVal) Allocator.Error!void {
+        self.last_results_len = vals.len;
+        if (vals.len == 0) return;
+        if (vals.len <= self.last_results_inline.len) {
+            @memcpy(self.last_results_inline[0..vals.len], vals);
+            return;
+        }
+        if (self.last_results_heap) |prev| self.allocator.free(prev);
+        self.last_results_heap = try self.allocator.dupe(RawVal, vals);
     }
 
     /// Ensure persistent buffers are allocated (lazy, first call only).
@@ -125,6 +154,17 @@ pub const VM = struct {
         params: []const RawVal,
         env: ExecEnv,
     ) Allocator.Error!ExecResult {
+        if (self.in_use) {
+            var nested = VM.init(self.allocator);
+            defer nested.deinit();
+            const res = try nested.execute(func, params, env);
+            try self.saveLastResults(nested.lastResults());
+            return res;
+        }
+        self.in_use = true;
+        defer self.in_use = false;
+        self.last_results_len = 0;
+
         // Lazily initialize GC heap for modules that need it (GC types or EH).
         if (env.module.has_gc_types or env.module.config.eh_mode != .none) {
             _ = try env.store.ensureGcHeap();
@@ -141,6 +181,8 @@ pub const VM = struct {
             .module = env.module,
             .host_funcs = env.host_funcs,
             .tables = env.tables,
+            .foreign_funcs = env.foreign_funcs,
+            .instance_id = env.instance_id,
             .func_type_indices = env.func_type_indices,
             .data_segments = env.data_segments,
             .data_segments_dropped = env.data_segments_dropped,
@@ -205,6 +247,17 @@ pub const VM = struct {
         const ip = func.code.ptr;
         const h: dispatch_mod.Handler = @as(*const dispatch_mod.Handler, @ptrCast(ip)).*;
         h(ip, entry_slots.ptr, &frame, &m3_env, 0, 0.0);
+
+        if (frame.multi_results_len > 0) {
+            try self.saveLastResults(frame.multiResultsSlice());
+        } else {
+            switch (frame.result) {
+                .ok => |maybe_val| if (maybe_val) |rv| {
+                    try self.saveLastResults(&.{rv});
+                },
+                .trap => {},
+            }
+        }
 
         return frame.result;
     }

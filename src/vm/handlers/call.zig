@@ -51,6 +51,8 @@ const IndirectSiteCache = struct {
     table_index: u32 = 0,
     type_index: u32 = 0,
     raw_index: u32 = 0,
+    table_version: u64 = 0,
+    instance_id: u64 = 0,
     callee_func_idx: u32 = 0,
 };
 
@@ -309,15 +311,16 @@ const HOST_CALL_INLINE_MAX = 16;
 /// Invoke a host function, returning the result. On failure writes trap or returns OOM.
 /// Uses a stack buffer for small argument/result counts to avoid heap allocation overhead.
 fn invokeHostCallInline(
-    allocator: Allocator,
-    store: *Store,
-    host_instance: *dispatch.HostInstance,
+    env: *const ExecEnv,
     host_func: HostFunc,
     arg_slots: []align(1) const ir.Slot,
     slots: [*]RawVal,
     result_len: usize,
+    dst_base: ?ir.Slot,
+    save_multi_to_frame: bool,
     frame: *DispatchState,
 ) ?RawVal {
+    const allocator = frame.allocator;
     // Fast path: use stack buffers for small argument/result counts (common for WASI calls).
     if (arg_slots.len <= HOST_CALL_INLINE_MAX and result_len <= HOST_CALL_INLINE_MAX) {
         var params_buf: [HOST_CALL_INLINE_MAX]RawVal = undefined;
@@ -330,7 +333,7 @@ fn invokeHostCallInline(
             host_params[i] = slots[arg_slot];
         }
 
-        var ctx = HostContext.init(store, host_instance, host_func.host_data);
+        var ctx = HostContext.init(env.store, env.host_instance, host_func.host_data);
         host_func.call(&ctx, host_params, host_results) catch |err| {
             switch (err) {
                 error.HostTrap => {
@@ -344,6 +347,17 @@ fn invokeHostCallInline(
             }
         };
 
+        frame.refreshMemCache(env.memory);
+        if (dst_base) |base| {
+            for (host_results, 0..) |rv, ri| {
+                slots[base + ri] = rv;
+            }
+        } else if (save_multi_to_frame and host_results.len > 1) {
+            if (!frame.setMultiResults(host_results)) {
+                trapReturn(frame, .OutOfMemory);
+                return null;
+            }
+        }
         return if (result_len > 0) host_results[0] else null;
     }
 
@@ -363,9 +377,9 @@ fn invokeHostCallInline(
     };
     @memset(host_results, std.mem.zeroes(RawVal));
 
-    var ctx = HostContext.init(store, host_instance, host_func.host_data);
+    var ctx = HostContext.init(env.store, env.host_instance, host_func.host_data);
     host_func.call(&ctx, host_params, host_results) catch |err| {
-        const ret_val: ?RawVal = switch (err) {
+        switch (err) {
             error.HostTrap => {
                 trapReturnFromTrap(frame, ctx.takeTrap());
                 allocator.free(host_params);
@@ -378,10 +392,22 @@ fn invokeHostCallInline(
                 trapReturn(frame, .OutOfMemory);
                 return null;
             },
-        };
-        _ = ret_val;
+        }
     };
 
+    frame.refreshMemCache(env.memory);
+    if (dst_base) |base| {
+        for (host_results, 0..) |rv, ri| {
+            slots[base + ri] = rv;
+        }
+    } else if (save_multi_to_frame and host_results.len > 1) {
+        if (!frame.setMultiResults(host_results)) {
+            allocator.free(host_params);
+            allocator.free(host_results);
+            trapReturn(frame, .OutOfMemory);
+            return null;
+        }
+    }
     const ret = if (result_len > 0) host_results[0] else null;
     allocator.free(host_params);
     allocator.free(host_results);
@@ -446,26 +472,21 @@ inline fn handle_call_impl(comptime known_arity: ?u32, ip: [*]u8, slots: [*]RawV
     countCallArity(arg_slots.len);
 
     if (ops.func_idx < env.host_funcs.len) {
-        // Host function call
         const host_func = env.host_funcs[ops.func_idx];
         const result_len = env.composite_types[env.func_type_indices[ops.func_idx]].func_type.results().len;
+        const dst_base: ?ir.Slot = if (ops.dst_valid != 0) ops.dst else null;
 
-        const ret_val = invokeHostCallInline(frame.allocator, env.store, env.host_instance, host_func, arg_slots, slots, result_len, frame);
+        const ret_val = invokeHostCallInline(env, host_func, arg_slots, slots, result_len, dst_base, false, frame);
 
-        // invokeHostCallInline returns null on failure (trap already written to frame.result).
-        // It also returns null for successful void calls (result_len == 0).
-        // Check the result tag to distinguish trap from void success.
         switch (frame.result) {
             .trap => return,
             .ok => {},
         }
 
-        if (ops.dst_valid != 0) {
-            if (ret_val) |rv| {
-                slots[ops.dst] = rv;
-            }
-        }
-        const acc = accumulatorsAfterHostCall(ret_val, ops.func_idx, env, r0, fp0);
+        const acc = if (ops.dst_valid <= 1)
+            accumulatorsAfterHostCall(ret_val, ops.func_idx, env, r0, fp0)
+        else
+            dispatch.Accumulators{ .r0 = r0, .fp0 = fp0 };
         dispatch.next(ip, instr_stride, slots, frame, env, acc.r0, acc.fp0);
     } else {
         // readOps + inline args already done above
@@ -633,16 +654,13 @@ inline fn handle_call_to_local_impl(comptime known_arity: ?u32, ip: [*]u8, slots
         const host_func = env.host_funcs[ops.func_idx];
         const result_len = env.composite_types[env.func_type_indices[ops.func_idx]].func_type.results().len;
 
-        const ret_val = invokeHostCallInline(frame.allocator, env.store, env.host_instance, host_func, arg_slots, slots, result_len, frame);
+        const ret_val = invokeHostCallInline(env, host_func, arg_slots, slots, result_len, ops.local, false, frame);
 
         switch (frame.result) {
             .trap => return,
             .ok => {},
         }
 
-        if (ret_val) |rv| {
-            slots[ops.local] = rv;
-        }
         const acc_tl = accumulatorsAfterHostCall(ret_val, ops.func_idx, env, r0, fp0);
         dispatch.next(ip, instr_stride, slots, frame, env, acc_tl.r0, acc_tl.fp0);
     } else {
@@ -810,7 +828,7 @@ inline fn handle_call_leaf_impl(comptime known_arity: ?u32, ip: [*]u8, slots: [*
         const host_func = env.host_funcs[ops.func_idx];
         const result_len = env.composite_types[env.func_type_indices[ops.func_idx]].func_type.results().len;
 
-        _ = invokeHostCallInline(frame.allocator, env.store, env.host_instance, host_func, arg_slots, slots, result_len, frame);
+        _ = invokeHostCallInline(env, host_func, arg_slots, slots, result_len, null, false, frame);
 
         switch (frame.result) {
             .trap => return,
@@ -925,6 +943,11 @@ inline fn indirectTypeMatches(env: *const ExecEnv, callee_func_idx: u32, type_in
     return type_equiv_mod.funcTypeMatches(actual, type_index, env.type_canonical);
 }
 
+const IndirectCallee = union(enum) {
+    local: u32,
+    foreign: *const core.ForeignFunc,
+};
+
 inline fn resolveIndirectCallee(
     ip: [*]u8,
     table_index: u32,
@@ -932,28 +955,57 @@ inline fn resolveIndirectCallee(
     raw_index: u32,
     env: *const ExecEnv,
     frame: *DispatchState,
-) ?u32 {
+) ?IndirectCallee {
+    if (table_index >= env.tables.len) {
+        trapReturn(frame, .TableOutOfBounds);
+        return null;
+    }
+    const tbl = env.tables[table_index];
+    const table_version = tbl.inner.version;
+
     const site_key = @intFromPtr(ip);
     const cache = &indirect_site_cache;
     if (cache.ip == site_key and
         cache.table_index == table_index and
         cache.type_index == type_index and
-        cache.raw_index == raw_index)
+        cache.raw_index == raw_index and
+        cache.table_version == table_version and
+        cache.instance_id == env.instance_id)
     {
         if (profiling.enabled) profiling.call_prof.resolved_hits += 1;
-        return cache.callee_func_idx;
+        return .{ .local = cache.callee_func_idx };
     }
 
-    if (table_index >= env.tables.len) {
+    const entry = tbl.get(raw_index) orelse {
         trapReturn(frame, .TableOutOfBounds);
         return null;
-    }
-    const table = env.tables[table_index];
-    if (raw_index >= table.len) {
-        trapReturn(frame, .TableOutOfBounds);
+    };
+    if (entry.isNull()) {
+        trapReturn(frame, .IndirectCallToNull);
         return null;
     }
-    const callee_func_idx = table[raw_index];
+    if (entry.foreign) |foreign| {
+        if (entry.owner_id == 0 or entry.owner_id != env.instance_id) {
+            const expected_ft = switch (env.composite_types[type_index]) {
+                .func_type => |ft| ft,
+                else => {
+                    trapReturn(frame, .BadSignature);
+                    return null;
+                },
+            };
+            if (!core.ValType.eqlSlice(foreign.param_types, expected_ft.params()) or
+                !core.ValType.eqlSlice(foreign.result_types, expected_ft.results()))
+            {
+                trapReturn(frame, .BadSignature);
+                return null;
+            }
+            return .{ .foreign = foreign };
+        }
+    } else if (entry.owner_id != 0 and entry.owner_id != env.instance_id) {
+        trapReturn(frame, .BadSignature);
+        return null;
+    }
+    const callee_func_idx = entry.func_idx;
     if (callee_func_idx == std.math.maxInt(u32)) {
         trapReturn(frame, .IndirectCallToNull);
         return null;
@@ -972,9 +1024,75 @@ inline fn resolveIndirectCallee(
         .table_index = table_index,
         .type_index = type_index,
         .raw_index = raw_index,
+        .table_version = table_version,
+        .instance_id = env.instance_id,
         .callee_func_idx = callee_func_idx,
     };
-    return callee_func_idx;
+    return .{ .local = callee_func_idx };
+}
+
+fn invokeForeignIndirect(
+    env: *const ExecEnv,
+    foreign: *const core.ForeignFunc,
+    arg_slots: []align(1) const ir.Slot,
+    slots: [*]RawVal,
+    dst_base: ?ir.Slot,
+    save_multi_to_frame: bool,
+    frame: *DispatchState,
+) ?RawVal {
+    const allocator = frame.allocator;
+    const args_buf = allocator.alloc(u64, arg_slots.len) catch {
+        trapReturn(frame, .OutOfMemory);
+        return null;
+    };
+    defer allocator.free(args_buf);
+    for (arg_slots, 0..) |s, i| {
+        args_buf[i] = slots[s].low64;
+    }
+
+    const res_len = foreign.result_types.len;
+    const res_buf = allocator.alloc(u64, res_len) catch {
+        trapReturn(frame, .OutOfMemory);
+        return null;
+    };
+    defer allocator.free(res_buf);
+    @memset(res_buf, 0);
+
+    var trap_msg: ?[*:0]const u8 = null;
+    if (!foreign.trampoline(foreign.ctx, foreign.func_idx, args_buf, res_buf, &trap_msg)) {
+        if (trap_msg) |m| {
+            var trap = Trap.hostMessage(std.mem.span(m));
+            if (frame.captureStackTrace()) |trace| {
+                trap.allocator = allocator;
+                trap.stack_trace = trace;
+            }
+            frame.result = .{ .trap = trap };
+        } else {
+            trapReturn(frame, .UnreachableCodeReached);
+        }
+        return null;
+    }
+
+    frame.refreshMemCache(env.memory);
+    if (dst_base) |base| {
+        for (res_buf, 0..) |bits, i| {
+            slots[base + i] = RawVal.fromBits64(bits);
+        }
+    } else if (save_multi_to_frame and res_len > 1) {
+        const raw_res = allocator.alloc(RawVal, res_len) catch {
+            trapReturn(frame, .OutOfMemory);
+            return null;
+        };
+        defer allocator.free(raw_res);
+        for (res_buf, 0..) |bits, i| {
+            raw_res[i] = RawVal.fromBits64(bits);
+        }
+        if (!frame.setMultiResults(raw_res)) {
+            trapReturn(frame, .OutOfMemory);
+            return null;
+        }
+    }
+    return if (res_len > 0) RawVal.fromBits64(res_buf[0]) else null;
 }
 
 inline fn dispatchCallIndirectLocal(
@@ -1030,28 +1148,40 @@ pub fn handle_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, 
     const instr_stride = encode.varStride(encode.ops.OpsCallIndirect, ops.args_len);
 
     const raw_index = slots[ops.index].readAs(u32);
-    const callee_func_idx = resolveIndirectCallee(ip, ops.table_index, ops.type_index, raw_index, env, frame) orelse return;
+    const resolved = resolveIndirectCallee(ip, ops.table_index, ops.type_index, raw_index, env, frame) orelse return;
 
-    if (callee_func_idx < env.host_funcs.len) {
-        const host_func = env.host_funcs[callee_func_idx];
-        const result_len = env.composite_types[env.func_type_indices[callee_func_idx]].func_type.results().len;
-
-        const ret_val = invokeHostCallInline(frame.allocator, env.store, env.host_instance, host_func, arg_slots, slots, result_len, frame);
-
-        switch (frame.result) {
-            .trap => return,
-            .ok => {},
-        }
-
-        if (ops.dst_valid != 0) {
-            if (ret_val) |rv| {
-                slots[ops.dst] = rv;
+    switch (resolved) {
+        .foreign => |foreign| {
+            const dst_base: ?ir.Slot = if (ops.dst_valid != 0) ops.dst else null;
+            _ = invokeForeignIndirect(env, foreign, arg_slots, slots, dst_base, false, frame);
+            switch (frame.result) {
+                .trap => return,
+                .ok => {},
             }
-        }
-        const acc_ci = accumulatorsAfterHostCall(ret_val, callee_func_idx, env, r0, fp0);
-        dispatch.next(ip, instr_stride, slots, frame, env, acc_ci.r0, acc_ci.fp0);
-    } else {
-        dispatchCallIndirectLocal(ip, slots, frame, env, r0, fp0, ops, arg_slots, instr_stride, callee_func_idx);
+            dispatch.next(ip, instr_stride, slots, frame, env, r0, fp0);
+        },
+        .local => |callee_func_idx| {
+            if (callee_func_idx < env.host_funcs.len) {
+                const host_func = env.host_funcs[callee_func_idx];
+                const result_len = env.composite_types[env.func_type_indices[callee_func_idx]].func_type.results().len;
+                const dst_base: ?ir.Slot = if (ops.dst_valid != 0) ops.dst else null;
+
+                const ret_val = invokeHostCallInline(env, host_func, arg_slots, slots, result_len, dst_base, false, frame);
+
+                switch (frame.result) {
+                    .trap => return,
+                    .ok => {},
+                }
+
+                const acc_ci = if (ops.dst_valid <= 1)
+                    accumulatorsAfterHostCall(ret_val, callee_func_idx, env, r0, fp0)
+                else
+                    dispatch.Accumulators{ .r0 = r0, .fp0 = fp0 };
+                dispatch.next(ip, instr_stride, slots, frame, env, acc_ci.r0, acc_ci.fp0);
+            } else {
+                dispatchCallIndirectLocal(ip, slots, frame, env, r0, fp0, ops, arg_slots, instr_stride, callee_func_idx);
+            }
+        },
     }
 }
 
@@ -1072,7 +1202,7 @@ pub fn handle_return_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
         const host_func = env.host_funcs[ops.func_idx];
         const result_len = env.composite_types[env.func_type_indices[ops.func_idx]].func_type.results().len;
 
-        const ret_val = invokeHostCallInline(frame.allocator, env.store, env.host_instance, host_func, arg_slots, slots, result_len, frame);
+        const ret_val = invokeHostCallInline(env, host_func, arg_slots, slots, result_len, null, true, frame);
 
         switch (frame.result) {
             .trap => return,
@@ -1090,14 +1220,21 @@ pub fn handle_return_call(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, en
 
         const caller_idx = frame.call_depth - 1;
         if (popped.dst) |dst_slot| {
-            if (ret_val) |rv| {
+            if (result_len > 1) {
+                for (frame.multiResultsSlice(), 0..) |rv, ri| {
+                    frame.callStackAt(caller_idx).slots[dst_slot + ri] = rv;
+                }
+            } else if (ret_val) |rv| {
                 frame.callStackAt(caller_idx).slots[dst_slot] = rv;
             }
         }
 
         // Resume caller with return value in r0/fp0
         const caller = frame.callStackAt(caller_idx);
-        const acc_rc = dispatch.accumulatorsFromReturn(ret_val, ops.func_idx, env);
+        const acc_rc = if (result_len <= 1)
+            dispatch.accumulatorsFromReturn(ret_val, ops.func_idx, env)
+        else
+            dispatch.Accumulators{ .r0 = 0, .fp0 = 0.0 };
         dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env, acc_rc.r0, acc_rc.fp0);
     } else {
         // Tail call to local function: replace current frame
@@ -1145,62 +1282,96 @@ pub fn handle_return_call_indirect(ip: [*]u8, slots: [*]RawVal, frame: *Dispatch
     const frame_idx = frame.call_depth - 1;
 
     const raw_index = slots[ops.index].readAs(u32);
-    const callee_func_idx = resolveIndirectCallee(ip, ops.table_index, ops.type_index, raw_index, env, frame) orelse return;
+    const resolved = resolveIndirectCallee(ip, ops.table_index, ops.type_index, raw_index, env, frame) orelse return;
 
-    if (callee_func_idx < env.host_funcs.len) {
-        const host_func = env.host_funcs[callee_func_idx];
-        const result_len = env.composite_types[env.func_type_indices[callee_func_idx]].func_type.results().len;
-
-        const ret_val = invokeHostCallInline(frame.allocator, env.store, env.host_instance, host_func, arg_slots, slots, result_len, frame);
-
-        switch (frame.result) {
-            .trap => return,
-            .ok => {},
-        }
-
-        const popped = frame.callStackPop();
-        frame.valStackFree(popped.slots_sp_base);
-
-        if (frame.call_depth == 0) {
-            frame.result = .{ .ok = ret_val };
-            return;
-        }
-
-        const caller_idx = frame.call_depth - 1;
-        if (popped.dst) |dst_slot| {
-            if (ret_val) |rv| {
-                frame.callStackAt(caller_idx).slots[dst_slot] = rv;
+    switch (resolved) {
+        .foreign => |foreign| {
+            const ret_val = invokeForeignIndirect(env, foreign, arg_slots, slots, null, true, frame);
+            switch (frame.result) {
+                .trap => return,
+                .ok => {},
             }
-        }
+            const popped = frame.callStackPop();
+            frame.valStackFree(popped.slots_sp_base);
+            if (frame.call_depth == 0) {
+                frame.result = .{ .ok = ret_val };
+                return;
+            }
+            const caller_idx = frame.call_depth - 1;
+            if (popped.dst) |dst_slot| {
+                if (foreign.result_types.len > 1) {
+                    for (frame.multiResultsSlice(), 0..) |rv, ri| {
+                        frame.callStackAt(caller_idx).slots[dst_slot + ri] = rv;
+                    }
+                } else if (ret_val) |rv| {
+                    frame.callStackAt(caller_idx).slots[dst_slot] = rv;
+                }
+            }
+            const caller = frame.callStackAt(caller_idx);
+            dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env, 0, 0.0);
+        },
+        .local => |callee_func_idx| {
+            if (callee_func_idx < env.host_funcs.len) {
+                const host_func = env.host_funcs[callee_func_idx];
+                const result_len = env.composite_types[env.func_type_indices[callee_func_idx]].func_type.results().len;
 
-        const caller = frame.callStackAt(caller_idx);
-        const acc_rci = dispatch.accumulatorsFromReturn(ret_val, callee_func_idx, env);
-        dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env, acc_rci.r0, acc_rci.fp0);
-    } else {
-        const callee = ensureLocalCompiled(callee_func_idx, env, frame) orelse return;
-        const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
+                const ret_val = invokeHostCallInline(env, host_func, arg_slots, slots, result_len, null, true, frame);
 
-        const old_sp_base = frame.callStackAt(frame_idx).slots_sp_base;
-        frame.valStackFree(old_sp_base);
-        const sp_base = frame.val_sp;
-        const callee_slots = allocCalleeSlots(frame, callee_slots_len, arg_slots.len, callee.locals_count, callee.needs_zero) orelse return;
-        // Re-derive caller slots: valStackAlloc may have grown the buffer,
-        // invalidating the handler's original `slots` parameter.
-        const caller_slots = frame.callStackTop().slots.ptr;
+                switch (frame.result) {
+                    .trap => return,
+                    .ok => {},
+                }
 
-        copyTailCallArgs(callee_slots, caller_slots, arg_slots);
+                const popped = frame.callStackPop();
+                frame.valStackFree(popped.slots_sp_base);
 
-        const tail_dst = frame.callStackAt(frame_idx).dst;
+                if (frame.call_depth == 0) {
+                    frame.result = .{ .ok = ret_val };
+                    return;
+                }
 
-        frame.callStackAt(frame_idx).* = .{
-            .ip = callee.code.ptr,
-            .slots = callee_slots,
-            .slots_sp_base = sp_base,
-            .dst = tail_dst,
-            .func = callee,
-        };
+                const caller_idx = frame.call_depth - 1;
+                if (popped.dst) |dst_slot| {
+                    if (result_len > 1) {
+                        for (frame.multiResultsSlice(), 0..) |rv, ri| {
+                            frame.callStackAt(caller_idx).slots[dst_slot + ri] = rv;
+                        }
+                    } else if (ret_val) |rv| {
+                        frame.callStackAt(caller_idx).slots[dst_slot] = rv;
+                    }
+                }
 
-        dispatch.dispatch(callee.code.ptr, callee_slots.ptr, frame, env, 0, 0.0);
+                const caller = frame.callStackAt(caller_idx);
+                const acc_rci = if (result_len <= 1)
+                    dispatch.accumulatorsFromReturn(ret_val, callee_func_idx, env)
+                else
+                    dispatch.Accumulators{ .r0 = 0, .fp0 = 0.0 };
+                dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env, acc_rci.r0, acc_rci.fp0);
+            } else {
+                const callee = ensureLocalCompiled(callee_func_idx, env, frame) orelse return;
+                const callee_slots_len: usize = @max(@as(usize, @intCast(callee.slots_len)), arg_slots.len);
+
+                const old_sp_base = frame.callStackAt(frame_idx).slots_sp_base;
+                frame.valStackFree(old_sp_base);
+                const sp_base = frame.val_sp;
+                const callee_slots = allocCalleeSlots(frame, callee_slots_len, arg_slots.len, callee.locals_count, callee.needs_zero) orelse return;
+                const caller_slots = frame.callStackTop().slots.ptr;
+
+                copyTailCallArgs(callee_slots, caller_slots, arg_slots);
+
+                const tail_dst = frame.callStackAt(frame_idx).dst;
+
+                frame.callStackAt(frame_idx).* = .{
+                    .ip = callee.code.ptr,
+                    .slots = callee_slots,
+                    .slots_sp_base = sp_base,
+                    .dst = tail_dst,
+                    .func = callee,
+                };
+
+                dispatch.dispatch(callee.code.ptr, callee_slots.ptr, frame, env, 0, 0.0);
+            }
+        },
     }
 }
 
@@ -1236,20 +1407,19 @@ pub fn handle_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState, env: 
     if (callee_func_idx < env.host_funcs.len) {
         const host_func = env.host_funcs[callee_func_idx];
         const result_len = env.composite_types[env.func_type_indices[callee_func_idx]].func_type.results().len;
+        const dst_base: ?ir.Slot = if (ops.dst_valid != 0) ops.dst else null;
 
-        const ret_val = invokeHostCallInline(frame.allocator, env.store, env.host_instance, host_func, arg_slots, slots, result_len, frame);
+        const ret_val = invokeHostCallInline(env, host_func, arg_slots, slots, result_len, dst_base, false, frame);
 
         switch (frame.result) {
             .trap => return,
             .ok => {},
         }
 
-        if (ops.dst_valid != 0) {
-            if (ret_val) |rv| {
-                slots[ops.dst] = rv;
-            }
-        }
-        const acc_ci = accumulatorsAfterHostCall(ret_val, callee_func_idx, env, r0, fp0);
+        const acc_ci = if (ops.dst_valid <= 1)
+            accumulatorsAfterHostCall(ret_val, callee_func_idx, env, r0, fp0)
+        else
+            dispatch.Accumulators{ .r0 = r0, .fp0 = fp0 };
         dispatch.next(ip, instr_stride, slots, frame, env, acc_ci.r0, acc_ci.fp0);
     } else {
         const callee = ensureLocalCompiled(callee_func_idx, env, frame) orelse return;
@@ -1331,7 +1501,7 @@ pub fn handle_return_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
         const host_func = env.host_funcs[callee_func_idx];
         const result_len = env.composite_types[env.func_type_indices[callee_func_idx]].func_type.results().len;
 
-        const ret_val = invokeHostCallInline(frame.allocator, env.store, env.host_instance, host_func, arg_slots, slots, result_len, frame);
+        const ret_val = invokeHostCallInline(env, host_func, arg_slots, slots, result_len, null, true, frame);
 
         switch (frame.result) {
             .trap => return,
@@ -1348,13 +1518,20 @@ pub fn handle_return_call_ref(ip: [*]u8, slots: [*]RawVal, frame: *DispatchState
 
         const caller_idx = frame.call_depth - 1;
         if (popped.dst) |dst_slot| {
-            if (ret_val) |rv| {
+            if (result_len > 1) {
+                for (frame.multiResultsSlice(), 0..) |rv, ri| {
+                    frame.callStackAt(caller_idx).slots[dst_slot + ri] = rv;
+                }
+            } else if (ret_val) |rv| {
                 frame.callStackAt(caller_idx).slots[dst_slot] = rv;
             }
         }
 
         const caller = frame.callStackAt(caller_idx);
-        const acc_rci = dispatch.accumulatorsFromReturn(ret_val, callee_func_idx, env);
+        const acc_rci = if (result_len <= 1)
+            dispatch.accumulatorsFromReturn(ret_val, callee_func_idx, env)
+        else
+            dispatch.Accumulators{ .r0 = 0, .fp0 = 0.0 };
         dispatch.dispatch(caller.ip, caller.slots.ptr, frame, env, acc_rci.r0, acc_rci.fp0);
     } else {
         const callee = ensureLocalCompiled(callee_func_idx, env, frame) orelse return;
