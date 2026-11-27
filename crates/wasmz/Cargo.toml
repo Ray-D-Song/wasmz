@@ -10,5 +10,5 @@ readme = "README.md"
 publish = false
 
 [dependencies]
-wasmz-sys = { path = "../wasmz-sys", version = "0.1.6" }
+wasmz-sys = { path = "../wasmz-sys", version = "0.1.7" }
 
