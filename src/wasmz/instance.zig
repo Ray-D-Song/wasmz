@@ -31,7 +31,7 @@ const TableEntry = core.TableEntry;
 const Memory = core.Memory;
 const SharedMemory = core.SharedMemory;
 
-var next_instance_id = std.atomic.Value(u64).init(1);
+var next_instance_id = std.atomic.Value(usize).init(1);
 const VM = vm_mod.VM;
 const ExecEnv = vm_mod.ExecEnv;
 const HostInstance = host_mod.HostInstance;
@@ -509,7 +509,7 @@ pub const Instance = struct {
         const module = arc.value;
         const allocator = store.allocator;
         var instance_alloc_count: usize = 0;
-        const instance_id = next_instance_id.fetchAdd(1, .monotonic);
+        const instance_id: u64 = @intCast(next_instance_id.fetchAdd(1, .monotonic));
 
         const g = try buildGlobals(store, module, imports, allocator);
         const global_handles = g.handles;
@@ -688,7 +688,7 @@ pub const Instance = struct {
         const max = mem_def.max_pages orelse return error.SharedMemoryMissingMax;
         const required_capacity = @as(usize, max) * @import("core").WASM_PAGE_SIZE;
         if (shared.capacity() < required_capacity) return error.SharedMemoryTooSmall;
-        const instance_id = next_instance_id.fetchAdd(1, .monotonic);
+        const instance_id: u64 = @intCast(next_instance_id.fetchAdd(1, .monotonic));
 
         const g = try buildGlobals(store, module, imports, allocator);
         const global_handles = g.handles;
